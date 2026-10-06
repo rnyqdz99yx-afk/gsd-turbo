@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tmpGitRepo } from './helpers/tmp.mjs';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { extractRefs, classifyArtifact, stalenessReport, recordBases, BASE_FILE } from '../lib/staleness.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 
@@ -98,4 +98,15 @@ test('staleness CLI prints the report and records bases', async () => {
   assert.equal(await run('3', '--json'), 0);
   assert.equal(JSON.parse(lines.at(-1)).artifacts[0].action, 'fresh');
   assert.equal(await run('3', '--record', 'nope.md'), 1);
+});
+
+test('staleness CLI names the candidates when the phase directory is ambiguous', async () => {
+  const root = tmpDir('stale');
+  for (const d of ['03-alpha', '03-beta']) fs.mkdirSync(path.join(root, '.planning', 'phases', d), { recursive: true });
+  const lines = [];
+  const run = (...a) => runPhaseCommand('staleness', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { planIndex: () => [] } });
+  assert.equal(await run('3'), 1);
+  assert.match(lines.at(-1), /phase 3 is ambiguous: 03-alpha, 03-beta — resolve it in \.planning\/phases$/);
+  assert.equal(await run('9'), 1);
+  assert.match(lines.at(-1), /no phase directory for phase 9/);
 });

@@ -6,7 +6,7 @@ import { claudeHome as defaultHome } from './lib/paths.mjs';
 import { writeJsonAtomic } from './lib/fsx.mjs';
 
 const REPO = path.dirname(fileURLToPath(import.meta.url));
-const MANIFEST = path.join('turbo', 'install-manifest.json');
+const MANIFEST = 'turbo/install-manifest.json';
 
 function walk(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -26,10 +26,11 @@ function plan(repoDir) {
 }
 
 // A manifest entry is deletable only as a relative POSIX path inside claudeHome
-// under turbo/, skills/turbo-*/ or agents/turbo-*; anything else is never touched.
+// under turbo/, skills/turbo-*/ or agents/turbo-* (never the manifest itself);
+// anything else is never touched.
 const TURBO_OWNED = /^(turbo\/.+|skills\/turbo-[^/]+\/.+|agents\/turbo-[^/]+)$/;
 function ownedPath(home, rel) {
-  if (typeof rel !== 'string' || /[\\:\0]/.test(rel) || rel.startsWith('/')) return null;
+  if (typeof rel !== 'string' || rel === MANIFEST || /[\\:\0]/.test(rel) || rel.startsWith('/')) return null;
   if (rel.split('/').some((s) => s === '' || s === '.' || s === '..') || !TURBO_OWNED.test(rel)) return null;
   const abs = path.resolve(home, rel);
   const inside = path.relative(home, abs);
@@ -60,7 +61,7 @@ export function install({ repoDir = REPO, claudeHome = defaultHome(), dryRun = f
   return manifest;
 }
 
-export function uninstall({ claudeHome = defaultHome() } = {}) {
+export function uninstall({ claudeHome = defaultHome(), dryRun = false } = {}) {
   const home = path.resolve(claudeHome);
   const mf = path.join(home, MANIFEST);
   if (!fs.existsSync(mf)) return 0;
@@ -79,10 +80,11 @@ export function uninstall({ claudeHome = defaultHome() } = {}) {
       process.stderr.write(`turbo uninstall: skipped directory manifest entry: ${p}\n`);
       continue;
     }
-    fs.rmSync(p);
+    if (!dryRun) fs.rmSync(p);
     n++;
   }
-  fs.rmSync(mf);
+  if (dryRun) return n;
+  fs.rmSync(mf, { force: true });
   const dirs = [...new Set(targets.map((p) => path.dirname(p)))].sort((a, b) => b.length - a.length);
   for (const d of dirs) {
     let cur = d;
@@ -94,10 +96,25 @@ export function uninstall({ claudeHome = defaultHome() } = {}) {
   return n;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Compare realpaths: run through a symlink/junction, argv[1] keeps the link path
+// while import.meta.url is the resolved one.
+function isMain() {
+  try {
+    return Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
   const args = process.argv.slice(2);
-  if (args.includes('--uninstall')) {
-    process.stdout.write(`removed ${uninstall()} files\n`);
+  const unknown = args.filter((a) => a !== '--uninstall' && a !== '--dry-run');
+  if (unknown.length) {
+    process.stderr.write(`unknown argument: ${unknown.join(' ')}\nusage: node install.mjs [--uninstall] [--dry-run]\n`);
+    process.exitCode = 2;
+  } else if (args.includes('--uninstall')) {
+    const dryRun = args.includes('--dry-run');
+    process.stdout.write(`${dryRun ? 'would remove' : 'removed'} ${uninstall({ dryRun })} files\n`);
   } else {
     const m = install({ dryRun: args.includes('--dry-run') });
     process.stdout.write(`${args.includes('--dry-run') ? 'would install' : 'installed'} gsd-turbo ${m.version}: ${m.files.length} files into ${defaultHome()}\n`);

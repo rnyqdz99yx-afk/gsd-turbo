@@ -30,6 +30,30 @@ test('msg renders launchHalted in en and ru, ending with the resume command', ()
   }
 });
 
+test('laneHalted, laneFailed and phaseMissing end with the resume command in en and ru', () => {
+  const vars = { phase: '2', restarts: 3, log: 'x.log', id: 's1' };
+  for (const lang of ['en', 'ru']) {
+    for (const key of ['laneHalted', 'laneFailed', 'phaseMissing']) {
+      assert.ok(msg(lang, key, vars).body.endsWith('/turbo-autonomous resume 2'), `${lang} ${key}`);
+    }
+  }
+  assert.match(msg('en', 'laneFailed', vars).body, /claude attach s1/);
+  assert.match(msg('ru', 'laneHalted', vars).body, /x\.log/);
+});
+
+test('every message exists in en and ru with the same placeholders', () => {
+  const keys = ['laneNeedsOwner', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'supervisorFailing'];
+  const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` }); // renders each {name} as itself
+  const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
+  for (const key of keys) {
+    const en = msg('en', key, keep);
+    const ru = msg('ru', key, keep);
+    assert.notEqual(en.title, key, key);
+    assert.notEqual(ru.title, en.title, `${key} has a ru text`);
+    assert.deepEqual(holes(ru), holes(en), key);
+  }
+});
+
 test('msg with a key unknown in every language returns the key as title instead of throwing', () => {
   assert.deepEqual(msg('ru', 'noSuchKey', {}), { title: 'noSuchKey', body: '' });
   assert.deepEqual(msg('xx', 'noSuchKey'), { title: 'noSuchKey', body: '' });

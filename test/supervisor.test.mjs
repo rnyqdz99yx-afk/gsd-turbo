@@ -350,6 +350,97 @@ test('a same-lane session in an unknown state is adopted, never removed or dupli
   assert.equal(s.lane.sessionId, 'live2');
 });
 
+test('a dependency cycle among unfinished phases is logged and notified once; fixing it launches', async () => {
+  const h = harness({ phases: [P('1', [], true), P('2', ['3']), P('3', ['2'])] });
+  let s = await tick(fresh(), h.ctx);
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane, null);
+  assert.equal(s.finished, false);
+  assert.equal(h.launched.length, 0);
+  assert.deepEqual(h.notes, [{ key: 'noReadyPhase', vars: { phases: '2, 3' } }]);
+  assert.equal(h.logs.filter((l) => /^no ready phase: 2, 3/.test(l)).length, 1);
+  h.phases[2].deps = [];
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.phase, '3');
+  assert.ok(!('noReady' in s));
+});
+
+test('a lane whose phase left the roadmap keeps a live session, and halts once it has ended', async () => {
+  const h = harness({ phases: [P('2'), P('3')] });
+  let s = await tick(fresh(), h.ctx);
+  h.phases = [P('3')];
+  s = await tick(s, h.ctx);
+  assert.equal(s.halted, false);
+  assert.equal(s.lane.sessionId, 's1');
+  h.agents[0].state = 'done';
+  s = await tick(s, h.ctx);
+  assert.equal(s.halted, true);
+  assert.equal(s.lane, null, 'a restart (resume) goes on with the next ready phase');
+  assert.equal(h.launched.length, 1);
+  assert.deepEqual(h.removed, []);
+  assert.deepEqual(h.notes, [{ key: 'phaseMissing', vars: { phase: '2', id: 's1' } }]);
+});
+
+test('adoption takes launchedAt from the session start, so a record it wrote before adoption counts', async () => {
+  const h = harness({ phases: [P('2')] });
+  const working = h.ctx.deps.claude.launchBg;
+  h.ctx.deps.claude.launchBg = (opts, cwd) => {
+    const id = working(opts, cwd);
+    h.agents.find((a) => a.id === id).startedAt = h.ctx.deps.now().getTime();
+    throw new Error('claude --bg failed: timed out after 120000 ms');
+  };
+  let s = await tick(fresh(), h.ctx); // 00:00 s1 registers, the call throws
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'owner sign-off', at: h.ctx.deps.now().toISOString() });
+  h.advance(1);
+  s = await tick(s, h.ctx); // 00:02 adopts s1
+  assert.equal(s.lane.sessionId, 's1');
+  assert.equal(s.lane.launchedAt, '2026-01-01T00:00:00.000Z');
+  h.agents[0].state = 'done';
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.deepEqual(h.notes, [{ key: 'laneNeedsOwner', vars: { phase: '2', reason: 'owner sign-off' } }]);
+});
+
+test('adoption falls back to now for a start time that is missing, in seconds, in the future or garbage', async () => {
+  const start = Date.parse('2026-01-01T00:03:00Z');
+  const cases = [
+    [start, '2026-01-01T00:03:00.000Z'],
+    ['2026-01-01T00:04:00.000Z', '2026-01-01T00:04:00.000Z'],
+    [String(start), '2026-01-01T00:03:00.000Z'],
+    [start / 1000, '2026-01-01T00:10:00.000Z'],
+    [Date.parse('2026-01-01T00:30:00Z'), '2026-01-01T00:10:00.000Z'],
+    ['soon', '2026-01-01T00:10:00.000Z'],
+    [0, '2026-01-01T00:10:00.000Z'],
+    [undefined, '2026-01-01T00:10:00.000Z'],
+  ];
+  for (const [startedAt, want] of cases) {
+    const h = harness({ phases: [P('2')] });
+    h.advance(10);
+    h.agents.push({ id: 'old', name: laneSessionName(h.root, '2'), cwd: h.root, state: 'working', startedAt });
+    const s = await tick(fresh(), h.ctx);
+    assert.equal(s.lane.sessionId, 'old');
+    assert.equal(s.lane.launchedAt, want, String(startedAt));
+  }
+});
+
+test('runDaemon keeps running when the state file cannot be written, logging once per spell', async () => {
+  const h = harness({ phases: [P('1', [], true)] });
+  const blocker = path.join(h.root, 'not-a-dir');
+  fs.writeFileSync(blocker, '');
+  let calls = 0;
+  h.ctx.deps.loadPhases = () => {
+    if (++calls <= 2) throw new Error('gsd-tools failed');
+    return h.phases;
+  };
+  let sleeps = 0;
+  const sleep = async () => { if (++sleeps > 10) throw new Error('runaway daemon'); };
+  const s = await runDaemon({ ctx: h.ctx, statePath: path.join(blocker, 'supervisor.json'), intervalMs: 1, sleep });
+  assert.equal(s.finished, true);
+  assert.equal(sleeps, 2);
+  assert.equal(h.logs.filter((l) => /^state write failed: /.test(l)).length, 1);
+});
+
 test('an empty phase list is not a finished milestone; it is logged once', async () => {
   const h = harness({ phases: [] });
   let s = await tick(fresh(), h.ctx);

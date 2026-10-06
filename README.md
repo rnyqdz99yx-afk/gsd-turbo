@@ -12,6 +12,7 @@ This is v0.1 (stage 1 of the [roadmap](#roadmap)): one phase runs at a time.
 - Claude Code ≥ 2.1.234 (background sessions: `claude --bg`, `claude agents --json --all`).
 - GSD core 1.16.x, installed with `npx @opengsd/gsd-core@latest` (or `npx @opengsd/gsd-core@1.16` to stay inside the tested range). `turbo-run doctor` is tested against `>=1.16.0 <1.17.0`. A different GSD version, including newer minor and major releases, runs in safe mode if the other checks pass: doctor prints `FAIL gsd-version …` and then `mode: safe`. If `gsd-tools init manager` changed incompatibly, doctor reports `mode: unsupported` and the run does not start.
 - Windows, macOS or Linux.
+- Claude Code must trust the project folder: run `claude` in it once and accept the trust prompt. In a folder it does not trust, every background session fails to start; the supervisor then stops at the first attempt and notifies you.
 
 ## Install
 
@@ -44,11 +45,19 @@ Projects keep their turbo files: `.planning/turbo/`, the last-green marker of th
 node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/gsd-tools.cjs" config-get workflow.test_command
 ```
 
-If it still calls `turbo-run`, set it back to the `test.full` value from `.planning/turbo/config.json`:
+If it still calls `turbo-run`, look at `test.full` in `.planning/turbo/config.json`:
 
-```sh
-node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/gsd-tools.cjs" config-set workflow.test_command "<value of test.full>"
-```
+- If it is the default `npm test`, clear the setting, so that GSD detects the test runner itself again instead of being pinned to `npm test`:
+
+  ```sh
+  node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/gsd-tools.cjs" config-set workflow.test_command ""
+  ```
+
+- Otherwise set it back to that value:
+
+  ```sh
+  node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/gsd-tools.cjs" config-set workflow.test_command "<value of test.full>"
+  ```
 
 If GSD is installed inside the project, use `.claude/gsd-core/bin/gsd-tools.cjs` instead.
 
@@ -60,7 +69,7 @@ Inside a GSD project (a directory with `.planning/`), open Claude Code and run:
 /turbo-autonomous
 ```
 
-If a run is already going, the skill shows its status and changes nothing. Otherwise it checks compatibility (`turbo-run doctor`), creates `.planning/turbo/config.json` on the first run (`turbo-run init`), commits only the setup files (`.planning/turbo/config.json`, `.planning/turbo/.gitignore`, `.planning/config.json`) and asks you what to do with any other uncommitted changes, so that the working tree is clean, and starts the supervisor. You can then close the session: the supervisor and the background sessions keep running.
+If a run is already going, the skill shows its status and changes nothing. Otherwise it checks compatibility (`turbo-run doctor`), creates `.planning/turbo/config.json` on the first run (`turbo-run init`), commits only the setup files (`.planning/turbo/config.json`, `.planning/turbo/.gitignore`, `.planning/config.json`) and asks you what to do with any other uncommitted changes, so that the working tree is clean, and starts the supervisor. You can then close the session: the supervisor and the background sessions keep running. (Checked on Windows: the supervisor outlives the Claude Code process that started it.)
 
 ```text
 /turbo-autonomous status          # supervisor state, current phase, session id
@@ -82,9 +91,9 @@ The background sessions work in your checkout. Do not run GSD phase commands in 
 
 - **One background session per phase.** The supervisor picks the next phase whose dependencies are complete and starts it with `claude --bg`, running GSD's `gsd-autonomous` skill for that phase only. When GSD marks the phase complete, the next phase starts. Phases run one at a time.
 - **Automatic continuation after context limits.** Each session is told (in its prompt) to commit, run `gsd-pause-work` and end when its context usage reaches about `context_stop_pct` percent; the supervisor then starts a fresh session that resumes from the state on disk. A session that ends before the phase is complete without failing is resumed the same way; a failed session stops the run and notifies you. After `max_restarts_without_progress` restarts in a row with no new commit and no new plan summary, the supervisor stops and notifies you.
-- **When a session cannot start or looks unfamiliar.** A failed `claude --bg` launch is retried at the next check; after 10 failed launches in a row the supervisor stops and notifies you. The count starts again with every supervisor start (`start`, `resume <phase> --start`). A session in a state the supervisor does not recognize counts as waiting: it is neither replaced nor relaunched, and you are notified after `blocked_minutes_before_notify`. If the running phase disappears from the roadmap, the supervisor stops once its session has ended; if no remaining phase can start because they all wait on each other (a dependency cycle), it notifies you once and keeps checking.
-- **Targeted tests.** `turbo-run init` points GSD's `workflow.test_command` to `turbo-run test-changed` only when a full test command is known: your previous `workflow.test_command` (kept as `test.full`), a `test.full` you set yourself (other than the default `npm test`), or `npm test` where GSD would pick it itself (a root `package.json` with a `test` script, and no Xcode project, no Makefile with a `test:` target and no Justfile, which GSD prefers). Otherwise init leaves `workflow.test_command` alone, GSD keeps detecting the test runner, and init prints how to enable targeted tests. Wherever GSD runs its test command (after each wave and in the phase's regression gate), turbo runs only the tests related to the files changed since the last full green run. It falls back to the full suite whenever the selection could be unsafe, for example: not a git repository or no commit yet, no full green run yet, uncommitted or untracked files, changed dependency or config files, changes in a nested package or outside the project root, a test command it cannot mirror exactly (`test.full` must be the root package's test script, and that script a plain `node --test`, `jest` or `vitest` call without `pretest`/`posttest` hooks; pytest projects always run in full), a selected test outside the runner's default test match, a changed file with no related test, or `test.max_targeted` targeted runs since the last full run. `TURBO_FULL=1` forces a full run. To enable targeted tests where init did not, set `test.full` to your full test command (see [Config](#config)) and run `turbo-run init` again.
-- **Notifications.** A desktop notification (and optionally Telegram) when a phase is done, the milestone is complete, a phase needs you, a session waits for input or fails, a phase stops making progress, a session cannot be started (10 failed launches in a row), the running phase is no longer in the roadmap, no phase can start because the remaining ones wait on each other, or the supervisor itself keeps failing or stops on an error. When the run stops for a phase, the notification ends with the command that continues it: `/turbo-autonomous resume <phase>`.
+- **When a session cannot start or looks unfamiliar.** A failed `claude --bg` launch is retried at the next check; after 10 failed launches in a row the supervisor stops and notifies you. The count starts again with every supervisor start (`start`, `resume <phase> --start`). A session in a state the supervisor does not recognize counts as waiting: it is neither replaced nor relaunched, and you are notified after `blocked_minutes_before_notify`. If the running phase disappears from the roadmap, the supervisor stops once its session has ended; if no remaining phase can start because they all wait on each other (a dependency cycle), it notifies you once and keeps checking. A folder Claude Code does not trust stops the run at the first attempt.
+- **Targeted tests.** `turbo-run init` points GSD's `workflow.test_command` to `turbo-run test-changed` only when a full test command is known: your previous `workflow.test_command` (kept as `test.full`), a `test.full` you set yourself (other than the default `npm test`), or `npm test` where GSD would pick it itself (a root `package.json` with a `test` script, and no Xcode project, no Makefile with a `test:` target and no Justfile, which GSD prefers). Otherwise init leaves `workflow.test_command` alone, GSD keeps detecting the test runner, and init prints how to enable targeted tests. Wherever GSD runs its test command (after each wave and in the phase's regression gate), turbo runs only the tests related to the files changed since the last full green run. It falls back to the full suite whenever the selection could be unsafe, for example: not a git repository or no commit yet, no full green run yet, uncommitted or untracked files, changed dependency or config files, changes in a nested package or outside the project root, a test command it cannot mirror exactly (`test.full` must be the root package's test script, and that script a plain `node --test`, `jest` or `vitest` call without `pretest`/`posttest` hooks; pytest projects always run in full), a selected test outside the runner's default test match, a changed file with no related test, or `test.max_targeted` targeted runs since the last full run. `TURBO_FULL=1` forces a full run. To enable targeted tests where init did not, set `test.full` to your full test command (see [Config](#config)) and run `turbo-run init` again. Running `turbo-run init` again is safe: it keeps `.planning/turbo/config.json`, including `test.full`. If `workflow.test_command` already calls `turbo-run`, init keeps it: it sets it again when a full command is known and, when none is, warns instead of changing it.
+- **Notifications.** A desktop notification (and optionally Telegram) when a phase is done, the milestone is complete, a phase needs you, a session waits for input or fails, a phase stops making progress, a session cannot be started (10 failed launches in a row), the running phase is no longer in the roadmap, no phase can start because the remaining ones wait on each other, the project folder is not trusted by Claude Code, or the supervisor itself keeps failing or stops on an error. When the run stops for a phase, the notification ends with the command that continues it: `/turbo-autonomous resume <phase>`.
 
 ## Config
 

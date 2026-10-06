@@ -19,6 +19,17 @@ test('msg renders supervisorFailing in en and ru', () => {
   assert.deepEqual(msg('ru', 'supervisorFailing', { error: 'launch phase 2 failed' }), { title: 'gsd-turbo не может продолжить', body: 'launch phase 2 failed. Проверь: /turbo-autonomous status' });
 });
 
+test('msg renders launchHalted in en and ru, ending with the resume command', () => {
+  const vars = { phase: '2', error: 'launch phase 2 failed: claude --bg failed: exit status 1' };
+  for (const lang of ['en', 'ru']) {
+    const m = msg(lang, 'launchHalted', vars);
+    assert.notEqual(m.title, 'launchHalted', lang);
+    assert.match(m.title, /2/, lang);
+    assert.ok(m.body.includes(vars.error), lang);
+    assert.ok(m.body.endsWith('/turbo-autonomous resume 2'), lang);
+  }
+});
+
 test('msg with a key unknown in every language returns the key as title instead of throwing', () => {
   assert.deepEqual(msg('ru', 'noSuchKey', {}), { title: 'noSuchKey', body: '' });
   assert.deepEqual(msg('xx', 'noSuchKey'), { title: 'noSuchKey', body: '' });

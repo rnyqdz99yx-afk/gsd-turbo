@@ -117,12 +117,12 @@ test('a throwing launchBg leaves the state unchanged and the next tick launches'
 
   h.ctx.deps.claude.launchBg = broken;
   let s = await tick(fresh(), h.ctx);
-  assert.deepEqual(s, { ...fresh(), failingSince: '2026-01-01T00:00:00.000Z' });
+  assert.deepEqual(s, { ...fresh(), failingSince: '2026-01-01T00:00:00.000Z', launchFailures: 1 });
   assert.ok(h.logs.some((l) => /tick error: launch phase 2 failed: claude --bg failed/.test(l)));
   h.ctx.deps.claude.launchBg = working;
   s = await tick(s, h.ctx);
   assert.equal(s.lane.sessionId, 's1');
-  assert.ok(!('failingSince' in s));
+  assert.ok(!('failingSince' in s) && !('launchFailures' in s));
 
   // relaunch after a context pause: the failed attempt changes nothing (state or the lane's
   // paused-context record, which outranks human_needed) and costs no restart
@@ -131,7 +131,7 @@ test('a throwing launchBg leaves the state unchanged and the next tick launches'
   const before = structuredClone(s);
   h.ctx.deps.claude.launchBg = broken;
   s = await tick(s, h.ctx);
-  assert.deepEqual(s, { ...before, failingSince: '2026-01-01T00:00:00.000Z' });
+  assert.deepEqual(s, { ...before, failingSince: '2026-01-01T00:00:00.000Z', launchFailures: 1 });
   assert.equal(readLaneStatus(h.root, '2').status, 'paused-context');
   h.ctx.deps.claude.launchBg = working;
   s = await tick(s, h.ctx);
@@ -165,7 +165,7 @@ test('a relaunch whose --bg registered the session and then threw adopts it with
   assert.equal(s.lane.sessionId, 's2');
   assert.equal(s.lane.restarts, 1);
   assert.equal(s.lane.launchedAt, '2026-01-01T00:03:00.000Z');
-  assert.ok(!('failingSince' in s));
+  assert.ok(!('failingSince' in s) && !('launchFailures' in s), 'adoption counts as a successful tick');
   assert.ok(h.logs.some((l) => /rm session s1 failed: claude rm failed/.test(l)));
   // s2 ends without a record of its own: the old paused-context record is not fresh for it,
   // so the human_needed phase goes to the owner instead of another relaunch
@@ -193,6 +193,72 @@ test('a --bg that always registers and then throws still halts after the restart
   assert.equal(h.launched.length, DEFAULTS.max_restarts_without_progress + 1);
 });
 
+// --bg that registers a session which dies at once, and then throws
+const registersDeadThenThrows = (h) => {
+  const working = h.ctx.deps.claude.launchBg;
+  return (opts, cwd) => {
+    const id = working(opts, cwd);
+    h.agents.find((a) => a.id === id).state = 'done';
+    throw new Error('claude --bg failed: timed out after 120000 ms');
+  };
+};
+const deadLaneSessions = (h, phase) => h.agents.filter((a) => a.name === laneSessionName(h.root, phase) && a.state === 'done');
+const BG_ERROR = 'launch phase 2 failed: claude --bg failed: timed out after 120000 ms';
+async function tickUntilHalted(h, s) {
+  for (let i = 0; i < 50 && !s.halted; i++) {
+    s = await tick(s, h.ctx);
+    assert.ok(deadLaneSessions(h, '2').length <= 1, `dead lane sessions after tick ${i + 1}`);
+  }
+  return s;
+}
+
+test('register-then-die --bg with no lane: bounded launches, dead sessions removed, launchHalted', async () => {
+  const h = harness({ phases: [P('2')] });
+  h.ctx.deps.claude.launchBg = registersDeadThenThrows(h);
+  const s = await tickUntilHalted(h, fresh());
+  assert.equal(s.halted, true);
+  assert.equal(h.launched.length, 10);
+  assert.equal(s.lane, null);
+  assert.equal(s.launchFailures, 10);
+  assert.deepEqual(h.notes, [{ key: 'launchHalted', vars: { phase: '2', error: BG_ERROR } }]);
+  assert.ok(h.logs.some((l) => /phase 2 halted: launch failed 10 times in a row/.test(l)));
+});
+
+test('register-then-die --bg on a relaunch: bounded launches, launchHalted keeps the lane', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'done';
+  h.ctx.deps.claude.launchBg = registersDeadThenThrows(h);
+  s = await tickUntilHalted(h, s);
+  assert.equal(s.halted, true);
+  assert.equal(h.launched.length, 1 + 10);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.deepEqual(h.notes, [{ key: 'launchHalted', vars: { phase: '2', error: BG_ERROR } }]);
+});
+
+test('register-then-die --bg on forceRelaunch: bounded launches, launchHalted', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  s.lane.forceRelaunch = true;
+  h.ctx.deps.claude.launchBg = registersDeadThenThrows(h);
+  s = await tickUntilHalted(h, s);
+  assert.equal(s.halted, true);
+  assert.equal(h.launched.length, 1 + 10);
+  assert.deepEqual(h.notes, [{ key: 'launchHalted', vars: { phase: '2', error: BG_ERROR } }]);
+});
+
+test('a launch removes up to 3 dead sessions of this lane only, never alive or foreign ones', async () => {
+  const h = harness({ phases: [P('2')] });
+  const name = laneSessionName(h.root, '2');
+  for (const id of ['d1', 'd2', 'd3', 'd4']) h.agents.push({ id, name, cwd: h.root, state: 'done' });
+  h.agents.push({ id: 'other-phase', name: laneSessionName(h.root, '3'), cwd: h.root, state: 'done' });
+  h.agents.push({ id: 'other-dir', name, cwd: tmpDir('sup-other'), state: 'done' });
+  const s = await tick(fresh(), h.ctx);
+  assert.deepEqual(h.removed, ['d1', 'd2', 'd3']);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.ok(!('launchFailures' in s));
+});
+
 test('a launch that keeps failing notifies supervisorFailing once per failing spell', async () => {
   const h = harness({ phases: [P('2')] });
   const working = h.ctx.deps.claude.launchBg;
@@ -210,7 +276,7 @@ test('a launch that keeps failing notifies supervisorFailing once per failing sp
   h.ctx.deps.claude.launchBg = working;
   s = await tick(s, h.ctx);
   assert.equal(s.lane.sessionId, 's1');
-  assert.ok(!('failingSince' in s) && !('failingNotified' in s));
+  assert.ok(!('failingSince' in s) && !('failingNotified' in s) && !('launchFailures' in s));
 });
 
 test('loadPhases or list failing every tick notifies once per spell with the first error line, capped', async () => {

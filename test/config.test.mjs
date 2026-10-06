@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmpDir } from './helpers/tmp.mjs';
+import { execFileSync } from 'node:child_process';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { DEFAULTS, loadConfig, initConfig, deepMerge } from '../lib/config.mjs';
 import { findProjectRoot, turboDir, claudeHome } from '../lib/paths.mjs';
 import { writeJsonAtomic, readJson } from '../lib/fsx.mjs';
@@ -83,6 +84,30 @@ test('loadConfig merges a partial nested config with defaults', () => {
   const root = tmpDir('cfg');
   writeConfig(root, '{"notify":{"telegram":true}}');
   assert.deepEqual(loadConfig(root).notify, { desktop: true, telegram: true });
+});
+
+test('loadConfig accepts a UTF-8 byte order mark (PowerShell 5.1 Set-Content -Encoding UTF8)', () => {
+  const root = tmpDir('cfg');
+  const file = writeConfig(root, '\uFEFF{"poll_seconds": 30}');
+  assert.equal(loadConfig(root).poll_seconds, 30);
+  // init merges test.full into the file through readJson: a BOM must not turn it into {}
+  assert.deepEqual(readJson(file, {}), { poll_seconds: 30 });
+});
+
+test('tmpGitRepo ignores the global git config (hooks, autocrlf)', (t) => {
+  const dir = tmpDir('gitglobal');
+  const hooks = path.join(dir, 'hooks');
+  fs.mkdirSync(hooks);
+  fs.writeFileSync(path.join(hooks, 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const cfg = path.join(dir, 'gitconfig');
+  fs.writeFileSync(cfg, `[core]\n\thooksPath = ${hooks.replace(/\\/g, '/')}\n\tautocrlf = true\n`);
+  const prev = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = cfg;
+  t.after(() => { if (prev === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = prev; });
+  const repo = tmpGitRepo(); // the global pre-commit hook would fail its commit
+  const get = (key) => execFileSync('git', ['config', key], { cwd: repo, encoding: 'utf8' }).trim();
+  assert.equal(get('core.autocrlf'), 'false');
+  assert.notEqual(path.resolve(repo, get('core.hooksPath')), path.resolve(hooks));
 });
 
 test('writeJsonAtomic throws and leaves no tmp file when the rename fails', () => {

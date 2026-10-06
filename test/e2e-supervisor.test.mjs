@@ -18,6 +18,7 @@ test('daemon drives a 2-phase milestone to completion', async () => {
   const prompts = [];
   const notes = [];
   const reasons = [];
+  const logs = [];
   let n = 0, fp = 0, ticks = 0;
   const clock = () => new Date(Date.parse('2026-01-01T00:00:00Z') + ticks * 1000);
   const script = [
@@ -30,7 +31,8 @@ test('daemon drives a 2-phase milestone to completion', async () => {
     () => { agents.at(-1).state = 'done'; phases[1].complete = true; },
   ];
   const ctx = {
-    root, config: structuredClone(DEFAULTS), turboRun: 'node x',
+    // no restart budget: a context pause without progress halts, so the relaunch proves progress
+    root, config: { ...structuredClone(DEFAULTS), max_restarts_without_progress: 0 }, turboRun: 'node x',
     deps: {
       loadPhases: () => { script[ticks]?.(); ticks++; return phases; },
       claude: {
@@ -41,11 +43,16 @@ test('daemon drives a 2-phase milestone to completion', async () => {
       fingerprint: () => String(fp),
       notify: async (k, v) => { notes.push(k); if (k === 'laneNeedsOwner') reasons.push(v.reason); },
       now: clock,
-      log() {},
+      log: (line) => { logs.push(line); },
     },
   };
   const statePath = path.join(root, '.planning', 'turbo', 'run', 'supervisor.json');
-  const final = await runDaemon({ ctx, statePath, intervalMs: 0, sleep: async () => {} });
+  // every fake resolves as a microtask, so a daemon that never stops would hang the suite
+  // (node:test timeouts never fire); runDaemon calls sleep outside its try, so this throw escapes
+  const sleep = async () => {
+    if (ticks > 20) throw new Error(`runaway daemon after ${ticks} ticks; notes ${notes}; log ${logs.slice(-5).join(' | ')}`);
+  };
+  const final = await runDaemon({ ctx, statePath, intervalMs: 0, sleep });
   assert.equal(final.finished, true);
   assert.deepEqual(notes, ['laneNeedsOwner', 'phaseDone', 'phaseDone', 'milestoneDone']);
   assert.equal(readJson(statePath).finished, true);

@@ -178,3 +178,59 @@ test('uncommitted changes in tracked files run the full command and record no gr
   assert.deepEqual(r.logs, ['full: uncommitted changes in tracked files']);
   assert.deepEqual(readMarker(repo), green, 'a run on a dirty tree proves nothing about HEAD');
 });
+
+// --- fix round: bash -c for the full command, unquoted git paths ---------------------------
+
+const hasBash = () => { try { execFileSync('bash', ['-c', 'exit 0'], { stdio: 'ignore' }); return true; } catch { return false; } };
+function nonGitDir(t) {
+  const dir = tmpDir('nogit');
+  try {
+    execFileSync('git', ['rev-parse', '--git-dir'], { cwd: dir, stdio: 'ignore' });
+    t.skip('the temp dir is inside a git repository');
+    return null;
+  } catch { return dir; }
+}
+
+test('the full command runs through bash -c, as GSD runs workflow.test_command', async (t) => {
+  if (!hasBash()) { t.skip('bash is not available'); return; }
+  const dir = nonGitDir(t);
+  if (!dir) return;
+  project(dir, { full: 'X=1; [[ $X == 1 ]]' });
+  assert.equal(await runner(dir).run(), 0, 'bash-only syntax succeeds');
+  project(dir, { full: 'X=1; [[ $X == 2 ]]' });
+  assert.notEqual(await runner(dir).run(), 0, 'and is really evaluated');
+});
+
+test('without bash the full command falls back to the system shell with one log line', async (t) => {
+  const nodeDir = path.dirname(process.execPath);
+  if (['bash', 'bash.exe'].some((b) => fs.existsSync(path.join(nodeDir, b)))) { t.skip('bash sits next to node'); return; }
+  const dir = nonGitDir(t);
+  if (!dir) return;
+  project(dir, { full: 'node -e "process.exit(0)"' });
+  const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
+  const saved = process.env[key];
+  process.env[key] = nodeDir; // no bash and no git on PATH
+  const r = runner(dir);
+  try {
+    assert.equal(await r.run(), 0);
+  } finally {
+    process.env[key] = saved;
+  }
+  assert.deepEqual(r.logs, ['full: not a git repository', 'bash not found, using system shell']);
+});
+
+test('non-ASCII file names are read unquoted from git, so their tests run targeted', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  git('config', 'core.quotepath', 'true'); // git's default: octal-escaped, quoted paths
+  const w = project(repo);
+  w('src/über.js', 'export const u = 1;\n');
+  w('test/über.test.js', "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { u } from '../src/über.js';\ntest('u', () => assert.equal(u, 1));\n");
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/über.js', 'export const u = 1; // touched\n');
+  git('commit', '-qam', 'c2');
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
+});

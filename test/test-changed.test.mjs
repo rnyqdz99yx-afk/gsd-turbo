@@ -741,13 +741,13 @@ test('final B12: runTestChanged reads the jest config from package.json and from
   }
 });
 
-// git quotes a path with `"`, `\`, a control character or DEL even with core.quotepath=false
+// a path with `"`, `\`, a control character or DEL (git would C-quote it) runs full
 test('follow-up: a path git prints quoted runs full (planRun)', () => {
   const quoted = '"test/a\\"b.test.js"';
   const r = planRun({ ...base, changed: ['src/a.js'], allFiles: ['src/a.js', 'test/a.test.js', quoted], marker: M('X') });
-  assert.deepEqual([r.mode, r.reason], ['full', `unusual file name: ${quoted}`], 'a tracked test git quotes is never a candidate');
+  assert.deepEqual([r.mode, r.reason], ['full', `unusual file name: ${JSON.stringify(quoted)}`], 'a tracked test git quotes is never a candidate');
   const c = planRun({ ...base, changed: ['src/a.js', '"src/a\\177.js"'], marker: M('X') });
-  assert.deepEqual([c.mode, c.reason], ['full', 'unusual file name: "src/a\\177.js"']);
+  assert.deepEqual([c.mode, c.reason], ['full', `unusual file name: ${JSON.stringify('"src/a\\177.js"')}`]);
   assert.equal(planRun({ ...base, changed: [], allFiles: [quoted], marker: M('H') }).mode, 'skip', 'nothing changed since the full green run');
 });
 
@@ -763,7 +763,7 @@ test('follow-up: a test whose name git quotes is never dropped from a targeted r
   w('src/a.js', 'export const a = 2;\n');
   git('commit', '-qam', 'break a for the quoted test only');
   assert.notEqual(await r.run(), 0, 'the full command runs the quoted test');
-  assert.equal(r.logs.at(-1), 'full: unusual file name: "test/q\\177.test.js"');
+  assert.equal(r.logs.at(-1), 'full: unusual file name: "test/q\\u007f.test.js"');
 });
 
 test('follow-up 2: a source under docs/ needs coverage and gains none from a test reading docs/ or naming .js', () => {

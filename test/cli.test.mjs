@@ -164,6 +164,28 @@ test('a corrupt turbo config is a one-line error with exit 1, never a stack trac
   }
 });
 
+test('test-changed with a corrupt turbo config is a one-line error with exit 1', async () => {
+  const root = tmpDir('cli');
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), '{\n  "test": \n}\n');
+  const r = await runAsync(['test-changed'], root);
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /invalid turbo config/);
+  assert.equal(r.stderr.trim().split(/\r?\n/).length, 1, r.stderr);
+  assert.doesNotMatch(r.stderr, /\bat .+:\d+:\d+/);
+});
+
+test('test-changed prints one [turbo-test] line and exits with the test command code', async () => {
+  const root = tmpDir('cli'); // not a git repository: always the full command
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ test: { full: 'node -e "process.exit(3)"' } }));
+  const r = await runAsync(['test-changed'], root);
+  assert.equal(r.code, 3);
+  assert.equal(r.stdout, '[turbo-test] full: not a git repository\n');
+  assert.equal(r.stderr, '');
+});
+
 test('status shows failingSince in text and json output', () => {
   const root = tmpDir('cli');
   const run1 = path.join(root, '.planning', 'turbo', 'run');

@@ -12,6 +12,13 @@
 
 **Base:** `main` at `ab3d875` (v0.1.0, the stage-1 release including its fix wave). Task 0 ships v0.1.1 from it; Tasks 1–17 build on v0.1.1. Stage-1 code is referenced by exported function names and behaviour, never by line numbers: the fix wave rewrote internals of `lib/supervisor.mjs`, `lib/run-status.mjs`, `lib/lane-prompt.mjs`, `lib/test-changed.mjs`, `lib/doctor.mjs` and `bin/turbo-run.mjs`. Where a task edits one of those files, it names the function and the exact text to find; if that text moved, apply the same change to the code that now holds the named behaviour. The code in this plan was dry-run in a scratch copy of `ab3d875` with Task 0 and Tasks 1–17 applied together: the whole suite passed (one test is Linux-only and skipped elsewhere).
 
+## Owner decisions (2026-10-07)
+
+- **Production read-only checks under `autonomy: max`** (spec §6.1): deferred to the deploy stage. Stage 2 keeps `uat.base_url` loopback-only, and such items stay class C (Task 7).
+- **GSD marks a phase complete when its verifier passes, before turbo's gate fan-out** (G9): accepted until Stage 4 (`turbo-exec`). In the meantime the supervisor waits for the lane's own `done` record (Task 13).
+- **Recorded import graph for targeted tests:** approved; it is Task 16, opt-in through `test.import_graph`.
+- **Live checks, Claude Code 2.1.292:** while `claude attach <id>` is open, the lane stays listed as its `background` entry (with `status: "busy"` next to `state`), and no interactive entry with its `sessionId` appears, so attached lanes need no special handling. A process spawned with `turbo-run start`'s exact spawn options from a `claude -p` session survives that Claude Code process exiting (Windows).
+
 ## Global Constraints
 
 Copied from stage 1 where they still apply:
@@ -42,14 +49,14 @@ Stage 2:
 - Owner-facing texts are rendered in the config `lang` (`en` or `ru`). The owner gets one batched request per phase (spec §6.3).
 - No installed file has a path segment that starts with `gsd-` (for example `lib/gsd-….mjs`): the stage-1 installer refuses such paths, because GSD's installer owns that prefix.
 - New `turbo-run` subcommands live in `lib/cli-phase.mjs`. `bin/turbo-run.mjs` only routes to it, so the stage-1 CLI changes stay small and named.
-- Testing discipline: while implementing a task, run only that task's test files. Run the full `npm test` once per release: in Task 0 (v0.1.1) and in Task 16 (v0.2.0).
+- Testing discipline: while implementing a task, run only that task's test files. Run the full `npm test` once per release: in Task 0 (v0.1.1) and in Task 17 (v0.2.0).
 
 ## Review Focus
 
 1. **`.planning/` is git-ignored, or `.planning/config.json` is untracked** (projects with `commit_docs: false`). Expected: gate toggles still apply and restore, nothing is committed, nothing fails; staleness treats never-committed artifacts as fresh. Pinned in Task 4 (ignored-planning test) and Task 3 (uncommitted-artifact test).
 2. **A lane stops between `gates off` and `gates restore`** (context pause, crash, owner stop, or doctor later reporting `safe`). Expected: the saved state is committed together with the change, `gates restore` is idempotent and puts back the exact bytes, early stops restore first, and the safe-mode lane prompt restores before running GSD. Pinned in Task 4 (round trip, idempotency) and Task 13 (safe prompt).
 3. **GSD marks the phase complete before turbo's fan-out, fixes and UAT finish** (the verifier passes inside execute-phase, and `update_roadmap` runs `phase complete`, G9). Expected: in full mode the supervisor waits for the lane's fresh `done` record, and `human_needed` alone never means `needs-owner`. Pinned in Task 13.
-4. **UAT.md rows written by turbo must still parse under GSD's UAT rules** (column-0 `result:`, the first `reason:` line carries `Deferred follow-up:`, integer `### N.` headings, split items appended with new numbers, rows the owner already answered left alone, G12). Pinned in Task 8, plus the real-GSD `phase uat-passed` check in Task 16 when GSD is installed.
+4. **UAT.md rows written by turbo must still parse under GSD's UAT rules** (column-0 `result:`, the first `reason:` line carries `Deferred follow-up:`, integer `### N.` headings, split items appended with new numbers, rows the owner already answered left alone, G12). Pinned in Task 8, plus the real-GSD `phase uat-passed` check in Task 17 when GSD is installed.
 5. **A one-time credential or a token lands in evidence or in UAT.md.** Expected: `uat record` refuses and writes nothing, and its message names file, line and rule but never the value. Pinned in Task 8.
 
 ## GSD facts
@@ -99,8 +106,9 @@ gsd-turbo/
   agents/turbo-uat.md        turbo-uat agent (Task 11)
   skills/turbo-phase/SKILL.md  /turbo-phase (Task 12)
   test/residuals-*.test.mjs  stage-1 residual fixes (Task 0)
-  test/fixtures/uat-sample.mjs  a GSD Step-A UAT file shared by Tasks 8-10 and 16 (Task 8)
-  test/helpers/fake-gsd.mjs  stub gsd-tools for the e2e test (Task 16)
+  test/fixtures/uat-sample.mjs  a GSD Step-A UAT file shared by Tasks 8-10 and 17 (Task 8)
+  test/helpers/fake-gsd.mjs  stub gsd-tools for the e2e test (Task 17)
+  lib/import-graph.mjs, lib/import-graph-hook.mjs  recorded import graph for targeted tests (Task 16)
   test/*.test.mjs            one test file per task
   README.md                  stage-2 sections (Task 15)
 ```
@@ -109,7 +117,7 @@ gsd-turbo/
 
 ### Task 0: Stage-1 residuals (v0.1.1)
 
-Ten fixes to the released v0.1.0 (`main` at `ab3d875`), from the stage-1 final review and a live CLI probe on Claude Code 2.1.292. Task 0 ships on its own as v0.1.1 before the rest of Stage 2. Its code was dry-run in a scratch copy of `ab3d875`: the whole suite passed, and the two lease tests passed three runs in a row.
+Nine fixes to the released v0.1.0 (`main` at `ab3d875`), from the stage-1 final review and a live CLI probe on Claude Code 2.1.292; item 7 was checked live and needs none. Task 0 ships on its own as v0.1.1 before the rest of Stage 2. Its code was dry-run in a scratch copy of `ab3d875`: the whole suite passed, and the two lease tests passed three runs in a row.
 
 | # | Residual | Part |
 |---|---|---|
@@ -119,7 +127,7 @@ Ten fixes to the released v0.1.0 (`main` at `ab3d875`), from the stage-1 final r
 | 4 | The multi-daemon lease test writes each foreign state right after that daemon's own tick (deflake) | B |
 | 5 | `parseAgents` takes a state only from a string field | A |
 | 6 | `startLane` counts any error after the launch attempt toward the launch-failure cap | A |
-| 7 | A lane the owner attached to (`claude attach`) and listed only as an interactive entry with the lane's `sessionId` counts as alive; live check for the owner | A, E |
+| 7 | `claude attach`: verified live, no change. While attached, the lane stays listed as its `background` entry (with `status: "busy"` next to `state`) and no interactive entry with its `sessionId` appears | — |
 | 8 | An untrusted workspace (`claude --bg` fails with "Workspace not trusted") stops the run at the first launch with a clear notification. The CLI has no command that reports trust without launching a session (`claude --help` lists none), so the launch error is the probe | A, D |
 | 9 | `test-changed`: NUL-separated git output (`-z`) so no name is trimmed and a non-UTF-8 name runs full; `{` `}` make a test script unknown; jest 30's `.mjs`/`.cjs` tests are selected (the jest 29 gate stays); a changed source under `docs/` also runs the tests that read its directory or extension | C |
 | 10 | The e2e runaway message includes the first log line (the root cause) as well as the last five | A |
@@ -129,16 +137,14 @@ Ten fixes to the released v0.1.0 (`main` at `ab3d875`), from the stage-1 final r
 - Create: `test/residuals-agents.test.mjs`, `test/residuals-test-changed.test.mjs`
 
 **Interfaces:**
-- Consumes: stage-1 `tick`, `startLane`, `step`, `failedTick` (`lib/supervisor.mjs`); `parseAgents`, `createClaude` (`lib/claude.mjs`); `leaseSleep`, `stopDaemon`, `clearDaemonPid`, `stopLanes`, the `stop` case (`bin/turbo-run.mjs`); `planRun`, `runTestChanged`, `mention`, `classifyScript` (`lib/test-changed.mjs`).
+- Consumes: stage-1 `tick`, `startLane`, `failedTick` (`lib/supervisor.mjs`); `parseAgents` (`lib/claude.mjs`); `leaseSleep`, `stopDaemon`, `clearDaemonPid`, `stopLanes`, the `stop` case (`bin/turbo-run.mjs`); `planRun`, `runTestChanged`, `mention`, `classifyScript` (`lib/test-changed.mjs`).
 - Produces:
-  - `parseAgentList(text) → {lanes, interactive: {pid, sessionId, status}[]}`; `parseAgents(text)` keeps its contract (the lanes).
-  - `createClaude().list()` returns the lanes array with an `interactive` property (that list is read only by the attached-lane lookup).
-  - Lane state gains `claudeSessionId` (the background entry's `sessionId`, recorded when seen).
+  - `parseAgents(text)` keeps its contract; an entry's `state` and `status` come only from string fields.
   - Message key `workspaceUntrusted` (`{phase, dir}`) in `en` and `ru`.
   - `splitZ(buf) → {names, bad}` exported from `lib/test-changed.mjs`.
   - The daemon lease is read from `daemon.lock` only.
 
-#### Part A: agents list, launch failures, untrusted workspace (items 5, 6, 7, 8, 10)
+#### Part A: agent state, launch failures, untrusted workspace (items 5, 6, 8, 10)
 
 - [ ] **Step 1: Write the failing test** `test/residuals-agents.test.mjs`
 
@@ -148,7 +154,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { parseAgents, parseAgentList, createClaude } from '../lib/claude.mjs';
+import { parseAgents } from '../lib/claude.mjs';
 import { tick } from '../lib/supervisor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { msg } from '../lib/messages.mjs';
@@ -163,25 +169,11 @@ test('parseAgents takes a state only from a string field', () => {
   assert.deepEqual(a.map((x) => [x.id, x.state]), [['o1', 'busy'], ['n1', 'working'], ['e1', 'done'], ['s1', 'blocked']]);
 });
 
-test('interactive entries come apart from the lanes; list() carries them for the attached-lane lookup only', () => {
-  const text = JSON.stringify([
-    { kind: 'background', id: 'b1', name: 'turbo-app-p1', cwd: '/w', sessionId: 'sid-1', state: 'working' },
-    { kind: 'interactive', pid: 41, name: 'chat', cwd: '/w', sessionId: 'sid-1', status: 'busy' },
-    { kind: 'interactive', pid: 42, sessionId: 7, status: null },
-  ]);
-  const { lanes, interactive } = parseAgentList(text);
-  assert.deepEqual(lanes.map((x) => x.id), ['b1']);
-  assert.deepEqual(interactive, [{ pid: 41, sessionId: 'sid-1', status: 'busy' }, { pid: 42, sessionId: '', status: '' }]);
-  const list = createClaude({ bin: { cmd: 'claude', prefix: [], shell: false }, exec: () => text }).list();
-  assert.deepEqual(list.map((x) => x.id), ['b1']);
-  assert.deepEqual(list.interactive.map((x) => x.sessionId), ['sid-1', '']);
-});
-
 function harness({ phases, launch } = {}) {
   const root = tmpDir('res');
   fs.mkdirSync(path.join(root, '.planning'));
   let clock = Date.parse('2026-01-01T00:00:00Z');
-  const h = { root, phases, agents: [], interactive: [], launched: [], notes: [], fp: 'A', advance(min) { clock += min * 60000; } };
+  const h = { root, phases, agents: [], launched: [], notes: [], fp: 'A', advance(min) { clock += min * 60000; } };
   let n = 0;
   h.ctx = {
     root, config: structuredClone(DEFAULTS), turboRun: 'node x',
@@ -192,10 +184,10 @@ function harness({ phases, launch } = {}) {
           const id = `s${++n}`;
           h.launched.push({ id, ...o });
           if (launch) return launch(id, o);
-          h.agents.push({ id, name: o.name, cwd: root, state: 'working', sessionId: `sid-${id}` });
+          h.agents.push({ id, name: o.name, cwd: root, state: 'working' });
           return id;
         },
-        list: () => Object.assign([...h.agents], { interactive: h.interactive }),
+        list: () => h.agents,
         stop() {},
         rm: (id) => { h.agents = h.agents.filter((a) => a.id !== id); },
       },
@@ -209,22 +201,6 @@ function harness({ phases, launch } = {}) {
 }
 const P = (number, deps = [], complete = false) => ({ number, deps, complete, verification: null });
 const fresh = () => ({ lane: null, finished: false, halted: false });
-
-test('a lane the owner attached to, listed only as an interactive entry, counts as alive', async () => {
-  const h = harness({ phases: [P('2')] });
-  let s = await tick(fresh(), h.ctx); // launch s1 (background, sessionId sid-s1)
-  s = await tick(s, h.ctx); // its background entry is seen: the session id is recorded
-  assert.equal(s.lane.claudeSessionId, 'sid-s1');
-  h.agents = []; // `claude attach`: the background entry is gone...
-  h.interactive = [{ pid: 9, sessionId: 'sid-s1', status: 'busy' }]; // ...and an interactive one has its session
-  h.fp = 'B';
-  for (let i = 0; i < 3; i++) s = await tick(s, h.ctx);
-  assert.equal(h.launched.length, 1, 'no relaunch while the owner is attached');
-  assert.equal(s.lane.sessionId, 's1');
-  h.interactive = []; // detached, and the session has ended
-  s = await tick(s, h.ctx);
-  assert.equal(h.launched.length, 2, 'an ended lane relaunches as before');
-});
 
 test('a launch whose lane record cannot be written counts toward the launch-failure cap', async () => {
   const h = harness({ phases: [P('2')], launch: (id) => id }); // the session never shows up in the list
@@ -251,72 +227,23 @@ test('an untrusted workspace stops the run at the first launch with a clear noti
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `node --test test/residuals-agents.test.mjs`
-Expected: FAIL (`does not provide an export named 'parseAgentList'`).
+Expected: FAIL, three tests: an object or a number becomes the state; the launch whose record fails never halts; the untrusted workspace is retried with no `workspaceUntrusted` notification.
 
-- [ ] **Step 3: `lib/claude.mjs`** — replace the comment block above `parseAgents` and the whole `parseAgents` function with:
+- [ ] **Step 3: `lib/claude.mjs`** — in `parseAgents`, take the state only from a string field. Above `export function parseAgents` add:
 
 ```js
 const str = (v) => (typeof v === 'string' ? v : '');
-
-// Throws unless the output is a JSON array of objects. Interactive sessions (kind "interactive": pid,
-// sessionId and status, no id) are returned apart: lanes are always background sessions, but
-// `claude attach` may list an attached lane as an interactive entry with the lane's sessionId. Every
-// other entry, whatever its kind, must have a non-empty string id and a string state or status (the
-// fields the state below is read from). An empty list, a renamed id or state field, or a renamed kind
-// value would make every lane session look ended (an unlisted lane session counts as ended), and the
-// supervisor would remove live sessions. An empty state string still means finished. Messages never
-// echo the output.
-export function parseAgentList(text) {
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error('claude agents output is not a JSON array (not JSON)');
-  }
-  if (!Array.isArray(data)) throw new Error(`claude agents output is not a JSON array (got ${data === null ? 'null' : typeof data})`);
-  const lanes = [];
-  const interactive = [];
-  data.forEach((a, i) => {
-    if (a === null || typeof a !== 'object' || Array.isArray(a)) throw new Error(`claude agents entry ${i} is not an object`);
-    if (a.kind === 'interactive') {
-      interactive.push({ pid: Number.isInteger(a.pid) ? a.pid : 0, sessionId: str(a.sessionId), status: str(a.status) });
-      return;
-    }
-    if (typeof a.id !== 'string' || !a.id) throw new Error(`claude agents entry ${i} has no string id`);
-    if (typeof a.state !== 'string' && typeof a.status !== 'string') throw new Error(`claude agents entry ${i} has no string state or status`);
-    lanes.push(a);
-  });
-  return {
-    lanes: lanes.map((a) => ({
-      id: String(a.id || ''),
-      name: a.name || '',
-      kind: a.kind || '',
-      // a state only from a string field: any other value is no state
-      state: str(a.state) || str(a.status),
-      status: str(a.status),
-      cwd: a.cwd || '',
-      startedAt: a.startedAt || 0,
-      sessionId: String(a.sessionId || ''),
-      pid: a.pid || 0,
-    })),
-    interactive,
-  };
-}
-
-export const parseAgents = (text) => parseAgentList(text).lanes;
 ```
 
-In `createClaude`, replace `list: () => parseAgents(run(['agents', '--json', '--all'])),` with:
+and in the object the entries are mapped to, replace the `state` and `status` lines with:
 
 ```js
-    // the lanes, with the interactive entries alongside for the attached-lane lookup only
-    list: () => {
-      const { lanes, interactive } = parseAgentList(run(['agents', '--json', '--all']));
-      return Object.assign(lanes, { interactive });
-    },
+    // a state only from a string field: any other value is no state
+    state: str(a.state) || str(a.status),
+    status: str(a.status),
 ```
 
-- [ ] **Step 4: `lib/supervisor.mjs`** — four edits.
+- [ ] **Step 4: `lib/supervisor.mjs`** — three edits.
 
 1. After `const MAX_DEAD_REMOVED = 3;` add:
 
@@ -350,19 +277,7 @@ const UNTRUSTED_RE = /workspace not trusted/i;
   return { sessionId, name, launchedAt: at };
 ```
 
-3. In `step`, replace `const agent = agents.find((a) => a.id === lane.sessionId);` with:
-
-```js
-  let agent = agents.find((a) => a.id === lane.sessionId);
-  if (agent?.sessionId) lane.claudeSessionId = agent.sessionId;
-  // `claude attach` may list the attached lane as an interactive entry with the lane's sessionId
-  // instead of its background entry: the owner is in the session, so it counts as alive.
-  if (!isAgentAlive(agent) && lane.claudeSessionId && (agents.interactive || []).some((i) => i.sessionId === lane.claudeSessionId)) {
-    agent = { id: lane.sessionId, state: 'working' };
-  }
-```
-
-4. In `failedTick`, directly after `const s = structuredClone(state);`, insert:
+3. In `failedTick`, directly after `const s = structuredClone(state);`, insert:
 
 ```js
   if (err?.launchFailed && UNTRUSTED_RE.test(text)) {
@@ -401,7 +316,7 @@ Expected: PASS.
 
 ```bash
 git add lib/claude.mjs lib/supervisor.mjs lib/messages.mjs test/residuals-agents.test.mjs test/e2e-supervisor.test.mjs
-git commit -q -m "fix: attached lanes stay alive, string-only agent state, launch-failure cap and untrusted workspace"
+git commit -q -m "fix: string-only agent state, launch-failure cap, untrusted workspace"
 ```
 
 #### Part B: daemon lease and `stop` (items 1, 2, 4)
@@ -783,7 +698,7 @@ git commit -q -m "fix: test-changed reads git -z verbatim; braces, jest 30 test 
 
 - [ ] **Step 1: Update** `README.md`
   - **Requirements**, a new bullet: "Claude Code must trust the project folder: run `claude` in it once and accept the trust prompt. In a folder it does not trust, every background session fails to start; the supervisor then stops at the first attempt and notifies you."
-  - **Use**, after the `claude attach` sentence: "While you are attached, the supervisor counts the session as running."
+  - **Use**, after "You can then close the session: the supervisor and the background sessions keep running.", add: "(Checked on Windows: the supervisor outlives the Claude Code process that started it.)"
   - **What happens**, the "When a session cannot start" bullet, append: "A folder Claude Code does not trust stops the run at the first attempt."
   - **What happens**, the "Targeted tests" bullet, append: "Running `turbo-run init` again is safe: it keeps `.planning/turbo/config.json`, including `test.full`. If `workflow.test_command` already calls `turbo-run`, init keeps it: it sets it again when a full command is known and, when none is, warns instead of changing it."
   - **Notifications** bullet: add "the project folder is not trusted by Claude Code" to the list.
@@ -817,32 +732,21 @@ git add README.md
 git commit -q -m "docs: re-running init, uninstall with the default test command, workspace trust"
 ```
 
-#### Part E: live check, full suite, release v0.1.1
+#### Part E: full suite, release v0.1.1
 
-- [ ] **Step 1: Live check of the attached-lane case (owner, about 5 minutes; item 7)**
-
-The interactive-entry shape after `claude attach` is unverified. With a supervisor running a lane:
-1. `/turbo-autonomous status` shows the lane's session id.
-2. In a second terminal: `claude attach <id>`.
-3. In a third terminal: `claude agents --json --all`. Note whether the lane's `background` entry is still listed (its state), and whether an `interactive` entry with the same `sessionId` appeared.
-4. Wait one `poll_seconds` and run `/turbo-autonomous status`: the same session id, `restarts` unchanged, and no relaunch in `.planning/turbo/logs/supervisor.log`.
-5. Detach; the lane keeps running.
-
-Record the result in the release notes. If the background entry stays listed while attached, the new rule never fires and costs nothing; if something else appears, open a follow-up with the observed JSON (names and paths replaced).
-
-- [ ] **Step 2: Version and the full suite (the one full run of Task 0; Task 0 ships on its own)**
+- [ ] **Step 1: Version and the full suite (the one full run of Task 0; Task 0 ships on its own)**
 
 Set `"version": "0.1.1"` in `package.json`.
 Run: `npm test`
 Expected: all tests PASS, 0 failures (one skip outside Linux: the non-UTF-8 file name test).
 
-- [ ] **Step 3: Privacy check, commit, tag, push**
+- [ ] **Step 2: Privacy check, commit, tag, push**
 
 ```bash
 f="$(git rev-parse --git-common-dir)/info/private-terms"; test -s "$f" && ! git log -p v0.1.0..HEAD | grep -i -E -f "$f" && echo CLEAN
 git add package.json
 git commit -q -m "chore: 0.1.1"
-git tag -a v0.1.1 -m "gsd-turbo 0.1.1: stage-1 residuals (lease, stop sweep, attached lanes, untrusted workspace, test-changed -z)"
+git tag -a v0.1.1 -m "gsd-turbo 0.1.1: stage-1 residuals (lease, stop sweep, launch failures, untrusted workspace, test-changed -z)"
 git push origin main --tags
 ```
 
@@ -2491,7 +2395,7 @@ git commit -q -m "feat: deterministic A/B/C/D UAT classifier with class floor an
 ### Task 8: UAT records, evidence manifest, secret-scan (spec §6.3)
 
 **Files:**
-- Create: `lib/uat.mjs`, `test/fixtures/uat-sample.mjs` (shared fixture; Tasks 9, 10 and 16 import it)
+- Create: `lib/uat.mjs`, `test/fixtures/uat-sample.mjs` (shared fixture; Tasks 9, 10 and 17 import it)
 - Test: `test/uat-record.test.mjs`
 
 **Interfaces:**
@@ -4140,7 +4044,250 @@ git commit -q -m "docs: README for /turbo-phase, gate toggles and turbo-uat"
 
 ---
 
-### Task 16: End-to-end check, full suite, install, release
+### Task 16: Recorded import graph for targeted tests
+
+Replaces `test-changed`'s mention-based dependency guess for JavaScript sources with the real module graph recorded during a full green run. Approved by the owner (2026-10-07); opt-in per project through `test.import_graph` (default `false`), because of the cost below.
+
+**Trade-off.** Precision: a targeted run picks exactly the tests whose recorded module graph loads a changed file, instead of guessing from quoted file names. Cost: every full run puts a turbo loader hook into the project's test processes through `NODE_OPTIONS` (Node ≥ 22.15 only), which can interact with other loaders (tsx, ts-node) and reaches child processes the tests spawn.
+
+**Files:**
+- Create: `lib/import-graph.mjs`, `lib/import-graph-hook.mjs`
+- Modify: `lib/config.mjs` (`DEFAULTS.test.import_graph: false`), `lib/test-changed.mjs`, `README.md`
+- Test: `test/import-graph.test.mjs`
+
+**Interfaces:**
+- Consumes: stage-1 `planRun`, `runTestChanged`, `isRunnableTest`, `isTestFile`, `classifyScript`, `JS_EXT_RE` (in `test-changed.mjs`).
+- Produces:
+  - `import-graph-hook.mjs`: preloaded with `--import`; with `TURBO_GRAPH_DIR` set it records `{entry: process.argv[1], files: [...]}` per process through `module.registerHooks` (sync hooks: `import` and `require` alike); on Node without `registerHooks` it writes an `unsupported` marker.
+  - `import-graph.mjs`: `HOOK_URL`; `graphEnv(env, dir) → env` (appends `--import=<HOOK_URL>` to `NODE_OPTIONS`, sets `TURBO_GRAPH_DIR`); `collectGraph({root, dir, fullSha, isTest}) → {fullSha, node, tests: {testFile: projectFiles[]}} | null`; `testsLoading(graph, file) → testFile[]`.
+  - `planRun` accepts `graph = null`: for a changed JavaScript file, with a `node --test` root runner and a graph of the marker's full run, the tests are exactly `testsLoading(graph, file)`; no test loads it → full. Other files keep the stage-1 rules.
+  - `runTestChanged`: with `test.import_graph: true` and a `node --test` root runner, full runs record the graph into `<git-dir>/turbo-import-graph.json` (next to the `turbo-last-green` marker); targeted runs pass it to `planRun` when its `fullSha` equals the marker's.
+
+- [ ] **Step 1: Write the failing test** `test/import-graph.test.mjs`
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import module from 'node:module';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
+import { collectGraph, testsLoading } from '../lib/import-graph.mjs';
+import { planRun, runTestChanged, isTestFile } from '../lib/test-changed.mjs';
+
+const GRAPH = { fullSha: 'X', tests: { 'test/a.test.mjs': ['src/a.mjs', 'src/shared.mjs'], 'test/b.test.mjs': ['src/b.mjs', 'src/shared.mjs'] } };
+const base = {
+  testFiles: ['test/a.test.mjs', 'test/b.test.mjs'], packages: [{ dir: '', testScript: 'node --test test/' }], readFile: () => "import '../src/shared.mjs'",
+  head: 'H', fullCommand: 'npm test', forceFull: false, marker: { fullSha: 'X', targetedSince: 0 },
+};
+
+test('collectGraph keeps project files of test entries; testsLoading finds the loaders', () => {
+  const root = tmpDir('ig');
+  const dir = path.join(root, 'g');
+  fs.mkdirSync(dir);
+  const abs = (f) => path.join(root, ...f.split('/'));
+  fs.writeFileSync(path.join(dir, '1.json'), JSON.stringify({ entry: abs('test/a.test.mjs'), files: [abs('src/a.mjs'), abs('node_modules/x/i.js'), path.join(path.dirname(root), 'outside.js')] }));
+  fs.writeFileSync(path.join(dir, '2.json'), JSON.stringify({ entry: null, files: [abs('src/z.mjs')] }));
+  const g = collectGraph({ root, dir, fullSha: 'X', isTest: isTestFile });
+  assert.deepEqual(g.tests, { 'test/a.test.mjs': ['src/a.mjs'] });
+  assert.deepEqual(testsLoading(GRAPH, 'src/shared.mjs'), ['test/a.test.mjs', 'test/b.test.mjs']);
+  fs.writeFileSync(path.join(dir, 'unsupported'), 'v20');
+  assert.equal(collectGraph({ root, dir, fullSha: 'X', isTest: isTestFile }), null);
+});
+
+test('planRun with a graph: exactly the loading tests; a file no test loads → full', () => {
+  const a = planRun({ ...base, changed: ['src/a.mjs'], graph: GRAPH });
+  assert.deepEqual([a.mode, a.groups[0].args.slice(-1)], ['targeted', ['test/a.test.mjs']]);
+  assert.equal(planRun({ ...base, changed: ['src/new.mjs'], graph: GRAPH }).mode, 'full');
+  assert.equal(planRun({ ...base, changed: ['src/shared.mjs'] }).mode, 'targeted', 'without a graph the mention rule applies');
+});
+
+test('a full run records the graph; the next targeted run uses it', { skip: typeof module.registerHooks !== 'function' && 'needs Node >= 22.15' }, async () => {
+  const root = tmpGitRepo();
+  const g = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const write = (f, s) => { fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true }); fs.writeFileSync(path.join(root, f), s); };
+  // plain `node --test` (default patterns): Node 24 imports a directory argument like `test/` as a module and fails
+  write('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
+  write('src/a.mjs', 'export const a = 1;\n');
+  write('src/b.mjs', 'export const b = 1;\n');
+  write('test/a.test.mjs', "import { test } from 'node:test';\nimport { a } from '../src/a.mjs';\ntest('a', () => {});\n");
+  write('test/b.test.mjs', "import { test } from 'node:test';\nimport { b } from '../src/b.mjs';\ntest('b', () => {});\n");
+  write('.planning/turbo/.gitignore', 'run/\nlogs/\nlocks/\n');
+  write('.planning/turbo/config.json', JSON.stringify({ test: { full: 'npm test', import_graph: true } }));
+  g('add', '-A');
+  g('commit', '-q', '-m', 'init');
+  assert.equal(await runTestChanged({ root, env: process.env, stdio: 'ignore', log: () => {} }), 0);
+  const graph = JSON.parse(fs.readFileSync(path.resolve(root, g('rev-parse', '--git-path', 'turbo-import-graph.json')), 'utf8'));
+  assert.ok(graph.tests['test/a.test.mjs'].includes('src/a.mjs'));
+  write('src/a.mjs', 'export const a = 2;\n');
+  g('add', '-A');
+  g('commit', '-q', '-m', 'change a');
+  const logs = [];
+  assert.equal(await runTestChanged({ root, env: process.env, stdio: 'ignore', log: (l) => logs.push(l) }), 0);
+  assert.ok(logs.some((l) => /^targeted: 1 related test file/.test(l)), logs.join('\n'));
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `node --test test/import-graph.test.mjs`
+Expected: FAIL (`Cannot find module '../lib/import-graph.mjs'`).
+
+- [ ] **Step 3: Implement** `lib/import-graph-hook.mjs`
+
+```js
+// Preloaded with --import during a FULL green run when test.import_graph is on.
+// Records every file each process loads; lib/import-graph.mjs aggregates the records.
+import fs from 'node:fs';
+import path from 'node:path';
+import module from 'node:module';
+import { fileURLToPath } from 'node:url';
+
+const dir = process.env.TURBO_GRAPH_DIR;
+if (dir) {
+  if (typeof module.registerHooks !== 'function') {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'unsupported'), process.version);
+  } else {
+    const seen = new Set();
+    // synchronous hooks see import and require alike
+    module.registerHooks({
+      resolve(specifier, context, nextResolve) {
+        const r = nextResolve(specifier, context);
+        if (typeof r?.url === 'string' && r.url.startsWith('file:')) seen.add(fileURLToPath(r.url));
+        return r;
+      },
+    });
+    process.on('exit', () => {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({ entry: process.argv[1] ? path.resolve(process.argv[1]) : null, files: [...seen] }));
+      } catch {
+        // a missing record only means the next run is full
+      }
+    });
+  }
+}
+```
+
+- [ ] **Step 4: Implement** `lib/import-graph.mjs`
+
+```js
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readJson } from './fsx.mjs';
+
+export const HOOK_URL = pathToFileURL(fileURLToPath(new URL('./import-graph-hook.mjs', import.meta.url))).href;
+
+export function graphEnv(env, dir) {
+  return { ...env, TURBO_GRAPH_DIR: dir, NODE_OPTIONS: `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ''}--import=${HOOK_URL}` };
+}
+
+const relIn = (root, f) => {
+  const r = path.relative(root, f).split(path.sep).join('/');
+  return !r || r.startsWith('..') || path.isAbsolute(r) || r.includes('node_modules/') ? null : r;
+};
+
+export function collectGraph({ root, dir, fullSha, isTest }) {
+  if (!fs.existsSync(dir) || fs.existsSync(path.join(dir, 'unsupported'))) return null;
+  const tests = {};
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith('.json')) continue;
+    const rec = readJson(path.join(dir, name), null);
+    const entry = rec?.entry ? relIn(root, rec.entry) : null;
+    if (!entry || !isTest(entry) || !Array.isArray(rec.files)) continue;
+    tests[entry] = [...new Set([...(tests[entry] || []), ...rec.files.map((f) => relIn(root, f)).filter((f) => f && f !== entry)])].sort();
+  }
+  return Object.keys(tests).length ? { fullSha, node: process.version, tests } : null;
+}
+
+// Tests whose recorded graph loads `file`; a test always covers itself.
+export function testsLoading(graph, file) {
+  return Object.entries(graph.tests).filter(([t, deps]) => t === file || deps.includes(file)).map(([t]) => t);
+}
+```
+
+- [ ] **Step 5: Wire it into** `lib/test-changed.mjs` **and** `lib/config.mjs`
+
+1. `lib/config.mjs`: in `DEFAULTS.test`, add `import_graph: false`.
+2. `lib/test-changed.mjs`: add `import { collectGraph, graphEnv, testsLoading } from './import-graph.mjs';`
+3. `planRun`: add `graph = null` to the destructured parameters. In the `for (const c of changed)` loop that collects tests, directly after the check of files loaded by carried prefix flags (the inner `for (const [flag, file] of flagFiles)`) and before `const hit = reached.filter(runnable);`, insert:
+
+```js
+    // test.import_graph: a changed module selects exactly the tests whose recorded graph loads it
+    if (graph && k.kind === 'node-test' && JS_EXT_RE.test(c)) {
+      const loaders = testsLoading(graph, c).filter(runnable);
+      if (!loaders.length) return full(`${c} is not loaded by any test in the recorded import graph`);
+      for (const t of loaders) tests.add(t);
+      continue;
+    }
+```
+
+   (`k` is the root runner's `classifyScript` result; `runnable` and `tests` are the loop's existing helpers. The prefix-flag check stays first, so a changed file that a carried `--import=`/`--require=` loads still runs full.)
+4. `lib/test-changed.mjs`, above `runTestChanged`, add:
+
+```js
+// The recorded graph counts only for the full run the marker names.
+function storedGraph(cfg, file, marker) {
+  if (cfg.test?.import_graph !== true || !file || !marker) return null;
+  const g = readJson(file, null);
+  return g && g.fullSha === marker.fullSha && g.tests && typeof g.tests === 'object' ? g : null;
+}
+```
+
+5. In `runTestChanged`:
+   - next to `let markerPath = null;` add `let graphFile = null;`, and right after the line that sets `markerPath = path.resolve(root, git(root, ['rev-parse', '--git-path', 'turbo-last-green']));` add `graphFile = path.resolve(root, git(root, ['rev-parse', '--git-path', 'turbo-import-graph.json']));`
+   - in the object passed to `planRun`, add `graph: storedGraph(cfg, graphFile, marker),`
+   - replace `const cenv = childEnv();` with:
+
+```js
+  // test.import_graph: a clean full run under a node --test root runner records what each test loads
+  const rootKind = classifyScript(String(readJson(path.join(root, 'package.json'), null)?.scripts?.test ?? '')).kind;
+  const graphDir = plan.mode === 'full' && markerPath && cfg.test?.import_graph === true && rootKind === 'node-test'
+    ? path.resolve(root, git(root, ['rev-parse', '--git-path', 'turbo-graph-run']))
+    : null;
+  if (graphDir) fs.rmSync(graphDir, { recursive: true, force: true });
+  const cenv = graphDir ? graphEnv(childEnv(), graphDir) : childEnv();
+```
+
+   - directly after the line that writes the marker for a full run (`if (markerPath && plan.mode === 'full') writeJsonAtomic(markerPath, …)`), add:
+
+```js
+  if (graphDir) {
+    const graph = collectGraph({ root, dir: graphDir, fullSha: head, isTest: (f) => isRunnableTest(f) || isTestFile(f) });
+    if (graph) writeJsonAtomic(graphFile, graph);
+    else fs.rmSync(graphFile, { force: true });
+    fs.rmSync(graphDir, { recursive: true, force: true });
+  }
+```
+
+- [ ] **Step 6: Run it to verify it passes**
+
+Run: `node --test test/import-graph.test.mjs test/phase-end.test.mjs`
+Expected: PASS (the recording test is skipped on Node without `module.registerHooks`).
+
+- [ ] **Step 7: README**
+
+In the Config table, after the `test.max_targeted` row, add:
+
+```markdown
+| `test.import_graph` | `false` | Record, during full green runs, which project files each test loads, and select targeted tests by that graph (Node ≥ 22.15 and a plain `node --test` root script; otherwise ignored). It puts a turbo loader hook into your test processes through `NODE_OPTIONS` during full runs. |
+```
+
+In the "Targeted tests" bullet add: "With `test.import_graph: true`, a changed JavaScript module selects exactly the tests that loaded it in the last full green run."
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add lib/import-graph.mjs lib/import-graph-hook.mjs lib/config.mjs lib/test-changed.mjs test/import-graph.test.mjs README.md
+git commit -q -m "feat: recorded import graph for targeted tests (test.import_graph)"
+```
+
+---
+
+### Task 17: End-to-end check, full suite, install, release
 
 **Files:**
 - Create: `test/helpers/fake-gsd.mjs`, `test/e2e-turbo-phase.test.mjs`
@@ -4415,244 +4562,11 @@ In a clean checkout of that project run `/turbo-autonomous`. Expected: the lane 
 git add test/helpers/fake-gsd.mjs test/e2e-turbo-phase.test.mjs
 git commit -q -m "test: end-to-end /turbo-phase pipeline with a stub gsd-tools"
 f="$(git rev-parse --git-common-dir)/info/private-terms"; test -s "$f" && ! git log -p main@{u}..HEAD | grep -i -E -f "$f" && echo CLEAN
-git tag -a v0.2.0 -m "gsd-turbo 0.2.0: /turbo-phase, gate fan-out, turbo-uat"
+git tag -a v0.2.0 -m "gsd-turbo 0.2.0: /turbo-phase, gate fan-out, turbo-uat, recorded import graph"
 git push origin main --tags
 ```
 
 Expected: `CLEAN` before the tag; push only after it.
-
----
-
-### Task 17 (Optional — owner decides): recorded import graph for targeted tests
-
-Replaces `test-changed`'s mention-based dependency guess for JavaScript sources with the real module graph recorded during a full green run.
-
-**Trade-off.** Precision: a targeted run picks exactly the tests whose recorded module graph loads a changed file, instead of guessing from quoted file names. Cost: every full run puts a turbo loader hook into the project's test processes through `NODE_OPTIONS` (Node ≥ 22.15 only), which can interact with other loaders (tsx, ts-node) and reaches child processes the tests spawn.
-
-**Files:**
-- Create: `lib/import-graph.mjs`, `lib/import-graph-hook.mjs`
-- Modify: `lib/config.mjs` (`DEFAULTS.test.import_graph: false`), `lib/test-changed.mjs`
-- Test: `test/import-graph.test.mjs`
-
-**Interfaces:**
-- Consumes: stage-1 `planRun`, `runTestChanged`, `isRunnableTest`, `isTestFile`, `classifyScript`, `JS_EXT_RE` (in `test-changed.mjs`).
-- Produces:
-  - `import-graph-hook.mjs`: preloaded with `--import`; with `TURBO_GRAPH_DIR` set it records `{entry: process.argv[1], files: [...]}` per process through `module.registerHooks` (sync hooks: `import` and `require` alike); on Node without `registerHooks` it writes an `unsupported` marker.
-  - `import-graph.mjs`: `HOOK_URL`; `graphEnv(env, dir) → env` (appends `--import=<HOOK_URL>` to `NODE_OPTIONS`, sets `TURBO_GRAPH_DIR`); `collectGraph({root, dir, fullSha, isTest}) → {fullSha, node, tests: {testFile: projectFiles[]}} | null`; `testsLoading(graph, file) → testFile[]`.
-  - `planRun` accepts `graph = null`: for a changed JavaScript file, with a `node --test` root runner and a graph of the marker's full run, the tests are exactly `testsLoading(graph, file)`; no test loads it → full. Other files keep the stage-1 rules.
-  - `runTestChanged`: with `test.import_graph: true` and a `node --test` root runner, full runs record the graph into `<git-dir>/turbo-import-graph.json` (next to the `turbo-last-green` marker); targeted runs pass it to `planRun` when its `fullSha` equals the marker's.
-
-- [ ] **Step 1: Write the failing test** `test/import-graph.test.mjs`
-
-```js
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import module from 'node:module';
-import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { collectGraph, testsLoading } from '../lib/import-graph.mjs';
-import { planRun, runTestChanged, isTestFile } from '../lib/test-changed.mjs';
-
-const GRAPH = { fullSha: 'X', tests: { 'test/a.test.mjs': ['src/a.mjs', 'src/shared.mjs'], 'test/b.test.mjs': ['src/b.mjs', 'src/shared.mjs'] } };
-const base = {
-  testFiles: ['test/a.test.mjs', 'test/b.test.mjs'], packages: [{ dir: '', testScript: 'node --test test/' }], readFile: () => "import '../src/shared.mjs'",
-  head: 'H', fullCommand: 'npm test', forceFull: false, marker: { fullSha: 'X', targetedSince: 0 },
-};
-
-test('collectGraph keeps project files of test entries; testsLoading finds the loaders', () => {
-  const root = tmpDir('ig');
-  const dir = path.join(root, 'g');
-  fs.mkdirSync(dir);
-  const abs = (f) => path.join(root, ...f.split('/'));
-  fs.writeFileSync(path.join(dir, '1.json'), JSON.stringify({ entry: abs('test/a.test.mjs'), files: [abs('src/a.mjs'), abs('node_modules/x/i.js'), path.join(path.dirname(root), 'outside.js')] }));
-  fs.writeFileSync(path.join(dir, '2.json'), JSON.stringify({ entry: null, files: [abs('src/z.mjs')] }));
-  const g = collectGraph({ root, dir, fullSha: 'X', isTest: isTestFile });
-  assert.deepEqual(g.tests, { 'test/a.test.mjs': ['src/a.mjs'] });
-  assert.deepEqual(testsLoading(GRAPH, 'src/shared.mjs'), ['test/a.test.mjs', 'test/b.test.mjs']);
-  fs.writeFileSync(path.join(dir, 'unsupported'), 'v20');
-  assert.equal(collectGraph({ root, dir, fullSha: 'X', isTest: isTestFile }), null);
-});
-
-test('planRun with a graph: exactly the loading tests; a file no test loads → full', () => {
-  const a = planRun({ ...base, changed: ['src/a.mjs'], graph: GRAPH });
-  assert.deepEqual([a.mode, a.groups[0].args.slice(-1)], ['targeted', ['test/a.test.mjs']]);
-  assert.equal(planRun({ ...base, changed: ['src/new.mjs'], graph: GRAPH }).mode, 'full');
-  assert.equal(planRun({ ...base, changed: ['src/shared.mjs'] }).mode, 'targeted', 'without a graph the mention rule applies');
-});
-
-test('a full run records the graph; the next targeted run uses it', { skip: typeof module.registerHooks !== 'function' && 'needs Node >= 22.15' }, async () => {
-  const root = tmpGitRepo();
-  const g = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
-  const write = (f, s) => { fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true }); fs.writeFileSync(path.join(root, f), s); };
-  // plain `node --test` (default patterns): Node 24 imports a directory argument like `test/` as a module and fails
-  write('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
-  write('src/a.mjs', 'export const a = 1;\n');
-  write('src/b.mjs', 'export const b = 1;\n');
-  write('test/a.test.mjs', "import { test } from 'node:test';\nimport { a } from '../src/a.mjs';\ntest('a', () => {});\n");
-  write('test/b.test.mjs', "import { test } from 'node:test';\nimport { b } from '../src/b.mjs';\ntest('b', () => {});\n");
-  write('.planning/turbo/.gitignore', 'run/\nlogs/\nlocks/\n');
-  write('.planning/turbo/config.json', JSON.stringify({ test: { full: 'npm test', import_graph: true } }));
-  g('add', '-A');
-  g('commit', '-q', '-m', 'init');
-  assert.equal(await runTestChanged({ root, env: process.env, stdio: 'ignore', log: () => {} }), 0);
-  const graph = JSON.parse(fs.readFileSync(path.resolve(root, g('rev-parse', '--git-path', 'turbo-import-graph.json')), 'utf8'));
-  assert.ok(graph.tests['test/a.test.mjs'].includes('src/a.mjs'));
-  write('src/a.mjs', 'export const a = 2;\n');
-  g('add', '-A');
-  g('commit', '-q', '-m', 'change a');
-  const logs = [];
-  assert.equal(await runTestChanged({ root, env: process.env, stdio: 'ignore', log: (l) => logs.push(l) }), 0);
-  assert.ok(logs.some((l) => /^targeted: 1 related test file/.test(l)), logs.join('\n'));
-});
-```
-
-- [ ] **Step 2: Run it to verify it fails**
-
-Run: `node --test test/import-graph.test.mjs`
-Expected: FAIL (`Cannot find module '../lib/import-graph.mjs'`).
-
-- [ ] **Step 3: Implement** `lib/import-graph-hook.mjs`
-
-```js
-// Preloaded with --import during a FULL green run when test.import_graph is on.
-// Records every file each process loads; lib/import-graph.mjs aggregates the records.
-import fs from 'node:fs';
-import path from 'node:path';
-import module from 'node:module';
-import { fileURLToPath } from 'node:url';
-
-const dir = process.env.TURBO_GRAPH_DIR;
-if (dir) {
-  if (typeof module.registerHooks !== 'function') {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'unsupported'), process.version);
-  } else {
-    const seen = new Set();
-    // synchronous hooks see import and require alike
-    module.registerHooks({
-      resolve(specifier, context, nextResolve) {
-        const r = nextResolve(specifier, context);
-        if (typeof r?.url === 'string' && r.url.startsWith('file:')) seen.add(fileURLToPath(r.url));
-        return r;
-      },
-    });
-    process.on('exit', () => {
-      try {
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({ entry: process.argv[1] ? path.resolve(process.argv[1]) : null, files: [...seen] }));
-      } catch {
-        // a missing record only means the next run is full
-      }
-    });
-  }
-}
-```
-
-- [ ] **Step 4: Implement** `lib/import-graph.mjs`
-
-```js
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readJson } from './fsx.mjs';
-
-export const HOOK_URL = pathToFileURL(fileURLToPath(new URL('./import-graph-hook.mjs', import.meta.url))).href;
-
-export function graphEnv(env, dir) {
-  return { ...env, TURBO_GRAPH_DIR: dir, NODE_OPTIONS: `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ''}--import=${HOOK_URL}` };
-}
-
-const relIn = (root, f) => {
-  const r = path.relative(root, f).split(path.sep).join('/');
-  return !r || r.startsWith('..') || path.isAbsolute(r) || r.includes('node_modules/') ? null : r;
-};
-
-export function collectGraph({ root, dir, fullSha, isTest }) {
-  if (!fs.existsSync(dir) || fs.existsSync(path.join(dir, 'unsupported'))) return null;
-  const tests = {};
-  for (const name of fs.readdirSync(dir)) {
-    if (!name.endsWith('.json')) continue;
-    const rec = readJson(path.join(dir, name), null);
-    const entry = rec?.entry ? relIn(root, rec.entry) : null;
-    if (!entry || !isTest(entry) || !Array.isArray(rec.files)) continue;
-    tests[entry] = [...new Set([...(tests[entry] || []), ...rec.files.map((f) => relIn(root, f)).filter((f) => f && f !== entry)])].sort();
-  }
-  return Object.keys(tests).length ? { fullSha, node: process.version, tests } : null;
-}
-
-// Tests whose recorded graph loads `file`; a test always covers itself.
-export function testsLoading(graph, file) {
-  return Object.entries(graph.tests).filter(([t, deps]) => t === file || deps.includes(file)).map(([t]) => t);
-}
-```
-
-- [ ] **Step 5: Wire it into** `lib/test-changed.mjs` **and** `lib/config.mjs`
-
-1. `lib/config.mjs`: in `DEFAULTS.test`, add `import_graph: false`.
-2. `lib/test-changed.mjs`: add `import { collectGraph, graphEnv, testsLoading } from './import-graph.mjs';`
-3. `planRun`: add `graph = null` to the destructured parameters. In the `for (const c of changed)` loop that collects tests, directly after the check of files loaded by carried prefix flags (the inner `for (const [flag, file] of flagFiles)`) and before `const hit = reached.filter(runnable);`, insert:
-
-```js
-    // test.import_graph: a changed module selects exactly the tests whose recorded graph loads it
-    if (graph && k.kind === 'node-test' && JS_EXT_RE.test(c)) {
-      const loaders = testsLoading(graph, c).filter(runnable);
-      if (!loaders.length) return full(`${c} is not loaded by any test in the recorded import graph`);
-      for (const t of loaders) tests.add(t);
-      continue;
-    }
-```
-
-   (`k` is the root runner's `classifyScript` result; `runnable` and `tests` are the loop's existing helpers. The prefix-flag check stays first, so a changed file that a carried `--import=`/`--require=` loads still runs full.)
-4. `lib/test-changed.mjs`, above `runTestChanged`, add:
-
-```js
-// The recorded graph counts only for the full run the marker names.
-function storedGraph(cfg, file, marker) {
-  if (cfg.test?.import_graph !== true || !file || !marker) return null;
-  const g = readJson(file, null);
-  return g && g.fullSha === marker.fullSha && g.tests && typeof g.tests === 'object' ? g : null;
-}
-```
-
-5. In `runTestChanged`:
-   - next to `let markerPath = null;` add `let graphFile = null;`, and right after the line that sets `markerPath = path.resolve(root, git(root, ['rev-parse', '--git-path', 'turbo-last-green']));` add `graphFile = path.resolve(root, git(root, ['rev-parse', '--git-path', 'turbo-import-graph.json']));`
-   - in the object passed to `planRun`, add `graph: storedGraph(cfg, graphFile, marker),`
-   - replace `const cenv = childEnv();` with:
-
-```js
-  // test.import_graph: a clean full run under a node --test root runner records what each test loads
-  const rootKind = classifyScript(String(readJson(path.join(root, 'package.json'), null)?.scripts?.test ?? '')).kind;
-  const graphDir = plan.mode === 'full' && markerPath && cfg.test?.import_graph === true && rootKind === 'node-test'
-    ? path.resolve(root, git(root, ['rev-parse', '--git-path', 'turbo-graph-run']))
-    : null;
-  if (graphDir) fs.rmSync(graphDir, { recursive: true, force: true });
-  const cenv = graphDir ? graphEnv(childEnv(), graphDir) : childEnv();
-```
-
-   - directly after the line that writes the marker for a full run (`if (markerPath && plan.mode === 'full') writeJsonAtomic(markerPath, …)`), add:
-
-```js
-  if (graphDir) {
-    const graph = collectGraph({ root, dir: graphDir, fullSha: head, isTest: (f) => isRunnableTest(f) || isTestFile(f) });
-    if (graph) writeJsonAtomic(graphFile, graph);
-    else fs.rmSync(graphFile, { force: true });
-    fs.rmSync(graphDir, { recursive: true, force: true });
-  }
-```
-
-- [ ] **Step 6: Run it to verify it passes**
-
-Run: `node --test test/import-graph.test.mjs test/phase-end.test.mjs`
-Expected: PASS (the recording test is skipped on Node without `module.registerHooks`).
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add lib/import-graph.mjs lib/import-graph-hook.mjs lib/config.mjs lib/test-changed.mjs test/import-graph.test.mjs
-git commit -q -m "feat: optional recorded import graph for targeted tests (test.import_graph)"
-```
 
 ---
 

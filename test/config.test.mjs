@@ -52,3 +52,43 @@ test('writeJsonAtomic + readJson round-trip; readJson falls back on missing/corr
   assert.equal(readJson(f, 'fb'), 'fb');
   assert.equal(readJson(path.join(dir, 'none.json'), null), null);
 });
+
+const writeConfig = (root, text) => {
+  fs.mkdirSync(turboDir(root), { recursive: true });
+  const file = path.join(turboDir(root), 'config.json');
+  fs.writeFileSync(file, text);
+  return file;
+};
+
+test('loadConfig throws naming the file on corrupt JSON', () => {
+  const root = tmpDir('cfg');
+  const file = writeConfig(root, '{bad');
+  assert.throws(() => loadConfig(root), (err) => err.message.includes(file));
+});
+
+test('loadConfig throws when the top-level value is not a plain object', () => {
+  const root = tmpDir('cfg');
+  const file = writeConfig(root, '["x"]');
+  assert.throws(() => loadConfig(root), (err) => err.message.includes(file));
+});
+
+test('loadConfig throws on a read error other than a missing file', () => {
+  const root = tmpDir('cfg');
+  const file = path.join(turboDir(root), 'config.json');
+  fs.mkdirSync(file, { recursive: true });
+  assert.throws(() => loadConfig(root), (err) => err.message.includes(file));
+});
+
+test('loadConfig merges a partial nested config with defaults', () => {
+  const root = tmpDir('cfg');
+  writeConfig(root, '{"notify":{"telegram":true}}');
+  assert.deepEqual(loadConfig(root).notify, { desktop: true, telegram: true });
+});
+
+test('writeJsonAtomic throws and leaves no tmp file when the rename fails', () => {
+  const dir = tmpDir('fsx');
+  const target = path.join(dir, 'occupied');
+  fs.mkdirSync(target);
+  assert.throws(() => writeJsonAtomic(target, { a: 1 }));
+  assert.deepEqual(fs.readdirSync(dir).filter((n) => n.includes('.tmp-')), []);
+});

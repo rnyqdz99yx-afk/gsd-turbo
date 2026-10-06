@@ -14,6 +14,11 @@ test('msg renders en and ru with variables; unknown lang falls back to en', () =
   assert.deepEqual(msg('xx', 'milestoneDone', {}), msg('en', 'milestoneDone', {}));
 });
 
+test('msg renders supervisorFailing in en and ru', () => {
+  assert.deepEqual(msg('en', 'supervisorFailing', { error: 'launch phase 2 failed' }), { title: 'gsd-turbo cannot make progress', body: 'launch phase 2 failed. Check: /turbo-autonomous status' });
+  assert.deepEqual(msg('ru', 'supervisorFailing', { error: 'launch phase 2 failed' }), { title: 'gsd-turbo не может продолжить', body: 'launch phase 2 failed. Проверь: /turbo-autonomous status' });
+});
+
 test('msg with a key unknown in every language returns the key as title instead of throwing', () => {
   assert.deepEqual(msg('ru', 'noSuchKey', {}), { title: 'noSuchKey', body: '' });
   assert.deepEqual(msg('xx', 'noSuchKey'), { title: 'noSuchKey', body: '' });

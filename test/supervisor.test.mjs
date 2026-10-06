@@ -25,7 +25,11 @@ function harness({ phases, agents = [] }) {
         launchBg: (opts, cwd) => { const id = `s${++n}`; h.launched.push({ id, cwd, ...opts }); h.agents.push({ id, name: opts.name, cwd, state: 'working' }); return id; },
         list: () => h.agents,
         stop: () => {},
-        rm: (id) => { h.removed.push(id); h.agents = h.agents.filter((a) => a.id !== id); },
+        rm: (id) => {
+          h.removed.push(id);
+          if (!h.agents.some((a) => a.id === id)) throw new Error(`claude rm failed: no session ${id}`);
+          h.agents = h.agents.filter((a) => a.id !== id);
+        },
       },
       fingerprint: () => h.fp,
       notify: async (key, vars) => { h.notes.push({ key, vars }); },
@@ -52,6 +56,16 @@ test('adopts an already running session with the lane name instead of launching'
   // same directory written differently: forward slashes / trailing slash, upper case on win32
   const cwd = process.platform === 'win32' ? h.root.replace(/\\/g, '/').toUpperCase() : `${h.root}/`;
   h.agents.push({ id: 'old', name: laneSessionName(h.root, '2'), cwd, state: 'working' });
+  const s = await tick(fresh(), h.ctx);
+  assert.equal(h.launched.length, 0);
+  assert.equal(s.lane.sessionId, 'old');
+});
+
+test('adoption sees through a junction or symlink to the checkout', async () => {
+  const h = harness({ phases: [P('2')] });
+  const link = path.join(tmpDir('sup-link'), 'checkout');
+  fs.symlinkSync(h.root, link, 'junction');
+  h.agents.push({ id: 'old', name: laneSessionName(h.root, '2'), cwd: link, state: 'working' });
   const s = await tick(fresh(), h.ctx);
   assert.equal(h.launched.length, 0);
   assert.equal(s.lane.sessionId, 'old');
@@ -103,11 +117,12 @@ test('a throwing launchBg leaves the state unchanged and the next tick launches'
 
   h.ctx.deps.claude.launchBg = broken;
   let s = await tick(fresh(), h.ctx);
-  assert.deepEqual(s, fresh());
-  assert.ok(h.logs.some((l) => /launch phase 2 failed: claude --bg failed/.test(l)));
+  assert.deepEqual(s, { ...fresh(), failingSince: '2026-01-01T00:00:00.000Z' });
+  assert.ok(h.logs.some((l) => /tick error: launch phase 2 failed: claude --bg failed/.test(l)));
   h.ctx.deps.claude.launchBg = working;
   s = await tick(s, h.ctx);
   assert.equal(s.lane.sessionId, 's1');
+  assert.ok(!('failingSince' in s));
 
   // relaunch after a context pause: the failed attempt changes nothing (state or the lane's
   // paused-context record, which outranks human_needed) and costs no restart
@@ -116,7 +131,7 @@ test('a throwing launchBg leaves the state unchanged and the next tick launches'
   const before = structuredClone(s);
   h.ctx.deps.claude.launchBg = broken;
   s = await tick(s, h.ctx);
-  assert.deepEqual(s, before);
+  assert.deepEqual(s, { ...before, failingSince: '2026-01-01T00:00:00.000Z' });
   assert.equal(readLaneStatus(h.root, '2').status, 'paused-context');
   h.ctx.deps.claude.launchBg = working;
   s = await tick(s, h.ctx);
@@ -128,18 +143,123 @@ test('a throwing launchBg leaves the state unchanged and the next tick launches'
   assert.deepEqual([readLaneStatus(h.root, '2').status, readLaneStatus(h.root, '2').sessionId], ['running', 's2']);
 });
 
-test('a --bg call that timed out after the session registered is picked up, not duplicated', async () => {
-  const h = harness({ phases: [P('2')] });
-  let s = await tick(fresh(), h.ctx);
+// --bg that registers the session and then throws (timeout, or no id in its output)
+const registersThenThrows = (h) => {
   const working = h.ctx.deps.claude.launchBg;
-  h.ctx.deps.claude.launchBg = (opts, cwd) => { working(opts, cwd); throw new Error('claude --bg failed: timed out after 120000 ms'); };
+  return (opts, cwd) => { working(opts, cwd); throw new Error('claude --bg failed: timed out after 120000 ms'); };
+};
+
+test('a relaunch whose --bg registered the session and then threw adopts it with fresh accounting', async () => {
+  const h = harness({ phases: [P('2', [], false, 'human_needed')] });
+  let s = await tick(fresh(), h.ctx);
   h.agents[0].state = 'done';
-  s = await tick(s, h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'paused-context', { reason: 'context', at: '2026-01-01T00:01:00.000Z' });
+  h.ctx.deps.claude.launchBg = registersThenThrows(h);
+  h.advance(1);
+  s = await tick(s, h.ctx); // rm s1; s2 registers, the call throws
   assert.equal(s.lane.sessionId, 's1');
-  h.ctx.deps.claude.launchBg = working;
-  s = await tick(s, h.ctx);
+  h.advance(1);
+  s = await tick(s, h.ctx); // s1 is gone: paused-context again, the relaunch adopts s2
   assert.equal(h.launched.length, 2);
   assert.equal(s.lane.sessionId, 's2');
+  assert.equal(s.lane.restarts, 1);
+  assert.equal(s.lane.launchedAt, '2026-01-01T00:03:00.000Z');
+  assert.ok(!('failingSince' in s));
+  assert.ok(h.logs.some((l) => /rm session s1 failed: claude rm failed/.test(l)));
+  // s2 ends without a record of its own: the old paused-context record is not fresh for it,
+  // so the human_needed phase goes to the owner instead of another relaunch
+  h.agents.find((a) => a.id === 's2').state = 'done';
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2);
+  assert.deepEqual(h.notes, [{ key: 'laneNeedsOwner', vars: { phase: '2', reason: 'human verification' } }]);
+});
+
+test('a --bg that always registers and then throws still halts after the restart budget', async () => {
+  const h = harness({ phases: [P('2')] });
+  h.ctx.deps.claude.launchBg = registersThenThrows(h);
+  const statePath = path.join(h.root, '.planning', 'turbo', 'run', 'supervisor.json');
+  let sleeps = 0;
+  const sleep = async () => {
+    if (++sleeps > 50) throw new Error('supervisor never halted');
+    const { lane } = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    const agent = lane && h.agents.find((a) => a.id === lane.sessionId);
+    if (agent) agent.state = 'done'; // every adopted session ends without progress
+  };
+  const s = await runDaemon({ ctx: h.ctx, statePath, intervalMs: 1, sleep });
+  assert.equal(s.halted, true);
+  assert.equal(h.notes.at(-1).key, 'laneHalted');
+  assert.equal(h.launched.length, DEFAULTS.max_restarts_without_progress + 1);
+});
+
+test('a launch that keeps failing notifies supervisorFailing once per failing spell', async () => {
+  const h = harness({ phases: [P('2')] });
+  const working = h.ctx.deps.claude.launchBg;
+  h.ctx.deps.claude.launchBg = () => { throw new Error('claude --bg failed: exit status 1\nsecond line'); };
+  let s = await tick(fresh(), h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify - 1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, []);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, [{ key: 'supervisorFailing', vars: { error: 'launch phase 2 failed: claude --bg failed: exit status 1' } }]);
+  assert.equal(h.logs.filter((l) => /^tick error: launch phase 2 failed/.test(l)).length, 4);
+  assert.equal(s.lane, null);
+  h.ctx.deps.claude.launchBg = working;
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.ok(!('failingSince' in s) && !('failingNotified' in s));
+});
+
+test('loadPhases or list failing every tick notifies once per spell with the first error line, capped', async () => {
+  const h = harness({ phases: [P('2')] });
+  const long = `gsd-tools init manager: ${'x'.repeat(300)}\nat stack line`;
+  h.ctx.deps.loadPhases = () => { throw new Error(long); };
+  let s = await tick(fresh(), h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify);
+  s = await tick(s, h.ctx);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, [{ key: 'supervisorFailing', vars: { error: long.split('\n')[0].slice(0, 200) } }]);
+  // recovery ends the spell; a later failing spell (agents list) notifies again and keeps the lane
+  h.ctx.deps.loadPhases = () => h.phases;
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.ok(!('failingSince' in s));
+  const list = h.ctx.deps.claude.list;
+  h.ctx.deps.claude.list = () => { throw new Error('claude agents failed: timed out after 30000 ms'); };
+  s = await tick(s, h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify);
+  s = await tick(s, h.ctx);
+  assert.equal(h.notes.length, 2);
+  assert.deepEqual(h.notes[1].vars, { error: 'claude agents failed: timed out after 30000 ms' });
+  assert.equal(s.lane.sessionId, 's1');
+  h.ctx.deps.claude.list = list;
+  s = await tick(s, h.ctx);
+  assert.ok(!('failingSince' in s));
+});
+
+test('an empty phase list is not a finished milestone; it is logged once', async () => {
+  const h = harness({ phases: [] });
+  let s = await tick(fresh(), h.ctx);
+  s = await tick(s, h.ctx);
+  assert.equal(s.finished, false);
+  assert.deepEqual(h.notes, []);
+  assert.equal(h.logs.filter((l) => /no phases/.test(l)).length, 1);
+  h.phases = [P('2')];
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.phase, '2');
+  assert.ok(!('noPhases' in s));
+});
+
+test('needs-owner ignores the reason of a lane record older than the session', async () => {
+  const h = harness({ phases: [P('2', [], false, 'human_needed')] });
+  let s = await tick(fresh(), h.ctx);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'old reason', at: '2025-12-31T23:59:00.000Z' });
+  h.agents[0].state = 'done';
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, [{ key: 'laneNeedsOwner', vars: { phase: '2', reason: 'human verification' } }]);
 });
 
 test('needs-owner notifies once and waits; completion advances', async () => {

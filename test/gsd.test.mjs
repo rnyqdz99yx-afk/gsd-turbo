@@ -68,6 +68,25 @@ test('runGsdJson strips leading non-JSON noise and passes --raw and --cwd', () =
   assert.deepEqual(seen.args.slice(-4), ['manager', '--raw', '--cwd', '/proj']);
 });
 
+test('runGsdJson runs <core>/bin/gsd-tools.cjs in cwd with a 120 s SIGKILL timeout', () => {
+  let seen;
+  const exec = (cmd, args, opts) => { seen = { cmd, args, opts }; return '{}'; };
+  runGsdJson('/core', ['init', 'manager'], { cwd: '/proj', exec });
+  assert.equal(seen.cmd, process.execPath);
+  assert.equal(seen.args[0], path.join('/core', 'bin', 'gsd-tools.cjs'));
+  assert.deepEqual(seen.args.slice(1), ['init', 'manager', '--raw', '--cwd', '/proj']);
+  assert.equal(seen.opts.cwd, '/proj');
+  assert.equal(seen.opts.timeout, 120000);
+  assert.equal(seen.opts.killSignal, 'SIGKILL');
+});
+
+test('runGsdJson maps a timeout to a short message without the argv', () => {
+  const exec = () => { throw Object.assign(new Error('spawnSync /usr/bin/node /core/bin/gsd-tools.cjs init manager --raw --cwd /proj ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGKILL' }); };
+  assert.throws(() => runGsdJson('/core', ['init', 'manager'], { cwd: '/proj', exec }), { message: 'gsd-tools init manager timed out after 120 s' });
+  const other = Object.assign(new Error('Command failed'), { status: 1 });
+  assert.throws(() => runGsdJson('/core', ['init', 'manager'], { cwd: '/proj', exec: () => { throw other; } }), (e) => e === other);
+});
+
 test('readVersion reads VERSION file', () => {
   const core = tmpDir('core');
   fs.writeFileSync(path.join(core, 'VERSION'), '1.16.0\n');

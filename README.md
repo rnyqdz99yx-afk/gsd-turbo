@@ -2,7 +2,7 @@
 
 ## What it is
 
-gsd-turbo is an overlay for [GSD](https://github.com/open-gsd/gsd-core) on Claude Code that runs a milestone faster with background Claude Code sessions. A small supervisor process (no LLM of its own) starts each remaining phase of the current milestone as an unattended background session, starts a fresh one when a session stops at its context limit, replaces full test runs with targeted ones where that is safe, and notifies you only when you are needed. It does not modify GSD: it talks to GSD only through `gsd-tools` and writes one documented GSD setting, `workflow.test_command`.
+gsd-turbo is an overlay for [GSD](https://github.com/open-gsd/gsd-core) on Claude Code that runs a milestone faster with background Claude Code sessions. A small supervisor process (no LLM of its own) starts each remaining phase of the current milestone as an unattended background session, starts a fresh one when a session stops at its context limit, replaces full test runs with targeted ones where that is safe, and notifies you when a phase finishes or needs you. It does not modify GSD: it talks to GSD only through `gsd-tools` and writes one documented GSD setting, `workflow.test_command`.
 
 This is v0.1 (stage 1 of the [roadmap](#roadmap)): one phase runs at a time.
 
@@ -10,7 +10,7 @@ This is v0.1 (stage 1 of the [roadmap](#roadmap)): one phase runs at a time.
 
 - Node.js ≥ 20 and git.
 - Claude Code ≥ 2.1.234 (background sessions: `claude --bg`, `claude agents --json`).
-- GSD core 1.16.x, installed with `npx @opengsd/gsd-core@latest`. The tested range is `>=1.16.0 <1.17.0`; outside it `turbo-run doctor` switches to safe mode: it warns that the GSD version is untested, and the run still starts.
+- GSD core 1.16.x, installed with `npx @opengsd/gsd-core@latest` (or `npx @opengsd/gsd-core@1.16` to stay inside the tested range). `turbo-run doctor` is tested against `>=1.16.0 <1.17.0`; any other version, including newer minor and major releases, runs in safe mode: doctor prints `FAIL gsd-version …` and then `mode: safe`, and the run still starts.
 - Windows, macOS or Linux.
 
 ## Install
@@ -24,7 +24,7 @@ The installer copies files into your Claude Code config directory (`~/.claude`, 
 - `turbo/`: the `turbo-run` CLI, its library and an install manifest;
 - `skills/turbo-autonomous/`: the `/turbo-autonomous` skill.
 
-It never writes `gsd-*` paths. `node install.mjs --dry-run` shows what would be installed without writing anything. To upgrade, run `git pull && node install.mjs`; a new install first removes the previous one.
+It never writes `gsd-*` paths. `node install.mjs --dry-run` shows only how many files would be installed and where, without writing anything. To upgrade, run `git pull && node install.mjs`; a new install first removes the previous one.
 
 ## Uninstall
 
@@ -34,13 +34,21 @@ node install.mjs --uninstall
 
 `node install.mjs --uninstall --dry-run` shows how many files would be removed. Only files listed in the install manifest are removed.
 
-Projects keep their turbo files: `.planning/turbo/` and the GSD setting `workflow.test_command`, which points to `turbo-run`. Restore your own test command (the previous value is kept as `test.full` in `.planning/turbo/config.json`) from the project root:
+Projects keep their turbo files: `.planning/turbo/` and the GSD setting `workflow.test_command`, which still points to the removed `turbo-run`. Reset it in each project, from the project root, in a bash-compatible shell (Git Bash on Windows):
 
-```sh
-node ~/.claude/gsd-core/bin/gsd-tools.cjs config-set workflow.test_command "npm test"
-```
+- If `turbo-run init` printed `kept previous workflow.test_command as test.full: …`, restore that value (it is `test.full` in `.planning/turbo/config.json`):
 
-Use `.claude/gsd-core` inside the project instead if GSD is installed there.
+  ```sh
+  node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/gsd-tools.cjs" config-set workflow.test_command "<value of test.full>"
+  ```
+
+- Otherwise clear it, so that GSD detects the test runner itself again:
+
+  ```sh
+  node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/gsd-tools.cjs" config-set workflow.test_command ""
+  ```
+
+If GSD is installed inside the project, use `.claude/gsd-core/bin/gsd-tools.cjs` instead.
 
 ## Use
 
@@ -71,8 +79,8 @@ The background sessions work in your checkout. Do not run GSD phase commands in 
 ## What happens
 
 - **One background session per phase.** The supervisor picks the next phase whose dependencies are complete and starts it with `claude --bg`, running GSD's `gsd-autonomous` skill for that phase only. When GSD marks the phase complete, the next phase starts. Phases run one at a time.
-- **Automatic continuation after context limits.** When a session reaches `context_stop_pct` of its context, it commits, runs `gsd-pause-work` and ends; the supervisor starts a fresh session that resumes from the state on disk. A session that ends before the phase is complete without failing is resumed the same way; a failed session stops the run and notifies you. After `max_restarts_without_progress` restarts in a row with no new commit and no new plan summary, the supervisor stops and notifies you.
-- **Targeted tests.** `turbo-run init` points GSD's `workflow.test_command` to `turbo-run test-changed` and keeps your previous test command as `test.full`. Wherever GSD runs its test command (after each wave, in the regression gate, in verification), turbo runs only the tests related to the files changed since the last full green run. It falls back to the full suite whenever the selection could be unsafe: no full green run yet, uncommitted or untracked files, changed dependency or config files, changes in a nested package or outside the project root, a test command it cannot mirror exactly (`test.full` must be the root package's test script, and that script a plain `node --test`, `jest` or `vitest` call without `pretest`/`posttest` hooks; pytest projects always run in full), a changed file with no related test, or `test.max_targeted` targeted runs since the last full run. `TURBO_FULL=1` forces a full run.
+- **Automatic continuation after context limits.** Each session is told (in its prompt) to commit, run `gsd-pause-work` and end when its context usage reaches about `context_stop_pct` percent; the supervisor then starts a fresh session that resumes from the state on disk. A session that ends before the phase is complete without failing is resumed the same way; a failed session stops the run and notifies you. After `max_restarts_without_progress` restarts in a row with no new commit and no new plan summary, the supervisor stops and notifies you.
+- **Targeted tests.** `turbo-run init` points GSD's `workflow.test_command` to `turbo-run test-changed` and keeps your previous test command, if you had set one, as `test.full`. Wherever GSD runs its test command (after each wave and in the phase's regression gate), turbo runs only the tests related to the files changed since the last full green run. It falls back to the full suite whenever the selection could be unsafe, for example: not a git repository or no commit yet, no full green run yet, uncommitted or untracked files, changed dependency or config files, changes in a nested package or outside the project root, a test command it cannot mirror exactly (`test.full` must be the root package's test script, and that script a plain `node --test`, `jest` or `vitest` call without `pretest`/`posttest` hooks; pytest projects always run in full), a selected test outside the runner's default test match, a changed file with no related test, or `test.max_targeted` targeted runs since the last full run. `TURBO_FULL=1` forces a full run. A project without an npm `test` script must set `test.full` to its full test command (see [Config](#config)): with the default `npm test`, every full run fails there, and targeted mode cannot help it.
 - **Notifications.** A desktop notification (and optionally Telegram) when a phase is done, the milestone is complete, a phase needs you, a session waits for input or fails, a phase stops making progress, or the supervisor itself keeps failing.
 
 ## Config
@@ -86,14 +94,14 @@ The background sessions work in your checkout. Do not run GSD phase commands in 
 | `max_executors` | `20` | Reserved for stage 4 (execution graph). Not used in v0.1. |
 | `lane_permission_mode` | `"bypassPermissions"` | `--permission-mode` of every background session. |
 | `lane_model` | `""` | `--model` of every background session; empty uses your Claude Code default. |
-| `context_stop_pct` | `55` | Context usage, in percent, at which a session saves its state and hands over to a fresh one. |
+| `context_stop_pct` | `55` | Context usage, in percent, at which a session is told to save its state and hand over to a fresh one (an instruction in the session prompt; the supervisor does not measure context). |
 | `autonomy` | `"standard"` | `standard` or `max` (`init --autonomy`). With `max`, sessions are also told to deploy using the project's deploy procedure: snapshot or backup first, health check after, automatic rollback on failure. |
 | `poll_seconds` | `20` | Supervisor check interval in seconds (at least 5). |
 | `max_restarts_without_progress` | `3` | Restarts in a row without a new commit or plan summary before the supervisor halts and notifies you (at least 1). |
 | `blocked_minutes_before_notify` | `10` | Minutes a session may wait for input, or the supervisor may keep failing, before you are notified (at least 1). |
 | `notify.desktop` | `true` | Desktop notifications (Windows toast, `osascript` on macOS, `notify-send` on Linux). |
 | `notify.telegram` | `false` | Telegram notifications; see [Telegram](#telegram-optional). |
-| `test.full` | `"npm test"` | The full test command, run through `bash -c` like GSD does. `init` sets it to your previous `workflow.test_command` when there was one. |
+| `test.full` | `"npm test"` | The full test command, run through `bash -c` like GSD does. `init` sets it to your previous `workflow.test_command` when there was one; otherwise, if your project has no npm `test` script, set it to your full test command. |
 | `test.max_targeted` | `3` | Targeted green runs allowed after the last full green run; the next run is full. |
 | `uat.boot` | `""` | Reserved for stage 2 (`turbo-uat`): command that starts the app for automated checks. Not used in v0.1. |
 | `uat.base_url` | `""` | Reserved for stage 2: loopback URL of that app. |

@@ -48,9 +48,11 @@ test('daemon drives a 2-phase milestone to completion', async () => {
   };
   const statePath = path.join(root, '.planning', 'turbo', 'run', 'supervisor.json');
   // every fake resolves as a microtask, so a daemon that never stops would hang the suite
-  // (node:test timeouts never fire); runDaemon calls sleep outside its try, so this throw escapes
+  // (node:test timeouts never fire); runDaemon calls sleep outside its try, so this throw escapes.
+  // It counts loop iterations, not ticks: a throwing script step never advances ticks.
+  let sleeps = 0;
   const sleep = async () => {
-    if (ticks > 20) throw new Error(`runaway daemon after ${ticks} ticks; notes ${notes}; log ${logs.slice(-5).join(' | ')}`);
+    if (++sleeps > 20) throw new Error(`runaway daemon after ${sleeps} iterations (${ticks} ticks); notes ${notes}; log ${logs.slice(-5).join(' | ')}`);
   };
   const final = await runDaemon({ ctx, statePath, intervalMs: 0, sleep });
   assert.equal(final.finished, true);

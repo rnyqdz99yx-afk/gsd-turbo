@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { writeLaneStatus, readLaneStatus, inferStatus } from '../lib/run-status.mjs';
+import { writeLaneStatus, readLaneStatus, inferStatus, isAgentAlive } from '../lib/run-status.mjs';
 
 const root = () => { const r = tmpDir('rs'); fs.mkdirSync(path.join(r, '.planning')); return r; };
 const phase = (o = {}) => ({ number: '2', complete: false, verification: null, ...o });
@@ -45,4 +45,45 @@ test('missing agent (removed/rebooted) or no state field → inferred from GSD',
 test('GSD completion beats a stale paused record', () => {
   const rec = { status: 'paused-context', at: later };
   assert.equal(inferStatus({ agent: { state: 'done' }, laneRecord: rec, phase: phase({ complete: true }), launchedAt: T0 }), 'done');
+});
+
+test('fresh record "done" without GSD completion is not trusted', () => {
+  const rec = { status: 'done', at: later };
+  assert.equal(inferStatus({ agent: { state: 'done' }, laneRecord: rec, phase: phase(), launchedAt: T0 }), 'paused-context');
+});
+
+test('fresh record with unknown or missing status is ignored', () => {
+  const unknown = { status: 'weird', at: later };
+  assert.equal(inferStatus({ agent: { state: 'done' }, laneRecord: unknown, phase: phase(), launchedAt: T0 }), 'paused-context');
+  const missing = { at: later };
+  assert.equal(inferStatus({ agent: { state: 'done' }, laneRecord: missing, phase: phase(), launchedAt: T0 }), 'paused-context');
+});
+
+test('missing agent, phase not complete, no record → paused-context', () => {
+  assert.equal(inferStatus({ agent: undefined, phase: phase(), launchedAt: T0 }), 'paused-context');
+});
+
+test('record written exactly at launch counts as fresh', () => {
+  const rec = { status: 'needs-owner', at: T0 };
+  assert.equal(inferStatus({ agent: { state: 'done' }, laneRecord: rec, phase: phase(), launchedAt: T0 }), 'needs-owner');
+});
+
+test('waiting agent → blocked', () => {
+  assert.equal(inferStatus({ agent: { state: 'waiting' }, phase: phase(), launchedAt: T0 }), 'blocked');
+});
+
+test('isAgentAlive: true for working/busy/blocked/waiting only', () => {
+  for (const state of ['working', 'busy', 'blocked', 'waiting']) assert.equal(isAgentAlive({ state }), true, state);
+  for (const state of ['done', 'failed', 'idle', '']) assert.equal(isAgentAlive({ state }), false, state);
+  assert.equal(isAgentAlive(undefined), false);
+  assert.equal(isAgentAlive({}), false);
+});
+
+test('writeLaneStatus accepts an explicit at', () => {
+  const r = root();
+  const rec = writeLaneStatus(r, '3', 'failed', { at: later });
+  assert.equal(rec.at, later);
+  assert.equal(readLaneStatus(r, '3').at, later);
+  const auto = writeLaneStatus(r, '4', 'done');
+  assert.ok(!Number.isNaN(Date.parse(auto.at)));
 });

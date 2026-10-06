@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { isTestFile, classifyScript, relatedTests, planRun, runTestChanged } from '../lib/test-changed.mjs';
+const hasBash = () => { try { execFileSync('bash', ['-c', 'exit 0'], { stdio: 'ignore' }); return true; } catch { return false; } };
 
 test('isTestFile', () => {
   for (const f of ['a.test.js', 'x/b.spec.ts', 'test/c.mjs', 'tests/test_d.py', 'e_test.go']) assert.ok(isTestFile(f), f);
@@ -29,18 +30,76 @@ test('relatedTests by self-change and import mention', () => {
 
 const base = { testFiles: ['test/a.test.js'], packages: [{ dir: '', testScript: 'node --test test/' }], readFile: () => "import '../src/a.js'", head: 'H', fullCommand: 'npm test', forceFull: false };
 
+// The marker records only the last FULL green run and the targeted greens since then.
+const M = (fullSha, targetedSince = 0) => ({ fullSha, targetedSince });
+
 test('planRun decision table', () => {
   assert.equal(planRun({ ...base, changed: ['src/a.js'], marker: null }).mode, 'full');
-  assert.equal(planRun({ ...base, changed: ['src/a.js'], marker: { sha: 'X', full: true }, forceFull: true }).mode, 'full');
-  assert.equal(planRun({ ...base, changed: ['package.json'], marker: { sha: 'X', full: true } }).mode, 'full');
-  assert.equal(planRun({ ...base, changed: [], marker: { sha: 'H', full: true } }).mode, 'skip');
-  assert.equal(planRun({ ...base, changed: [], marker: { sha: 'H', full: false } }).mode, 'full');
-  assert.equal(planRun({ ...base, changed: ['docs/x.md', '.planning/STATE.md'], marker: { sha: 'X', full: true } }).mode, 'skip');
-  const t = planRun({ ...base, changed: ['src/a.js'], marker: { sha: 'X', full: true } });
+  assert.equal(planRun({ ...base, changed: ['src/a.js'], marker: M('X'), forceFull: true }).mode, 'full');
+  assert.equal(planRun({ ...base, changed: ['package.json'], marker: M('X') }).mode, 'full');
+  assert.equal(planRun({ ...base, changed: ['.planning/turbo/config.json'], marker: M('X') }).mode, 'full');
+  assert.equal(planRun({ ...base, changed: [], marker: M('H') }).mode, 'skip');
+  assert.equal(planRun({ ...base, changed: [], marker: M('H', 2) }).mode, 'skip', 'skip only on an empty cumulative change set');
+  assert.equal(planRun({ ...base, changed: ['src/a.js'], marker: M('X', 3) }).mode, 'full', 'max_targeted defaults to 3');
+  assert.equal(planRun({ ...base, changed: ['src/a.js'], marker: M('X', 1), maxTargeted: 1 }).mode, 'full');
+  const d = planRun({ ...base, changed: ['docs/x.md', '.planning/STATE.md'], marker: M('X') });
+  assert.deepEqual([d.mode, d.groups], ['targeted', []], 'no blanket docs skip; docs no test mentions need no coverage');
+  const t = planRun({ ...base, changed: ['src/a.js', 'README.md'], marker: M('X', 2) });
   assert.equal(t.mode, 'targeted');
   assert.deepEqual(t.groups, [{ cwd: '', cmd: process.execPath, args: ['--test', 'test/a.test.js'], shell: false }]);
-  assert.equal(planRun({ ...base, changed: ['src/zzz.js'], marker: { sha: 'X', full: true } }).mode, 'full');
-  assert.equal(planRun({ ...base, packages: [{ dir: '', testScript: 'make test' }], changed: ['src/a.js'], marker: { sha: 'X', full: true } }).mode, 'full');
+  assert.equal(planRun({ ...base, changed: ['src/zzz.js'], marker: M('X') }).mode, 'full');
+  assert.equal(planRun({ ...base, packages: [{ dir: '', testScript: 'make test' }], changed: ['src/a.js'], marker: M('X') }).mode, 'full');
+});
+
+test('support files: the importing tests run, never the helper itself; an unimported helper runs full', () => {
+  const files = { 'test/a.test.mjs': "import { h } from './helpers/h.mjs'", 'test/helpers/h.mjs': 'export const h = 1', 'test/helpers/lonely.mjs': '' };
+  const p = { ...base, testFiles: Object.keys(files), readFile: (f) => files[f], marker: M('X') };
+  const t = planRun({ ...p, changed: ['test/helpers/h.mjs'] });
+  assert.equal(t.mode, 'targeted');
+  assert.deepEqual(t.groups.map((g) => g.args), [['--test', 'test/a.test.mjs']]);
+  assert.equal(planRun({ ...p, changed: ['test/helpers/lonely.mjs'] }).mode, 'full');
+  // relatedTests searches importers even when the changed file is itself a test
+  assert.deepEqual(relatedTests(['test/helpers/h.mjs'], Object.keys(files), p.readFile), ['test/a.test.mjs', 'test/helpers/h.mjs']);
+});
+
+test('transitive importers and directory imports pull in their tests', () => {
+  const files = {
+    'src/a.js': 'export const a = 1',
+    'src/b.js': "import { a } from './a.js'",
+    'lib/index.js': "export * from './x.js'",
+    'test/b.test.js': "import { b } from '../src/b.js'",
+    'test/lib.test.js': "import * as lib from '../lib'",
+  };
+  const p = { ...base, testFiles: ['test/b.test.js', 'test/lib.test.js'], sourceFiles: Object.keys(files), readFile: (f) => files[f], marker: M('X') };
+  assert.deepEqual(planRun({ ...p, changed: ['src/a.js'] }).groups.map((g) => g.args), [['--test', 'test/b.test.js']]);
+  assert.deepEqual(planRun({ ...p, changed: ['lib/x.js'] }).groups.map((g) => g.args), [['--test', 'test/lib.test.js']]);
+});
+
+test('targeted only for package test scripts with a known simple runner; pytest is full-only', () => {
+  const p = { ...base, changed: ['src/a.js'], marker: M('X') };
+  assert.equal(planRun({ ...p, fullCommand: 'make test' }).mode, 'full');
+  assert.equal(planRun({ ...p, fullCommand: 'node --test test/' }).mode, 'targeted', 'equal to the root scripts.test');
+  for (const c of ['npm run test', 'pnpm test', 'pnpm run test', 'yarn test', 'yarn run test']) assert.equal(planRun({ ...p, fullCommand: c }).mode, 'targeted', c);
+  for (const s of ['node --test && eslint .', 'node --test || true', 'node --test; echo', 'node --test | tee log']) {
+    assert.equal(classifyScript(s).kind, 'unknown', s);
+    assert.equal(planRun({ ...p, packages: [{ dir: '', testScript: s }] }).mode, 'full', s);
+  }
+  const py = planRun({ ...base, testFiles: ['tests/test_a.py'], packages: [{ dir: '', testScript: 'pytest -q' }], fullCommand: 'pytest -q', changed: ['tests/test_a.py'], marker: M('X') });
+  assert.deepEqual([py.mode, py.reason], ['full', 'pytest projects run the full suite']);
+});
+
+test('jest and vitest groups run through bash -c with single-quoted file arguments', () => {
+  const files = { "web/test/it's.test.js": "import '../src/a.js'" };
+  const p = { ...base, testFiles: Object.keys(files), readFile: (f) => files[f], changed: ['web/src/a.js'], marker: M('X') };
+  const pk = (testScript) => [{ dir: '', testScript: 'node --test' }, { dir: 'web', testScript }];
+  const j = planRun({ ...p, packages: pk('jest --ci') });
+  assert.deepEqual(j.groups, [{ cwd: 'web', cmd: 'bash', args: ['-c', "npx --no-install jest --findRelatedTests 'test/it'\\''s.test.js'"], shell: false }]);
+  const v = planRun({ ...p, packages: pk('vitest run') });
+  assert.deepEqual(v.groups, [{ cwd: 'web', cmd: 'bash', args: ['-c', "npx --no-install vitest run 'test/it'\\''s.test.js'"], shell: false }]);
+  if (hasBash()) {
+    const echoed = execFileSync('bash', ['-c', j.groups[0].args[1].replace('npx --no-install jest --findRelatedTests', 'printf %s')], { encoding: 'utf8' });
+    assert.equal(echoed, "test/it's.test.js", 'bash reads the quoted argument back verbatim');
+  }
 });
 
 // Executed fixture commands use plain `node --test`: Node 22+ no longer expands a directory argument.
@@ -54,7 +113,7 @@ test('runTestChanged end-to-end in a temp git repo: full, then skip, then target
   w('.planning/turbo/config.json', JSON.stringify({ test: { full: 'node --test' } }));
   git('add', '-A'); git('commit', '-q', '-m', 'c1');
   const logs = [];
-  const opts = { root: repo, env: {}, log: (l) => logs.push(l) };
+  const opts = { root: repo, env: {}, stdio: 'ignore', log: (l) => logs.push(l) };
   assert.equal(await runTestChanged(opts), 0);
   assert.match(logs.join('\n'), /full/);
   assert.equal(await runTestChanged(opts), 0);
@@ -69,12 +128,12 @@ test('runTestChanged end-to-end in a temp git repo: full, then skip, then target
 
 const A_TEST = (expected) => `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { a } from '../src/a.js';\ntest('a', () => assert.equal(a, ${expected}));\n`;
 
-function project(dir, { full = 'node --test', expected = 1 } = {}) {
+function project(dir, { full = 'node --test', expected = 1, maxTargeted } = {}) {
   const w = (f, s) => { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), s); };
   w('package.json', JSON.stringify({ name: 't', type: 'module', scripts: { test: 'node --test' } }));
   w('src/a.js', 'export const a = 1;\n');
   w('test/a.test.js', A_TEST(expected));
-  w('.planning/turbo/config.json', JSON.stringify({ test: { full } }));
+  w('.planning/turbo/config.json', JSON.stringify({ test: { full, max_targeted: maxTargeted } }));
   return w;
 }
 const gitIn = (dir) => (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: 'pipe' }).trim();
@@ -82,7 +141,7 @@ const markerOf = (dir) => path.resolve(dir, gitIn(dir)('rev-parse', '--git-path'
 const readMarker = (dir) => { try { return JSON.parse(fs.readFileSync(markerOf(dir), 'utf8')); } catch { return null; } };
 const runner = (root, env = {}) => {
   const logs = [];
-  return { logs, run: () => runTestChanged({ root, env, log: (l) => logs.push(l) }) };
+  return { logs, run: () => runTestChanged({ root, env, stdio: 'ignore', log: (l) => logs.push(l) }) };
 };
 
 test('a failing full or targeted run never writes the green marker', async () => {
@@ -99,13 +158,13 @@ test('a failing full or targeted run never writes the green marker', async () =>
   git('commit', '-qam', 'green');
   const green = git('rev-parse', 'HEAD');
   assert.equal(await r.run(), 0);
-  assert.deepEqual(readMarker(repo), { sha: green, full: true });
+  assert.deepEqual(readMarker(repo), { fullSha: green, targetedSince: 0 });
 
   w('src/a.js', 'export const a = 3;\n');
   git('commit', '-qam', 'break');
   assert.notEqual(await r.run(), 0);
   assert.match(r.logs.at(-1), /^targeted: /);
-  assert.deepEqual(readMarker(repo), { sha: green, full: true }, 'a failing targeted run leaves the marker alone');
+  assert.deepEqual(readMarker(repo), { fullSha: green, targetedSince: 0 }, 'a failing targeted run leaves the marker alone');
   assert.equal(r.logs.length, 3, 'exactly one log line per run');
 });
 
@@ -181,7 +240,6 @@ test('uncommitted changes in tracked files run the full command and record no gr
 
 // --- fix round: bash -c for the full command, unquoted git paths ---------------------------
 
-const hasBash = () => { try { execFileSync('bash', ['-c', 'exit 0'], { stdio: 'ignore' }); return true; } catch { return false; } };
 function nonGitDir(t) {
   const dir = tmpDir('nogit');
   try {
@@ -233,4 +291,112 @@ test('non-ASCII file names are read unquoted from git, so their tests run target
   git('commit', '-qam', 'c2');
   assert.equal(await r.run(), 0);
   assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
+});
+
+// --- fix round 2: false-green repros (safe by construction) -------------------------------
+
+const H_TEST = "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { a } from '../src/a.js';\nimport { expected } from './helpers/h.mjs';\ntest('a', () => assert.equal(a, expected));\n";
+
+test('critical 1: a changed support file runs the tests that import it', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo);
+  w('test/helpers/h.mjs', 'export const expected = 1;\n');
+  w('test/a.test.js', H_TEST);
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('test/helpers/h.mjs', 'export const expected = 2;\n');
+  git('commit', '-qam', 'break the helper');
+  assert.notEqual(await r.run(), 0, 'the importing test runs and fails');
+  assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
+});
+
+test('critical 2: a rename runs the importers of the old path', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo);
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  git('mv', 'src/a.js', 'src/b.js');
+  w('test/b.test.js', "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { a } from '../src/b.js';\ntest('b', () => assert.equal(a, 1));\n");
+  git('add', '-A'); git('commit', '-q', '-m', 'rename, test/a.test.js still imports the old path');
+  assert.notEqual(await r.run(), 0, 'test/a.test.js runs and fails on the missing module');
+});
+
+test('docs: a changed doc runs the tests that mention it', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo);
+  w('.planning/STATE.md', 'phase: 1\n');
+  w('test/state.test.js', "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport fs from 'node:fs';\ntest('state', () => assert.match(fs.readFileSync(new URL('../.planning/STATE.md', import.meta.url), 'utf8'), /phase: 1/));\n");
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('.planning/STATE.md', 'phase: 2\n');
+  git('commit', '-qam', 'docs change that breaks a test');
+  assert.notEqual(await r.run(), 0, 'the mentioning test runs and fails');
+  assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
+});
+
+test('max_targeted: targeted greens keep the full sha and count up; at the limit a full run resets', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo, { maxTargeted: 1 });
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  const c1 = git('rev-parse', 'HEAD');
+  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 0 });
+  w('src/a.js', 'export const a = 1; // c2\n');
+  git('commit', '-qam', 'c2');
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
+  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 1 }, 'a targeted green never moves fullSha');
+  w('src/a.js', 'export const a = 1; // c3\n');
+  git('commit', '-qam', 'c3');
+  assert.equal(await r.run(), 0);
+  assert.match(r.logs.at(-1), /^full: 1 targeted run\(s\) since the last full run/);
+  assert.deepEqual(readMarker(repo), { fullSha: git('rev-parse', 'HEAD'), targetedSince: 0 });
+});
+
+test('untracked files: the run happens but the marker is not updated', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo);
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  w('scratch.txt', 'not tracked\n');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'full: no previous full green run');
+  assert.equal(readMarker(repo), null);
+  fs.rmSync(path.join(repo, 'scratch.txt'));
+  assert.equal(await r.run(), 0);
+  const green = readMarker(repo);
+  assert.equal(green.targetedSince, 0);
+  w('src/a.js', 'export const a = 1; // c2\n');
+  git('commit', '-qam', 'c2');
+  w('scratch.txt', 'not tracked\n');
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
+  assert.deepEqual(readMarker(repo), green, 'no count-up while untracked files are present');
+});
+
+test('project root in a subdirectory: a change outside the root runs full', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const root = path.join(repo, 'app');
+  const w = project(root);
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(root);
+  assert.equal(await r.run(), 0);
+  fs.writeFileSync(path.join(repo, 'tool.js'), 'export const t = 1;\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'top-level change');
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'full: changes outside the project root');
+  w('src/a.js', 'export const a = 1; // inside\n');
+  git('commit', '-qam', 'inside the root');
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)', 'root-relative paths after the prefix is stripped');
 });

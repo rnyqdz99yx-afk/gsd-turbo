@@ -740,3 +740,28 @@ test('final B12: runTestChanged reads the jest config from package.json and from
     assert.equal(r.logs[0], `full: jest config sets ${key}`);
   }
 });
+
+// git quotes a path with `"`, `\`, a control character or DEL even with core.quotepath=false
+test('follow-up: a path git prints quoted runs full (planRun)', () => {
+  const quoted = '"test/a\\"b.test.js"';
+  const r = planRun({ ...base, changed: ['src/a.js'], allFiles: ['src/a.js', 'test/a.test.js', quoted], marker: M('X') });
+  assert.deepEqual([r.mode, r.reason], ['full', `unusual file name: ${quoted}`], 'a tracked test git quotes is never a candidate');
+  const c = planRun({ ...base, changed: ['src/a.js', '"src/a\\177.js"'], marker: M('X') });
+  assert.deepEqual([c.mode, c.reason], ['full', 'unusual file name: "src/a\\177.js"']);
+  assert.equal(planRun({ ...base, changed: [], allFiles: [quoted], marker: M('H') }).mode, 'skip', 'nothing changed since the full green run');
+});
+
+test('follow-up: a test whose name git quotes is never dropped from a targeted run', async (t) => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo);
+  w('test/a.test.js', "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { a } from '../src/a.js';\ntest('a', () => assert.equal(typeof a, 'number'));\n");
+  try { w('test/q\x7f.test.js', A_TEST(1)); } catch { t.skip('the file system refuses DEL in a file name'); return; }
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/a.js', 'export const a = 2;\n');
+  git('commit', '-qam', 'break a for the quoted test only');
+  assert.notEqual(await r.run(), 0, 'the full command runs the quoted test');
+  assert.equal(r.logs.at(-1), 'full: unusual file name: "test/q\\177.test.js"');
+});

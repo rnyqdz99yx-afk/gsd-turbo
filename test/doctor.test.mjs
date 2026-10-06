@@ -66,6 +66,25 @@ test('claude runs as cmd + prefix args without a shell', () => {
   assert.ok(claudeCalls.every((c) => c.shell === false));
 });
 
+test('failure details carry the spawn code, exit status and signal', () => {
+  const e = env();
+  const fail = (props) => Object.assign(new Error('Command failed'), props);
+  const exec = (cmd, args) => {
+    if (cmd === 'git') throw fail({ status: null, signal: 'SIGTERM', code: 'ETIMEDOUT' });
+    if (args.includes('--version')) throw fail({ code: 'ENOENT' });
+    if (args.includes('agents')) throw fail({ status: 3, stderr: 'not logged in\n' });
+    return execOk('2.1.291')(cmd, args);
+  };
+  const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: BIN });
+  const detail = (name) => r.checks.find((c) => c.name === name).detail;
+  assert.equal(r.mode, 'unsupported');
+  assert.match(detail('git'), /ETIMEDOUT/);
+  assert.match(detail('git'), /signal SIGTERM/);
+  assert.match(detail('claude-version'), /ENOENT/);
+  assert.match(detail('claude-agents'), /exit status 3/);
+  assert.match(detail('claude-agents'), /not logged in/);
+});
+
 test('unsupported claude shim fails claude-version with the shim message and never runs it', () => {
   const e = env();
   const calls = [];

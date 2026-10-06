@@ -75,7 +75,7 @@ test('npm shim target runs without cmd.exe and keeps spaces, quotes and newlines
 test('parseAgents reads entries with an id and a state or status field', () => {
   const text = JSON.stringify([
     { id: 'a1', name: 'turbo-x-p2', kind: 'background', state: 'working', cwd: '/p', startedAt: 1, sessionId: 'a1-full' },
-    { id: 'i1', kind: 'interactive', status: 'busy', cwd: '/q', pid: 42 },
+    { id: 'i1', status: 'busy', cwd: '/q', pid: 42 },
     { id: 'e1', state: '' },
   ]);
   const a = parseAgents(text);
@@ -88,12 +88,40 @@ test('parseAgents reads entries with an id and a state or status field', () => {
   assert.deepEqual(parseAgents('[]\n'), []);
 });
 
+// Shape of `claude agents --json --all` seen live (Claude Code 2.1.292), names and paths made
+// synthetic: background sessions carry id + state; interactive ones have pid + status, no id.
+test('parseAgents skips interactive sessions and keeps the background ones (live CLI shape)', () => {
+  const t0 = 1767225600000;
+  const sid = (n) => `c0ffee0${n}-0000-4000-8000-00000000000${n}`;
+  const live = [
+    { kind: 'background', id: 'b1a2c3d4', name: 'turbo-app-1a2b3c-p1', cwd: '/w/app', startedAt: t0, sessionId: sid(1), state: 'failed' },
+    { kind: 'interactive', pid: 4101, name: 'chat one', cwd: '/w/app', startedAt: t0 + 1, sessionId: sid(2), status: 'busy' },
+    { kind: 'background', id: 'b2b3c4d5', name: 'turbo-app-1a2b3c-p2', cwd: '/w/app', startedAt: t0 + 2, sessionId: sid(3), state: 'blocked' },
+    { kind: 'interactive', pid: 4102, name: 'chat two', cwd: '/w/other', startedAt: t0 + 3, sessionId: sid(4), status: 'busy' },
+    { kind: 'background', id: 'b3c4d5e6', name: 'misc', cwd: '/w/other', startedAt: t0 + 4, sessionId: sid(5), state: 'done' },
+    { kind: 'interactive', pid: 4103, name: 'chat three', cwd: '/w/third', startedAt: t0 + 5, sessionId: sid(6), status: 'busy' },
+  ];
+  const a = parseAgents(JSON.stringify(live));
+  assert.deepEqual(a.map((x) => [x.id, x.kind, x.state, x.sessionId]), [
+    ['b1a2c3d4', 'background', 'failed', sid(1)],
+    ['b2b3c4d5', 'background', 'blocked', sid(3)],
+    ['b3c4d5e6', 'background', 'done', sid(5)],
+  ]);
+  // any other explicit kind is skipped too; a non-object entry still throws
+  assert.deepEqual(parseAgents(JSON.stringify([{ kind: 'remote', pid: 1 }])), []);
+  assert.throws(() => parseAgents(JSON.stringify([{ kind: 'interactive', pid: 1 }, null])), { message: 'claude agents entry 1 is not an object' });
+});
+
 // A renamed id or state field would make every live session look ended (and be removed).
 test('parseAgents throws on an entry without an id or without a state/status field, without echoing it', () => {
   const secret = 'SECRET-SESSION-TITLE';
   const bad = [
     [{ id: 's1', name: secret, cwd: '/r', phase: 'working' }],
     [{ name: secret, state: 'working' }],
+    // an interactive-looking entry without kind: only an explicit non-background kind is skipped
+    [{ pid: 4242, name: secret, cwd: '/w/app', startedAt: 1767225600000, sessionId: 'c0ffee00-0000-4000-8000-000000000001', status: 'busy' }],
+    [{ kind: 'background', name: secret, cwd: '/w/app', state: 'working' }],
+    [{ kind: 'background', id: 'b1', name: secret, cwd: '/w/app', phase: 'working' }],
     [{ id: '', state: 'working' }],
     [{ id: 7, state: 'working' }],
     [{ id: 's1', state: null, status: 1, name: secret }],

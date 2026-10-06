@@ -110,7 +110,31 @@ test('claude-agents fails when the agents output is not a JSON array', () => {
     assert.equal(r.mode, 'unsupported', out);
     const check = r.checks.find((c) => c.name === 'claude-agents');
     assert.equal(check.ok, false, out);
-    assert.match(check.detail, /claude agents --json --all: output is not a JSON array/, out);
+    assert.match(check.detail, /^claude agents --json --all: claude agents output is not a JSON array/, out);
+  }
+});
+
+// The same parser as the supervisor: a format change it cannot read makes `start` refuse,
+// instead of every tick failing after start.
+test('claude-agents validates entries like the supervisor: renamed fields fail, interactive sessions pass', () => {
+  const e = env();
+  const run = (entries) => {
+    const exec = (cmd, args) => (args.includes('agents') ? JSON.stringify(entries) : execOk('2.1.291')(cmd, args));
+    const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: BIN });
+    return { mode: r.mode, check: r.checks.find((c) => c.name === 'claude-agents') };
+  };
+  const live = [
+    { kind: 'background', id: 'b1a2c3d4', name: 'turbo-app-1a2b3c-p1', cwd: '/w/app', startedAt: 1, sessionId: 's-1', state: 'done' },
+    { kind: 'interactive', pid: 4101, name: 'chat', cwd: '/w/app', startedAt: 2, sessionId: 's-2', status: 'busy' },
+  ];
+  assert.deepEqual(run(live), { mode: 'full', check: { name: 'claude-agents', ok: true, detail: '' } });
+  const secret = 'SECRET-SESSION-TITLE';
+  for (const entries of [[{ kind: 'background', id: 'b1', name: secret, phase: 'working' }], [{ kind: 'bg', pid: 1, name: secret, status: 'busy' }]]) {
+    const { mode, check } = run(entries);
+    assert.equal(mode, 'unsupported');
+    assert.equal(check.ok, false);
+    assert.match(check.detail, /^claude agents --json --all: claude agents entry 0 has no string (id|state or status)$/);
+    assert.ok(!check.detail.includes(secret));
   }
 });
 

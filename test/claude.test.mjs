@@ -107,9 +107,17 @@ test('parseAgents skips interactive sessions and keeps the background ones (live
     ['b2b3c4d5', 'background', 'blocked', sid(3)],
     ['b3c4d5e6', 'background', 'done', sid(5)],
   ]);
-  // any other explicit kind is skipped too; a non-object entry still throws
-  assert.deepEqual(parseAgents(JSON.stringify([{ kind: 'remote', pid: 1 }])), []);
+  // a non-object entry still throws, even next to a skipped one
   assert.throws(() => parseAgents(JSON.stringify([{ kind: 'interactive', pid: 1 }, null])), { message: 'claude agents entry 1 is not an object' });
+});
+
+// Only `interactive` is skipped: a renamed kind value (say `bg` for `background`) must not make
+// lane sessions vanish (an unlisted lane session counts as ended and is removed).
+test('parseAgents checks every kind other than interactive strictly', () => {
+  assert.deepEqual(parseAgents(JSON.stringify([{ kind: 'bg', id: 'x', state: 'working' }])).map((a) => [a.id, a.kind, a.state]), [['x', 'bg', 'working']]);
+  assert.throws(() => parseAgents(JSON.stringify([{ kind: 'bg', pid: 1, status: 'busy' }])), { message: 'claude agents entry 0 has no string id' });
+  assert.throws(() => parseAgents(JSON.stringify([{ kind: 'remote', pid: 1 }])), { message: 'claude agents entry 0 has no string id' });
+  assert.deepEqual(parseAgents(JSON.stringify([{ kind: 'interactive', pid: 1, status: 'busy' }])), []);
 });
 
 // A renamed id or state field would make every live session look ended (and be removed).

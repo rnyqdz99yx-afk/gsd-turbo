@@ -73,6 +73,34 @@ test('a partially failed install leaves a manifest that uninstalls the copied fi
   assert.ok(fs.existsSync(home));
 });
 
+test('uninstall without a manifest says so; a corrupt manifest is a one-line error that names it', () => {
+  const home = tmpDir('home');
+  const cli = (...args) => spawnSync(process.execPath, [path.resolve('install.mjs'), ...args], { env: { ...process.env, CLAUDE_CONFIG_DIR: home }, encoding: 'utf8' });
+  assert.equal(uninstall({ claudeHome: home }), null);
+  for (const args of [['--uninstall'], ['--uninstall', '--dry-run']]) {
+    const r = cli(...args);
+    assert.equal(r.status, 1, args.join(' '));
+    assert.equal(r.stdout, '');
+    assert.equal(r.stderr.trim(), `no gsd-turbo install manifest in ${home}`);
+  }
+
+  const mf = path.join(home, 'turbo', 'install-manifest.json');
+  fs.mkdirSync(path.dirname(mf), { recursive: true });
+  for (const text of ['{"version": ', 'null']) {
+    fs.writeFileSync(mf, text);
+    const want = (msg) => msg.startsWith(`invalid install manifest ${mf}: `) && msg.endsWith('; delete it to reinstall');
+    assert.throws(() => uninstall({ claudeHome: home }), (e) => want(e.message), text);
+    assert.throws(() => install({ repoDir: path.resolve('.'), claudeHome: home }), (e) => want(e.message), text);
+    for (const args of [['--uninstall'], []]) {
+      const r = cli(...args);
+      assert.equal(r.status, 1, `${text} ${args}`);
+      assert.equal(r.stderr.trim().split(/\r?\n/).length, 1, r.stderr);
+      assert.ok(want(r.stderr.trim()), r.stderr);
+    }
+  }
+  assert.deepEqual(fs.readdirSync(path.join(home, 'turbo')), ['install-manifest.json']);
+});
+
 test('CLI runs through a linked path, rejects unknown args, and uninstall --dry-run deletes nothing', (t) => {
   const root = tmpDir('install-cli');
   const repo = path.join(root, 'repo');

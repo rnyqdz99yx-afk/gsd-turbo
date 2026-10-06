@@ -79,6 +79,35 @@ test('phaseArtifacts ignores worksheets that only end with an artifact suffix', 
   assert.equal(a.verification, null);
 });
 
+test('phaseArtifacts ignores artifacts of other phases in the directory', () => {
+  const dir = path.join(tmpDir('po'), '03-alpha');
+  fs.mkdirSync(dir);
+  for (const f of ['02-VERIFICATION.md', '03-VERIFICATION.md', '02-REVIEW.md', '03-REVIEW.md', '02-UAT.md', '03.1-CONTEXT.md', '03-01-SECURITY.md']) {
+    fs.writeFileSync(path.join(dir, f), '');
+  }
+  const a = phaseArtifacts(dir);
+  assert.equal(a.verification, '03-VERIFICATION.md');
+  assert.equal(a.review, '03-REVIEW.md');
+  assert.equal(a.uat, null, 'only a foreign 02-UAT.md exists');
+  assert.equal(a.context, null, '03.1 is another phase');
+  assert.equal(a.security, null, '03-01 is not phase 03');
+});
+
+test('phaseArtifacts finds milestone-prefixed artifacts and prefers the own-token file', () => {
+  const dir = path.join(tmpDir('pm'), '02-01-bar');
+  fs.mkdirSync(dir);
+  for (const f of ['02-01-CONTEXT.md', '02-01-VERIFICATION.md', '02-02-REVIEW.md', '02-UAT.md', '2-01-UAT.md']) fs.writeFileSync(path.join(dir, f), '');
+  const a = phaseArtifacts(dir);
+  assert.equal(a.context, '02-01-CONTEXT.md');
+  assert.equal(a.verification, '02-01-VERIFICATION.md');
+  assert.equal(a.review, null, '02-02 is a sibling phase');
+  assert.equal(a.uat, '2-01-UAT.md', 'the token 02-01 wins over the bare leading number 02, though 02-UAT.md sorts first');
+  const odd = path.join(tmpDir('pn'), 'notes');
+  fs.mkdirSync(odd);
+  fs.writeFileSync(path.join(odd, '02-REVIEW.md'), '');
+  assert.equal(phaseArtifacts(odd).review, '02-REVIEW.md', 'a directory without a phase token accepts every phase');
+});
+
 test('directory read errors other than a missing directory surface', () => {
   const root = tmpDir('pe');
   const file = path.join(root, 'not-a-dir');

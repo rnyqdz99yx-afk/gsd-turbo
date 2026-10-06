@@ -90,13 +90,13 @@ test('targeted only for package test scripts with a known simple runner; pytest 
 });
 
 test('jest and vitest groups run through bash -c with single-quoted file arguments', () => {
-  const files = { "web/test/it's.test.js": "import '../src/a.js'" };
-  const p = { ...base, testFiles: Object.keys(files), readFile: (f) => files[f], changed: ['web/src/a.js'], marker: M('X') };
-  const pk = (testScript) => [{ dir: '', testScript: 'node --test' }, { dir: 'web', testScript }];
+  const files = { "test/it's.test.js": "import '../src/a.js'" };
+  const p = { ...base, testFiles: Object.keys(files), readFile: (f) => files[f], changed: ['src/a.js'], marker: M('X') };
+  const pk = (testScript) => [{ dir: '', testScript }];
   const j = planRun({ ...p, packages: pk('jest') });
-  assert.deepEqual(j.groups, [{ cwd: 'web', cmd: 'bash', args: ['-c', "npx --no-install jest --findRelatedTests 'test/it'\\''s.test.js'"], shell: false }]);
+  assert.deepEqual(j.groups, [{ cwd: '', cmd: 'bash', args: ['-c', "npx --no-install jest --findRelatedTests 'test/it'\\''s.test.js'"], shell: false }]);
   const v = planRun({ ...p, packages: pk('vitest run') });
-  assert.deepEqual(v.groups, [{ cwd: 'web', cmd: 'bash', args: ['-c', "npx --no-install vitest run 'test/it'\\''s.test.js'"], shell: false }]);
+  assert.deepEqual(v.groups, [{ cwd: '', cmd: 'bash', args: ['-c', "npx --no-install vitest run 'test/it'\\''s.test.js'"], shell: false }]);
   if (hasBash()) {
     const echoed = execFileSync('bash', ['-c', j.groups[0].args[1].replace('npx --no-install jest --findRelatedTests', 'printf %s')], { encoding: 'utf8' });
     assert.equal(echoed, "test/it's.test.js", 'bash reads the quoted argument back verbatim');
@@ -495,8 +495,23 @@ test('fix 5: targeted only for bare runner scripts; env, wrappers, extra flags a
   assert.deepEqual(classifyScript('node --experimental-vm-modules --test-reporter=dot --test test/'), { kind: 'node-test', prefix: ['--experimental-vm-modules', '--test-reporter=dot'] });
   // the root script is what the full command runs: it must be a bare runner wherever the tests live
   const files = { 'web/test/a.test.js': "import '../src/a.js'" };
+  // (the root-script gate comes before the nested-package gate of fix 3b)
   for (const rootScript of ['npm test --workspaces', 'lerna run test', 'NODE_ENV=test node --test', '']) {
     const r = planRun({ ...base, testFiles: Object.keys(files), readFile: (f) => files[f], changed: ['web/src/a.js'], marker: M('X'), packages: [{ dir: '', testScript: rootScript }, { dir: 'web', testScript: 'jest' }] });
-    assert.equal(r.mode, 'full', rootScript);
+    assert.deepEqual([r.mode, r.reason], ['full', 'unknown test runner in root'], rootScript);
   }
+});
+
+test('fix 3b: a changed file or a selected test under a nested package runs full', () => {
+  // the full command (root `node --test`) runs web/**/*.test.js under node; a jest group in web/ would not mirror it
+  const files = { 'web/test/a.test.js': "import '../src/a.js'", 'web/test/b.test.js': "import '../../src/b.js'", 'test/b.test.js': "import '../src/b.js'" };
+  const pkgs = [{ dir: '', testScript: 'node --test' }, { dir: 'web', testScript: 'jest' }];
+  const p = { ...base, testFiles: Object.keys(files), readFile: (f) => files[f], packages: pkgs, marker: M('X') };
+  for (const changed of [['web/src/a.js'], ['web/README.md'], ['src/b.js', 'web/test/a.test.js']]) {
+    assert.deepEqual([planRun({ ...p, changed }).mode, planRun({ ...p, changed }).reason], ['full', 'changes in a nested package'], String(changed));
+  }
+  const r = planRun({ ...p, changed: ['src/b.js'] }); // root change, but web/test/b.test.js imports it
+  assert.deepEqual([r.mode, r.reason], ['full', 'web/test/b.test.js is in a nested package']);
+  const rootOnly = planRun({ ...p, packages: [pkgs[0]], changed: ['src/b.js'] });
+  assert.deepEqual(rootOnly.groups.map((g) => g.args), [['--test', 'test/b.test.js', 'web/test/b.test.js']], 'without web/package.json the root governs web/');
 });

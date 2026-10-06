@@ -72,9 +72,9 @@ test('waiting agent → blocked', () => {
   assert.equal(inferStatus({ agent: { state: 'waiting' }, phase: phase(), launchedAt: T0 }), 'blocked');
 });
 
-test('isAgentAlive: false only for ended states (done/failed/idle) and an empty or missing state', () => {
+test('isAgentAlive: false only for ended states (done/failed/idle/stopped) and an empty or missing state', () => {
   for (const state of ['working', 'busy', 'blocked', 'waiting', 'running', 'stopping']) assert.equal(isAgentAlive({ state }), true, state);
-  for (const state of ['done', 'failed', 'idle', '']) assert.equal(isAgentAlive({ state }), false, state);
+  for (const state of ['done', 'failed', 'idle', 'stopped', '']) assert.equal(isAgentAlive({ state }), false, state);
   assert.equal(isAgentAlive(undefined), false);
   assert.equal(isAgentAlive({}), false);
 });
@@ -87,8 +87,17 @@ test('unknown agent state → blocked, whatever GSD or the lane record say', () 
     assert.equal(inferStatus({ agent: { state: 'running' }, laneRecord: rec, phase: p, launchedAt: T0 }), 'blocked');
   }
   assert.equal(unknownAgentState({ state: 'running' }), 'running');
-  for (const state of ['working', 'busy', 'blocked', 'waiting', 'done', 'failed', 'idle', '']) assert.equal(unknownAgentState({ state }), '', state);
+  for (const state of ['working', 'busy', 'blocked', 'waiting', 'done', 'failed', 'idle', 'stopped', '']) assert.equal(unknownAgentState({ state }), '', state);
   assert.equal(unknownAgentState(undefined), '');
+});
+
+// `claude stop <id>` leaves the session listed (with --all) in state "stopped" (Claude Code 2.1.292)
+test('stopped agent (after claude stop) is ended: inferred like done, never blocked', () => {
+  const stopped = { state: 'stopped' };
+  assert.equal(inferStatus({ agent: stopped, phase: phase(), launchedAt: T0 }), 'paused-context');
+  assert.equal(inferStatus({ agent: stopped, phase: phase({ verification: 'human_needed' }), launchedAt: T0 }), 'needs-owner');
+  assert.equal(inferStatus({ agent: stopped, phase: phase({ complete: true }), launchedAt: T0 }), 'done');
+  assert.equal(inferStatus({ agent: stopped, laneRecord: { status: 'needs-owner', at: later }, phase: phase(), launchedAt: T0 }), 'needs-owner');
 });
 
 test('writeLaneStatus accepts an explicit at', () => {

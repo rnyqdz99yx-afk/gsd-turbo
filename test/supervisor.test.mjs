@@ -335,6 +335,19 @@ test('an unknown lane session state waits as blocked: no rm, no relaunch, logged
   assert.deepEqual(h.notes, [{ key: 'laneBlocked', vars: { phase: '2', id: 's1' } }]);
 });
 
+test('a stopped lane session (claude stop, then start) is relaunched with resume, not waited on', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'stopped';
+  h.fp = 'B';
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2);
+  assert.match(h.launched[1].prompt, /HANDOFF/);
+  assert.deepEqual(h.removed, ['s1']);
+  assert.equal(s.lane.sessionId, 's2');
+  assert.ok(!h.logs.some((l) => /unknown state/.test(l)));
+});
+
 test('a same-lane session in an unknown state is adopted, never removed or duplicated', async () => {
   const h = harness({ phases: [P('2')] });
   h.agents.push({ id: 'live', name: laneSessionName(h.root, '2'), cwd: h.root, state: 'running' });

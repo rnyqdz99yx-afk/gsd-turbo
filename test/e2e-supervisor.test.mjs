@@ -52,7 +52,8 @@ test('daemon drives a 2-phase milestone to completion', async () => {
   // It counts loop iterations, not ticks: a throwing script step never advances ticks.
   let sleeps = 0;
   const sleep = async () => {
-    if (++sleeps > 20) throw new Error(`runaway daemon after ${sleeps} iterations (${ticks} ticks); notes ${notes}; log ${logs.slice(-5).join(' | ')}`);
+    // the first log line is usually the root cause, the last ones show the loop
+    if (++sleeps > 20) throw new Error(`runaway daemon after ${sleeps} iterations (${ticks} ticks); notes ${notes}; first log ${logs[0] ?? '-'}; last log ${logs.slice(-5).join(' | ')}`);
   };
   const final = await runDaemon({ ctx, statePath, intervalMs: 0, sleep });
   assert.equal(final.finished, true);

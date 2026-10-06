@@ -247,23 +247,21 @@ async function start(root) {
   return 1;
 }
 
-// The daemon's lease, checked after every sleep. After a long sleep (hibernate, a stopped VM), or
-// while its state writes keep failing, the heartbeat goes stale: another start may then judge this
-// daemon dead and start a new one, or stop/resume clears its pid. The lease is lost as soon as
-// supervisor.json or daemon.lock is readable and names a different pid (null included); the daemon
-// then exits without writing either file again. A read error (missing, unreadable or half-written
-// file) proves nothing and keeps it running.
+// The daemon's lease, checked after every sleep. After a long sleep (hibernate, a stopped VM) the
+// heartbeat goes stale: another start may then judge this daemon dead and take the lock, and stop
+// or resume clear it ({pid: null}). daemon.lock alone decides: the lease is lost as soon as the lock
+// is readable and names a different pid (null included). supervisor.json does not count: a daemon
+// that only looked dead may have rewritten it in the middle of a tick, and the new owner's next tick
+// rewrites it anyway. A read error (missing, unreadable or half-written lock) proves nothing and
+// keeps the daemon running.
 function leaseSleep(root, log) {
-  const foreign = (file) => {
-    const v = readJson(file, null);
-    return v !== null && typeof v === 'object' && Object.hasOwn(v, 'pid') && v.pid !== process.pid;
-  };
   return async (ms) => {
     await delay(ms);
-    const lost = [supPath(root), lockPath(root)].filter(foreign);
-    if (!lost.length) return;
-    log(`daemon exit pid ${process.pid}: lease lost (${lost.map((f) => path.basename(f)).join(', ')} names another pid)`);
-    releaseLock(root); // only a lock that still names this process
+    const lock = readJson(lockPath(root), null);
+    if (lock === null || typeof lock !== 'object' || !Object.hasOwn(lock, 'pid') || lock.pid === process.pid) return;
+    log(`daemon exit pid ${process.pid}: lease lost (daemon.lock names ${lock.pid == null ? 'no pid' : `pid ${lock.pid}`})`);
+    // stop or resume cleared the lock: leave no pid behind. With another owner, write nothing.
+    if (lock.pid == null) clearDaemonPid(root, null);
     process.exit(0); // not a throw: nothing after this point may write state
   };
 }
@@ -308,6 +306,9 @@ function stopDaemon(root, sup) {
     out(`stopped supervisor pid ${sup.pid}`);
   } else if (Number.isInteger(sup.pid) && sup.pid > 0 && pidExists(sup.pid)) {
     out(`pid ${sup.pid} has no recent supervisor heartbeat (last ${sup.updatedAt || 'never'}); not killed`);
+    // A daemon that only looks dead (hibernated) may still be mid-tick and rewrite its pid into
+    // supervisor.json; the lock is what ends its lease, at its next check.
+    writeJsonAtomic(lockPath(root), { pid: null, at: new Date().toISOString() });
   }
   if (sup.pid != null) writeJsonAtomic(supPath(root), { ...readJson(supPath(root), sup), pid: null });
 }
@@ -476,7 +477,8 @@ async function main() {
       if (!root) die('no .planning directory found');
       const sup = readJson(supPath(root), null);
       stopDaemon(root, sup);
-      if (!sup) { out('stopped'); return 0; } // never started: no daemon, no lane
+      // supervisor.json may be missing (never started) or unreadable for any reason: this
+      // project's lane sessions are swept either way
       return stopLanes(root, sup);
     }
     case 'lane-status': {

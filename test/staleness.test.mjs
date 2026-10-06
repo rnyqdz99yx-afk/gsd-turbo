@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { extractRefs, classifyArtifact, stalenessReport, recordBases, BASE_FILE } from '../lib/staleness.mjs';
+import { extractRefs, classifyArtifact, stalenessReport, recordBases, gitRunner, BASE_FILE } from '../lib/staleness.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 
 function repo() {
@@ -109,4 +109,120 @@ test('staleness CLI names the candidates when the phase directory is ambiguous',
   assert.match(lines.at(-1), /phase 3 is ambiguous: 03-alpha, 03-beta — resolve it in \.planning\/phases$/);
   assert.equal(await run('9'), 1);
   assert.match(lines.at(-1), /no phase directory for phase 9/);
+});
+
+test('extractRefs reads GSD reference forms: @paths, dot-paths, directories, any line suffix', () => {
+  const r = extractRefs([
+    '@src/a.ts:12 @.planning/STATE.md',
+    '<read_first>.env.example, .github/workflows/ci.yml</read_first>',
+    'src/b.ts:12:5 src/c.ts:L12 src/d.ts:12—30 src/e.ts#30 src/f.ts:',
+    'src/components/ ../outside.js src/../up.js',
+  ].join('\n'));
+  for (const p of ['src/a.ts', '@src/a.ts', '.planning/STATE.md', '.env.example', '.github/workflows/ci.yml', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts', 'src/components']) {
+    assert.ok(r.paths.includes(p), p);
+  }
+  assert.deepEqual(r.lineRefs.sort(), ['@src/a.ts', 'src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts']);
+  assert.ok(!r.paths.some((p) => p.includes('..')), r.paths.join());
+});
+
+test('stalenessReport: @-cited and dot-path deletions rebuild, an @-cited changed line regrounds, own phase files ignored', () => {
+  const r = repo();
+  r.write('src/x.ts', 'x\n');
+  r.write('src/a.ts', '1\n2\n');
+  r.write('.env.example', 'A=1\n');
+  r.write('src/components/c.tsx', 'c\n');
+  const dir = '.planning/phases/03-alpha';
+  r.write(`${dir}/03-01-PLAN.md`, 'Context: @src/x.ts\n');
+  r.write(`${dir}/03-02-PLAN.md`, '<read_first>.env.example</read_first>\n');
+  r.write(`${dir}/03-03-PLAN.md`, 'See @src/a.ts:2 and @.planning/phases/03-alpha/03-01-SUMMARY.md\n');
+  r.write(`${dir}/03-04-PLAN.md`, 'Put it in src/components/\n');
+  r.commit('plan');
+  r.g('rm', '-q', 'src/x.ts', '.env.example', 'src/components/c.tsx');
+  r.write('src/a.ts', '1\nTWO\n');
+  r.write(`${dir}/03-01-SUMMARY.md`, 'done\n');
+  r.commit('later');
+  const plans = ['03-01', '03-02', '03-03', '03-04'].map((id) => ({ id, files_modified: [], has_summary: false }));
+  const by = Object.fromEntries(stalenessReport({ root: r.root, phaseDir: path.join(r.root, dir), plans }).artifacts.map((x) => [x.file, x]));
+  assert.deepEqual(by['03-01-PLAN.md'].reasons, ['src/x.ts: deleted or renamed']);
+  assert.equal(by['03-01-PLAN.md'].action, 'rebuild');
+  assert.deepEqual([by['03-02-PLAN.md'].action, by['03-02-PLAN.md'].reasons], ['rebuild', ['.env.example: deleted or renamed']]);
+  assert.deepEqual([by['03-03-PLAN.md'].action, by['03-03-PLAN.md'].reasons], ['reground', ['src/a.ts: changed at a referenced line']]);
+  assert.deepEqual([by['03-04-PLAN.md'].action, by['03-04-PLAN.md'].reasons], ['rebuild', ['src/components: deleted or renamed']]);
+});
+
+test('files_modified paths are normalized like cited paths', () => {
+  const r = repo();
+  r.write('src/m.ts', 'm\n');
+  r.write('.planning/phases/03-alpha/03-01-PLAN.md', 'plan\n');
+  r.commit('plan');
+  r.g('rm', '-q', 'src/m.ts');
+  r.commit('drop');
+  const plans = [{ id: '03-01', files_modified: ['./src\\m.ts'], has_summary: false }];
+  const rep = stalenessReport({ root: r.root, phaseDir: path.join(r.root, '.planning/phases/03-alpha'), plans });
+  assert.deepEqual(rep.artifacts.map((x) => [x.action, x.reasons]), [['rebuild', ['src/m.ts: deleted or renamed']]]);
+});
+
+test('bare PLAN.md and nested plans/PLAN-NN.md are checked; a plan without its file is reported, never dropped', async () => {
+  const r = repo();
+  r.write('src/x.ts', 'x\n');
+  const dir = '.planning/phases/03-alpha';
+  r.write(`${dir}/PLAN.md`, 'Uses @src/x.ts\n');
+  r.write(`${dir}/plans/PLAN-02.md`, 'Edit src/x.ts:1\n');
+  r.commit('plan');
+  r.g('rm', '-q', 'src/x.ts');
+  r.commit('drop x');
+  const plans = ['', 'plans/PLAN-02.md', '03-09'].map((id) => ({ id, files_modified: [], has_summary: false }));
+  const phaseDir = path.join(r.root, dir);
+  const rep = stalenessReport({ root: r.root, phaseDir, plans });
+  assert.deepEqual(rep.artifacts.map((x) => [x.id, x.file, x.action]), [
+    ['', 'PLAN.md', 'rebuild'],
+    ['plans/PLAN-02.md', 'plans/PLAN-02.md', 'rebuild'],
+    ['03-09', '03-09-PLAN.md', 'rebuild'],
+  ]);
+  assert.deepEqual(rep.artifacts[2].reasons, ['plan file not found']);
+  const lines = [];
+  const run = (...a) => runPhaseCommand('staleness', a, { root: r.root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { planIndex: () => plans } });
+  assert.equal(await run('3', '--record', `${dir}/plans/PLAN-02.md`, 'PLAN.md'), 0);
+  const again = stalenessReport({ root: r.root, phaseDir, plans });
+  assert.deepEqual(again.artifacts.slice(0, 2).map((x) => [x.action, x.baseSource]), [['fresh', 'record'], ['fresh', 'record']]);
+});
+
+test('staleness CLI fails on a phase-plan-index error instead of checking no plans', async () => {
+  const r = repo();
+  r.write('.planning/phases/03-alpha/03-01-PLAN.md', 'Edit README.md:1\n');
+  const core = path.join(r.root, '.claude', 'gsd-core');
+  fs.mkdirSync(path.join(core, 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(core, 'VERSION'), '1.16.0');
+  fs.writeFileSync(path.join(core, 'bin', 'gsd-tools.cjs'), "process.stdout.write(JSON.stringify({ phase: '3', error: 'Phase not found', plans: [] }));\n");
+  const lines = [];
+  assert.equal(await runPhaseCommand('staleness', ['3'], { root: r.root, out: (l) => lines.push(l), err: (l) => lines.push(l) }), 1);
+  assert.match(lines.at(-1), /phase-plan-index 3: Phase not found/);
+});
+
+test('a repository without commits: every artifact uncommitted and fresh, no tree reads, nothing recorded', async () => {
+  const root = tmpDir('stale');
+  execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'pipe' });
+  const phaseDir = path.join(root, '.planning', 'phases', '03-alpha');
+  fs.mkdirSync(phaseDir, { recursive: true });
+  fs.writeFileSync(path.join(phaseDir, '03-CONTEXT.md'), 'About README.md\n');
+  fs.writeFileSync(path.join(phaseDir, '03-01-PLAN.md'), 'Edit README.md:1\n');
+  const calls = [];
+  const real = gitRunner(root);
+  const git = (args, enc) => { calls.push(args[0]); return real(args, enc); };
+  const rep = stalenessReport({ root, phaseDir, plans: [{ id: '03-01', files_modified: ['README.md'], has_summary: false }], git });
+  assert.equal(rep.head, null);
+  assert.deepEqual(rep.artifacts.map((x) => [x.file, x.action, x.baseSource]), [['03-CONTEXT.md', 'fresh', 'uncommitted'], ['03-01-PLAN.md', 'fresh', 'uncommitted']]);
+  assert.ok(!calls.some((c) => c === 'ls-files' || c === 'ls-tree' || c === 'diff'), calls.join());
+  const lines = [];
+  const run = (...a) => runPhaseCommand('staleness', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { planIndex: () => [{ id: '03-01', has_summary: false }] } });
+  assert.equal(await run('3'), 0);
+  assert.equal(await run('3', '--record-all'), 0);
+  assert.equal(lines.at(-1), 'no commit yet: nothing recorded');
+  assert.ok(!fs.existsSync(path.join(phaseDir, BASE_FILE)));
+});
+
+test('recordBases orders keys by code unit, independent of locale', () => {
+  const dir = tmpDir('stale');
+  const f = recordBases(dir, ['a.md', 'B.md', 'plans/PLAN-01.md', 'PLAN.md'], 'f'.repeat(40), new Date(0));
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(f, 'utf8'))), ['B.md', 'PLAN.md', 'a.md', 'plans/PLAN-01.md']);
 });

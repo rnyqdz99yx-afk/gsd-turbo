@@ -223,7 +223,7 @@
     "context_stop_pct": 55,
     "autonomy": "max",
     "notify": { "desktop": true, "telegram": false },
-    "uat": { "boot": "", "base_url": "http://localhost:3001", "seed": "", "forbidden_hosts": [] },
+    "uat": { "boot": "", "base_url": "http://localhost:8080", "seed": "", "forbidden_hosts": [] },
     "deploy": { "command": "", "snapshot": "", "health": "", "rollback": "" }
   }
 }

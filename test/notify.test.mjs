@@ -19,6 +19,15 @@ test('msg with a key unknown in every language returns the key as title instead 
   assert.deepEqual(msg('xx', 'noSuchKey'), { title: 'noSuchKey', body: '' });
 });
 
+test('msg ignores inherited Object properties as keys or languages', () => {
+  for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    assert.deepEqual(msg('en', key, {}), { title: key, body: '' });
+    assert.deepEqual(msg('ru', key, {}), { title: key, body: '' });
+  }
+  assert.deepEqual(msg('constructor', 'milestoneDone', {}), msg('en', 'milestoneDone', {}));
+  assert.deepEqual(msg('__proto__', 'milestoneDone', {}), msg('en', 'milestoneDone', {}));
+});
+
 test('desktopCommand win32: constant script, text only in env (no PowerShell injection)', () => {
   const w = desktopCommand('win32', 'a<b ‘t’', `c&d ${INJECT} ‚‛`);
   assert.equal(w.cmd, 'powershell.exe');
@@ -40,8 +49,31 @@ test('desktopCommand darwin and linux pass text via argv; unknown platform is nu
   assert.deepEqual(d.args, ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', 't"x', `b ${INJECT}`]);
   const l = desktopCommand('linux', '-t', 'b');
   assert.equal(l.cmd, 'notify-send');
-  assert.deepEqual(l.args, ['--', '-t', 'b']);
+  assert.deepEqual(l.args, ['--', '\u200B-t', 'b']);
   assert.equal(desktopCommand('aix', 't', 'b'), null);
+});
+
+test('desktopCommand: a text field starting with "-" is guarded with U+200B on every platform', () => {
+  const evil = '-eproperty p : (do shell script "x")';
+  const d = desktopCommand('darwin', '-title', evil);
+  assert.equal(d.args.slice(0, 6).filter((a) => a === '-e').length, 3);
+  const tail = d.args.slice(6);
+  assert.deepEqual(tail, ['\u200B-title', `\u200B${evil}`]);
+  for (const a of tail) assert.ok(!a.startsWith('-'), `argv element must not start with "-": ${a}`);
+  assert.deepEqual(desktopCommand('linux', '-title', evil).args, ['--', '\u200B-title', `\u200B${evil}`]);
+  const w = desktopCommand('win32', '-title', evil);
+  assert.equal(w.env.TURBO_NOTIFY_TITLE, '\u200B-title');
+  assert.equal(w.env.TURBO_NOTIFY_BODY, `\u200B${evil}`);
+  assert.deepEqual(desktopCommand('linux', 'a-b', 'x -y').args, ['--', 'a-b', 'x -y'], 'inner dashes untouched');
+});
+
+test('desktopCommand strips C0 control chars except tab, newline and carriage return', () => {
+  const raw = 'a\u0000b\u0001c\nd\te\rf\u001Bg\u001F';
+  const clean = 'abc\nd\te\rfg';
+  assert.deepEqual(desktopCommand('linux', raw, raw).args, ['--', clean, clean]);
+  assert.deepEqual(desktopCommand('darwin', raw, raw).args.slice(6), [clean, clean]);
+  assert.deepEqual(desktopCommand('win32', raw, raw).env, { TURBO_NOTIFY_TITLE: clean, TURBO_NOTIFY_BODY: clean });
+  assert.deepEqual(desktopCommand('linux', '\u0001-x', 'b').args, ['--', '\u200B-x', 'b'], 'guard applies after stripping');
 });
 
 test('notify sends telegram only when enabled and env is present; never throws', async () => {
@@ -74,6 +106,11 @@ test('notify desktop success path passes cmd/args/env to exec and truncates text
   assert.ok(opts.env.TURBO_NOTIFY_BODY.startsWith(INJECT));
   const someKey = Object.keys(process.env)[0];
   assert.equal(opts.env[someKey], process.env[someKey], 'child env inherits process.env');
+  calls.length = 0;
+  await notify({ notify: { desktop: true } }, { title: '-'.repeat(500), body: 'b' }, { platform: 'linux', exec, env: {} });
+  const guarded = [...calls[0].args[1]];
+  assert.equal(guarded[0], '\u200B');
+  assert.equal(guarded.length, 120, 'the U+200B guard counts toward the 120 cap');
 });
 
 test('notify with desktop:false never calls exec', async () => {

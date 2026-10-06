@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { writeLaneStatus, readLaneStatus, inferStatus, isAgentAlive } from '../lib/run-status.mjs';
+import { writeLaneStatus, readLaneStatus, inferStatus, isAgentAlive, unknownAgentState } from '../lib/run-status.mjs';
 
 const root = () => { const r = tmpDir('rs'); fs.mkdirSync(path.join(r, '.planning')); return r; };
 const phase = (o = {}) => ({ number: '2', complete: false, verification: null, ...o });
@@ -72,11 +72,23 @@ test('waiting agent → blocked', () => {
   assert.equal(inferStatus({ agent: { state: 'waiting' }, phase: phase(), launchedAt: T0 }), 'blocked');
 });
 
-test('isAgentAlive: true for working/busy/blocked/waiting only', () => {
-  for (const state of ['working', 'busy', 'blocked', 'waiting']) assert.equal(isAgentAlive({ state }), true, state);
+test('isAgentAlive: false only for ended states (done/failed/idle) and an empty or missing state', () => {
+  for (const state of ['working', 'busy', 'blocked', 'waiting', 'running', 'stopping']) assert.equal(isAgentAlive({ state }), true, state);
   for (const state of ['done', 'failed', 'idle', '']) assert.equal(isAgentAlive({ state }), false, state);
   assert.equal(isAgentAlive(undefined), false);
   assert.equal(isAgentAlive({}), false);
+});
+
+// An unknown state may be a live session: never treat it as finished (rm kills running
+// sessions) and never relaunch next to it; wait instead.
+test('unknown agent state → blocked, whatever GSD or the lane record say', () => {
+  const rec = { status: 'paused-context', at: later };
+  for (const p of [phase(), phase({ complete: true }), phase({ verification: 'human_needed' })]) {
+    assert.equal(inferStatus({ agent: { state: 'running' }, laneRecord: rec, phase: p, launchedAt: T0 }), 'blocked');
+  }
+  assert.equal(unknownAgentState({ state: 'running' }), 'running');
+  for (const state of ['working', 'busy', 'blocked', 'waiting', 'done', 'failed', 'idle', '']) assert.equal(unknownAgentState({ state }), '', state);
+  assert.equal(unknownAgentState(undefined), '');
 });
 
 test('writeLaneStatus accepts an explicit at', () => {

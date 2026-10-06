@@ -72,7 +72,7 @@ test('npm shim target runs without cmd.exe and keeps spaces, quotes and newlines
   assert.deepEqual(JSON.parse(createClaude({ bin }).stop(arg)), ['stop', arg]);
 });
 
-test('parseAgents tolerates mixed shapes and bad input', () => {
+test('parseAgents tolerates mixed entry shapes inside an array', () => {
   const text = JSON.stringify([
     { id: 'a1', name: 'turbo-x-p2', kind: 'background', state: 'working', cwd: '/p', startedAt: 1, sessionId: 'a1-full' },
     { kind: 'interactive', status: 'busy', cwd: '/q', pid: 42 },
@@ -84,8 +84,21 @@ test('parseAgents tolerates mixed shapes and bad input', () => {
   assert.equal(a[0].sessionId, 'a1-full');
   assert.equal(a[1].state, 'busy');
   assert.equal(a[1].pid, 42);
-  assert.deepEqual(parseAgents('not json'), []);
-  assert.deepEqual(parseAgents('{"x":1}'), []);
+  assert.deepEqual(parseAgents('[]\n'), []);
+});
+
+// An empty list would make every lane session look ended, and the supervisor would remove them.
+test('parseAgents throws on output that is not a JSON array, without echoing the output', () => {
+  const secret = 'SECRET-SESSION-TITLE';
+  for (const text of [`not json ${secret}`, '', `{"agents":[{"id":"a1","name":"${secret}","state":"working"}]}`, '"x"', 'null']) {
+    assert.throws(() => parseAgents(text), (e) => {
+      assert.match(e.message, /^claude agents output is not a JSON array/);
+      assert.ok(!e.message.includes(secret));
+      return true;
+    }, JSON.stringify(text));
+  }
+  const c = createClaude({ bin: PLAIN_BIN, exec: () => '{"agents":[]}' });
+  assert.throws(() => c.list(), /claude agents output is not a JSON array/);
 });
 
 test('laneSessionName is stable, filesystem-safe and unique per root', () => {

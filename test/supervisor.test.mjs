@@ -6,7 +6,7 @@ import { tmpDir } from './helpers/tmp.mjs';
 import { tick, runDaemon } from '../lib/supervisor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus, readLaneStatus } from '../lib/run-status.mjs';
-import { laneSessionName } from '../lib/claude.mjs';
+import { laneSessionName, parseAgents } from '../lib/claude.mjs';
 
 function harness({ phases, agents = [] }) {
   const root = tmpDir('sup');
@@ -304,6 +304,50 @@ test('loadPhases or list failing every tick notifies once per spell with the fir
   h.ctx.deps.claude.list = list;
   s = await tick(s, h.ctx);
   assert.ok(!('failingSince' in s));
+});
+
+test('an agents list that stops parsing fails the tick and never removes the lane session', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  const before = structuredClone(s);
+  h.ctx.deps.claude.list = () => parseAgents(JSON.stringify({ agents: h.agents }));
+  for (let i = 0; i < 3; i++) s = await tick(s, h.ctx);
+  assert.deepEqual(s, { ...before, failingSince: '2026-01-01T00:00:00.000Z' });
+  assert.deepEqual(h.removed, []);
+  assert.equal(h.launched.length, 1);
+  assert.ok(h.logs.some((l) => /tick error: claude agents output is not a JSON array/.test(l)));
+});
+
+test('an unknown lane session state waits as blocked: no rm, no relaunch, logged once', async () => {
+  const h = harness({ phases: [P('2', [], false, 'human_needed')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'running';
+  s = await tick(s, h.ctx);
+  s = await tick(s, h.ctx);
+  h.phases[0].complete = true;
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.removed, []);
+  assert.equal(h.launched.length, 1);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.equal(h.logs.filter((l) => /session s1 reports unknown state "running"/.test(l)).length, 1);
+  h.advance(DEFAULTS.blocked_minutes_before_notify);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, [{ key: 'laneBlocked', vars: { phase: '2', id: 's1' } }]);
+});
+
+test('a same-lane session in an unknown state is adopted, never removed or duplicated', async () => {
+  const h = harness({ phases: [P('2')] });
+  h.agents.push({ id: 'live', name: laneSessionName(h.root, '2'), cwd: h.root, state: 'running' });
+  let s = await tick(fresh(), h.ctx);
+  assert.equal(s.lane.sessionId, 'live');
+  // and on a relaunch: the ended lane session is replaced by the unknown-state one
+  h.agents.find((a) => a.id === 'live').state = 'done';
+  h.agents.push({ id: 'live2', name: laneSessionName(h.root, '2'), cwd: h.root, state: 'running' });
+  h.fp = 'B';
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 0);
+  assert.deepEqual(h.removed, ['live']);
+  assert.equal(s.lane.sessionId, 'live2');
 });
 
 test('an empty phase list is not a finished milestone; it is logged once', async () => {

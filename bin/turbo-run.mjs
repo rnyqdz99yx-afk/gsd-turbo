@@ -247,17 +247,22 @@ async function start(root) {
   return 1;
 }
 
-// The daemon's lease: supervisor.json and daemon.lock both name this process. After a long sleep
-// (hibernate, a stopped VM) another start may have judged this daemon dead and started a new one,
-// or stop/resume cleared its pid; this daemon then exits without writing either file again.
+// The daemon's lease, checked after every sleep. After a long sleep (hibernate, a stopped VM), or
+// while its state writes keep failing, the heartbeat goes stale: another start may then judge this
+// daemon dead and start a new one, or stop/resume clears its pid. The lease is lost as soon as
+// supervisor.json or daemon.lock is readable and names a different pid (null included); the daemon
+// then exits without writing either file again. A read error (missing, unreadable or half-written
+// file) proves nothing and keeps it running.
 function leaseSleep(root, log) {
-  const held = () => readJson(supPath(root), null)?.pid === process.pid && readJson(lockPath(root), null)?.pid === process.pid;
+  const foreign = (file) => {
+    const v = readJson(file, null);
+    return v !== null && typeof v === 'object' && Object.hasOwn(v, 'pid') && v.pid !== process.pid;
+  };
   return async (ms) => {
     await delay(ms);
-    if (held()) return;
-    await delay(250); // another writer may be between its write and rename
-    if (held()) return;
-    log(`daemon exit pid ${process.pid}: lease lost (supervisor.json or daemon.lock names another process)`);
+    const lost = [supPath(root), lockPath(root)].filter(foreign);
+    if (!lost.length) return;
+    log(`daemon exit pid ${process.pid}: lease lost (${lost.map((f) => path.basename(f)).join(', ')} names another pid)`);
     releaseLock(root); // only a lock that still names this process
     process.exit(0); // not a throw: nothing after this point may write state
   };

@@ -369,27 +369,37 @@ test('daemon replaces a dead lock, runs to the end, then clears its pid and lock
   assert.ok(p.claudeCalls().some((a) => a[0] === 'agents'));
 });
 
-test('a daemon exits after a sleep once supervisor.json or the lock names another process', async (t) => {
+test('a daemon exits after a sleep once supervisor.json or the lock names another pid; read errors keep it running', async (t) => {
   const mk = () => fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
-  const a = mk();
-  const b = mk();
-  const da = spawnCli(t, ['daemon'], a);
-  const db = spawnCli(t, ['daemon'], b);
-  const ticked = (p, c) => waitFor(() => { const s = readSup(p.root); return s?.pid === c.pid && s.lane ? s : null; }, 10000);
-  const [sa, sb] = await Promise.all([ticked(a, da), ticked(b, db)]);
-  assert.ok(sa, logOf(a.root));
-  assert.ok(sb, logOf(b.root));
+  const [a, b, c, d] = [mk(), mk(), mk(), mk()];
+  const [da, db, dc, dd] = [a, b, c, d].map((p) => spawnCli(t, ['daemon'], p));
+  const ticked = (p, ch) => waitFor(() => { const s = readSup(p.root); return s?.pid === ch.pid && s.lane ? s : null; }, 10000);
+  const [sa, sb, sc, sd] = await Promise.all([ticked(a, da), ticked(b, db), ticked(c, dc), ticked(d, dd)]);
+  for (const [s, p] of [[sa, a], [sb, b], [sc, c], [sd, d]]) assert.ok(s, logOf(p.root));
   const other = sleeper(t).pid; // the daemon that took over after this one looked dead
-  const taken = { ...sa, pid: other, updatedAt: new Date().toISOString() };
-  writeSup(a.root, taken);
-  writeLock(b.root, { pid: other, at: new Date().toISOString() });
-  const [ea, eb] = await Promise.all([exited(da, 10000), exited(db, 10000)]);
+  const now = new Date().toISOString();
+  const taken = { ...sa, pid: other, updatedAt: now };
+  const supFile = (p) => path.join(runDirOf(p.root), 'supervisor.json');
+  writeSup(a.root, taken); // a: supervisor.json names another pid
+  writeLock(b.root, { pid: other, at: now }); // b: the lock names another pid
+  fs.writeFileSync(supFile(c), '{ not json'); // c: its state unreadable (writes failing), the lock taken over
+  writeLock(c.root, { pid: other, at: now });
+  fs.writeFileSync(supFile(d), '{ not json'); // d: only read errors, no foreign pid anywhere
+  fs.rmSync(lockOf(d.root));
+  const [ea, eb, ec] = await Promise.all([exited(da, 10000), exited(db, 10000), exited(dc, 10000)]);
   assert.ok(ea, `daemon a still running: ${logOf(a.root)}`);
   assert.ok(eb, `daemon b still running: ${logOf(b.root)}`);
+  assert.ok(ec, `daemon c still running: ${logOf(c.root)}`);
   assert.deepEqual(readSup(a.root), taken, 'the new owner\'s state is left alone');
   assert.equal(readJsonFile(lockOf(b.root)).pid, other, 'the new owner\'s lock is left alone');
-  assert.match(logOf(a.root), /lease lost/);
-  assert.match(logOf(b.root), /lease lost/);
+  assert.equal(fs.readFileSync(supFile(c), 'utf8'), '{ not json', 'no write after the lease is lost');
+  assert.equal(readJsonFile(lockOf(c.root)).pid, other);
+  for (const p of [a, b, c]) assert.match(logOf(p.root), /lease lost/);
+  // d slept through the read errors and wrote its state again on the next tick
+  const again = await waitFor(() => { const s = readSup(d.root); return s?.pid === dd.pid && Date.parse(s.updatedAt) > Date.parse(now) ? s : null; }, 10000);
+  assert.ok(again, logOf(d.root));
+  assert.equal(dd.exitCode, null, 'daemon d still running');
+  assert.doesNotMatch(logOf(d.root), /lease lost/);
 });
 
 test('a daemon that dies on a fatal error notifies the owner', async () => {

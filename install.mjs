@@ -61,12 +61,25 @@ export function install({ repoDir = REPO, claudeHome = defaultHome(), dryRun = f
   return manifest;
 }
 
+function readManifest(mf) {
+  const invalid = (why) => new Error(`invalid install manifest ${mf}: ${why}; delete it to reinstall`);
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(mf, 'utf8'));
+  } catch (e) {
+    throw invalid(e.message.replace(/\s*\r?\n\s*/g, ' '));
+  }
+  if (!Array.isArray(data?.files)) throw invalid('no files list');
+  return data;
+}
+
+// Returns the number of files removed (or, with dryRun, that would be removed), or null when
+// claudeHome holds no install manifest.
 export function uninstall({ claudeHome = defaultHome(), dryRun = false } = {}) {
   const home = path.resolve(claudeHome);
   const mf = path.join(home, MANIFEST);
-  if (!fs.existsSync(mf)) return 0;
-  const { files } = JSON.parse(fs.readFileSync(mf, 'utf8'));
-  if (!Array.isArray(files)) throw new Error(`invalid install manifest (no files list): ${mf}`);
+  if (!fs.existsSync(mf)) return null;
+  const { files } = readManifest(mf);
   const targets = [];
   for (const rel of files) {
     const abs = ownedPath(home, rel);
@@ -106,17 +119,32 @@ function isMain() {
   }
 }
 
-if (isMain()) {
-  const args = process.argv.slice(2);
+function main(args) {
   const unknown = args.filter((a) => a !== '--uninstall' && a !== '--dry-run');
   if (unknown.length) {
     process.stderr.write(`unknown argument: ${unknown.join(' ')}\nusage: node install.mjs [--uninstall] [--dry-run]\n`);
-    process.exitCode = 2;
-  } else if (args.includes('--uninstall')) {
-    const dryRun = args.includes('--dry-run');
-    process.stdout.write(`${dryRun ? 'would remove' : 'removed'} ${uninstall({ dryRun })} files\n`);
-  } else {
-    const m = install({ dryRun: args.includes('--dry-run') });
-    process.stdout.write(`${args.includes('--dry-run') ? 'would install' : 'installed'} gsd-turbo ${m.version}: ${m.files.length} files into ${defaultHome()}\n`);
+    return 2;
+  }
+  const dryRun = args.includes('--dry-run');
+  if (args.includes('--uninstall')) {
+    const n = uninstall({ dryRun });
+    if (n === null) {
+      process.stderr.write(`no gsd-turbo install manifest in ${defaultHome()}\n`);
+      return 1;
+    }
+    process.stdout.write(`${dryRun ? 'would remove' : 'removed'} ${n} files\n`);
+    return 0;
+  }
+  const m = install({ dryRun });
+  process.stdout.write(`${dryRun ? 'would install' : 'installed'} gsd-turbo ${m.version}: ${m.files.length} files into ${defaultHome()}\n`);
+  return 0;
+}
+
+if (isMain()) {
+  try {
+    process.exitCode = main(process.argv.slice(2));
+  } catch (e) {
+    process.stderr.write(`${e?.message || e}\n`);
+    process.exitCode = 1;
   }
 }

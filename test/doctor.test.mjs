@@ -62,7 +62,7 @@ test('claude runs as cmd + prefix args without a shell', () => {
   const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: bin });
   assert.equal(r.mode, 'full', JSON.stringify(r.checks));
   const claudeCalls = calls.filter((c) => c.cmd === '/opt/node');
-  assert.deepEqual(claudeCalls.map((c) => c.args), [['/opt/claude/cli.js', '--version'], ['/opt/claude/cli.js', 'agents', '--json']]);
+  assert.deepEqual(claudeCalls.map((c) => c.args), [['/opt/claude/cli.js', '--version'], ['/opt/claude/cli.js', 'agents', '--json', '--all']]);
   assert.ok(claudeCalls.every((c) => c.shell === false));
 });
 
@@ -100,4 +100,27 @@ test('unsupported claude shim fails claude-version with the shim message and nev
   assert.equal(check.ok, false);
   assert.equal(check.detail, reason);
   assert.ok(!calls.includes('C:/tools/claude.cmd'));
+});
+
+test('claude-agents fails when the agents output is not a JSON array', () => {
+  const e = env();
+  for (const out of ['{"agents":[]}', 'no sessions', 'null']) {
+    const exec = (cmd, args) => (args.includes('agents') ? out : execOk('2.1.291')(cmd, args));
+    const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: BIN });
+    assert.equal(r.mode, 'unsupported', out);
+    const check = r.checks.find((c) => c.name === 'claude-agents');
+    assert.equal(check.ok, false, out);
+    assert.match(check.detail, /claude agents --json --all: output is not a JSON array/, out);
+  }
+});
+
+test('unsupported when gsd-tools init manager fails', () => {
+  const e = env();
+  const exec = (cmd, args) => {
+    if (args.includes('manager')) throw Object.assign(new Error('Command failed'), { status: 1, stderr: 'init broke' });
+    return execOk('2.1.291')(cmd, args);
+  };
+  const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: BIN });
+  assert.equal(r.mode, 'unsupported');
+  assert.equal(r.checks.find((c) => c.name === 'gsd-init-manager').ok, false);
 });

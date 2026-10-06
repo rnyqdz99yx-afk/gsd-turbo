@@ -2,12 +2,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir } from '../lib/paths.mjs';
+import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '../lib/paths.mjs';
 import { DEFAULTS, loadConfig, initConfig, deepMerge } from '../lib/config.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
-import { writeLaneStatus, LANE_STATUSES } from '../lib/run-status.mjs';
-import { createClaude, resolveBin } from '../lib/claude.mjs';
+import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
+import { createClaude, resolveBin, laneSessionName } from '../lib/claude.mjs';
 import { loadPhases, normalizePhaseId } from '../lib/gsd.mjs';
 import { doctor } from '../lib/doctor.mjs';
 import { runDaemon } from '../lib/supervisor.mjs';
@@ -23,10 +24,14 @@ const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const CONFIG_ERROR = /^invalid turbo config /;
-// `claude stop` on a session that no longer runs: "No job matching '<id>'. …"
-const SESSION_GONE = /no job matching|not running|already (?:stopped|finished|ended|exited)|not found|no such/i;
 const HEARTBEAT_MIN_MS = 10 * 60 * 1000;
 const KILL_WAIT_MS = 5000;
+const START_CONFIRM_MS = 5000;
+const EXEC_TIMEOUT_MS = 30000;
+// POSIX single quotes; a ' inside becomes '\''.
+const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+// Why a child process failed, without Node's "Command failed: <argv>" text.
+const execWhy = (e) => (typeof e.status === 'number' ? `exit status ${e.status}` : e.code || e.signal || 'failed');
 
 function die(text, code = 1) { process.stderr.write(text + '\n'); process.exit(code); }
 function flag(args, name, fallback = '') { const i = args.indexOf(name); return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback; }
@@ -43,9 +48,11 @@ const supPath = (root) => path.join(runDir(root), 'supervisor.json');
 const lockPath = (root) => path.join(locksDir(root), 'daemon.lock');
 const out = (line) => process.stdout.write(line + '\n');
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const pidExists = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// EPERM: the process exists but belongs to someone else.
+const pidExists = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
-const clampPoll = (x) => Math.max(5, Number(x) || 20);
+// Upper bound: setTimeout turns delays above 2^31-1 ms into 1 ms (a hot loop).
+const clampPoll = (x) => Math.min(3600, Math.max(5, Number(x) || 20));
 const clampInt = (x, min, fallback) => { const n = Math.floor(Number(x)); return Number.isFinite(n) ? Math.max(min, n) : fallback; };
 // Numeric keys the daemon loop and the liveness checks depend on, kept sane.
 function runtimeConfig(config) {
@@ -62,14 +69,17 @@ function pollOf(root) {
 }
 
 // Windows reuses pids quickly, so a pid alone proves nothing: a daemon is alive only with a
-// valid pid that exists AND a heartbeat (updatedAt, rewritten every tick) that is recent.
+// valid pid that exists AND a heartbeat (updatedAt, rewritten every tick) that is recent. A
+// heartbeat from the future (clock changed) is just as stale as an old one.
 function daemonAlive(pid, updatedAt, pollSeconds) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   const at = Date.parse(updatedAt);
-  if (!Number.isFinite(at) || Date.now() - at > Math.max(HEARTBEAT_MIN_MS, 5 * pollSeconds * 1000)) return false;
+  if (!Number.isFinite(at) || Math.abs(Date.now() - at) > Math.max(HEARTBEAT_MIN_MS, 5 * pollSeconds * 1000)) return false;
   return pidExists(pid);
 }
-const supAlive = (sup, pollSeconds) => Boolean(sup) && daemonAlive(sup.pid, sup.updatedAt, pollSeconds);
+// The running daemon may poll more slowly than the config now says: it records its own poll.
+const supPoll = (sup, pollSeconds) => Math.max(pollSeconds, sup?.poll_seconds == null ? 0 : clampPoll(sup.poll_seconds));
+const supAlive = (sup, pollSeconds) => Boolean(sup) && daemonAlive(sup.pid, sup.updatedAt, supPoll(sup, pollSeconds));
 
 // Kills a daemon and waits until it is gone, so the caller's state edits are not overwritten
 // by a last tick. ESRCH means it already exited.
@@ -108,7 +118,7 @@ function acquireLock(root, pollSeconds) {
       const sup = readJson(supPath(root), null);
       const beats = [lock.at, sup?.pid === lock.pid ? sup.updatedAt : null].map((s) => Date.parse(s)).filter(Number.isFinite);
       const beat = beats.length ? new Date(Math.max(...beats)).toISOString() : null;
-      if (daemonAlive(lock.pid, beat, pollSeconds)) return { ok: false, pid: lock.pid };
+      if (daemonAlive(lock.pid, beat, sup?.pid === lock.pid ? supPoll(sup, pollSeconds) : pollSeconds)) return { ok: false, pid: lock.pid };
     }
     fs.rmSync(file, { force: true }); // stale lock
   }
@@ -140,7 +150,7 @@ function printStatus(sup, running) {
 function fingerprint(root) {
   return (phase) => {
     let head = '';
-    try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim(); } catch { /* not a repo */ }
+    try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' }).trim(); } catch { /* not a repo, or git hung */ }
     const dir = path.join(root, '.planning', 'phases');
     const raw = String(phase.number);
     const prefixes = [`${raw.replace(/^\d+/, (n) => n.padStart(2, '0'))}-`, `${raw}-`];
@@ -159,7 +169,7 @@ function makeCtx(root) {
   ensureDir(logsDir(root));
   const logFile = path.join(logsDir(root), 'supervisor.log');
   return {
-    root, config, turboRun: `node '${SELF.replace(/\\/g, '/')}'`,
+    root, config, turboRun: `node ${shQuote(SELF.replace(/\\/g, '/'))}`,
     deps: {
       loadPhases: () => {
         if (!core) throw new Error('gsd-core not found');
@@ -176,7 +186,24 @@ function makeCtx(root) {
   };
 }
 
-function start(root) {
+// Last lines of the supervisor log (read from its end: the log only grows).
+function logTail(root, lines = 10) {
+  try {
+    const fd = fs.openSync(path.join(logsDir(root), 'supervisor.log'), 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      const buf = Buffer.alloc(Math.min(size, 8192));
+      fs.readSync(fd, buf, 0, buf.length, size - buf.length);
+      return buf.toString('utf8').split(/\r?\n/).filter(Boolean).slice(-lines).join('\n');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+}
+
+async function start(root) {
   const config = runtimeConfig(loadConfig(root)); // a corrupt config fails here, not inside the detached daemon
   const running = () => { const sup = readJson(supPath(root), null); return supAlive(sup, config.poll_seconds) ? sup : null; };
   const already = (sup) => { out(`already running (pid ${sup.pid})`); printStatus(sup, true); return 0; };
@@ -194,16 +221,57 @@ function start(root) {
   if (sup) return already(sup);
   ensureDir(logsDir(root));
   const fd = fs.openSync(path.join(logsDir(root), 'supervisor.log'), 'a');
+  const spawnedAt = Date.now();
   const child = spawn(process.execPath, [SELF, 'daemon', '--project', root], { cwd: root, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
+  let ended = null;
+  child.once('exit', (code, signal) => { ended = signal ? `signal ${signal}` : `exit code ${code}`; });
+  child.once('error', (e) => { ended = e.code || e.message; });
   child.unref();
   fs.closeSync(fd);
-  out(`started supervisor pid ${child.pid} (mode ${r.mode})`);
-  return 0;
+  // A daemon announces itself by writing its pid to supervisor.json before its first tick.
+  const started = () => readJson(supPath(root), null)?.pid === child.pid;
+  for (const end = Date.now() + START_CONFIRM_MS; !ended && Date.now() < end && !started();) await delay(100);
+  if (started()) {
+    out(`started supervisor pid ${child.pid} (mode ${r.mode})`);
+    return 0;
+  }
+  const last = readJson(supPath(root), null);
+  if (ended && supAlive(last, config.poll_seconds)) return already(last); // another start won the lock
+  if (ended && last && last.pid == null && Date.parse(last.updatedAt) >= spawnedAt && (last.finished || last.halted)) {
+    out(`supervisor pid ${child.pid} ran and exited`);
+    printStatus(last, false);
+    return last.finished ? 0 : 1;
+  }
+  const what = ended ? `exited at once (${ended})` : `did not report within ${START_CONFIRM_MS / 1000} s; check: turbo-run status`;
+  process.stderr.write(`supervisor pid ${child.pid} ${what}\n${SUPERVISOR_LOG}:\n${logTail(root)}\n`);
+  return 1;
+}
+
+// The daemon's lease, checked after every sleep. After a long sleep (hibernate, a stopped VM), or
+// while its state writes keep failing, the heartbeat goes stale: another start may then judge this
+// daemon dead and start a new one, or stop/resume clears its pid. The lease is lost as soon as
+// supervisor.json or daemon.lock is readable and names a different pid (null included); the daemon
+// then exits without writing either file again. A read error (missing, unreadable or half-written
+// file) proves nothing and keeps it running.
+function leaseSleep(root, log) {
+  const foreign = (file) => {
+    const v = readJson(file, null);
+    return v !== null && typeof v === 'object' && Object.hasOwn(v, 'pid') && v.pid !== process.pid;
+  };
+  return async (ms) => {
+    await delay(ms);
+    const lost = [supPath(root), lockPath(root)].filter(foreign);
+    if (!lost.length) return;
+    log(`daemon exit pid ${process.pid}: lease lost (${lost.map((f) => path.basename(f)).join(', ')} names another pid)`);
+    releaseLock(root); // only a lock that still names this process
+    process.exit(0); // not a throw: nothing after this point may write state
+  };
 }
 
 async function daemon(root) {
   const ctx = makeCtx(root);
-  const lock = acquireLock(root, ctx.config.poll_seconds);
+  const poll = ctx.config.poll_seconds;
+  const lock = acquireLock(root, poll);
   if (!lock.ok) { out(`already running${lock.pid ? ` (pid ${lock.pid})` : ''}`); return 0; }
   const onSignal = (code) => () => { clearDaemonPid(root, null); releaseLock(root); process.exit(code); };
   process.on('SIGINT', onSignal(130));
@@ -211,12 +279,20 @@ async function daemon(root) {
   let final = null;
   try {
     const prev = readJson(supPath(root), null);
-    const initial = prev && !prev.finished ? { lane: prev.lane || null, finished: false, halted: false } : { lane: null, finished: false, halted: false };
+    // poll_seconds: this daemon's own poll, for the heartbeat window of status, stop and start
+    const initial = { lane: prev && !prev.finished ? prev.lane || null : null, finished: false, halted: false, poll_seconds: poll };
     // pid on disk before the first tick, so status and a second start see this daemon at once
     writeJsonAtomic(supPath(root), { ...initial, pid: process.pid, updatedAt: new Date().toISOString() });
     ctx.deps.log(`daemon start pid ${process.pid}`);
-    final = await runDaemon({ ctx, statePath: supPath(root), initial, intervalMs: ctx.config.poll_seconds * 1000 });
+    final = await runDaemon({ ctx, statePath: supPath(root), initial, intervalMs: poll * 1000, sleep: leaseSleep(root, ctx.deps.log) });
     ctx.deps.log(`daemon exit${final.finished ? ': milestone finished' : final.halted ? ': halted' : ''}`);
+  } catch (e) {
+    const text = String(e?.message ?? e);
+    ctx.deps.log(`daemon fatal: ${text.replace(/\s*\r?\n\s*/g, ' ')}`);
+    try {
+      await ctx.deps.notify('supervisorFailing', { error: text.split(/\r?\n/)[0].slice(0, 200) });
+    } catch { /* best-effort: the log has it */ }
+    throw e;
   } finally {
     clearDaemonPid(root, final);
     releaseLock(root);
@@ -234,6 +310,90 @@ function stopDaemon(root, sup) {
     out(`pid ${sup.pid} has no recent supervisor heartbeat (last ${sup.updatedAt || 'never'}); not killed`);
   }
   if (sup.pid != null) writeJsonAtomic(supPath(root), { ...readJson(supPath(root), sup), pid: null });
+}
+
+// Lane sessions of this checkout: a lane name of this project (any phase) started in it.
+function projectLaneAgents(agents, root) {
+  const prefix = laneSessionName(root, '');
+  const home = dirKey(root);
+  return agents.filter((a) => String(a.name).startsWith(prefix) && Boolean(a.cwd) && dirKey(a.cwd) === home);
+}
+
+// Runs once the daemon is gone. Stops the lane recorded before and after its death, and every
+// alive lane session of this project: a daemon stopped while launching never records the session
+// it started. A failed `claude stop` counts as stopped only when claude no longer lists the
+// session alive.
+function stopLanes(root, before) {
+  const after = readJson(supPath(root), null);
+  const claude = createClaude();
+  const warn = (line) => process.stderr.write(`warn: ${line}\n`);
+  const list = () => { try { return claude.list(); } catch (e) { return e; } };
+  let ok = true;
+  const ids = new Set([before?.lane?.sessionId, after?.lane?.sessionId].filter(Boolean));
+  const agents = list();
+  if (agents instanceof Error) {
+    warn(`cannot list sessions (${agents.message}); lane sessions missing from supervisor.json were not checked`);
+    ok = false;
+  } else {
+    for (const a of projectLaneAgents(agents, root)) if (isAgentAlive(a)) ids.add(a.id);
+  }
+  const failed = new Map();
+  for (const id of ids) {
+    try { claude.stop(id); } catch (e) { failed.set(id, e); }
+  }
+  const now = failed.size ? list() : [];
+  for (const [id, e] of failed) {
+    if (now instanceof Error) {
+      warn(`lane session ${id} not stopped: ${e.message}; cannot list sessions: ${now.message}`);
+      ok = false;
+      continue;
+    }
+    const agent = now.find((a) => a.id === id);
+    if (agent && isAgentAlive(agent)) {
+      warn(`lane session ${id} not stopped: ${e.message}`);
+      ok = false;
+    }
+  }
+  if (!ok) return 1;
+  out('stopped');
+  return 0;
+}
+
+// GSD 1.16 with an empty workflow.test_command runs: xcodebuild test for an Xcode project (within
+// depth 2, not under node_modules; post-merge gate), else `make test` for a Makefile with a
+// test: target, else `just test` for a Justfile, else `npm test` when package.json exists.
+// turbo's default full command is GSD's own choice only in the npm case, and usable only with a
+// test script. Returns why it is not, or null.
+function npmTestBlocker(root) {
+  const has = (f) => fs.existsSync(path.join(root, f));
+  const read = (f) => { try { return fs.readFileSync(path.join(root, f), 'utf8'); } catch { return ''; } };
+  const isX = (n) => n.endsWith('.xcodeproj');
+  let top = [];
+  try { top = fs.readdirSync(root, { withFileTypes: true }); } catch { /* reported below as no package.json */ }
+  for (const e of top) if (isX(e.name)) return `GSD runs xcodebuild test for ${e.name}`;
+  for (const e of top) {
+    if (!e.isDirectory() || e.name === 'node_modules') continue;
+    let names = [];
+    try { names = fs.readdirSync(path.join(root, e.name)); } catch { /* unreadable */ }
+    const x = names.find(isX);
+    if (x) return `GSD runs xcodebuild test for ${e.name}/${x}`;
+  }
+  if (has('Makefile') && /^test:/m.test(read('Makefile'))) return 'GSD runs make test (Makefile has a test target)';
+  if (has('Justfile') || has('justfile')) return 'GSD runs just test (Justfile)';
+  if (!has('package.json')) return 'no package.json';
+  let pkg = null;
+  try { pkg = JSON.parse(read('package.json').replace(/^\uFEFF/, '')); } catch { return 'package.json cannot be parsed'; }
+  const script = pkg?.scripts?.test;
+  return typeof script === 'string' && script.trim() ? null : 'package.json has no test script';
+}
+
+// The full command test-changed falls back to: an explicitly set test.full, or the default
+// `npm test` where GSD itself would run it. Anything else would let a gate pass on a subset.
+function knownFullCommand(root, config) {
+  const full = config.test?.full;
+  if (full !== DEFAULTS.test.full) return typeof full === 'string' && full.trim() ? { full } : { why: 'test.full is empty or not a string' };
+  const why = npmTestBlocker(root);
+  return why ? { why } : { full };
 }
 
 async function main() {
@@ -259,23 +419,35 @@ async function main() {
       let prev = '';
       if (tool) {
         try {
-          prev = execFileSync(process.execPath, [tool, 'config-get', 'workflow.test_command', '--default', '', '--raw', '--cwd', root], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }).replace(/\r?\n$/, '');
+          prev = execFileSync(process.execPath, [tool, 'config-get', 'workflow.test_command', '--default', '', '--raw', '--cwd', root], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' }).replace(/\r?\n$/, '');
         } catch (e) {
-          const why = typeof e.status === 'number' ? `exit status ${e.status}` : e.code || e.signal || 'failed';
           const detail = String(e.stderr || '').trim().split(/\r?\n/)[0] || '';
-          die(`init aborted: gsd-tools config-get workflow.test_command failed (${why})${detail ? `: ${detail}` : ''}; nothing was changed`);
+          die(`init aborted: gsd-tools config-get workflow.test_command failed (${execWhy(e)})${detail ? `: ${detail}` : ''}; nothing was changed`);
         }
       }
       const res = initConfig(root, { lang, autonomy });
-      loadConfig(root); // an existing corrupt config fails init
+      const config = loadConfig(root); // an existing corrupt config fails init
       if (tool) {
-        if (prev && !prev.includes('turbo-run.mjs')) {
+        const prevIsTurbo = prev.includes('turbo-run.mjs');
+        let known;
+        if (prev && !prevIsTurbo) {
           writeJsonAtomic(res.file, deepMerge(readJson(res.file, {}), { test: { full: prev } }));
           out(`kept previous workflow.test_command as test.full: ${prev}`);
+          known = { full: prev };
+        } else {
+          known = knownFullCommand(root, config);
         }
-        try {
-          execFileSync(process.execPath, [tool, 'config-set', 'workflow.test_command', TURBO_TEST_CMD, '--cwd', root], { stdio: 'inherit', windowsHide: true });
-        } catch { die('gsd-tools config-set workflow.test_command failed'); }
+        if (known.full !== undefined) {
+          try {
+            execFileSync(process.execPath, [tool, 'config-set', 'workflow.test_command', TURBO_TEST_CMD, '--cwd', root], { stdio: 'inherit', windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' });
+          } catch (e) { die(`gsd-tools config-set workflow.test_command failed (${execWhy(e)})`); }
+          out(`workflow.test_command set to turbo-run test-changed (full test command: ${known.full})`);
+        } else {
+          // GSD keeps choosing the test runner itself; nothing in the GSD config changes
+          out(`no known full test command: ${known.why}`);
+          out('targeted tests not enabled: set test.full in .planning/turbo/config.json, then run init again');
+          if (prevIsTurbo) out('warn: workflow.test_command already runs turbo-run test-changed, but no full test command is known: set test.full and run init again, or reset workflow.test_command (see the README, Uninstall)');
+        }
       } else {
         out('gsd-core not found: workflow.test_command not set');
       }
@@ -304,19 +476,8 @@ async function main() {
       if (!root) die('no .planning directory found');
       const sup = readJson(supPath(root), null);
       stopDaemon(root, sup);
-      const id = sup?.lane?.sessionId;
-      if (id) {
-        try {
-          createClaude().stop(id);
-        } catch (e) {
-          if (!SESSION_GONE.test(e.message)) {
-            process.stderr.write(`warn: lane session ${id} not stopped: ${e.message}\n`);
-            return 1;
-          }
-        }
-      }
-      out('stopped');
-      return 0;
+      if (!sup) { out('stopped'); return 0; } // never started: no daemon, no lane
+      return stopLanes(root, sup);
     }
     case 'lane-status': {
       const [phase, status] = pos;

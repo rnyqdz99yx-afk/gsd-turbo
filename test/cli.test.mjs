@@ -424,6 +424,21 @@ test('stop with a stale heartbeat clears the lock too; a daemon that only looked
   assert.match(logOf(p.root), /lease lost/);
 });
 
+test('stop revokes the lock lease of a daemon that an unreadable supervisor.json no longer names', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  const ch = spawnCli(t, ['daemon'], p);
+  const s = await waitFor(() => { const v = readSup(p.root); return v?.pid === ch.pid && v.lane ? v : null; }, 10000);
+  assert.ok(s, logOf(p.root));
+  fs.writeFileSync(path.join(runDirOf(p.root), 'supervisor.json'), '{ not json'); // right after its tick
+  const r = await runAsync(['stop'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`daemon\\.lock names pid ${ch.pid}.*exits at its next check`));
+  assert.equal(readJsonFile(lockOf(p.root)).pid, null);
+  assert.ok(await exited(ch, 12000), `daemon still running: ${logOf(p.root)}`);
+  assert.match(logOf(p.root), /lease lost/);
+  assert.equal(readSup(p.root).pid, null, 'the daemon leaves no pid behind');
+});
+
 test('stop sweeps this project\'s alive lane sessions even when supervisor.json is missing or unreadable', async () => {
   const p = fakeProject();
   p.setClaude({ agents: [{ id: 'late01', name: laneSessionName(p.root, '5'), cwd: p.root, state: 'working' }] });
@@ -510,6 +525,20 @@ test('resume with a dead daemon pid clears the phase and arms a forced relaunch'
   assert.equal(sup.halted, false);
   assert.deepEqual(sup.lane, { phase: '4', sessionId: 'abc', restarts: 0, notified: {}, forceRelaunch: true });
   assert.equal(fs.existsSync(path.join(runDirOf(root), 'p4.json')), false);
+});
+
+test('resume with a stale heartbeat kills nothing and revokes the lock lease', async (t) => {
+  const root = plainProject();
+  const child = sleeper(t);
+  writeSup(root, { pid: child.pid, updatedAt: ago(30), lane: { phase: '4', sessionId: 'abc' } });
+  writeLock(root, { pid: child.pid, at: ago(30) });
+  const r = await runAsync(['resume', '4'], root);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /not killed/);
+  assert.equal(readJsonFile(lockOf(root)).pid, null, 'the lock no longer names the daemon');
+  assert.ok(pidExists(child.pid));
+  assert.equal(readSup(root).pid, null);
+  assert.equal(readSup(root).lane.forceRelaunch, true);
 });
 
 test('resume stops a live daemon (waiting for the owner) but not the lane session', async (t) => {

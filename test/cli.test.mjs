@@ -4,18 +4,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
+import { laneSessionName } from '../lib/claude.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
-const run = (args, cwd, env = process.env) => execFileSync(process.execPath, [CLI, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+const run = (args, cwd, env = process.env, nodeArgs = []) => execFileSync(process.execPath, [...nodeArgs, CLI, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 // Async, so this process keeps reaping children the CLI kills (no POSIX zombies).
-const runAsync = (args, cwd, env = process.env) => new Promise((resolve) => {
-  execFile(process.execPath, [CLI, ...args], { cwd, env, encoding: 'utf8', windowsHide: true }, (err, stdout, stderr) => {
+const runAsync = (args, cwd, env = process.env, nodeArgs = []) => new Promise((resolve) => {
+  execFile(process.execPath, [...nodeArgs, CLI, ...args], { cwd, env, encoding: 'utf8', windowsHide: true }, (err, stdout, stderr) => {
     resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr });
   });
 });
 
 const PATH_KEY = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
+// Far above any real pid limit (Linux 2^22, macOS 99999; Windows pids are small multiples of 4).
+const DEAD_PID = 2147483644;
 const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
 const runDirOf = (root) => path.join(root, '.planning', 'turbo', 'run');
 const lockOf = (root) => path.join(root, '.planning', 'turbo', 'locks', 'daemon.lock');
@@ -47,12 +50,39 @@ function fakeClaude() {
   const b = JSON.parse(fs.readFileSync(path.join(__dirname, 'behavior.json'), 'utf8'));
   const [cmd, id = ''] = args;
   if (cmd === '--version') console.log(`${b.version} (Claude Code)`);
-  else if (cmd === 'agents') console.log('[]');
-  else if (cmd === '--bg') console.log('backgrounded abcdef123456');
+  else if (cmd === 'agents') {
+    if (b.agentsFail) { console.error('agents broke'); process.exitCode = 1; } else console.log(JSON.stringify(b.agents || []));
+  } else if (cmd === '--bg') console.log('backgrounded abcdef123456');
   else if (cmd === 'stop' || cmd === 'rm') {
     if (id.startsWith('gone')) { console.error(`No job matching '${id}'. Run 'claude agents' to list running sessions.`); process.exitCode = 1; }
     if (id.startsWith('stuck')) { console.error('permission denied'); process.exitCode = 1; }
+    if (id.startsWith('lost')) { console.error(`session ${id} not found`); process.exitCode = 1; }
   } else process.exitCode = 2;
+}
+// Preloaded with --require: records every execFileSync call (command, first args, timeout) and
+// answers every execFile call (desktop notifications) without running anything.
+function execSpyPreload() {
+  const cp = require('node:child_process');
+  const fs = require('node:fs');
+  const log = (rec) => fs.appendFileSync(process.env.TURBO_SPY_LOG, JSON.stringify(rec) + '\n');
+  const sync = cp.execFileSync;
+  cp.execFileSync = function (cmd, args, opts) {
+    log({ cmd, args: (args || []).slice(0, 3), timeout: opts && opts.timeout !== undefined ? opts.timeout : null });
+    return sync.apply(this, arguments);
+  };
+  cp.execFile = function (cmd, args, opts, cb) {
+    const done = [opts, cb].find((f) => typeof f === 'function');
+    log({ execFile: cmd, args, title: (opts && opts.env && opts.env.TURBO_NOTIFY_TITLE) || null });
+    process.nextTick(() => done(null, '', ''));
+    return null;
+  };
+  require('node:module').syncBuiltinESMExports();
+}
+function execSpy(dir) {
+  const preload = path.join(dir, 'exec-spy.cjs');
+  const log = path.join(dir, 'exec-spy.jsonl');
+  fs.writeFileSync(preload, `(${execSpyPreload})();\n`);
+  return { nodeArgs: ['--require', preload], env: { TURBO_SPY_LOG: log }, calls: () => readLines(log) };
 }
 function fakeGsd() {
   const fs = require('fs');
@@ -74,6 +104,7 @@ function fakeProject({
   configGet = { out: '', exit: 0 },
   claudeVersion = '2.1.291',
   config = { notify: { desktop: false, telegram: false } },
+  agents = [],
 } = {}) {
   const root = tmpDir('cli');
   const bin = path.join(root, 'fake-bin');
@@ -85,7 +116,8 @@ function fakeProject({
   fs.writeFileSync(path.join(core, 'VERSION'), '1.16.0');
   fs.writeFileSync(path.join(core, 'bin', 'gsd-tools.cjs'), `(${fakeGsd})();\n`);
   fs.writeFileSync(path.join(core, 'bin', 'behavior.json'), JSON.stringify({ configGet, phases }));
-  fs.writeFileSync(path.join(bin, 'behavior.json'), JSON.stringify({ version: claudeVersion }));
+  const setClaude = (patch) => fs.writeFileSync(path.join(bin, 'behavior.json'), JSON.stringify({ version: claudeVersion, agents, ...patch }));
+  setClaude({});
   fs.writeFileSync(path.join(bin, 'claude-fake.cjs'), `(${fakeClaude})();\n`);
   // win32: an npm-style shim that resolveBin maps to node + claude-fake.cjs (never run by cmd.exe)
   fs.writeFileSync(path.join(bin, 'claude.cmd'), '@"%dp0%\\claude-fake.cjs" %*\r\n');
@@ -94,6 +126,7 @@ function fakeProject({
   return {
     root,
     env,
+    setClaude,
     gsdCalls: () => readLines(path.join(core, 'bin', 'gsd-argv.jsonl')),
     claudeCalls: () => readLines(path.join(bin, 'claude-argv.jsonl')),
   };
@@ -109,11 +142,13 @@ const exited = (child, ms = 8000) => new Promise((resolve) => {
   const timer = setTimeout(() => resolve(false), ms);
   child.once('exit', () => { clearTimeout(timer); resolve(true); });
 });
-async function deadPid() {
-  const c = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore', windowsHide: true });
-  await exited(c);
-  return c.pid;
+// A daemon run in the background; killed after the test.
+function spawnCli(t, args, p, { nodeArgs = [], env = {}, cli = CLI } = {}) {
+  const child = spawn(process.execPath, [...nodeArgs, cli, ...args], { cwd: p.root, env: { ...p.env, ...env }, stdio: 'ignore', windowsHide: true });
+  t.after(() => { try { child.kill(); } catch { /* gone */ } });
+  return child;
 }
+const logOf = (root) => { try { return fs.readFileSync(path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log'), 'utf8'); } catch { return ''; } };
 async function waitFor(fn, ms) {
   for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
     const v = fn();
@@ -198,9 +233,8 @@ test('status shows failingSince in text and json output', () => {
   assert.equal(json.failingSince, since);
 });
 
-test('a daemon counts as running only with a valid existing pid and a recent heartbeat', async () => {
+test('a daemon counts as running only with a valid existing pid and a recent heartbeat', () => {
   const root = plainProject();
-  const dead = await deadPid();
   const cases = [
     [{ pid: process.pid, updatedAt: ago(0) }, true],
     [{ pid: process.pid, updatedAt: ago(30) }, false],
@@ -208,7 +242,7 @@ test('a daemon counts as running only with a valid existing pid and a recent hea
     [{ pid: -1, updatedAt: ago(0) }, false],
     [{ pid: 0, updatedAt: ago(0) }, false],
     [{ pid: String(process.pid), updatedAt: ago(0) }, false],
-    [{ pid: dead, updatedAt: ago(0) }, false],
+    [{ pid: DEAD_PID, updatedAt: ago(0) }, false],
   ];
   for (const [sup, want] of cases) {
     writeSup(root, sup);
@@ -226,6 +260,33 @@ test('the heartbeat window is max(10 min, 5 x poll_seconds) with poll_seconds cl
   assert.equal(JSON.parse(run(['status', '--json'], root)).running, false);
 });
 
+test('a pid the OS refuses to signal (EPERM) still counts as an existing process', () => {
+  const root = plainProject();
+  writeSup(root, { pid: process.platform === 'win32' ? 4 : 1, updatedAt: ago(0) });
+  assert.equal(JSON.parse(run(['status', '--json'], root)).running, true);
+});
+
+test('heartbeat window: poll capped at 3600 s, the daemon\'s own poll counts, a heartbeat from the future is stale', () => {
+  const root = plainProject();
+  const cfg = path.join(root, '.planning', 'turbo', 'config.json');
+  const running = () => JSON.parse(run(['status', '--json'], root)).running;
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  for (const poll of ['1e999', '99999999']) {
+    fs.writeFileSync(cfg, `{"poll_seconds": ${poll}}`);
+    writeSup(root, { pid: process.pid, updatedAt: ago(6 * 60) });
+    assert.equal(running(), false, `poll ${poll}, 6 h old`);
+    writeSup(root, { pid: process.pid, updatedAt: ago(4 * 60) });
+    assert.equal(running(), true, `poll ${poll}, 4 h old`);
+  }
+  fs.rmSync(cfg);
+  writeSup(root, { pid: process.pid, updatedAt: ago(20), poll_seconds: 600 });
+  assert.equal(running(), true, 'running daemon polls every 600 s');
+  writeSup(root, { pid: process.pid, updatedAt: ago(-30) });
+  assert.equal(running(), false, '30 min in the future');
+  writeSup(root, { pid: process.pid, updatedAt: ago(-1) });
+  assert.equal(running(), true, '1 min clock skew');
+});
+
 test('stop kills a live daemon, clears its pid and stops the lane session', async (t) => {
   const p = fakeProject();
   const child = sleeper(t);
@@ -238,39 +299,141 @@ test('stop kills a live daemon, clears its pid and stops the lane session', asyn
 });
 
 test('stop never kills a pid without a recent heartbeat, and clears it', async (t) => {
-  const root = plainProject();
+  const p = fakeProject();
   const child = sleeper(t);
-  writeSup(root, { pid: child.pid, updatedAt: ago(30) });
-  const r = await runAsync(['stop'], root);
+  writeSup(p.root, { pid: child.pid, updatedAt: ago(30) });
+  const r = await runAsync(['stop'], p.root, p.env);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /not killed/);
   assert.equal(await exited(child, 300), false);
   assert.ok(pidExists(child.pid));
-  assert.equal(readSup(root).pid, null);
+  assert.equal(readSup(p.root).pid, null);
 });
 
-test('stop treats an already-gone lane session as stopped and warns on other failures', async () => {
+test('stop counts a lane session as stopped only when claude no longer lists it alive', async () => {
   const p = fakeProject();
-  writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: 'gone1' } });
-  let r = await runAsync(['stop'], p.root, p.env);
+  const stopWith = (id, agents) => {
+    p.setClaude({ agents });
+    writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: id } });
+    return runAsync(['stop'], p.root, p.env);
+  };
+  let r = await stopWith('gone1', []);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /stopped/);
-  writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: 'stuck1' } });
-  r = await runAsync(['stop'], p.root, p.env);
+  r = await stopWith('stuck2', [{ id: 'stuck2', name: 'x', cwd: p.root, state: 'done' }]);
+  assert.equal(r.code, 0, `ended session: ${r.stderr}`);
+  r = await stopWith('stuck1', [{ id: 'stuck1', name: 'x', cwd: p.root, state: 'working' }]);
   assert.notEqual(r.code, 0);
   assert.match(r.stderr, /^warn: lane session stuck1 not stopped: .*permission denied/m);
+  // an error text that only looks like "already gone" proves nothing while the session is listed alive
+  r = await stopWith('lost1', [{ id: 'lost1', name: 'x', cwd: p.root, state: 'working' }]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /^warn: lane session lost1 not stopped: .*not found/m);
+});
+
+test('stop also stops alive lane sessions of this project that supervisor.json never recorded', async () => {
+  const p = fakeProject();
+  const lane = (phase) => laneSessionName(p.root, phase);
+  p.setClaude({ agents: [
+    { id: 'late01', name: lane('5'), cwd: p.root, state: 'working' },
+    { id: 'late02', name: lane('6'), cwd: p.root, state: 'blocked' },
+    { id: 'done01', name: lane('3'), cwd: p.root, state: 'done' },
+    { id: 'other1', name: lane('5'), cwd: path.join(p.root, 'elsewhere'), state: 'working' },
+    { id: 'user01', name: 'my-own-session', cwd: p.root, state: 'working' },
+  ] });
+  writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: 'abc123' } });
+  let r = await runAsync(['stop'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(p.claudeCalls().some((a) => a[0] === 'agents' && a.includes('--json') && a.includes('--all')));
+  assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop').map((a) => a[1]).sort(), ['abc123', 'late01', 'late02']);
+
+  // the scan cannot run: the recorded lane is still stopped, and stop says what it could not check
+  p.setClaude({ agentsFail: true });
+  writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: 'abc999' } });
+  r = await runAsync(['stop'], p.root, p.env);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /cannot list/);
+  assert.ok(p.claudeCalls().some((a) => a[0] === 'stop' && a[1] === 'abc999'));
 });
 
 test('daemon replaces a dead lock, runs to the end, then clears its pid and lock', async () => {
   const p = fakeProject();
-  writeLock(p.root, { pid: await deadPid(), at: ago(0) });
+  writeLock(p.root, { pid: DEAD_PID, at: ago(0) });
   const r = await runAsync(['daemon'], p.root, p.env);
   assert.equal(r.code, 0, r.stderr);
   const sup = readSup(p.root);
   assert.equal(sup.finished, true);
   assert.equal(sup.pid, null);
+  assert.equal(sup.poll_seconds, 20, 'the daemon records its own poll for the heartbeat window');
   assert.equal(fs.existsSync(lockOf(p.root)), false);
   assert.ok(p.claudeCalls().some((a) => a[0] === 'agents'));
+});
+
+test('a daemon exits after a sleep once supervisor.json or the lock names another process', async (t) => {
+  const mk = () => fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  const a = mk();
+  const b = mk();
+  const da = spawnCli(t, ['daemon'], a);
+  const db = spawnCli(t, ['daemon'], b);
+  const ticked = (p, c) => waitFor(() => { const s = readSup(p.root); return s?.pid === c.pid && s.lane ? s : null; }, 10000);
+  const [sa, sb] = await Promise.all([ticked(a, da), ticked(b, db)]);
+  assert.ok(sa, logOf(a.root));
+  assert.ok(sb, logOf(b.root));
+  const other = sleeper(t).pid; // the daemon that took over after this one looked dead
+  const taken = { ...sa, pid: other, updatedAt: new Date().toISOString() };
+  writeSup(a.root, taken);
+  writeLock(b.root, { pid: other, at: new Date().toISOString() });
+  const [ea, eb] = await Promise.all([exited(da, 10000), exited(db, 10000)]);
+  assert.ok(ea, `daemon a still running: ${logOf(a.root)}`);
+  assert.ok(eb, `daemon b still running: ${logOf(b.root)}`);
+  assert.deepEqual(readSup(a.root), taken, 'the new owner\'s state is left alone');
+  assert.equal(readJsonFile(lockOf(b.root)).pid, other, 'the new owner\'s lock is left alone');
+  assert.match(logOf(a.root), /lease lost/);
+  assert.match(logOf(b.root), /lease lost/);
+});
+
+test('a daemon that dies on a fatal error notifies the owner', async () => {
+  const p = fakeProject({ config: { notify: { desktop: true, telegram: false } } });
+  fs.mkdirSync(path.join(runDirOf(p.root), 'supervisor.json'), { recursive: true }); // state cannot be written
+  const spy = execSpy(p.root);
+  const r = await runAsync(['daemon'], p.root, { ...p.env, ...spy.env }, spy.nodeArgs);
+  assert.notEqual(r.code, 0);
+  const notes = spy.calls().filter((c) => c.execFile);
+  assert.ok(notes.some((c) => JSON.stringify(c).includes('gsd-turbo cannot make progress')), JSON.stringify(notes));
+  assert.match(logOf(p.root), /fatal/);
+});
+
+test('start fails with the log tail when the daemon exits at once', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }] });
+  const holder = sleeper(t); // a daemon that holds the lock but never wrote supervisor.json
+  writeLock(p.root, { pid: holder.pid, at: ago(0) });
+  const r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 1, r.stdout);
+  assert.doesNotMatch(r.stdout, /started supervisor/);
+  assert.match(r.stderr, /exited/);
+  assert.match(r.stderr, new RegExp(`already running \\(pid ${holder.pid}\\)`));
+});
+
+test('lane prompts quote a CLI path that contains a single quote; git in the fingerprint has a timeout', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }] });
+  const copy = path.join(tmpDir('cli'), "it's here");
+  for (const d of ['bin', 'lib', 'package.json']) fs.cpSync(path.resolve(d), path.join(copy, d), { recursive: true });
+  const spy = execSpy(p.root);
+  const child = spawnCli(t, ['daemon'], p, { nodeArgs: spy.nodeArgs, env: spy.env, cli: path.join(copy, 'bin', 'turbo-run.mjs') });
+  const bg = await waitFor(() => p.claudeCalls().find((a) => a[0] === '--bg'), 10000);
+  assert.ok(bg, logOf(p.root));
+  child.kill();
+  await exited(child);
+  const system = bg[bg.indexOf('--append-system-prompt') + 1];
+  const quoted = `node '${copy.replace(/\\/g, '/').replace(/'/g, `'\\''`)}/bin/turbo-run.mjs'`;
+  assert.ok(system.includes(`${quoted} lane-status 4 done`), system);
+  if (process.platform !== 'win32') {
+    execFileSync('sh', ['-c', `${quoted} lane-status 4 paused-context --reason quoted`], { cwd: p.root, env: p.env, stdio: 'pipe' });
+    assert.equal(readJsonFile(path.join(runDirOf(p.root), 'p4.json')).reason, 'quoted');
+  }
+  const git = spy.calls().filter((c) => c.cmd === 'git' && c.args[0] === 'rev-parse');
+  assert.ok(git.length > 0, JSON.stringify(spy.calls()));
+  assert.ok(git.every((c) => c.timeout === 30000), JSON.stringify(git));
 });
 
 test('daemon refuses while a live daemon holds the lock; a lock without heartbeat is stale', async (t) => {
@@ -294,7 +457,7 @@ test('daemon refuses while a live daemon holds the lock; a lock without heartbea
 
 test('resume with a dead daemon pid clears the phase and arms a forced relaunch', async () => {
   const root = plainProject();
-  writeSup(root, { pid: await deadPid(), updatedAt: ago(0), halted: true, lane: { phase: '4', sessionId: 'abc', restarts: 3, notified: { owner: true } } });
+  writeSup(root, { pid: DEAD_PID, updatedAt: ago(0), halted: true, lane: { phase: '4', sessionId: 'abc', restarts: 3, notified: { owner: true } } });
   fs.writeFileSync(path.join(runDirOf(root), 'p4.json'), JSON.stringify({ phase: '4', status: 'failed' }));
   assert.match(run(['resume', '04'], root), /phase 4 cleared; run: turbo-run start/);
   const sup = readSup(root);
@@ -347,12 +510,57 @@ test('start refuses an unsupported environment with exit 2 and the failed checks
 test('init keeps the previous test command verbatim as test.full and sets the turbo command', () => {
   const prev = 'pytest -k "not slow"';
   const p = fakeProject({ config: null, configGet: { out: prev, exit: 0 } });
-  run(['init'], p.root, p.env);
+  const spy = execSpy(p.root);
+  run(['init'], p.root, { ...p.env, ...spy.env }, spy.nodeArgs);
   const cfg = readJsonFile(path.join(p.root, '.planning', 'turbo', 'config.json'));
   assert.equal(cfg.test.full, prev);
   const calls = p.gsdCalls();
   assert.deepEqual(calls[0], ['config-get', 'workflow.test_command', '--default', '', '--raw', '--cwd', p.root]);
   assert.deepEqual(calls[1], ['config-set', 'workflow.test_command', TURBO_TEST_CMD, '--cwd', p.root]);
+  const gsd = spy.calls().filter((c) => /gsd-tools\.cjs$/.test(c.args[0] || ''));
+  assert.deepEqual(gsd.map((c) => [c.args[1], c.timeout]), [['config-get', 30000], ['config-set', 30000]]);
+});
+
+test('init sets workflow.test_command only where GSD itself would run npm test, or a full command is known', () => {
+  const pkg = JSON.stringify({ scripts: { test: 'node --test' } });
+  const cases = [
+    ['no package.json', {}, false],
+    ['package.json with a test script', { 'package.json': pkg }, true],
+    ['package.json without a test script', { 'package.json': '{"scripts":{}}' }, false],
+    ['Makefile with a test target', { 'package.json': pkg, Makefile: 'build:\n\ttrue\ntest:\n\ttrue\n' }, false],
+    ['Makefile without a test target', { 'package.json': pkg, Makefile: 'build:\n\ttrue\n' }, true],
+    ['Justfile', { 'package.json': pkg, Justfile: 'test:\n  true\n' }, false],
+    ['justfile', { 'package.json': pkg, justfile: 'test:\n  true\n' }, false],
+    ['xcodeproj at depth 2', { 'package.json': pkg, 'ios/App.xcodeproj/project.pbxproj': '' }, false],
+    ['xcodeproj deeper than 2', { 'package.json': pkg, 'a/b/App.xcodeproj/project.pbxproj': '' }, true],
+    ['xcodeproj inside node_modules', { 'package.json': pkg, 'node_modules/App.xcodeproj/project.pbxproj': '' }, true],
+    ['explicit test.full', { '.planning/turbo/config.json': '{"test":{"full":"make check"}}' }, true],
+    ['explicit test.full beside a Makefile test target', { Makefile: 'test:\n\ttrue\n', '.planning/turbo/config.json': '{"test":{"full":"make test"}}' }, true],
+  ];
+  for (const [name, files, set] of cases) {
+    const p = fakeProject({ config: null });
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(p.root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(p.root, rel), text);
+    }
+    const stdout = run(['init'], p.root, p.env);
+    assert.equal(p.gsdCalls().some((a) => a[0] === 'config-set'), set, `${name}: ${stdout}`);
+    if (set) assert.match(stdout, /workflow\.test_command set/, name);
+    else assert.match(stdout, /^targeted tests not enabled: set test\.full in \.planning\/turbo\/config\.json, then run init again$/m, name);
+  }
+});
+
+test('init run again keeps test.full and re-sets the command when it is known, warns when it is not', () => {
+  const p = fakeProject({ config: { test: { full: 'pytest -q' } }, configGet: { out: TURBO_TEST_CMD, exit: 0 } });
+  let stdout = run(['init'], p.root, p.env);
+  assert.doesNotMatch(stdout, /kept previous/);
+  assert.equal(readJsonFile(path.join(p.root, '.planning', 'turbo', 'config.json')).test.full, 'pytest -q');
+  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD]);
+
+  const q = fakeProject({ config: { lang: 'en' }, configGet: { out: TURBO_TEST_CMD, exit: 0 } });
+  stdout = run(['init'], q.root, q.env);
+  assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set'), stdout);
+  assert.match(stdout, /^warn: workflow\.test_command already runs turbo-run/m);
 });
 
 test('init aborts before config-set when config-get fails, and on a corrupt turbo config', () => {

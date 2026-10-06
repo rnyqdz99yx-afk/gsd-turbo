@@ -14,9 +14,10 @@ import { doctor } from '../lib/doctor.mjs';
 import { runDaemon } from '../lib/supervisor.mjs';
 import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
+import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|test-changed> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|test-changed|phase-step|staleness|gates|jobs|uat> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
@@ -417,6 +418,10 @@ async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   const root = projectArg(args);
   const pos = positional(args);
+  if (PHASE_COMMANDS.has(cmd)) {
+    if (!root) die('no .planning directory found');
+    return runPhaseCommand(cmd, args, { root });
+  }
   switch (cmd) {
     case 'doctor': {
       const r = doctor({ root });

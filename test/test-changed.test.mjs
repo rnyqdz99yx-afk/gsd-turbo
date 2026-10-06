@@ -15,7 +15,7 @@ test('isTestFile', () => {
 test('classifyScript', () => {
   assert.deepEqual(classifyScript('node --test "scripts/**/*.test.js"'), { kind: 'node-test', prefix: [] });
   assert.deepEqual(classifyScript('node --experimental-vm-modules --test test/*.test.js'), { kind: 'node-test', prefix: ['--experimental-vm-modules'] });
-  assert.equal(classifyScript('jest --ci').kind, 'jest');
+  assert.equal(classifyScript('jest').kind, 'jest'); // ruling: bare runner forms only ('jest --ci' is unknown)
   assert.equal(classifyScript('vitest run').kind, 'vitest');
   assert.equal(classifyScript('pytest -q').kind, 'pytest');
   assert.equal(classifyScript('make test').kind, 'unknown');
@@ -51,13 +51,14 @@ test('planRun decision table', () => {
   assert.equal(planRun({ ...base, packages: [{ dir: '', testScript: 'make test' }], changed: ['src/a.js'], marker: M('X') }).mode, 'full');
 });
 
-test('support files: the importing tests run, never the helper itself; an unimported helper runs full', () => {
+test('support files: the importing tests run, never the helper itself; a file in a test dir nothing imports runs as a test', () => {
   const files = { 'test/a.test.mjs': "import { h } from './helpers/h.mjs'", 'test/helpers/h.mjs': 'export const h = 1', 'test/helpers/lonely.mjs': '' };
   const p = { ...base, testFiles: Object.keys(files), readFile: (f) => files[f], marker: M('X') };
   const t = planRun({ ...p, changed: ['test/helpers/h.mjs'] });
   assert.equal(t.mode, 'targeted');
   assert.deepEqual(t.groups.map((g) => g.args), [['--test', 'test/a.test.mjs']]);
-  assert.equal(planRun({ ...p, changed: ['test/helpers/lonely.mjs'] }).mode, 'full');
+  // a leaf: `node --test` runs every file under test/, so it is a test, not a support file
+  assert.deepEqual(planRun({ ...p, changed: ['test/helpers/lonely.mjs'] }).groups.map((g) => g.args), [['--test', 'test/helpers/lonely.mjs']]);
   // relatedTests searches importers even when the changed file is itself a test
   assert.deepEqual(relatedTests(['test/helpers/h.mjs'], Object.keys(files), p.readFile), ['test/a.test.mjs', 'test/helpers/h.mjs']);
 });
@@ -92,7 +93,7 @@ test('jest and vitest groups run through bash -c with single-quoted file argumen
   const files = { "web/test/it's.test.js": "import '../src/a.js'" };
   const p = { ...base, testFiles: Object.keys(files), readFile: (f) => files[f], changed: ['web/src/a.js'], marker: M('X') };
   const pk = (testScript) => [{ dir: '', testScript: 'node --test' }, { dir: 'web', testScript }];
-  const j = planRun({ ...p, packages: pk('jest --ci') });
+  const j = planRun({ ...p, packages: pk('jest') });
   assert.deepEqual(j.groups, [{ cwd: 'web', cmd: 'bash', args: ['-c', "npx --no-install jest --findRelatedTests 'test/it'\\''s.test.js'"], shell: false }]);
   const v = planRun({ ...p, packages: pk('vitest run') });
   assert.deepEqual(v.groups, [{ cwd: 'web', cmd: 'bash', args: ['-c', "npx --no-install vitest run 'test/it'\\''s.test.js'"], shell: false }]);
@@ -361,7 +362,7 @@ test('max_targeted: targeted greens keep the full sha and count up; at the limit
   assert.deepEqual(readMarker(repo), { fullSha: git('rev-parse', 'HEAD'), targetedSince: 0 });
 });
 
-test('untracked files: the run happens but the marker is not updated', async () => {
+test('untracked files: the full command runs but the marker is not updated', async () => {
   const repo = tmpGitRepo();
   const git = gitIn(repo);
   const w = project(repo);
@@ -369,7 +370,7 @@ test('untracked files: the run happens but the marker is not updated', async () 
   w('scratch.txt', 'not tracked\n');
   const r = runner(repo);
   assert.equal(await r.run(), 0);
-  assert.equal(r.logs.at(-1), 'full: no previous full green run');
+  assert.equal(r.logs.at(-1), 'full: untracked files present');
   assert.equal(readMarker(repo), null);
   fs.rmSync(path.join(repo, 'scratch.txt'));
   assert.equal(await r.run(), 0);
@@ -379,8 +380,8 @@ test('untracked files: the run happens but the marker is not updated', async () 
   git('commit', '-qam', 'c2');
   w('scratch.txt', 'not tracked\n');
   assert.equal(await r.run(), 0);
-  assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
-  assert.deepEqual(readMarker(repo), green, 'no count-up while untracked files are present');
+  assert.equal(r.logs.at(-1), 'full: untracked files present');
+  assert.deepEqual(readMarker(repo), green, 'no marker write while untracked files are present');
 });
 
 test('project root in a subdirectory: a change outside the root runs full', async () => {
@@ -399,4 +400,103 @@ test('project root in a subdirectory: a change outside the root runs full', asyn
   git('commit', '-qam', 'inside the root');
   assert.equal(await r.run(), 0);
   assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)', 'root-relative paths after the prefix is stripped');
+});
+
+// --- fix round 3: leaf directory tests, npm hooks, pytest, untracked files, bare scripts ----
+
+test('fix 1: a test only by directory runs when nothing imports it by path; a runner that would skip it runs full', () => {
+  const files = {
+    'src/a.js': 'export const a = 1',
+    'src/__tests__/a.js': "import { a } from '../a.js'",
+    'test/a.mjs': "import { a } from '../src/a.js'",
+    'test/b.test.js': "import { a } from '../src/a.js'",
+    'test/helpers/h.mjs': "export { a } from '../../src/a.js'",
+    'test/c.test.js': "import { a } from './helpers/h.mjs'",
+  };
+  const p = { ...base, sourceFiles: Object.keys(files), testFiles: Object.keys(files).filter(isTestFile), readFile: (f) => files[f], changed: ['src/a.js'], marker: M('X') };
+  // every importer of '../src/a.js' mentions the stem `a`; a leaf is decided by the resolved import path
+  assert.deepEqual(planRun(p).groups.map((g) => g.args), [['--test', 'src/__tests__/a.js', 'test/a.mjs', 'test/b.test.js', 'test/c.test.js']], 'helpers/h.mjs is imported by path: a support file');
+  assert.ok(planRun({ ...p, changed: ['test/a.mjs'] }).groups[0].args.includes('test/a.mjs'), 'a changed leaf runs itself');
+  const dot = { 'test/index.mjs': "import { a } from '../src/a.js'", 'test/d.test.js': "import { a } from '../src/a.js'; 'x.y'.split('.')" };
+  assert.deepEqual(planRun({ ...base, testFiles: Object.keys(dot), readFile: (f) => dot[f], changed: ['src/a.js'], marker: M('X') }).groups.map((g) => g.args),
+    [['--test', 'test/d.test.js', 'test/index.mjs']], "a bare '.' string is not a directory import of test/index.mjs");
+  const pk = (testScript) => [{ dir: '', testScript }];
+  const j = planRun({ ...p, packages: pk('jest') });
+  assert.equal(j.mode, 'full', 'jest does not run test/a.mjs as a test by default');
+  assert.match(j.reason, /test\/a\.mjs/);
+  const noMjs = { ...p, testFiles: p.testFiles.filter((f) => f !== 'test/a.mjs'), sourceFiles: p.sourceFiles.filter((f) => f !== 'test/a.mjs') };
+  const j2 = planRun({ ...noMjs, packages: pk('jest') });
+  assert.deepEqual(j2.groups, [{ cwd: '', cmd: 'bash', args: ['-c', "npx --no-install jest --findRelatedTests 'src/__tests__/a.js' 'test/b.test.js' 'test/c.test.js'"], shell: false }], 'jest runs __tests__/** by default');
+  assert.equal(planRun({ ...noMjs, packages: pk('vitest run') }).mode, 'full', 'vitest runs only *.test.* / *.spec.* by default');
+});
+
+test('fix 2: a pretest or posttest script in the root package.json runs full', () => {
+  for (const hooks of [['pretest'], ['posttest'], ['pretest', 'posttest']]) {
+    const r = planRun({ ...base, packages: [{ dir: '', testScript: 'node --test test/', hooks }], changed: ['src/a.js'], marker: M('X') });
+    assert.deepEqual([r.mode, r.reason], ['full', `root package.json has a ${hooks.join('/')} script`]);
+  }
+});
+
+const hasNpm = () => { try { execFileSync('bash', ['-c', 'npm --version'], { stdio: 'ignore' }); return true; } catch { return false; } };
+
+test('fix 2: npm test with a failing pretest hook is never a targeted green', async (t) => {
+  if (!hasNpm()) { t.skip('npm is not available through bash'); return; }
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo, { full: 'npm test' });
+  w('package.json', JSON.stringify({ name: 't', type: 'module', scripts: { pretest: 'node lint.mjs', test: 'node --test' } }));
+  w('lint.mjs', "import fs from 'node:fs';\nif (fs.readFileSync('src/a.js', 'utf8').includes('TODO')) process.exit(1);\n");
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/a.js', 'export const a = 1; // TODO\n');
+  git('commit', '-qam', 'c2: the test still passes, the pretest lint fails');
+  assert.notEqual(await r.run(), 0, 'npm test fails in pretest');
+  assert.equal(r.logs.at(-1), 'full: root package.json has a pretest script');
+});
+
+test('fix 3: a pytest root runs full on any change, docs included', () => {
+  for (const testScript of ['pytest -q', 'pytest']) {
+    for (const changed of [['docs/x.md'], ['README.md', '.planning/STATE.md']]) {
+      const r = planRun({ ...base, testFiles: ['tests/test_a.py'], readFile: () => '', packages: [{ dir: '', testScript }], fullCommand: testScript, changed, marker: M('X') });
+      assert.deepEqual([r.mode, r.reason], ['full', 'pytest projects run the full suite'], `${testScript} ${changed}`);
+    }
+  }
+});
+
+test('fix 4: untracked files run full and leave the marker alone, even when HEAD is fully green', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo);
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  const green = readMarker(repo);
+  w('test/new.test.js', "import { test } from 'node:test';\nimport assert from 'node:assert';\ntest('new', () => assert.fail('red'));\n");
+  assert.notEqual(await r.run(), 0, 'the full command runs the untracked failing test');
+  assert.equal(r.logs.at(-1), 'full: untracked files present');
+  assert.deepEqual(readMarker(repo), green);
+});
+
+test('fix 5: targeted only for bare runner scripts; env, wrappers, extra flags and expansions run full', () => {
+  const unknown = [
+    'node --test --test-coverage-lines=80', 'node --test test/ --test-reporter=dot', 'node --test -- test/a.test.js',
+    'node --test-coverage-lines=80 --experimental-test-coverage --test', 'node --test-shard=1/2 --test',
+    'node --test $TEST_ARGS', 'node --test `ls test`', 'node --test\nnode extra.js', 'node --test > out.log',
+    'jest --ci', 'jest --config jest.ci.js', 'jest src "--coverage"', 'cross-env NODE_ENV=test jest', 'NODE_ENV=test jest', 'npx jest', 'dotenv -- jest',
+    'vitest --typecheck', 'vitest run --typecheck', 'npx vitest run', 'vitest bench', 'vitest watch', 'NODE_ENV=test node --test',
+  ];
+  for (const s of unknown) {
+    assert.equal(classifyScript(s).kind, 'unknown', s);
+    assert.equal(planRun({ ...base, packages: [{ dir: '', testScript: s }], changed: ['src/a.js'], marker: M('X') }).mode, 'full', s);
+  }
+  const known = [['node --test', 'node-test'], ['node --test "test/**/*.test.mjs" test/x.js', 'node-test'], ['jest', 'jest'], ['jest src/', 'jest'], ['vitest', 'vitest'], ['vitest run', 'vitest'], ['vitest run src', 'vitest']];
+  for (const [s, kind] of known) assert.equal(classifyScript(s).kind, kind, s);
+  assert.deepEqual(classifyScript('node --experimental-vm-modules --test-reporter=dot --test test/'), { kind: 'node-test', prefix: ['--experimental-vm-modules', '--test-reporter=dot'] });
+  // the root script is what the full command runs: it must be a bare runner wherever the tests live
+  const files = { 'web/test/a.test.js': "import '../src/a.js'" };
+  for (const rootScript of ['npm test --workspaces', 'lerna run test', 'NODE_ENV=test node --test', '']) {
+    const r = planRun({ ...base, testFiles: Object.keys(files), readFile: (f) => files[f], changed: ['web/src/a.js'], marker: M('X'), packages: [{ dir: '', testScript: rootScript }, { dir: 'web', testScript: 'jest' }] });
+    assert.equal(r.mode, 'full', rootScript);
+  }
 });

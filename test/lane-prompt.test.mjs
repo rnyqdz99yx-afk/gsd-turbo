@@ -6,8 +6,20 @@ test('system prompt carries rules, no double quotes or percent signs', () => {
   const s = laneSystemPrompt({ phase: '3', turboRun: 'node /h/.claude/turbo/bin/turbo-run.mjs', contextPct: 55, autonomy: 'standard' });
   for (const needle of ['AskUserQuestion', 'lane-status 3 done', 'lane-status 3 needs-owner', 'lane-status 3 paused-context', 'gsd-pause-work', 'Playwright', 'force-push', '55 percent']) assert.ok(s.includes(needle), needle);
   assert.ok(!s.includes('"') && !s.includes('%'));
-  assert.ok(!s.includes('deploy'));
-  assert.ok(laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'max' }).includes('deploy'));
+});
+
+// spec 6.2: with autonomy standard, deploying is the owner's (class D); max deploys itself
+test('standard reserves deploying for the owner; max deploys with safeguards', () => {
+  const OWNER_DEPLOY = 'deploying to any server or environment outside this machine';
+  const SAFEGUARDS = 'snapshot or backup first';
+  const standard = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard' });
+  const max = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'max' });
+  const needsOwner = (s) => s.split('\n').find((l) => l.includes('lane-status 3 needs-owner'));
+  assert.ok(needsOwner(standard).includes(OWNER_DEPLOY));
+  assert.ok(!standard.includes(SAFEGUARDS));
+  assert.ok(max.includes(SAFEGUARDS));
+  assert.ok(!max.includes(OWNER_DEPLOY));
+  for (const s of [standard, max]) assert.ok(!s.includes('"') && !s.includes('%'));
 });
 
 test('user prompt runs gsd-autonomous --only N; resume variant mentions handoff', () => {

@@ -72,20 +72,55 @@ test('npm shim target runs without cmd.exe and keeps spaces, quotes and newlines
   assert.deepEqual(JSON.parse(createClaude({ bin }).stop(arg)), ['stop', arg]);
 });
 
-test('parseAgents tolerates mixed shapes and bad input', () => {
+test('parseAgents reads entries with an id and a state or status field', () => {
   const text = JSON.stringify([
     { id: 'a1', name: 'turbo-x-p2', kind: 'background', state: 'working', cwd: '/p', startedAt: 1, sessionId: 'a1-full' },
-    { kind: 'interactive', status: 'busy', cwd: '/q', pid: 42 },
-    null, 1, 'x', [1],
+    { id: 'i1', kind: 'interactive', status: 'busy', cwd: '/q', pid: 42 },
+    { id: 'e1', state: '' },
   ]);
   const a = parseAgents(text);
-  assert.equal(a.length, 2);
+  assert.equal(a.length, 3);
   assert.equal(a[0].state, 'working');
   assert.equal(a[0].sessionId, 'a1-full');
   assert.equal(a[1].state, 'busy');
   assert.equal(a[1].pid, 42);
-  assert.deepEqual(parseAgents('not json'), []);
-  assert.deepEqual(parseAgents('{"x":1}'), []);
+  assert.equal(a[2].state, '', 'an empty state field keeps meaning finished');
+  assert.deepEqual(parseAgents('[]\n'), []);
+});
+
+// A renamed id or state field would make every live session look ended (and be removed).
+test('parseAgents throws on an entry without an id or without a state/status field, without echoing it', () => {
+  const secret = 'SECRET-SESSION-TITLE';
+  const bad = [
+    [{ id: 's1', name: secret, cwd: '/r', phase: 'working' }],
+    [{ name: secret, state: 'working' }],
+    [{ id: '', state: 'working' }],
+    [{ id: 7, state: 'working' }],
+    [{ id: 's1', state: null, status: 1, name: secret }],
+    [{ id: 's1', state: 'working' }, null],
+    [1], ['x'], [[1]],
+  ];
+  for (const entries of bad) {
+    assert.throws(() => parseAgents(JSON.stringify(entries)), (e) => {
+      assert.match(e.message, /^claude agents entry \d+ /);
+      assert.ok(!e.message.includes(secret));
+      return true;
+    }, JSON.stringify(entries));
+  }
+});
+
+// An empty list would make every lane session look ended, and the supervisor would remove them.
+test('parseAgents throws on output that is not a JSON array, without echoing the output', () => {
+  const secret = 'SECRET-SESSION-TITLE';
+  for (const text of [`not json ${secret}`, '', `{"agents":[{"id":"a1","name":"${secret}","state":"working"}]}`, '"x"', 'null']) {
+    assert.throws(() => parseAgents(text), (e) => {
+      assert.match(e.message, /^claude agents output is not a JSON array/);
+      assert.ok(!e.message.includes(secret));
+      return true;
+    }, JSON.stringify(text));
+  }
+  const c = createClaude({ bin: PLAIN_BIN, exec: () => '{"agents":[]}' });
+  assert.throws(() => c.list(), /claude agents output is not a JSON array/);
 });
 
 test('laneSessionName is stable, filesystem-safe and unique per root', () => {

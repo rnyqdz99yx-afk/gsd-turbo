@@ -34,3 +34,16 @@ test('relaunchDecision resets on progress and halts after max no-progress restar
   assert.deepEqual(relaunchDecision({ restarts: 0, progressed: false, maxRestarts: 3 }), { action: 'relaunch', restarts: 1 });
   assert.deepEqual(relaunchDecision({ restarts: 3, progressed: false, maxRestarts: 3 }), { action: 'halt', restarts: 4 });
 });
+
+// supervisor.json is hand-editable and resume rewrites the lane: a bad count must never
+// make the no-progress bound disappear.
+test('relaunchDecision: a missing or invalid count starts at 0; a missing or invalid limit halts', () => {
+  for (const restarts of [undefined, null, NaN, 'x', -2]) {
+    assert.deepEqual(relaunchDecision({ restarts, progressed: false, maxRestarts: 3 }), { action: 'relaunch', restarts: 1 }, String(restarts));
+  }
+  assert.deepEqual(relaunchDecision({ restarts: '2', progressed: false, maxRestarts: 3 }), { action: 'relaunch', restarts: 3 });
+  assert.deepEqual(relaunchDecision({ restarts: 1.7, progressed: false, maxRestarts: 3 }), { action: 'relaunch', restarts: 2 });
+  for (const maxRestarts of [undefined, NaN, 'x']) {
+    assert.equal(relaunchDecision({ restarts: 0, progressed: false, maxRestarts }).action, 'halt', String(maxRestarts));
+  }
+});

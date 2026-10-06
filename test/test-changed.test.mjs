@@ -765,3 +765,48 @@ test('follow-up: a test whose name git quotes is never dropped from a targeted r
   assert.notEqual(await r.run(), 0, 'the full command runs the quoted test');
   assert.equal(r.logs.at(-1), 'full: unusual file name: "test/q\\177.test.js"');
 });
+
+test('follow-up 2: a source under docs/ needs coverage and gains none from a test reading docs/ or naming .js', () => {
+  const base2 = { 'src/util.js': 'export const u = 1', 'docs/examples/basic.js': "import { u } from '../../src/util.js'", 'test/u.test.js': "import 'node:test'; import { u } from '#utils'" };
+  const byDir = plan({ ...base2, 'test/docs.test.js': "import 'node:test'; for (const f of fs.readdirSync('docs')) check(f);" }, { changed: ['src/util.js'] });
+  assert.deepEqual([byDir.mode, byDir.reason], ['full', 'no related test for src/util.js'], 'a test reading docs/ by directory');
+  const byExt = plan({ ...base2, 'lib/loader.js': "export const isJs = (f) => f.endsWith('.js')", 'test/loader.test.js': "import 'node:test'; import { isJs } from '../lib/loader.js'" }, { changed: ['src/util.js'] });
+  assert.deepEqual([byExt.mode, byExt.reason], ['full', 'no related test for src/util.js'], "a source with a '.js' string");
+  const self = plan(base2, { changed: ['docs/examples/basic.js'] });
+  assert.deepEqual([self.mode, self.reason], ['full', 'no related test for docs/examples/basic.js'], 'no docs exemption for a source');
+  const md = plan({ 'test/docs.test.js': "import 'node:test'; fs.readdirSync('docs')" }, { changed: ['docs/guide.md'] });
+  assert.deepEqual(groupArgs(md), [['--test', 'test/docs.test.js']], 'a markdown doc still matches by directory');
+});
+
+test('follow-up 2: a test reading docs/ never stands in for the alias consumer of a source a docs example imports', async () => {
+  const { repo, git, w } = fixtureRepo({
+    'src/util.js': 'export const u = 1;\n',
+    'docs/examples/basic.js': "import { u } from '../../src/util.js';\nconsole.log(u);\n",
+    'test/docs.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport fs from 'node:fs';\ntest('docs exist', () => assert.ok(fs.readdirSync('docs').length > 0));\n",
+    'test/u.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { u } from '#utils';\ntest('u', () => assert.equal(u, 1));\n",
+  });
+  w('package.json', JSON.stringify({ name: 't', type: 'module', imports: { '#utils': './src/util.js' }, scripts: { test: 'node --test' } }));
+  git('commit', '-qam', 'package imports');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/util.js', 'export const u = 2;\n');
+  git('commit', '-qam', 'break util');
+  assert.notEqual(await r.run(), 0, 'the alias consumer runs and fails');
+  assert.equal(r.logs.at(-1), 'full: no related test for src/util.js');
+});
+
+test('follow-up 2: braces in a prefix-flag value are never carried (bash expands them in the full run)', async (t) => {
+  for (const s of ['node --test-name-pattern={unit,integ} --test', 'node --test-name-pattern=a{1..3} --test']) assert.equal(classifyScript(s).kind, 'unknown', s);
+  if (!hasBash()) { t.skip('bash is not available: the full run would not expand the braces'); return; }
+  const script = 'node --test-name-pattern={unit,integ} --test';
+  const { repo, git, w } = fixtureRepo({
+    'src/a.js': 'export const a = 1;\n',
+    'test/a.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { a } from '../src/a.js';\ntest('unit a', () => assert.equal(a, 1));\n",
+  }, script);
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/a.js', 'export const a = 2;\n');
+  git('commit', '-qam', 'break a');
+  assert.notEqual(await r.run(), 0, 'the full command runs the "unit" tests');
+  assert.equal(r.logs.at(-1), 'full: unknown test runner in root');
+});

@@ -182,6 +182,8 @@ function makeCtx(root) {
       log: (line) => {
         try { fs.appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* logging is best-effort */ }
       },
+      // probed right before a launch: a lease revoked mid-tick (stop, resume, another start) launches nothing
+      leaseHeld: () => !lostLease(root),
     },
   };
 }
@@ -254,11 +256,15 @@ async function start(root) {
 // that only looked dead may have rewritten it in the middle of a tick, and the new owner's next tick
 // rewrites it anyway. A read error (missing, unreadable or half-written lock) proves nothing and
 // keeps the daemon running.
+function lostLease(root) {
+  const lock = readJson(lockPath(root), null);
+  return lock !== null && typeof lock === 'object' && Object.hasOwn(lock, 'pid') && lock.pid !== process.pid ? lock : null;
+}
 function leaseSleep(root, log) {
   return async (ms) => {
     await delay(ms);
-    const lock = readJson(lockPath(root), null);
-    if (lock === null || typeof lock !== 'object' || !Object.hasOwn(lock, 'pid') || lock.pid === process.pid) return;
+    const lock = lostLease(root);
+    if (!lock) return;
     log(`daemon exit pid ${process.pid}: lease lost (daemon.lock names ${lock.pid == null ? 'no pid' : `pid ${lock.pid}`})`);
     // stop or resume cleared the lock: leave no pid behind. With another owner, write nothing.
     if (lock.pid == null) clearDaemonPid(root, null);
@@ -298,19 +304,29 @@ async function daemon(root) {
   return 0;
 }
 
-// Stops the daemon process only (never the lane session) and clears its pid.
+// Stops the daemon process only (never the lane session) and clears its pid. A daemon that is not
+// killed (no recent heartbeat, or not named by supervisor.json) loses its lease instead: daemon.lock
+// {pid: null} ends it at its next check.
 function stopDaemon(root, sup) {
-  if (!sup) return;
-  if (supAlive(sup, pollOf(root))) {
+  const revoke = () => writeJsonAtomic(lockPath(root), { pid: null, at: new Date().toISOString() });
+  if (sup && supAlive(sup, pollOf(root))) {
     killDaemon(root, sup.pid);
     out(`stopped supervisor pid ${sup.pid}`);
-  } else if (Number.isInteger(sup.pid) && sup.pid > 0 && pidExists(sup.pid)) {
+  } else if (sup && Number.isInteger(sup.pid) && sup.pid > 0 && pidExists(sup.pid)) {
     out(`pid ${sup.pid} has no recent supervisor heartbeat (last ${sup.updatedAt || 'never'}); not killed`);
     // A daemon that only looks dead (hibernated) may still be mid-tick and rewrite its pid into
     // supervisor.json; the lock is what ends its lease, at its next check.
-    writeJsonAtomic(lockPath(root), { pid: null, at: new Date().toISOString() });
+    revoke();
+  } else {
+    // supervisor.json is missing, unreadable or names no live daemon, but daemon.lock, the lease, may
+    // still name one. Never killed: without a heartbeat the pid may belong to another process by now.
+    const pid = readJson(lockPath(root), null)?.pid;
+    if (Number.isInteger(pid) && pid > 0 && pidExists(pid)) {
+      out(`daemon.lock names pid ${pid}, supervisor.json does not; its lease is revoked and it exits at its next check`);
+      revoke();
+    }
   }
-  if (sup.pid != null) writeJsonAtomic(supPath(root), { ...readJson(supPath(root), sup), pid: null });
+  if (sup?.pid != null) writeJsonAtomic(supPath(root), { ...readJson(supPath(root), sup), pid: null });
 }
 
 // Lane sessions of this checkout: a lane name of this project (any phase) started in it.

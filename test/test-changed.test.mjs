@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { isTestFile, classifyScript, relatedTests, planRun, runTestChanged } from '../lib/test-changed.mjs';
+import { isTestFile, isRunnableTest, classifyScript, relatedTests, planRun, runTestChanged } from '../lib/test-changed.mjs';
 const hasBash = () => { try { execFileSync('bash', ['-c', 'exit 0'], { stdio: 'ignore' }); return true; } catch { return false; } };
 
 test('isTestFile', () => {
@@ -51,14 +51,14 @@ test('planRun decision table', () => {
   assert.equal(planRun({ ...base, packages: [{ dir: '', testScript: 'make test' }], changed: ['src/a.js'], marker: M('X') }).mode, 'full');
 });
 
-test('support files: the importing tests run, never the helper itself; a file in a test dir nothing imports runs as a test', () => {
+test('support files: the importing tests run, never the helper itself; a changed file in a test dir nothing imports runs full', () => {
   const files = { 'test/a.test.mjs': "import { h } from './helpers/h.mjs'", 'test/helpers/h.mjs': 'export const h = 1', 'test/helpers/lonely.mjs': '' };
   const p = { ...base, testFiles: Object.keys(files), readFile: (f) => files[f], marker: M('X') };
   const t = planRun({ ...p, changed: ['test/helpers/h.mjs'] });
   assert.equal(t.mode, 'targeted');
   assert.deepEqual(t.groups.map((g) => g.args), [['--test', 'test/a.test.mjs']]);
-  // a leaf: `node --test` runs every file under test/, so it is a test, not a support file
-  assert.deepEqual(planRun({ ...p, changed: ['test/helpers/lonely.mjs'] }).groups.map((g) => g.args), [['--test', 'test/helpers/lonely.mjs']]);
+  // final B1: run alone it proves nothing (a fixture read by directory passes with 0 tests)
+  assert.deepEqual(planRun({ ...p, changed: ['test/helpers/lonely.mjs'] }).mode, 'full');
   // relatedTests searches importers even when the changed file is itself a test
   assert.deepEqual(relatedTests(['test/helpers/h.mjs'], Object.keys(files), p.readFile), ['test/a.test.mjs', 'test/helpers/h.mjs']);
 });
@@ -407,8 +407,8 @@ test('project root in a subdirectory: a change outside the root runs full', asyn
 test('fix 1: a test only by directory runs when nothing imports it by path; a runner that would skip it runs full', () => {
   const files = {
     'src/a.js': 'export const a = 1',
-    'src/__tests__/a.js': "import { a } from '../a.js'",
-    'test/a.mjs': "import { a } from '../src/a.js'",
+    'src/__tests__/a.js': "import { test } from 'node:test'; import { a } from '../a.js'",
+    'test/a.mjs': "import { test } from 'node:test'; import { a } from '../src/a.js'",
     'test/b.test.js': "import { a } from '../src/a.js'",
     'test/helpers/h.mjs': "export { a } from '../../src/a.js'",
     'test/c.test.js': "import { a } from './helpers/h.mjs'",
@@ -417,7 +417,7 @@ test('fix 1: a test only by directory runs when nothing imports it by path; a ru
   // every importer of '../src/a.js' mentions the stem `a`; a leaf is decided by the resolved import path
   assert.deepEqual(planRun(p).groups.map((g) => g.args), [['--test', 'src/__tests__/a.js', 'test/a.mjs', 'test/b.test.js', 'test/c.test.js']], 'helpers/h.mjs is imported by path: a support file');
   assert.ok(planRun({ ...p, changed: ['test/a.mjs'] }).groups[0].args.includes('test/a.mjs'), 'a changed leaf runs itself');
-  const dot = { 'test/index.mjs': "import { a } from '../src/a.js'", 'test/d.test.js': "import { a } from '../src/a.js'; 'x.y'.split('.')" };
+  const dot = { 'test/index.mjs': "import 'node:test'; import { a } from '../src/a.js'", 'test/d.test.js': "import { a } from '../src/a.js'; 'x.y'.split('.')" };
   assert.deepEqual(planRun({ ...base, testFiles: Object.keys(dot), readFile: (f) => dot[f], changed: ['src/a.js'], marker: M('X') }).groups.map((g) => g.args),
     [['--test', 'test/d.test.js', 'test/index.mjs']], "a bare '.' string is not a directory import of test/index.mjs");
   const pk = (testScript) => [{ dir: '', testScript }];
@@ -514,4 +514,299 @@ test('fix 3b: a changed file or a selected test under a nested package runs full
   assert.deepEqual([r.mode, r.reason], ['full', 'web/test/b.test.js is in a nested package']);
   const rootOnly = planRun({ ...p, packages: [pkgs[0]], changed: ['src/b.js'] });
   assert.deepEqual(rootOnly.groups.map((g) => g.args), [['--test', 'test/b.test.js', 'web/test/b.test.js']], 'without web/package.json the root governs web/');
+});
+
+// --- final fix wave, area B: false greens (safe by construction) ---------------------------
+
+function fixtureRepo(files, script = 'node --test') {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = (f, s) => { fs.mkdirSync(path.dirname(path.join(repo, f)), { recursive: true }); fs.writeFileSync(path.join(repo, f), s); };
+  w('package.json', JSON.stringify({ name: 't', type: 'module', scripts: { test: script } }));
+  w('.planning/turbo/config.json', JSON.stringify({ test: { full: script } }));
+  for (const [f, s] of Object.entries(files)) w(f, s);
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  return { repo, git, w };
+}
+
+// Loads every file in test/fixtures/ by directory: it never names a fixture.
+const READDIR_TEST = "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport fs from 'node:fs';\nconst dir = new URL('./fixtures/', import.meta.url);\ntest('fixtures', async () => { for (const f of fs.readdirSync(dir)) assert.equal((await import(new URL(f, dir))).default, 1, f); });\n";
+const plan = (files, extra = {}) => {
+  const all = Object.keys(files);
+  return planRun({ ...base, marker: M('X'), readFile: (f) => files[f] ?? '', testFiles: all.filter(isTestFile), sourceFiles: all, ...extra });
+};
+const groupArgs = (r) => r.groups.map((g) => g.args);
+
+test('final B1: a changed fixture never covers itself; the consuming test runs in the full run', async () => {
+  const { repo, git, w } = fixtureRepo({ 'test/fixtures/case1.js': 'export default 1;\n', 'test/fixtures.test.mjs': READDIR_TEST }, 'node --test test/*.test.mjs');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('test/fixtures/case1.js', 'export default 2;\n');
+  git('commit', '-qam', 'break the fixture');
+  assert.notEqual(await r.run(), 0, 'the consuming test runs and fails');
+  assert.equal(r.logs.at(-1), 'full: no related test for test/fixtures/case1.js');
+});
+
+test('final B1: a fixture reached from a changed source is no test under node --test; the run is full', async () => {
+  const { repo, git, w } = fixtureRepo({
+    'src/a.js': 'export const a = 1;\n',
+    'test/fixtures/case1.js': "export { a as default } from '../../src/a.js';\n",
+    'test/fixtures.test.mjs': READDIR_TEST,
+    'test/a.test.mjs': "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { a } from '../src/a.js';\ntest('a', () => assert.equal(typeof a, 'number'));\n",
+  }, 'node --test test/*.test.mjs');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/a.js', 'export const a = 2;\n');
+  git('commit', '-qam', 'break the fixture through its source');
+  assert.notEqual(await r.run(), 0, 'the consuming test runs and fails');
+  assert.equal(r.logs.at(-1), 'full: test/fixtures/case1.js is a test only by directory and does not import node:test');
+});
+
+test('final B1: pure decisions for fixtures and tests by directory', () => {
+  const files = { 'src/a.js': '', 'test/fixtures/case1.js': "export { a as default } from '../../src/a.js'", 'test/a.test.mjs': "import 'node:test'; import '../src/a.js'" };
+  const only = { 'src/a.js': '', 'test/fixtures/case1.js': files['test/fixtures/case1.js'] };
+  const r = plan(only, { changed: ['src/a.js'] });
+  assert.deepEqual([r.mode, r.reason], ['full', 'no related test for src/a.js'], 'a fixture alone is no proof');
+  const t = plan({ ...files, 'test/fixtures/case1.js': "import 'node:test'; import '../../src/a.js'" }, { changed: ['src/a.js'] });
+  assert.deepEqual(groupArgs(t), [['--test', 'test/a.test.mjs', 'test/fixtures/case1.js']], 'with node:test it is a test');
+  const self = plan({ 'test/x.mjs': "import 'node:test'" }, { changed: ['test/x.mjs'] });
+  assert.equal(self.mode, 'full', 'a test by directory never covers itself');
+  assert.equal(plan({ 'test/x.test.mjs': "import 'node:test'" }, { changed: ['test/x.test.mjs'] }).mode, 'targeted', 'a test by name does');
+});
+
+test('final B2: a test name with glob characters runs full (node --test reads paths as globs on Node 22+)', async () => {
+  const { repo, git, w } = fixtureRepo({ 'src/a.js': 'export const a = 1;\n', 'test/[id].test.js': A_TEST(1) });
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/a.js', 'export const a = 2;\n');
+  git('commit', '-qam', 'break a');
+  assert.notEqual(await r.run(), 0, 'the full command runs test/[id].test.js');
+  assert.equal(r.logs.at(-1), 'full: test/[id].test.js has glob characters node --test would expand');
+  for (const f of ['test/a+(b).test.js', 'test/{x}.test.js', 'test/a?.test.js', 'test/!a.test.js', 'test/@(a).test.js', 'test/a*.test.js']) {
+    assert.equal(plan({ [f]: "import '../src/a.js'" }, { changed: ['src/a.js'] }).mode, 'full', f);
+  }
+});
+
+test('final B3/B10: quoted or backslash-escaped flags are never carried into a targeted run', async () => {
+  for (const s of ['node --test-name-pattern="unit" --test', "node --test-name-pattern='unit' --test", 'node --test-name-pattern=\\"unit\\" --test', 'jest \\--coverage', 'node --test \\--x']) {
+    assert.equal(classifyScript(s).kind, 'unknown', s);
+  }
+  assert.deepEqual(classifyScript('node --test-name-pattern=unit --test'), { kind: 'node-test', prefix: ['--test-name-pattern=unit'] });
+  const script = 'node --test-name-pattern="unit" --test';
+  const { repo, git, w } = fixtureRepo({
+    'src/a.js': 'export const a = 1;\n',
+    'test/a.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { a } from '../src/a.js';\ntest('unit a', () => assert.equal(a, 1));\n",
+  }, script);
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/a.js', 'export const a = 2;\n');
+  git('commit', '-qam', 'break a');
+  assert.notEqual(await r.run(), 0, 'the full command runs the "unit" tests');
+  assert.equal(r.logs.at(-1), 'full: unknown test runner in root');
+});
+
+test('final B3 (beyond the ruling): --test-isolation shares one process between files, so it runs full', () => {
+  for (const s of ['node --test-isolation=none --test', 'node --experimental-test-isolation=none --test']) assert.equal(classifyScript(s).kind, 'unknown', s);
+});
+
+test('final B4: a doc read by directory or by extension runs the tests that read it', () => {
+  for (const [doc, src] of [
+    ['.claude/rules/style.md', "for (const f of fs.readdirSync('.claude/rules')) check(f);"],
+    ['.planning/seeds/SEED-001.md', "fs.readdirSync(path.join(root, '.planning', 'seeds'))"],
+    ['docs/guide/deep/x.md', "walk(path.join(root, 'docs/'))"],
+    ['docs/guide/x.md', "glob('**/*.md')"],
+    ['README.md', "files.filter((f) => f.endsWith('.md'))"],
+  ]) {
+    const r = plan({ 'test/docs.test.js': src, 'test/other.test.js': "import '../src/a.js'" }, { changed: [doc] });
+    assert.deepEqual(groupArgs(r), [['--test', 'test/docs.test.js']], doc);
+  }
+  // only docs, which need no coverage: a test naming its directory never covers any other file
+  const data = plan({ 'test/data.test.js': "fs.readdirSync(new URL('./fixtures', import.meta.url))" }, { changed: ['test/fixtures/a.json'] });
+  assert.deepEqual([data.mode, data.reason], ['full', 'no related test for test/fixtures/a.json']);
+});
+
+test('final B5/B8: bare, trailing-slash and package-main directory imports reach their tests', () => {
+  const cases = [
+    { name: "jest __tests__ importing '..'", script: 'jest', changed: 'src/foo/bar.js',
+      files: { 'src/foo/index.js': "export * from './bar'", 'src/foo/bar.js': '', 'src/foo/__tests__/foo.test.js': "import * as foo from '..'", 'src/foo/__tests__/bar.test.js': "import { b } from '../bar'" },
+      want: ['src/foo/__tests__/bar.test.js', 'src/foo/__tests__/foo.test.js'] },
+    { name: "require('..') of the root index.js", changed: 'lib/a.js',
+      files: { 'index.js': "module.exports = require('./lib/a')", 'lib/a.js': '', 'test/index.test.js': "const m = require('..')", 'test/a.test.js': "require('../lib/a')" },
+      want: ['test/a.test.js', 'test/index.test.js'] },
+    { name: "require('../lib/')", changed: 'lib/y.js',
+      files: { 'lib/index.js': "module.exports = require('./y')", 'lib/y.js': '', 'test/all.test.js': "require('../lib/')", 'test/y.test.js': "require('../lib/y')" },
+      want: ['test/all.test.js', 'test/y.test.js'] },
+    { name: "require('./') next to index.js", changed: 'lib/y.js',
+      files: { 'lib/index.js': "module.exports = require('./y')", 'lib/y.js': '', 'lib/index.test.js': "require('./')", 'lib/y.test.js': "require('./y')" },
+      want: ['lib/index.test.js', 'lib/y.test.js'] },
+    { name: "require('..') of the package.json main", main: './lib/main.js', changed: 'lib/a.js',
+      files: { 'lib/main.js': "module.exports = require('./a')", 'lib/a.js': '', 'test/pkg.test.js': "require('..')", 'test/a.test.js': "require('../lib/a')" },
+      want: ['test/a.test.js', 'test/pkg.test.js'] },
+  ];
+  for (const c of cases) {
+    const r = plan(c.files, { changed: [c.changed], packages: [{ dir: '', testScript: c.script ?? 'node --test', main: c.main }] });
+    assert.equal(r.mode, 'targeted', c.name);
+    const args = r.groups[0].args;
+    for (const t of c.want) assert.ok(args.some((a) => a === t || a.includes(`'${t}'`)), `${c.name}: ${t} in ${args}`);
+  }
+});
+
+test('final B6: a test by directory that a non-test source imports still runs', () => {
+  const files = { 'src/x.js': '', 'test/a.mjs': "import 'node:test'; import { x } from '../src/x.js'", 'test/b.test.js': "import { x } from '../src/x.js'", 'scripts/run-all.mjs': "await import('../test/a.mjs')" };
+  assert.deepEqual(groupArgs(plan(files, { changed: ['src/x.js'] })), [['--test', 'test/a.mjs', 'test/b.test.js']]);
+});
+
+test('final B7: an import of a.cjs never makes a.mjs a support file; ./h.js still resolves to h.ts', () => {
+  const files = { 'src/x.js': '', 'test/a.mjs': "import 'node:test'; import { x } from '../src/x.js'", 'test/a.cjs': 'module.exports = 1', 'test/b.test.js': "require('./a.cjs'); require('../src/x.js')" };
+  assert.deepEqual(groupArgs(plan(files, { changed: ['src/x.js'] })), [['--test', 'test/a.mjs', 'test/b.test.js']]);
+  const ts = { 'src/x.ts': '', 'test/h.ts': "export * from '../src/x.js'", 'test/c.test.ts': "import './h.js'" };
+  assert.deepEqual(groupArgs(plan(ts, { changed: ['src/x.ts'] })), [['--test', 'test/c.test.ts']]);
+});
+
+test('final B9: node default test names are tests', () => {
+  for (const f of ['src/x_test.js', 'src/x-test.mjs', 'src/test-x.cjs', 'test.js', 'a/test.ts']) {
+    assert.ok(isTestFile(f), f);
+    assert.ok(isRunnableTest(f), f);
+  }
+  for (const f of ['src/latest.js', 'src/contest.js', 'src/test.config.js', 'src/attest-x.js']) assert.ok(!isRunnableTest(f), f);
+  for (const name of ['src/x_test.js', 'src/x-test.js', 'src/test-x.js', 'test.js']) {
+    const files = { 'src/x.js': '', [name]: `import 'node:test'; import { x } from '${name === 'test.js' ? './src/x.js' : './x.js'}'`, 'test/y.test.js': "import { x } from '../src/x.js'" };
+    assert.deepEqual(groupArgs(plan(files, { changed: ['src/x.js'] })), [['--test', ...[name, 'test/y.test.js'].sort()]], name);
+  }
+});
+
+test('final B9: under jest a test is what jest runs by default: test-utils.js is support, __tests__/* is a test', () => {
+  const files = {
+    'src/a.js': '', 'src/test-utils.js': "export * from './a.js'", 'src/a.test.js': "import './test-utils.js'; import './a.js'",
+    'src/__tests__/helpers.js': 'export const h = 1', 'src/__tests__/b.test.js': "import { h } from './helpers.js'",
+  };
+  const jest = { packages: [{ dir: '', testScript: 'jest' }] };
+  const u = plan(files, { ...jest, changed: ['src/test-utils.js'] });
+  assert.deepEqual(u.groups.map((g) => g.args[1]), ["npx --no-install jest --findRelatedTests 'src/a.test.js'"]);
+  const h = plan(files, { ...jest, changed: ['src/__tests__/helpers.js'] });
+  assert.deepEqual(h.groups.map((g) => g.args[1]), ["npx --no-install jest --findRelatedTests 'src/__tests__/b.test.js' 'src/__tests__/helpers.js'"], 'jest runs it and fails a file without tests');
+  const m = plan({ 'src/a.js': '', 'src/a.test.mjs': "import './a.js'" }, { ...jest, changed: ['src/a.js'] });
+  assert.deepEqual([m.mode, m.reason], ['full', 'src/a.test.mjs is outside the jest default test match'], 'jest 29 runs no .mjs test by default');
+});
+
+test('final B11: a changed file loaded by a carried prefix flag, or reaching one, runs full', () => {
+  const script = 'node --import=./setup.mjs --env-file=.env.test --test';
+  const files = { 'setup.mjs': "import './src/a.js'", 'test/a.test.js': "import '../src/a.js'; import '../setup.mjs'", 'test/b.test.js': "import '../src/b.js'" };
+  const p = { packages: [{ dir: '', testScript: script }], fullCommand: script };
+  for (const c of ['setup.mjs', 'src/a.js', '.env.test']) {
+    const r = plan(files, { ...p, changed: [c] });
+    assert.equal(r.mode, 'full', c);
+    assert.match(r.reason, /loaded by --(import|env-file)$/, c);
+  }
+  assert.deepEqual(groupArgs(plan(files, { ...p, changed: ['src/b.js'] })), [['--import=./setup.mjs', '--env-file=.env.test', '--test', 'test/b.test.js']]);
+});
+
+test('final B12: a jest or vitest config that changes the test set, coverage or isolation runs full', () => {
+  const pk = (testScript) => [{ dir: '', testScript }];
+  const p = { ...base, changed: ['src/a.js'], marker: M('X') };
+  for (const [script, cfg, key] of [
+    ['jest', '{"coverageThreshold":{"global":{"lines":80}},"collectCoverage":true}', 'coverageThreshold'],
+    ['jest', "module.exports = { testMatch: ['**/*.it.js'] }", 'testMatch'],
+    ['jest', "module.exports = { testPathIgnorePatterns: ['/fixtures/'] }", 'testPathIgnorePatterns'],
+    ['vitest run', 'export default defineConfig({ test: { typecheck: { enabled: true } } })', 'typecheck'],
+    ['vitest run', 'export default { test: { coverage: { thresholds: { lines: 80 } } } }', 'thresholds'],
+    ['vitest run', "export default { test: { include: ['src/**/*.check.ts'] } }", 'include'],
+    ['vitest run', "export default { test: { includeSource: ['src/**/*.ts'] } }", 'includeSource'],
+    ['vitest', 'export default { test: { isolate: false } }', 'isolate'],
+  ]) {
+    const r = planRun({ ...p, packages: pk(script), runnerConfig: cfg });
+    assert.deepEqual([r.mode, r.reason], ['full', `${classifyScript(script).kind} config sets ${key}`], cfg);
+  }
+  assert.equal(planRun({ ...p, packages: pk('jest'), runnerConfig: "module.exports = { testEnvironment: 'node' }" }).mode, 'targeted');
+  assert.equal(planRun({ ...p, runnerConfig: '{"coverageThreshold":{}}' }).mode, 'targeted', 'node --test reads no jest config');
+});
+
+test('final B12: runTestChanged reads the jest config from package.json and from jest.config.*', async () => {
+  for (const [jestKey, configFile, key] of [[{ coverageThreshold: { global: { lines: 90 } } }, null, 'coverageThreshold'], [undefined, "module.exports = { testMatch: ['**/*.it.js'] };\n", 'testMatch']]) {
+    const repo = tmpGitRepo();
+    const git = gitIn(repo);
+    const w = (f, s) => { fs.mkdirSync(path.dirname(path.join(repo, f)), { recursive: true }); fs.writeFileSync(path.join(repo, f), s); };
+    w('package.json', JSON.stringify({ name: 't', scripts: { test: 'jest' }, jest: jestKey }));
+    if (configFile) w('jest.config.cjs', configFile);
+    w('.planning/turbo/config.json', JSON.stringify({ test: { full: 'jest' } }));
+    w('src/a.js', 'exports.a = 1;\n');
+    w('test/a.test.js', "const { a } = require('../src/a.js');\ntest('a', () => expect(a).toBe(1));\n");
+    git('add', '-A'); git('commit', '-q', '-m', 'c1');
+    fs.writeFileSync(markerOf(repo), JSON.stringify({ fullSha: git('rev-parse', 'HEAD'), targetedSince: 0 }));
+    w('src/a.js', 'exports.a = 2;\n');
+    git('commit', '-qam', 'c2');
+    const r = runner(repo);
+    await r.run(); // jest is not installed here: only the plan matters
+    assert.equal(r.logs[0], `full: jest config sets ${key}`);
+  }
+});
+
+// git quotes a path with `"`, `\`, a control character or DEL even with core.quotepath=false
+test('follow-up: a path git prints quoted runs full (planRun)', () => {
+  const quoted = '"test/a\\"b.test.js"';
+  const r = planRun({ ...base, changed: ['src/a.js'], allFiles: ['src/a.js', 'test/a.test.js', quoted], marker: M('X') });
+  assert.deepEqual([r.mode, r.reason], ['full', `unusual file name: ${quoted}`], 'a tracked test git quotes is never a candidate');
+  const c = planRun({ ...base, changed: ['src/a.js', '"src/a\\177.js"'], marker: M('X') });
+  assert.deepEqual([c.mode, c.reason], ['full', 'unusual file name: "src/a\\177.js"']);
+  assert.equal(planRun({ ...base, changed: [], allFiles: [quoted], marker: M('H') }).mode, 'skip', 'nothing changed since the full green run');
+});
+
+test('follow-up: a test whose name git quotes is never dropped from a targeted run', async (t) => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo);
+  w('test/a.test.js', "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { a } from '../src/a.js';\ntest('a', () => assert.equal(typeof a, 'number'));\n");
+  try { w('test/q\x7f.test.js', A_TEST(1)); } catch { t.skip('the file system refuses DEL in a file name'); return; }
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/a.js', 'export const a = 2;\n');
+  git('commit', '-qam', 'break a for the quoted test only');
+  assert.notEqual(await r.run(), 0, 'the full command runs the quoted test');
+  assert.equal(r.logs.at(-1), 'full: unusual file name: "test/q\\177.test.js"');
+});
+
+test('follow-up 2: a source under docs/ needs coverage and gains none from a test reading docs/ or naming .js', () => {
+  const base2 = { 'src/util.js': 'export const u = 1', 'docs/examples/basic.js': "import { u } from '../../src/util.js'", 'test/u.test.js': "import 'node:test'; import { u } from '#utils'" };
+  const byDir = plan({ ...base2, 'test/docs.test.js': "import 'node:test'; for (const f of fs.readdirSync('docs')) check(f);" }, { changed: ['src/util.js'] });
+  assert.deepEqual([byDir.mode, byDir.reason], ['full', 'no related test for src/util.js'], 'a test reading docs/ by directory');
+  const byExt = plan({ ...base2, 'lib/loader.js': "export const isJs = (f) => f.endsWith('.js')", 'test/loader.test.js': "import 'node:test'; import { isJs } from '../lib/loader.js'" }, { changed: ['src/util.js'] });
+  assert.deepEqual([byExt.mode, byExt.reason], ['full', 'no related test for src/util.js'], "a source with a '.js' string");
+  const self = plan(base2, { changed: ['docs/examples/basic.js'] });
+  assert.deepEqual([self.mode, self.reason], ['full', 'no related test for docs/examples/basic.js'], 'no docs exemption for a source');
+  const md = plan({ 'test/docs.test.js': "import 'node:test'; fs.readdirSync('docs')" }, { changed: ['docs/guide.md'] });
+  assert.deepEqual(groupArgs(md), [['--test', 'test/docs.test.js']], 'a markdown doc still matches by directory');
+});
+
+test('follow-up 2: a test reading docs/ never stands in for the alias consumer of a source a docs example imports', async () => {
+  const { repo, git, w } = fixtureRepo({
+    'src/util.js': 'export const u = 1;\n',
+    'docs/examples/basic.js': "import { u } from '../../src/util.js';\nconsole.log(u);\n",
+    'test/docs.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport fs from 'node:fs';\ntest('docs exist', () => assert.ok(fs.readdirSync('docs').length > 0));\n",
+    'test/u.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { u } from '#utils';\ntest('u', () => assert.equal(u, 1));\n",
+  });
+  w('package.json', JSON.stringify({ name: 't', type: 'module', imports: { '#utils': './src/util.js' }, scripts: { test: 'node --test' } }));
+  git('commit', '-qam', 'package imports');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/util.js', 'export const u = 2;\n');
+  git('commit', '-qam', 'break util');
+  assert.notEqual(await r.run(), 0, 'the alias consumer runs and fails');
+  assert.equal(r.logs.at(-1), 'full: no related test for src/util.js');
+});
+
+test('follow-up 2: braces in a prefix-flag value are never carried (bash expands them in the full run)', async (t) => {
+  for (const s of ['node --test-name-pattern={unit,integ} --test', 'node --test-name-pattern=a{1..3} --test']) assert.equal(classifyScript(s).kind, 'unknown', s);
+  if (!hasBash()) { t.skip('bash is not available: the full run would not expand the braces'); return; }
+  const script = 'node --test-name-pattern={unit,integ} --test';
+  const { repo, git, w } = fixtureRepo({
+    'src/a.js': 'export const a = 1;\n',
+    'test/a.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { a } from '../src/a.js';\ntest('unit a', () => assert.equal(a, 1));\n",
+  }, script);
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('src/a.js', 'export const a = 2;\n');
+  git('commit', '-qam', 'break a');
+  assert.notEqual(await r.run(), 0, 'the full command runs the "unit" tests');
+  assert.equal(r.logs.at(-1), 'full: unknown test runner in root');
 });

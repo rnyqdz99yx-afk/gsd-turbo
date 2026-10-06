@@ -4,7 +4,10 @@
   "phases": [
     { "number": "1", "name": "Base", "dep_phases": [], "deps_display": "—", "phase_complete": true, "disk_status": "complete", "verification_status": "passed", "is_active": false },
     { "number": "2", "name": "Api", "dep_phases": ["1"], "deps_display": "1", "phase_complete": false, "disk_status": "planned", "verification_status": null, "is_active": true },
+    { "number": "2a", "name": "Variant", "dep_phases": ["01"], "deps_display": "01", "phase_complete": false, "disk_status": "no_directory", "verification_status": null, "is_active": false },
     { "number": "2.1", "name": "Hotfix", "deps_display": "2", "phase_complete": false, "disk_status": "no_directory", "verification_status": null, "is_active": false },
-    { "number": "3", "name": "Ui", "deps_display": "2,0", "phase_complete": false, "disk_status": "no_directory", "verification_status": "human_needed", "is_active": false }
+    { "number": "3", "name": "Ui", "deps_display": "2,0", "phase_complete": false, "disk_status": "no_directory", "verification_status": "human_needed", "is_active": false },
+    { "number": "04", "name": "Late", "deps_display": "2a,03", "phase_complete": false, "disk_status": "no_directory", "verification_status": null, "is_active": false },
+    { "number": "999.1", "name": "Someday", "dep_phases": [], "deps_display": "—", "phase_complete": false, "disk_status": "no_directory", "verification_status": null, "is_active": false }
   ]
 }

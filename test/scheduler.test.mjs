@@ -1,0 +1,36 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { comparePhase, nextPhase, relaunchDecision } from '../lib/scheduler.mjs';
+
+const P = (number, deps = [], complete = false) => ({ number, deps, complete });
+
+test('comparePhase orders decimals numerically', () => {
+  const sorted = ['10', '2', '2.1', '2.10', '2.2', '1'].sort(comparePhase);
+  assert.deepEqual(sorted, ['1', '2', '2.1', '2.2', '2.10', '10']);
+});
+
+test('comparePhase puts decimal sub-phases before letter-suffixed inserts, like GSD', () => {
+  const sorted = ['3', '2A', '2', '2.1', '2B'].sort(comparePhase);
+  assert.deepEqual(sorted, ['2', '2.1', '2A', '2B', '3']);
+});
+
+test('nextPhase picks lowest incomplete phase with satisfied deps', () => {
+  const phases = [P('1', [], true), P('3', ['2']), P('2', ['1']), P('2.1', ['2'])];
+  assert.equal(nextPhase(phases).number, '2');
+});
+
+test('deps outside the milestone count as satisfied', () => {
+  assert.equal(nextPhase([P('5', ['0', '4'])]).number, '5');
+});
+
+test('nextPhase respects exclude and returns null when nothing is ready', () => {
+  const phases = [P('1', [], true), P('2', ['1']), P('3', ['2'])];
+  assert.equal(nextPhase(phases, { exclude: ['2'] }), null);
+  assert.equal(nextPhase([P('1', [], true)]), null);
+});
+
+test('relaunchDecision resets on progress and halts after max no-progress restarts', () => {
+  assert.deepEqual(relaunchDecision({ restarts: 2, progressed: true, maxRestarts: 3 }), { action: 'relaunch', restarts: 0 });
+  assert.deepEqual(relaunchDecision({ restarts: 0, progressed: false, maxRestarts: 3 }), { action: 'relaunch', restarts: 1 });
+  assert.deepEqual(relaunchDecision({ restarts: 3, progressed: false, maxRestarts: 3 }), { action: 'halt', restarts: 4 });
+});

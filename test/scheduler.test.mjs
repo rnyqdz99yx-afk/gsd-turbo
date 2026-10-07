@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { comparePhase, nextPhase, relaunchDecision } from '../lib/scheduler.mjs';
+import { comparePhase, nextPhase, relaunchDecision, isFinished } from '../lib/scheduler.mjs';
 
 const P = (number, deps = [], complete = false) => ({ number, deps, complete });
+// checked off in the ROADMAP and fully implemented, but GSD reports it unfinished (verification stale)
+const C = (number, deps = []) => ({ number, deps, complete: false, closed: true });
 
 test('comparePhase orders decimals numerically', () => {
   const sorted = ['10', '2', '2.1', '2.10', '2.2', '1'].sort(comparePhase);
@@ -27,6 +29,12 @@ test('nextPhase respects exclude and returns null when nothing is ready', () => 
   const phases = [P('1', [], true), P('2', ['1']), P('3', ['2'])];
   assert.equal(nextPhase(phases, { exclude: ['2'] }), null);
   assert.equal(nextPhase([P('1', [], true)]), null);
+});
+
+test('a closed phase is never started again and satisfies the deps on it', () => {
+  assert.equal(nextPhase([C('1'), P('2', ['1']), P('3', ['2'])]).number, '2');
+  assert.equal(nextPhase([C('1'), C('2', ['1'])]), null);
+  assert.deepEqual([P('1', [], true), C('2'), P('3'), { number: '4', deps: [] }].map(isFinished), [true, true, false, false]);
 });
 
 test('relaunchDecision resets on progress and halts after max no-progress restarts', () => {

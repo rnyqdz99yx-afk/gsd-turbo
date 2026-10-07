@@ -40,7 +40,10 @@ function harness({ phases, agents = [] }) {
   return h;
 }
 const P = (number, deps = [], complete = false, verification = null) => ({ number, deps, complete, verification });
+// checked off in the ROADMAP and fully implemented, but GSD reports it unfinished
+const C = (number, deps = [], verification = 'stale') => ({ number, deps, complete: false, closed: true, verification });
 const fresh = () => ({ lane: null, finished: false, halted: false });
+const SKIPPED = /^skipped phases /;
 
 test('launches the next ready phase', async () => {
   const h = harness({ phases: [P('1', [], true), P('2', ['1'])] });
@@ -376,6 +379,48 @@ test('a dependency cycle among unfinished phases is logged and notified once; fi
   s = await tick(s, h.ctx);
   assert.equal(s.lane.phase, '3');
   assert.ok(!('noReady' in s));
+});
+
+test('closed phases GSD reports unfinished are skipped: one log line per distinct set, no notification', async () => {
+  const h = harness({ phases: [C('1'), P('2', ['3']), P('3', ['2'])] });
+  let s = await tick(fresh(), h.ctx);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.logs.filter((l) => SKIPPED.test(l)), ['skipped phases 1: checked off in the roadmap, GSD reports them unfinished (verification stale); re-verify by hand with /gsd-execute-phase <N>']);
+  assert.deepEqual(h.notes, [{ key: 'noReadyPhase', vars: { phases: '2, 3' } }], 'a closed phase is not waiting');
+  h.phases.push(C('4', [], 'human_needed'));
+  s = await tick(s, h.ctx);
+  s = await tick(s, h.ctx);
+  assert.equal(h.logs.filter((l) => SKIPPED.test(l)).at(-1), 'skipped phases 1, 4: checked off in the roadmap, GSD reports them unfinished (verification stale, human_needed); re-verify by hand with /gsd-execute-phase <N>');
+  assert.equal(h.logs.filter((l) => SKIPPED.test(l)).length, 2);
+  h.phases[2].deps = [];
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.phase, '3');
+  assert.equal(h.launched.length, 1);
+  assert.equal(h.notes.length, 1);
+});
+
+test('closed phases count as done for the milestone', async () => {
+  const h = harness({ phases: [C('1'), P('2', ['1'], true)] });
+  const s = await tick(fresh(), h.ctx);
+  assert.equal(s.finished, true);
+  assert.equal(h.launched.length, 0);
+  assert.deepEqual(h.notes.map((x) => x.key), ['milestoneDone']);
+});
+
+test('a lane whose phase GSD checks off in the roadmap while it runs keeps running as before', async () => {
+  const h = harness({ phases: [P('2'), P('3')] });
+  let s = await tick(fresh(), h.ctx);
+  h.phases[0].closed = true;
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.sessionId, 's1');
+  // its session ends without a record while GSD does not report the phase complete: resumed, never done
+  h.agents[0].state = 'done';
+  h.fp = 'B';
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.lane.phase, s.lane.sessionId], ['2', 's2']);
+  assert.match(h.launched[1].prompt, /HANDOFF/);
+  assert.deepEqual(h.notes, []);
+  assert.ok(!h.logs.some((l) => SKIPPED.test(l)));
 });
 
 test('a lane whose phase left the roadmap keeps a live session, and halts once it has ended', async () => {

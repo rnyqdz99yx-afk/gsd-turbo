@@ -49,6 +49,47 @@ test('gateOutcome: findings → fix, open threats → fix, missing blocking arti
   assert.deepEqual(gateOutcome({ jobs, fm: { security: { threats_open: '0' }, nyquist: { status: 'validated' } } }).missing, ['code-review']);
 });
 
+// GSD's `frontmatter get` answers an empty file or broken YAML with exit 0 and {error, path} (cmdFrontmatterGet).
+const gsdError = (file, error = 'File not found') => ({ error, path: `/p/.planning/phases/03-alpha/${file}` });
+
+test('gateOutcome: an unreadable gate report (empty file, broken YAML, no review status) fails closed and names the file', () => {
+  const jobs = fanoutJobs({ phase: '3', active: ['security', 'ui', 'code-review', 'nyquist'], artifacts: { uiSpec: '03-UI-SPEC.md' } });
+  const clean = { security: { threats_open: '0' }, ui: {}, 'code-review': { status: 'clean' }, nyquist: { status: 'validated', nyquist_compliant: 'true' } };
+  assert.deepEqual([gateOutcome({ jobs, fm: clean }).next, gateOutcome({ jobs, fm: clean }).unreadable], ['final-gate', []]);
+  const review = gateOutcome({ jobs, fm: { ...clean, 'code-review': gsdError('03-REVIEW.md', 'Frontmatter is not parseable YAML') } });
+  assert.deepEqual([review.reviewFindings, review.missing, review.next], [1, ['code-review'], 'fix']);
+  assert.match(review.unreadable.join('\n'), /code-review: 03-REVIEW\.md .*not parseable YAML/);
+  const noStatus = gateOutcome({ jobs, fm: { ...clean, 'code-review': {} } });
+  assert.deepEqual([noStatus.reviewFindings, noStatus.next], [1, 'fix'], 'a REVIEW.md without a gsd-code-reviewer status is not clean');
+  assert.equal(gateOutcome({ jobs, fm: { ...clean, 'code-review': { status: 'skipped' } } }).next, 'final-gate');
+  const sec = gateOutcome({ jobs, fm: { ...clean, security: gsdError('03-SECURITY.md') } });
+  assert.deepEqual([sec.securityOpen, sec.blockingMissing, sec.next], [1, ['security'], 'retry']);
+  assert.match(sec.unreadable.join('\n'), /03-SECURITY\.md/);
+  const ui = gateOutcome({ jobs, fm: { ...clean, ui: gsdError('03-UI-REVIEW.md') } });
+  assert.deepEqual([ui.missing, ui.next], [['ui'], 'final-gate']);
+  assert.match(ui.unreadable.join('\n'), /03-UI-REVIEW\.md/);
+  const nyq = gateOutcome({ jobs, fm: { ...clean, nyquist: gsdError('03-VALIDATION.md') } });
+  assert.deepEqual([nyq.blockingMissing, nyq.next], [['nyquist'], 'retry']);
+  assert.match(nyq.unreadable.join('\n'), /03-VALIDATION\.md/);
+});
+
+test('jobs outcome: an empty REVIEW.md is not clean', async () => {
+  const root = tmpDir('jobs-empty');
+  const dir = path.join(root, '.planning', 'phases', '03-alpha');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, '03-REVIEW.md'), '');
+  const gsd = { hooks: () => [], frontend: () => false, goal: () => '', frontmatter: (f) => (fs.readFileSync(f, 'utf8') ? {} : { error: 'File not found', path: f }) };
+  const lines = [];
+  const run = (...a) => runPhaseCommand('jobs', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd } });
+  writeJsonAtomic(path.join(root, gatesRel('3')), { active: ['code-review'] });
+  assert.equal(await run('3', 'outcome', '--json'), 0);
+  const o = JSON.parse(lines.at(-1));
+  assert.deepEqual([o.next, o.reviewFindings], ['fix', 1]);
+  assert.match(o.unreadable[0], /03-REVIEW\.md/);
+  assert.equal(await run('3', 'outcome'), 0);
+  assert.match(lines.at(-1), /^next fix; review findings 1;/);
+});
+
 test('jobs CLI reads hooks, gate state and frontmatter through injected GSD queries', async () => {
   const root = tmpDir('jobs');
   const dir = path.join(root, '.planning', 'phases', '03-alpha');

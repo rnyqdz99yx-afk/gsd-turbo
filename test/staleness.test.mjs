@@ -125,7 +125,7 @@ test('extractRefs reads GSD reference forms: @paths, dot-paths, directories, any
   assert.ok(!r.paths.some((p) => p.includes('..')), r.paths.join());
 });
 
-test('stalenessReport: @-cited and dot-path deletions rebuild, an @-cited changed line regrounds, own phase files ignored', () => {
+test('stalenessReport: @-cited and dot-path deletions rebuild, an @-cited changed line regrounds, a created own-phase file ignored', () => {
   const r = repo();
   r.write('src/x.ts', 'x\n');
   r.write('src/a.ts', '1\n2\n');
@@ -225,4 +225,59 @@ test('recordBases orders keys by code unit, independent of locale', () => {
   const dir = tmpDir('stale');
   const f = recordBases(dir, ['a.md', 'B.md', 'plans/PLAN-01.md', 'PLAN.md'], 'f'.repeat(40), new Date(0));
   assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(f, 'utf8'))), ['B.md', 'PLAN.md', 'a.md', 'plans/PLAN-01.md']);
+});
+
+test('extractRefs: separate line citations and bracketed path segments', () => {
+  const r = extractRefs([
+    'Copy auth pattern from `src/controllers/users.ts` lines 12-25.',
+    'Analog `src/a.ts` (L12-L30), and src/b.ts at line 4; see lines 3-5 of src/c.ts',
+    '**Analog:** `src/d.ts`',
+    '',
+    '**Imports pattern** (lines 1-8):',
+    '```typescript',
+    "import { x } from './src/fenced.ts'; // lines 9-10",
+    '```',
+    '**Auth pattern** (lines 12-18):',
+    'Untouched src/e.ts, then src/f.ts',
+    '<read_first>src/app/[slug]/page.tsx, app/(auth)/login/page.tsx</read_first> [src/g.ts](src/g.ts) files_modified: [src/h.ts, src/i.ts]',
+    'Also @./src/j.ts',
+  ].join('\n'));
+  for (const p of ['src/controllers/users.ts', 'src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/fenced.ts', 'src/e.ts', 'src/f.ts',
+    'src/app/[slug]/page.tsx', 'app/(auth)/login/page.tsx', 'src/g.ts', 'src/h.ts', 'src/i.ts', 'src/j.ts', '@src/j.ts']) {
+    assert.ok(r.paths.includes(p), p);
+  }
+  assert.deepEqual(r.lineRefs.sort(), ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/controllers/users.ts', 'src/d.ts']);
+  assert.ok(!r.paths.includes('src/app') && !r.paths.includes('app'), r.paths.join());
+});
+
+test('stalenessReport: a changed analog range regrounds; a deleted bracketed path or sibling plan rebuilds', () => {
+  const r = repo();
+  r.write('src/controllers/users.ts', '1\n2\n3\n');
+  r.write('src/app/[slug]/page.tsx', 'p\n');
+  const dir = '.planning/phases/03-alpha';
+  r.write(`${dir}/03-PATTERNS.md`, [
+    '### `src/controllers/auth.ts` (controller, request-response)',
+    '',
+    '**Analog:** `src/controllers/users.ts`',
+    '',
+    '**Auth pattern** (lines 2-3):',
+    '```typescript',
+    'router.use(authenticate);',
+    '```',
+    '',
+  ].join('\n'));
+  r.write(`${dir}/03-01-PLAN.md`, 'Copy auth pattern from `src/controllers/users.ts` lines 2-3.\n');
+  r.write(`${dir}/03-02-PLAN.md`, '<read_first>src/app/[slug]/page.tsx</read_first>\n');
+  r.write(`${dir}/03-03-PLAN.md`, 'Builds on @.planning/phases/03-alpha/03-09-PLAN.md\n');
+  r.write(`${dir}/03-09-PLAN.md`, 'dropped later\n');
+  r.commit('plan');
+  r.write('src/controllers/users.ts', '1\nTWO\n3\n');
+  r.g('rm', '-q', 'src/app/[slug]/page.tsx', `${dir}/03-09-PLAN.md`);
+  r.commit('later');
+  const plans = ['03-01', '03-02', '03-03'].map((id) => ({ id, files_modified: [], has_summary: false }));
+  const by = Object.fromEntries(stalenessReport({ root: r.root, phaseDir: path.join(r.root, dir), plans }).artifacts.map((x) => [x.file, x]));
+  assert.deepEqual([by['03-PATTERNS.md'].action, by['03-PATTERNS.md'].reasons], ['reground', ['src/controllers/users.ts: changed at a referenced line']]);
+  assert.deepEqual([by['03-01-PLAN.md'].action, by['03-01-PLAN.md'].reasons], ['reground', ['src/controllers/users.ts: changed at a referenced line']]);
+  assert.deepEqual([by['03-02-PLAN.md'].action, by['03-02-PLAN.md'].reasons], ['rebuild', ['src/app/[slug]/page.tsx: deleted or renamed']]);
+  assert.deepEqual([by['03-03-PLAN.md'].action, by['03-03-PLAN.md'].reasons], ['rebuild', [`${dir}/03-09-PLAN.md: deleted or renamed`]]);
 });

@@ -677,7 +677,9 @@ test('start --only/--from/--all set, keep, drop and clear the range; a lane outs
     assert.ok(sup, `${args.join(' ')}: ${logOf(p.root)}`);
     return { stdout: r.stdout, sup };
   };
-  const rangeLines = (stdout) => stdout.split(/\r?\n/).filter((l) => l.startsWith('range:'));
+  // start prints its own range line before spawning; a daemon that already finished (a fast tick under
+  // load) makes start print the status too, with a second, plain range line: only the first is start's
+  const rangeLines = (stdout) => stdout.split(/\r?\n/).filter((l) => l.startsWith('range:')).slice(0, 1);
 
   writeSup(p.root, { pid: null, finished: false, halted: true, lane: { phase: '3', sessionId: 'old333', restarts: 0, launchedAt: ago(5) } });
   let r = await startRun(['--only', '04']);

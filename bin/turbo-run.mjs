@@ -15,6 +15,7 @@ import { runDaemon } from '../lib/supervisor.mjs';
 import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
+import { ownerRequestFiles } from '../lib/uat.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|test-changed|phase-step|staleness|gates|jobs|uat> [args]';
@@ -492,6 +493,7 @@ async function main() {
       if (args.includes('--json')) { out(JSON.stringify({ running, ...sup }, null, 2)); return 0; }
       if (!sup) { out('supervisor: not running (never started)'); return 0; }
       printStatus(sup, running);
+      for (const f of ownerRequestFiles(root)) out(`owner request: ${f}`);
       return 0;
     }
     case 'stop': {

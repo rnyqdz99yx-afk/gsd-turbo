@@ -106,7 +106,7 @@ Below, `turbo-run` stands for this `node …/turbo-run.mjs` call; the installer 
 
 To run a single phase without the supervisor, run `/turbo-phase <N>` in Claude Code, in a clean checkout. It needs `turbo-run doctor` to report `mode: full`; otherwise it stops at once.
 
-The background sessions work in your checkout. Do not run GSD phase commands in the same checkout while the supervisor is running.
+The background sessions work in your checkout. Each lane runs with `worktree.bgIsolation: "none"` passed to its session, so it edits the project folder directly, as GSD expects; your own settings are not changed. Do not run GSD phase commands in the same checkout while the supervisor is running.
 
 ## What happens
 

@@ -631,6 +631,81 @@ test('start passes doctor\'s full mode to the daemon: the lane runs the turbo-ph
   assert.equal(stop.code, 0, stop.stderr);
 });
 
+test('start refuses conflicting or invalid range flags with exit 1 and starts nothing', async () => {
+  const root = plainProject();
+  const cases = [
+    ['--only', '4', '--from', '3'], ['--only', '4', '--to', '5'], ['--all', '--from', '3'], ['--all', '--only', '4'],
+    ['--from', '5', '--to', '3'], ['--from', '2B', '--to', '2.1'], ['--from'], ['--only', '../x'], ['--from', '--to', '5'],
+  ];
+  for (const args of cases) {
+    const r = await runAsync(['start', ...args], root);
+    assert.equal(r.code, 1, args.join(' '));
+    assert.match(r.stderr, /usage: turbo-run start \[--from <phase>\] \[--to <phase>\] \| start --only <phase> \| start --all/, args.join(' '));
+  }
+  assert.equal(readSup(root), null);
+  assert.equal(fs.existsSync(path.join(root, '.planning', 'turbo', 'logs')), false, 'no daemon was spawned');
+});
+
+test('status shows the run\'s range, and a finished range is not a finished milestone; status --json carries it', () => {
+  const root = plainProject();
+  const cases = [[{ from: '4', to: '7' }, 'range: phases 4–7'], [{ from: '4', to: null }, 'range: phases 4–end'], [{ from: null, to: '7' }, 'range: phases start–7']];
+  for (const [range, line] of cases) {
+    writeSup(root, { lane: null, finished: false, halted: true, pid: null, range });
+    const text = run(['status'], root);
+    assert.ok(text.split(/\r?\n/).includes(line), text);
+    assert.deepEqual(JSON.parse(run(['status', '--json'], root)).range, range);
+  }
+  writeSup(root, { lane: null, finished: true, halted: false, pid: null, range: { from: '4', to: '4' } });
+  assert.match(run(['status'], root), /^supervisor: not running · range finished$/m);
+  writeSup(root, { lane: null, finished: true, halted: false, pid: null });
+  const text = run(['status'], root);
+  assert.match(text, /^supervisor: not running · milestone finished$/m);
+  assert.doesNotMatch(text, /range/);
+});
+
+test('start --only/--from/--all set, keep, drop and clear the range; a lane outside it is not resumed', async (t) => {
+  // 3 is checked off in the roadmap but GSD reports its verification stale; 4 is complete
+  const p = fakeProject({ phases: [
+    { number: '3', name: 'three', phase_complete: false, roadmap_complete: true, implementation_complete: true, disk_status: 'executed', verification_status: 'stale' },
+    { number: '4', name: 'four', phase_complete: true },
+  ] });
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  const startRun = async (args) => {
+    const r = await runAsync(['start', ...args], p.root, p.env);
+    assert.equal(r.code, 0, `${args.join(' ')}: ${r.stdout}${r.stderr}`);
+    const sup = await waitFor(() => { const s = readSup(p.root); return s?.finished && s.pid === null ? s : null; }, 15000);
+    assert.ok(sup, `${args.join(' ')}: ${logOf(p.root)}`);
+    return { stdout: r.stdout, sup };
+  };
+  // start prints its own range line before spawning; a daemon that already finished (a fast tick under
+  // load) makes start print the status too, with a second, plain range line: only the first is start's
+  const rangeLines = (stdout) => stdout.split(/\r?\n/).filter((l) => l.startsWith('range:')).slice(0, 1);
+
+  writeSup(p.root, { pid: null, finished: false, halted: true, lane: { phase: '3', sessionId: 'old333', restarts: 0, launchedAt: ago(5) } });
+  let r = await startRun(['--only', '04']);
+  assert.deepEqual(rangeLines(r.stdout), ['range: phases 4–4']);
+  assert.deepEqual([r.sup.range, r.sup.lane], [{ from: '4', to: '4' }, null]);
+  assert.match(logOf(p.root), /lane phase 3 is outside the range 4–4; not resumed \(session old333 kept\)/);
+  assert.match(logOf(p.root), /phases 4–4 done/);
+  assert.ok(!p.claudeCalls().some((a) => a[0] === 'stop' || a[0] === 'rm' || a[0] === '--bg'), JSON.stringify(p.claudeCalls()));
+
+  r = await startRun([]); // the previous run finished: its range is dropped
+  assert.deepEqual(rangeLines(r.stdout), []);
+  assert.equal('range' in r.sup, false);
+  assert.match(logOf(p.root), /milestone done/);
+
+  writeSup(p.root, { pid: null, finished: false, halted: true, lane: null, range: { from: '4', to: null } });
+  r = await startRun([]); // a halted run keeps it
+  assert.deepEqual(rangeLines(r.stdout), ['range: phases 4–end (kept from the previous run)']);
+  assert.deepEqual(r.sup.range, { from: '4', to: null });
+
+  writeSup(p.root, { pid: null, finished: false, halted: true, lane: null, range: { from: '4', to: '4' } });
+  r = await startRun(['--all']);
+  assert.deepEqual(rangeLines(r.stdout), []);
+  assert.equal('range' in r.sup, false);
+  assert.equal(p.claudeCalls().filter((a) => a[0] === '--bg').length, 0, 'the closed phase 3 is never started');
+});
+
 test('start refuses an unsupported environment with exit 2 and the failed checks', async () => {
   const p = fakeProject({ claudeVersion: '2.1.100' });
   const r = await runAsync(['start'], p.root, p.env);

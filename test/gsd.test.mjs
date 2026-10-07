@@ -35,6 +35,23 @@ test('normalizePhases normalizes ids so deps match phase numbers', () => {
   assert.deepEqual(by['4'].deps, ['2A', '3']);
 });
 
+// GSD reports a phase checked off long ago as unfinished once later phases change the files its
+// VERIFICATION.md covers (verification stale): `closed` keeps it from being scheduled again.
+test('normalizePhases marks a phase closed when its roadmap box is checked and it is fully implemented', () => {
+  const phase = (number, over) => ({ number, name: 'x', dep_phases: [], disk_status: 'executed', phase_complete: false, ...over });
+  const by = Object.fromEntries(normalizePhases({ phases: [
+    phase('4', { roadmap_complete: true, implementation_complete: true, verification_status: 'stale' }),
+    phase('5', { roadmap_complete: false, implementation_complete: true }),
+    phase('6', { roadmap_complete: true, implementation_complete: false }),
+    phase('7', { roadmap_complete: true, implementation_complete: true, phase_complete: true }),
+    phase('8', { roadmap_complete: 'true', implementation_complete: 1 }),
+  ] }).map((x) => [x.number, x]));
+  assert.deepEqual([by['4'].closed, by['4'].complete, by['4'].verification], [true, false, 'stale']);
+  assert.deepEqual([by['5'].closed, by['6'].closed, by['8'].closed], [false, false, false]);
+  assert.deepEqual([by['7'].closed, by['7'].complete], [true, true]);
+  assert.equal(normalizePhases(fixture).some((x) => x.closed), false, 'absent fields are not closed');
+});
+
 test('normalizePhases drops backlog/icebox sentinel phases', () => {
   const numbers = normalizePhases(fixture).map((x) => x.number);
   assert.equal(numbers.includes('999.1'), false);

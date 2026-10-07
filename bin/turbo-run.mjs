@@ -11,7 +11,8 @@ import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.
 import { createClaude, resolveBin, laneSessionName } from '../lib/claude.mjs';
 import { loadPhases, normalizePhaseId } from '../lib/gsd.mjs';
 import { doctor } from '../lib/doctor.mjs';
-import { runDaemon } from '../lib/supervisor.mjs';
+import { runDaemon, resumableLane } from '../lib/supervisor.mjs';
+import { comparePhase, rangeLabel } from '../lib/scheduler.mjs';
 import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
@@ -24,9 +25,10 @@ const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-statu
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy', '--mode']);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy', '--mode', '--from', '--to', '--only']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
+const START_USAGE = 'usage: turbo-run start [--from <phase>] [--to <phase>] | start --only <phase> | start --all';
 const CONFIG_ERROR = /^invalid turbo config /;
 const HEARTBEAT_MIN_MS = 10 * 60 * 1000;
 const KILL_WAIT_MS = 5000;
@@ -48,6 +50,33 @@ function positional(args) {
   return out;
 }
 function projectArg(args) { const p = flag(args, '--project'); return p ? path.resolve(p) : findProjectRoot(process.cwd()); }
+// The range flags of start (and of the daemon it spawns): undefined without any (start keeps the
+// stored range), null for --all, else { from, to } of normalized ids, a missing end null (open).
+function rangeFlags(args) {
+  const has = (f) => args.includes(f);
+  const bad = (why) => die(`${why}\n${START_USAGE}`);
+  // a flag right after another one is no phase id
+  const id = (f) => { const v = flag(args, f); if (!PHASE_ID.test(v) || v.startsWith('-')) bad(`${f} needs a phase id`); return normalizePhaseId(v); };
+  if (has('--all')) {
+    if (has('--from') || has('--to') || has('--only')) bad('--all clears the range: no --from, --to or --only with it');
+    return null;
+  }
+  if (has('--only')) {
+    if (has('--from') || has('--to')) bad('--only takes no --from or --to');
+    const only = id('--only');
+    return { from: only, to: only };
+  }
+  if (!has('--from') && !has('--to')) return undefined;
+  const range = { from: has('--from') ? id('--from') : null, to: has('--to') ? id('--to') : null };
+  if (range.from && range.to && comparePhase(range.from, range.to) > 0) bad(`--from ${range.from} comes after --to ${range.to}`);
+  return range;
+}
+// A run that has not finished (a stop, a halt, a resume) hands its range to the next start.
+function keptRange(sup) {
+  const r = sup && !sup.finished ? sup.range : null;
+  const end = (v) => (v == null || v === '' ? null : String(v));
+  return r && (end(r.from) || end(r.to)) ? { from: end(r.from), to: end(r.to) } : null;
+}
 const supPath = (root) => path.join(runDir(root), 'supervisor.json');
 const lockPath = (root) => path.join(locksDir(root), 'daemon.lock');
 const out = (line) => process.stdout.write(line + '\n');
@@ -146,7 +175,9 @@ function clearDaemonPid(root, state) {
 }
 
 function printStatus(sup, running) {
-  out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.finished ? ' · milestone finished' : ''}${sup.halted ? ' · halted' : ''}`);
+  const finished = sup.range ? ' · range finished' : ' · milestone finished';
+  out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
+  if (sup.range) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
   if (sup.lane) out(`lane: phase ${sup.lane.phase} · session ${sup.lane.sessionId} · restarts ${sup.lane.restarts} · mode ${sup.lane.mode || 'safe'} · since ${sup.lane.launchedAt}\n  watch: claude attach ${sup.lane.sessionId}`);
 }
@@ -209,7 +240,8 @@ function logTail(root, lines = 10) {
   }
 }
 
-async function start(root) {
+// requested: rangeFlags' result (undefined keeps the range of a run that has not finished).
+async function start(root, requested = undefined) {
   const config = runtimeConfig(loadConfig(root)); // a corrupt config fails here, not inside the detached daemon
   const running = () => { const sup = readJson(supPath(root), null); return supAlive(sup, config.poll_seconds) ? sup : null; };
   const already = (sup) => { out(`already running (pid ${sup.pid})`); printStatus(sup, true); return 0; };
@@ -225,10 +257,14 @@ async function start(root) {
   // doctor takes seconds: another start may have launched a daemon meanwhile
   sup = running();
   if (sup) return already(sup);
+  const kept = requested === undefined ? keptRange(readJson(supPath(root), null)) : null;
+  const range = kept || requested || null;
+  if (range) out(`range: phases ${rangeLabel(range)}${kept ? ' (kept from the previous run)' : ''}`);
+  const rangeArgs = [...(range?.from ? ['--from', range.from] : []), ...(range?.to ? ['--to', range.to] : [])];
   ensureDir(logsDir(root));
   const fd = fs.openSync(path.join(logsDir(root), 'supervisor.log'), 'a');
   const spawnedAt = Date.now();
-  const child = spawn(process.execPath, [SELF, 'daemon', '--project', root, '--mode', r.mode === 'full' ? 'full' : 'safe'], { cwd: root, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
+  const child = spawn(process.execPath, [SELF, 'daemon', '--project', root, '--mode', r.mode === 'full' ? 'full' : 'safe', ...rangeArgs], { cwd: root, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
   let ended = null;
   child.once('exit', (code, signal) => { ended = signal ? `signal ${signal}` : `exit code ${code}`; });
   child.once('error', (e) => { ended = e.code || e.message; });
@@ -276,7 +312,7 @@ function leaseSleep(root, log) {
   };
 }
 
-async function daemon(root, mode = 'safe') {
+async function daemon(root, mode = 'safe', range = null) {
   const ctx = makeCtx(root, mode);
   const poll = ctx.config.poll_seconds;
   const lock = acquireLock(root, poll);
@@ -286,14 +322,15 @@ async function daemon(root, mode = 'safe') {
   process.on('SIGTERM', onSignal(143));
   let final = null;
   try {
+    ctx.deps.log(`daemon start pid ${process.pid}`);
     const prev = readJson(supPath(root), null);
-    // poll_seconds: this daemon's own poll, for the heartbeat window of status, stop and start
-    const initial = { lane: prev && !prev.finished ? prev.lane || null : null, finished: false, halted: false, poll_seconds: poll };
+    // poll_seconds: this daemon's own poll, for the heartbeat window of status, stop and start;
+    // range: the phases this run may start (no key: the whole milestone)
+    const initial = { lane: resumableLane(prev, range, ctx.deps.log), finished: false, halted: false, poll_seconds: poll, ...(range ? { range } : {}) };
     // pid on disk before the first tick, so status and a second start see this daemon at once
     writeJsonAtomic(supPath(root), { ...initial, pid: process.pid, updatedAt: new Date().toISOString() });
-    ctx.deps.log(`daemon start pid ${process.pid}`);
     final = await runDaemon({ ctx, statePath: supPath(root), initial, intervalMs: poll * 1000, sleep: leaseSleep(root, ctx.deps.log) });
-    ctx.deps.log(`daemon exit${final.finished ? ': milestone finished' : final.halted ? ': halted' : ''}`);
+    ctx.deps.log(`daemon exit${final.finished ? (final.range ? ': range finished' : ': milestone finished') : final.halted ? ': halted' : ''}`);
   } catch (e) {
     const text = String(e?.message ?? e);
     ctx.deps.log(`daemon fatal: ${text.replace(/\s*\r?\n\s*/g, ' ')}`);
@@ -488,11 +525,11 @@ async function main() {
     }
     case 'start': {
       if (!root) die('no .planning directory found');
-      return start(root);
+      return start(root, rangeFlags(args));
     }
     case 'daemon': {
       if (!root) die('no .planning directory found');
-      return daemon(root, flag(args, '--mode', 'safe'));
+      return daemon(root, flag(args, '--mode', 'safe'), rangeFlags(args) ?? null);
     }
     case 'status': {
       if (!root) die('no .planning directory found');

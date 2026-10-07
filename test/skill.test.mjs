@@ -29,6 +29,15 @@ test('turbo-autonomous skill never commits during a run and commits only the set
   assert.ok(commit.indexOf('git status --porcelain', 1) > 0, 'a final clean-tree check after the commit');
 });
 
+test('turbo-autonomous skill passes the range flags to start and stops a lane on an unexpected phase', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const hint = /^argument-hint: (.+)$/m.exec(s)[1];
+  for (const f of ['--from <N>', '--to <N>', '--only <N>', '--all']) assert.ok(hint.includes(f), f);
+  const at = s.indexOf('turbo-run.mjs" start <range flags>');
+  assert.ok(at > s.indexOf('## Otherwise'), 'start gets the range flags');
+  assert.match(s.slice(at), /not the phase the user expected[^\n]*turbo-run\.mjs" stop` at once/);
+});
+
 test('turbo-autonomous skill never sleeps and covers "no lane yet" and "not running" after start', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
   assert.ok(!/\bwait\b[^.\n]*\bseconds\b/i.test(s), 'no foreground wait');

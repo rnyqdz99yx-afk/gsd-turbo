@@ -144,6 +144,42 @@ test('supervisor full mode: a blocked lane session follows its fresh record (pau
   assert.equal(h.launched.length, 2);
 });
 
+test('supervisor full mode: a finished (blocked) session on a completed phase waits for the fresh done record, then is removed', async () => {
+  const h = harness({ phases: [P('2')], mode: 'full' });
+  let s = await tick(fresh(), h.ctx);
+  h.phases[0].complete = true; // the verifier passed inside execute-phase (G9)
+  last(h).state = 'blocked';
+  s = await tick(s, h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify + 1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneBlocked'], 'no done without the lane record');
+  assert.equal(s.lane.sessionId, 's1');
+  writeLaneStatus(h.root, '2', 'done', { at: h.ctx.deps.now().toISOString() });
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneBlocked', 'phaseDone']);
+  assert.equal(s.lane, null);
+  assert.deepEqual(h.agents, [], 'the finished session is removed');
+});
+
+test('a forced relaunch of a finished (blocked) full lane on its done record removes that session', async () => {
+  const h = harness({ phases: [P('2', [], true)], mode: 'full' });
+  let s = fullLane(h);
+  last(h).state = 'blocked';
+  s.lane.forceRelaunch = true;
+  writeLaneStatus(h.root, '2', 'done', { at: '2026-01-01T00:01:00.000Z' });
+  const rm = h.ctx.deps.claude.rm;
+  h.ctx.deps.claude.rm = () => { throw new Error('claude rm failed: permission denied'); };
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.sessionId, 's0', 'a live session that rm cannot remove keeps the lane');
+  assert.deepEqual(h.notes, []);
+  h.ctx.deps.claude.rm = rm;
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane, null);
+  assert.deepEqual(h.notes.map((x) => x.key), ['phaseDone']);
+  assert.deepEqual(h.agents, []);
+  assert.equal(h.launched.length, 0);
+});
+
 test('supervisor safe mode (no ctx.mode): gsd-autonomous with the gates restore first', async () => {
   const h = harness({ phases: [P('2')], mode: undefined });
   const s = await tick(fresh(), h.ctx);

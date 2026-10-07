@@ -627,6 +627,57 @@ test('blocked session with a stale needs-owner record waits as blocked; a workin
   assert.equal(h.launched.length, 1);
 });
 
+// Claude Code 2.1.292 lists a session that finished its turn as state "blocked", status idle.
+test('a finished (blocked) session on a completed phase: removed before phaseDone, the next phase gets its own session', async () => {
+  const h = harness({ phases: [P('2'), P('3', ['2'])] });
+  const order = [];
+  const { rm } = h.ctx.deps.claude;
+  h.ctx.deps.claude.rm = (id) => { order.push(`rm ${id}`); return rm(id); };
+  const notify = h.ctx.deps.notify;
+  h.ctx.deps.notify = async (key, vars) => { order.push(key); return notify(key, vars); };
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  h.phases[0].complete = true;
+  s = await tick(s, h.ctx);
+  assert.deepEqual(order, ['rm s1', 'phaseDone']);
+  assert.equal(s.lane, null);
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.phase, '3');
+  assert.equal(s.lane.sessionId, 's2');
+  assert.deepEqual(h.agents.map((a) => a.id), ['s2']);
+});
+
+test('a finished (blocked) session that rm cannot remove keeps the lane: no phaseDone, no next launch, retried', async () => {
+  const h = harness({ phases: [P('2'), P('3', ['2'])] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  h.phases[0].complete = true;
+  const rm = h.ctx.deps.claude.rm;
+  h.ctx.deps.claude.rm = () => { throw new Error('claude rm failed: permission denied'); };
+  s = await tick(s, h.ctx);
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.phase, '2');
+  assert.deepEqual(h.notes, []);
+  assert.equal(h.launched.length, 1);
+  h.ctx.deps.claude.rm = rm;
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane, null);
+  assert.deepEqual(h.notes.map((x) => x.key), ['phaseDone']);
+  assert.deepEqual(h.agents, []);
+});
+
+test('a finished (blocked) safe-mode session on a human_needed phase: one laneNeedsOwner, the session kept', async () => {
+  const h = harness({ phases: [P('2', [], false, 'human_needed')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify + 1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, [{ key: 'laneNeedsOwner', vars: { phase: '2', reason: 'human verification' } }]);
+  assert.deepEqual(h.removed, []);
+  assert.equal(h.launched.length, 1);
+});
+
 test('milestone done when all phases complete', async () => {
   const h = harness({ phases: [P('1', [], true)] });
   const s = await tick(fresh(), h.ctx);

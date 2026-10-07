@@ -72,21 +72,39 @@ test('waiting agent → blocked', () => {
   assert.equal(inferStatus({ agent: { state: 'waiting' }, phase: phase(), launchedAt: T0 }), 'blocked');
 });
 
-// A lane that wrote `lane-status N needs-owner` and ended its turn is listed as state "blocked"
-// (status idle, Claude Code 2.1.292): its fresh trusted record decides; a live state still wins.
+// A background session that finished its turn is listed as state "blocked" (status idle, Claude Code
+// 2.1.292). Lanes run without AskUserQuestion and with bypassPermissions, so a blocked lane has ended
+// its turn: it is inferred like an ended one, except that it waits as blocked instead of the
+// paused-context / failed fallbacks. A live state still wins; an unknown state still waits.
 test('blocked agent with a fresh trusted lane record → the record status; stale or untrusted → blocked', () => {
   for (const state of ['blocked', 'waiting']) {
     for (const status of ['needs-owner', 'paused-context', 'failed']) {
       assert.equal(inferStatus({ agent: { state }, laneRecord: { status, at: later }, phase: phase(), launchedAt: T0 }), status, `${state}/${status}`);
     }
     assert.equal(inferStatus({ agent: { state }, laneRecord: { status: 'needs-owner', at: T0 }, phase: phase(), launchedAt: later }), 'blocked', `${state}/stale`);
-    for (const status of ['running', 'done']) {
-      assert.equal(inferStatus({ agent: { state }, laneRecord: { status, at: later }, phase: phase({ complete: true }), launchedAt: T0, mode: 'full' }), 'blocked', `${state}/${status}`);
-    }
-    assert.equal(inferStatus({ agent: { state }, phase: phase({ verification: 'human_needed' }), launchedAt: T0 }), 'blocked', `${state}/no record`);
+    assert.equal(inferStatus({ agent: { state }, laneRecord: { status: 'running', at: later }, phase: phase(), launchedAt: T0 }), 'blocked', `${state}/running record`);
   }
   for (const state of ['working', 'busy']) {
     assert.equal(inferStatus({ agent: { state }, laneRecord: { status: 'needs-owner', at: later }, phase: phase(), launchedAt: T0 }), 'running', state);
+  }
+});
+
+test('blocked agent (turn finished) ends the phase like an ended one; it waits as blocked instead of the fallbacks', () => {
+  const doneRec = { status: 'done', at: later };
+  for (const state of ['blocked', 'waiting']) {
+    const agent = { state };
+    assert.equal(inferStatus({ agent, phase: phase({ complete: true }), launchedAt: T0 }), 'done', `${state}/safe complete`);
+    assert.equal(inferStatus({ agent, laneRecord: doneRec, phase: phase({ complete: true }), launchedAt: T0, mode: 'full' }), 'done', `${state}/full complete + fresh done`);
+    assert.equal(inferStatus({ agent, phase: phase({ complete: true }), launchedAt: T0, mode: 'full' }), 'blocked', `${state}/full complete, no record`);
+    assert.equal(inferStatus({ agent, laneRecord: { status: 'done', at: T0 }, phase: phase({ complete: true }), launchedAt: later, mode: 'full' }), 'blocked', `${state}/full complete, stale done`);
+    assert.equal(inferStatus({ agent, laneRecord: { status: 'running', at: later }, phase: phase({ complete: true }), launchedAt: T0, mode: 'full' }), 'blocked', `${state}/full complete, running record`);
+    assert.equal(inferStatus({ agent, laneRecord: doneRec, phase: phase(), launchedAt: T0, mode: 'full' }), 'blocked', `${state}/done record without GSD completion`);
+    assert.equal(inferStatus({ agent, phase: phase({ verification: 'human_needed' }), launchedAt: T0 }), 'needs-owner', `${state}/safe human_needed`);
+    assert.equal(inferStatus({ agent, phase: phase({ verification: 'human_needed' }), launchedAt: T0, mode: 'full' }), 'blocked', `${state}/full human_needed`);
+    assert.equal(inferStatus({ agent, phase: phase(), launchedAt: T0 }), 'blocked', `${state}/nothing`);
+  }
+  for (const mode of ['safe', 'full']) {
+    assert.equal(inferStatus({ agent: { state: 'working' }, laneRecord: doneRec, phase: phase({ complete: true }), launchedAt: T0, mode }), 'running', `working/${mode}`);
   }
 });
 

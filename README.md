@@ -4,7 +4,7 @@
 
 gsd-turbo is an overlay for [GSD](https://github.com/open-gsd/gsd-core) on Claude Code that runs a milestone faster with background Claude Code sessions. A small supervisor process (no LLM of its own) starts each remaining phase of the current milestone as an unattended background session, starts a fresh one when a session stops at its context limit, replaces full test runs with targeted ones where that is safe, and notifies you when a phase finishes or needs you. It does not modify GSD: it talks to GSD only through `gsd-tools` and GSD's own skills, agents and workflows, and it writes only a few documented GSD settings (see [GSD settings turbo writes](#gsd-settings-turbo-writes)).
 
-This is v0.2.0 (stage 2 of the [roadmap](#roadmap)). Each phase now runs as `/turbo-phase`: a freshness check, discuss in assumptions mode, a parallel planning prologue, GSD planning and execution, gates in parallel, fixes, a full test run, automated UAT and a done record. One phase still runs at a time.
+This is v0.2.1 (stage 2 of the [roadmap](#roadmap)). Each phase now runs as `/turbo-phase`: a freshness check, discuss in assumptions mode, a parallel planning prologue, GSD planning and execution, gates in parallel, fixes, a full test run, automated UAT and a done record. One phase still runs at a time.
 
 ## Requirements
 

@@ -28,34 +28,77 @@ test('collectGraph keeps project files of test entries; testsLoading finds the l
   assert.equal(collectGraph({ root, dir, fullSha: 'X', isTest: isTestFile }), null);
 });
 
-test('planRun with a graph: exactly the loading tests; a file no test loads → full', () => {
+test('planRun with a graph: the loading tests join the mention rule; a file neither finds → full', () => {
   const a = planRun({ ...base, changed: ['src/a.mjs'], graph: GRAPH });
-  assert.deepEqual([a.mode, a.groups[0].args.slice(-1)], ['targeted', ['test/a.test.mjs']]);
+  assert.deepEqual([a.mode, a.groups[0].args.slice(-1)], ['targeted', ['test/a.test.mjs']], 'the graph adds a test the mention rule misses');
   assert.equal(planRun({ ...base, changed: ['src/new.mjs'], graph: GRAPH }).mode, 'full');
   assert.equal(planRun({ ...base, changed: ['src/shared.mjs'] }).mode, 'targeted', 'without a graph the mention rule applies');
 });
 
-test('a full run records the graph; the next targeted run uses it', { skip: typeof module.registerHooks !== 'function' && 'needs Node >= 22.15' }, async () => {
+test('planRun with a graph never selects fewer tests than the mention rule', () => {
+  // test/cli spawns bin/cli.mjs, which imports src/a.mjs: the child process is not in test/cli's recorded graph
+  const files = {
+    'src/a.mjs': 'export const a = 2;\n',
+    'bin/cli.mjs': "import { a } from '../src/a.mjs';\nconsole.log(a);\n",
+    'test/a.test.mjs': "import { test } from 'node:test';\nimport { a } from '../src/a.mjs';\ntest('x', () => {});\n",
+    'test/cli.test.mjs': "import { test } from 'node:test';\nimport { execFileSync } from 'node:child_process';\ntest('cli', () => execFileSync(process.execPath, ['bin/cli.mjs']));\n",
+    'test/new.test.mjs': "import { test } from 'node:test';\ntest('new', () => {});\n",
+  };
+  const all = Object.keys(files);
+  const graph = { fullSha: 'X', tests: { 'test/a.test.mjs': ['src/a.mjs'], 'test/cli.test.mjs': [] } };
+  const opts = { ...base, testFiles: all.filter(isTestFile), sourceFiles: all.filter((f) => !isTestFile(f)), allFiles: all, packages: [{ dir: '', testScript: 'node --test' }], readFile: (f) => files[f] };
+  const sel = (changed, g) => planRun({ ...opts, changed, graph: g }).groups[0]?.args.filter((x) => x.startsWith('test/'));
+  assert.deepEqual(sel(['src/a.mjs'], graph), ['test/a.test.mjs', 'test/cli.test.mjs']);
+  assert.deepEqual(sel(['src/a.mjs'], graph), sel(['src/a.mjs'], null));
+  assert.deepEqual(sel(['test/new.test.mjs'], graph), ['test/new.test.mjs'], 'a test added after the full run selects itself');
+});
+
+test('a full run records the graph; targeted runs add its tests only for the marker\'s full run and only when on', { skip: typeof module.registerHooks !== 'function' && 'needs Node >= 22.15' }, async () => {
   const root = tmpGitRepo();
   const g = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
   const write = (f, s) => { fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true }); fs.writeFileSync(path.join(root, f), s); };
-  // plain `node --test` (default patterns): Node 24 imports a directory argument like `test/` as a module and fails
-  write('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
+  const commit = (m) => { g('add', '-A'); g('commit', '-q', '-m', m); };
+  const config = (on) => write('.planning/turbo/config.json', JSON.stringify({ test: { full: 'npm test', import_graph: on } }));
+  const run = async (extra = {}) => {
+    const logs = [];
+    assert.equal(await runTestChanged({ root, env: { ...process.env, ...extra }, stdio: 'ignore', log: (l) => logs.push(l) }), 0);
+    return logs;
+  };
+  // plain `node --test` (default patterns): Node 24 imports a directory argument like `test/` as a module and fails.
+  // src/b.mjs reaches src/a.mjs through a package.json "imports" alias, an edge only the recorded graph sees.
+  write('package.json', JSON.stringify({ scripts: { test: 'node --test' }, imports: { '#core': './src/a.mjs' } }));
   write('src/a.mjs', 'export const a = 1;\n');
-  write('src/b.mjs', 'export const b = 1;\n');
+  write('src/b.mjs', "import { a } from '#core';\nexport const b = a + 1;\n");
   write('test/a.test.mjs', "import { test } from 'node:test';\nimport { a } from '../src/a.mjs';\ntest('a', () => {});\n");
   write('test/b.test.mjs', "import { test } from 'node:test';\nimport { b } from '../src/b.mjs';\ntest('b', () => {});\n");
   write('.planning/turbo/.gitignore', 'run/\nlogs/\nlocks/\n');
-  write('.planning/turbo/config.json', JSON.stringify({ test: { full: 'npm test', import_graph: true } }));
-  g('add', '-A');
-  g('commit', '-q', '-m', 'init');
-  assert.equal(await runTestChanged({ root, env: process.env, stdio: 'ignore', log: () => {} }), 0);
-  const graph = JSON.parse(fs.readFileSync(path.resolve(root, g('rev-parse', '--git-path', 'turbo-import-graph.json')), 'utf8'));
-  assert.ok(graph.tests['test/a.test.mjs'].includes('src/a.mjs'));
-  write('src/a.mjs', 'export const a = 2;\n');
-  g('add', '-A');
-  g('commit', '-q', '-m', 'change a');
-  const logs = [];
-  assert.equal(await runTestChanged({ root, env: process.env, stdio: 'ignore', log: (l) => logs.push(l) }), 0);
-  assert.ok(logs.some((l) => /^targeted: 1 related test file/.test(l)), logs.join('\n'));
+  config(true);
+  commit('init');
+  const graphPath = path.resolve(root, g('rev-parse', '--git-path', 'turbo-import-graph.json'));
+  // a graph that cannot be saved leaves the green full run green
+  fs.mkdirSync(path.join(graphPath, 'blocker'), { recursive: true });
+  let logs = await run();
+  assert.ok(logs.some((l) => l.startsWith('import graph: not saved')), logs.join('\n'));
+  fs.rmSync(graphPath, { recursive: true });
+  logs = await run({ TURBO_FULL: '1' });
+  assert.ok(logs.includes('import graph: recorded (2 test file(s))'), logs.join('\n'));
+  const graph = JSON.parse(fs.readFileSync(graphPath, 'utf8'));
+  assert.ok(graph.tests['test/b.test.mjs'].includes('src/a.mjs'), 'the alias edge is recorded');
+  const changeA = (n) => { write('src/a.mjs', `export const a = ${n};\n`); commit(`a ${n}`); };
+  changeA(2);
+  logs = await run();
+  assert.ok(logs.includes('targeted: 2 related test file(s)') && logs.includes('import graph: used with the mention rule'), logs.join('\n'));
+  // a graph of another full run is ignored: the mention rule alone finds test/a only
+  fs.writeFileSync(graphPath, JSON.stringify({ ...graph, fullSha: 'f'.repeat(40) }));
+  logs = await run();
+  assert.ok(logs.includes('targeted: 1 related test file(s)') && logs.includes('import graph: none for the last full green run; mention rule only'), logs.join('\n'));
+  // import_graph: false ignores a graph of the marker's full run
+  config(false);
+  commit('graph off');
+  assert.match((await run())[0], /^full: /);
+  const marker = JSON.parse(fs.readFileSync(path.resolve(root, g('rev-parse', '--git-path', 'turbo-last-green')), 'utf8'));
+  fs.writeFileSync(graphPath, JSON.stringify({ ...graph, fullSha: marker.fullSha }));
+  changeA(3);
+  logs = await run();
+  assert.deepEqual(logs, ['targeted: 1 related test file(s)']);
 });

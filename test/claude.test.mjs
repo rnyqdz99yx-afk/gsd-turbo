@@ -167,10 +167,15 @@ test('laneSessionName is stable, filesystem-safe and unique per root', () => {
   assert.match(laneSessionName('/x/\u30d7\u30ed\u30b8\u30a7\u30af\u30c8', 1), /^turbo-project-[0-9a-f]{6}-p1$/);
 });
 
-test('buildBgArgs puts flags before the prompt and disables AskUserQuestion', () => {
+test('buildBgArgs puts flags before the prompt, disables AskUserQuestion and turns off bg worktree isolation', () => {
+  const settings = '{"worktree":{"bgIsolation":"none"}}';
   const args = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'bypassPermissions', model: '' });
-  assert.deepEqual(args, ['--bg', '--name', 'n', '--permission-mode', 'bypassPermissions', '--disallowedTools', 'AskUserQuestion', '--append-system-prompt', 'S', 'P']);
-  assert.ok(buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: 'opus' }).includes('opus'));
+  assert.deepEqual(args, ['--bg', '--name', 'n', '--permission-mode', 'bypassPermissions', '--settings', settings, '--disallowedTools', 'AskUserQuestion', '--append-system-prompt', 'S', 'P']);
+  assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' } });
+  const withModel = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: 'opus' });
+  assert.ok(withModel.includes('opus'));
+  assert.equal(withModel[withModel.indexOf('--settings') + 1], settings);
+  assert.equal(withModel.at(-1), 'P');
 });
 
 test('parseBgLaunch extracts the id', () => {
@@ -214,6 +219,8 @@ test('createClaude prepends the bin prefix and passes per-call timeouts with SIG
     [120000, 'SIGKILL', false], [30000, 'SIGKILL', false], [30000, 'SIGKILL', false], [30000, 'SIGKILL', false],
   ]);
   assert.equal(calls[0].opts.cwd, '/p');
+  const bg = calls[0].args;
+  assert.equal(bg[bg.indexOf('--settings') + 1], '{"worktree":{"bgIsolation":"none"}}');
 });
 
 test('createClaude errors carry CLI output but never the argv', () => {

@@ -24,7 +24,7 @@ Run the matching command and show its output, then stop:
    - If it prints `supervisor: running`, show the output, tell the user a run is already in progress (watch it with `claude attach <session id>` or `/turbo-autonomous status`, stop it with `/turbo-autonomous stop`) and stop. Commit nothing: a background session is working in this checkout.
 2. **Compatibility.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor`.
    - Exit code 2 (`mode: unsupported`): show the failed checks with what to fix and stop.
-   - `mode: safe`: tell the user that turbo runs in safe mode (GSD version outside the tested range) and continue.
+   - `mode: safe`: tell the user that turbo runs in safe mode (GSD version outside the tested range, or the turbo-phase skill, the turbo-uat agent or GSD's hook listing is missing; doctor's checks say which) and continue.
 3. **Project setup (first run only).** If `.planning/turbo/config.json` does not exist, run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" init --lang <en|ru by the user's language>`. Show init's whole output, including whether `workflow.test_command` was set or how to enable targeted tests.
 4. **Clean tree.** Run `git status --porcelain`.
    - Commit only these setup files, where they are new or changed: `.planning/turbo/config.json`, `.planning/turbo/.gitignore` and `.planning/config.json` (the GSD config that `init` changed). Use the project's own commit conventions.

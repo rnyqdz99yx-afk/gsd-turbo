@@ -12,12 +12,18 @@ function env() {
   fs.writeFileSync(path.join(core, 'VERSION'), '1.16.0');
   const root = tmpDir('proj');
   fs.mkdirSync(path.join(root, '.planning'));
+  // stage 2: full mode also needs the installed turbo-phase skill and turbo-uat agent
+  fs.mkdirSync(path.join(home, 'skills', 'turbo-phase'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'skills', 'turbo-phase', 'SKILL.md'), 'x');
+  fs.mkdirSync(path.join(home, 'agents'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'agents', 'turbo-uat.md'), 'x');
   return { home, core, root };
 }
 
 const execOk = (version) => (cmd, args) => {
   if (cmd === 'git') return 'git version 2.45.0';
   if (args.includes('manager')) return '{"phases":[]}';
+  if (args.includes('render-hooks')) return '{"activeHooks":[]}';
   if (args.includes('agents')) return '[]';
   if (args.includes('--version')) return `${version} (Claude Code)`;
   return '';

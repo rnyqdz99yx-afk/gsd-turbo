@@ -14,13 +14,17 @@ import { doctor } from '../lib/doctor.mjs';
 import { runDaemon } from '../lib/supervisor.mjs';
 import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
+import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
+import { ownerRequestFiles } from '../lib/uat.mjs';
+import { clearAttempts } from '../lib/phase-progress.mjs';
+import { gatesLeftovers } from '../lib/gates.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|test-changed> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|test-changed|phase-step|staleness|gates|jobs|uat> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy']);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy', '--mode']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const CONFIG_ERROR = /^invalid turbo config /;
@@ -144,7 +148,7 @@ function clearDaemonPid(root, state) {
 function printStatus(sup, running) {
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.finished ? ' · milestone finished' : ''}${sup.halted ? ' · halted' : ''}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
-  if (sup.lane) out(`lane: phase ${sup.lane.phase} · session ${sup.lane.sessionId} · restarts ${sup.lane.restarts} · since ${sup.lane.launchedAt}\n  watch: claude attach ${sup.lane.sessionId}`);
+  if (sup.lane) out(`lane: phase ${sup.lane.phase} · session ${sup.lane.sessionId} · restarts ${sup.lane.restarts} · mode ${sup.lane.mode || 'safe'} · since ${sup.lane.launchedAt}\n  watch: claude attach ${sup.lane.sessionId}`);
 }
 
 function fingerprint(root) {
@@ -162,14 +166,14 @@ function fingerprint(root) {
   };
 }
 
-function makeCtx(root) {
+function makeCtx(root, mode = 'safe') {
   const config = runtimeConfig(loadConfig(root));
   const core = gsdCoreDir(root);
   const claude = createClaude({ bin: resolveBin() });
   ensureDir(logsDir(root));
   const logFile = path.join(logsDir(root), 'supervisor.log');
   return {
-    root, config, turboRun: `node ${shQuote(SELF.replace(/\\/g, '/'))}`,
+    root, config, mode: mode === 'full' ? 'full' : 'safe', turboRun: `node ${shQuote(SELF.replace(/\\/g, '/'))}`,
     deps: {
       loadPhases: () => {
         if (!core) throw new Error('gsd-core not found');
@@ -224,7 +228,7 @@ async function start(root) {
   ensureDir(logsDir(root));
   const fd = fs.openSync(path.join(logsDir(root), 'supervisor.log'), 'a');
   const spawnedAt = Date.now();
-  const child = spawn(process.execPath, [SELF, 'daemon', '--project', root], { cwd: root, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
+  const child = spawn(process.execPath, [SELF, 'daemon', '--project', root, '--mode', r.mode === 'full' ? 'full' : 'safe'], { cwd: root, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
   let ended = null;
   child.once('exit', (code, signal) => { ended = signal ? `signal ${signal}` : `exit code ${code}`; });
   child.once('error', (e) => { ended = e.code || e.message; });
@@ -272,8 +276,8 @@ function leaseSleep(root, log) {
   };
 }
 
-async function daemon(root) {
-  const ctx = makeCtx(root);
+async function daemon(root, mode = 'safe') {
+  const ctx = makeCtx(root, mode);
   const poll = ctx.config.poll_seconds;
   const lock = acquireLock(root, poll);
   if (!lock.ok) { out(`already running${lock.pid ? ` (pid ${lock.pid})` : ''}`); return 0; }
@@ -334,6 +338,13 @@ function projectLaneAgents(agents, root) {
   const prefix = laneSessionName(root, '');
   const home = dirKey(root);
   return agents.filter((a) => String(a.name).startsWith(prefix) && Boolean(a.cwd) && dirKey(a.cwd) === home);
+}
+
+// A phase stopped by the owner or a crashed lane can leave GSD's gates or docs commits off; they stay off until
+// restored by hand, so status and stop name them with the command. Never restored here.
+function printLeftovers({ gates, docs }) {
+  for (const p of gates) out(`gates off: phase ${p} (run: turbo-run gates restore ${p})`);
+  for (const p of docs) out(`docs commits off: phase ${p} (run: turbo-run gates docs-restore ${p})`);
 }
 
 // Runs once the daemon is gone. Stops the lane recorded before and after its death, and every
@@ -417,6 +428,10 @@ async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   const root = projectArg(args);
   const pos = positional(args);
+  if (PHASE_COMMANDS.has(cmd)) {
+    if (!root) die('no .planning directory found');
+    return runPhaseCommand(cmd, args, { root });
+  }
   switch (cmd) {
     case 'doctor': {
       const r = doctor({ root });
@@ -477,16 +492,20 @@ async function main() {
     }
     case 'daemon': {
       if (!root) die('no .planning directory found');
-      return daemon(root);
+      return daemon(root, flag(args, '--mode', 'safe'));
     }
     case 'status': {
       if (!root) die('no .planning directory found');
       const config = runtimeConfig(loadConfig(root)); // a corrupt config stops the daemon; report it instead of a normal status
       const sup = readJson(supPath(root), null);
       const running = supAlive(sup, config.poll_seconds);
-      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup }, null, 2)); return 0; }
-      if (!sup) { out('supervisor: not running (never started)'); return 0; }
-      printStatus(sup, running);
+      const ownerRequests = ownerRequestFiles(root); // a phase run by hand has one without a supervisor
+      const leftovers = gatesLeftovers(root);
+      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ownerRequests, gatesOff: leftovers.gates }, null, 2)); return 0; }
+      if (!sup) out('supervisor: not running (never started)');
+      else printStatus(sup, running);
+      for (const f of ownerRequests) out(`owner request: ${f}`);
+      printLeftovers(leftovers);
       return 0;
     }
     case 'stop': {
@@ -495,7 +514,9 @@ async function main() {
       stopDaemon(root, sup);
       // supervisor.json may be missing (never started) or unreadable for any reason: this
       // project's lane sessions are swept either way
-      return stopLanes(root, sup);
+      const code = stopLanes(root, sup);
+      printLeftovers(gatesLeftovers(root));
+      return code;
     }
     case 'lane-status': {
       const [phase, status] = pos;
@@ -519,6 +540,8 @@ async function main() {
       // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
       stopDaemon(root, readJson(supPath(root), null));
       fs.rmSync(path.join(runDir(root), `p${id}.json`), { force: true });
+      // the owner's resume gives turbo-phase's bounded rounds a fresh budget; the steps done stay done
+      clearAttempts(root, id);
       const sup = readJson(supPath(root), null);
       if (sup) {
         const lane = sup.lane && String(sup.lane.phase) === id ? { ...sup.lane, notified: {}, restarts: 0, forceRelaunch: true } : sup.lane || null;

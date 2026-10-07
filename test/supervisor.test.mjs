@@ -394,6 +394,21 @@ test('a lane whose phase left the roadmap keeps a live session, and halts once i
   assert.deepEqual(h.notes, [{ key: 'phaseMissing', vars: { phase: '2', id: 's1' } }]);
 });
 
+test('a finished (blocked) session of a phase that left the roadmap halts like an ended one, even with a fresh paused-context record', async () => {
+  const h = harness({ phases: [P('2'), P('3')] });
+  let s = await tick(fresh(), h.ctx);
+  h.phases = [P('3')];
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'paused-context', { at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  assert.equal(s.halted, true);
+  assert.equal(s.lane, null);
+  assert.equal(h.launched.length, 1, 'never relaunched for a phase GSD no longer lists');
+  assert.deepEqual(h.removed, [], 'the session is kept for inspection');
+  assert.deepEqual(h.notes, [{ key: 'phaseMissing', vars: { phase: '2', id: 's1' } }]);
+});
+
 test('adoption takes launchedAt from the session start, so a record it wrote before adoption counts', async () => {
   const h = harness({ phases: [P('2')] });
   const working = h.ctx.deps.claude.launchBg;
@@ -538,6 +553,26 @@ test('forceRelaunch never adopts the session it has just removed', async () => {
   assert.equal(s.lane.sessionId, 's2');
 });
 
+test('forceRelaunch of a finished (blocked) session that rm cannot remove launches nothing until rm succeeds', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  s.lane.forceRelaunch = true;
+  const rm = h.ctx.deps.claude.rm;
+  h.ctx.deps.claude.rm = () => { throw new Error('claude rm failed: permission denied'); };
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.equal(s.lane.forceRelaunch, true, 'the resume is still pending');
+  assert.ok(h.logs.some((l) => /tick error: claude rm failed/.test(l)), h.logs.join('\n'));
+  h.ctx.deps.claude.rm = rm;
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2);
+  assert.equal(s.lane.sessionId, 's2');
+  assert.equal(s.lane.forceRelaunch, false);
+  assert.deepEqual(h.agents.map((a) => a.id), ['s2']);
+});
+
 test('failed session notifies and halts', async () => {
   const h = harness({ phases: [P('2')] });
   let s = await tick(fresh(), h.ctx);
@@ -545,6 +580,137 @@ test('failed session notifies and halts', async () => {
   s = await tick(s, h.ctx);
   assert.equal(s.halted, true);
   assert.equal(h.notes.at(-1).key, 'laneFailed');
+});
+
+// A lane that writes its record and ends its turn stays listed as state "blocked" (Claude Code 2.1.292).
+test('blocked session with a fresh needs-owner record: one laneNeedsOwner with its reason, never laneBlocked', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'owner sign-off', at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify + 1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, [{ key: 'laneNeedsOwner', vars: { phase: '2', reason: 'owner sign-off' } }]);
+  assert.equal(h.launched.length, 1);
+  assert.deepEqual(h.removed, []);
+});
+
+test('blocked session with a fresh paused-context record is removed, then the lane is relaunched', async () => {
+  const h = harness({ phases: [P('2')] });
+  const order = [];
+  const { rm, launchBg } = h.ctx.deps.claude;
+  h.ctx.deps.claude.rm = (id) => { order.push(`rm ${id}`); return rm(id); };
+  h.ctx.deps.claude.launchBg = (opts, cwd) => { const id = launchBg(opts, cwd); order.push(`launch ${id}`); return id; };
+  let s = await tick(fresh(), h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'paused-context', { reason: 'ctx 56%', at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  h.fp = 'B';
+  s = await tick(s, h.ctx);
+  assert.deepEqual(order, ['launch s1', 'rm s1', 'launch s2']);
+  assert.equal(s.lane.sessionId, 's2');
+  assert.match(h.launched[1].prompt, /HANDOFF/);
+  assert.deepEqual(h.agents.map((a) => a.id), ['s2']);
+});
+
+test('a blocked paused-context session that rm cannot remove is never relaunched next to', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'paused-context', { at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  const rm = h.ctx.deps.claude.rm;
+  h.ctx.deps.claude.rm = () => { throw new Error('claude rm failed: permission denied'); };
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.ok(h.logs.some((l) => /tick error: claude rm failed/.test(l)), h.logs.join('\n'));
+  h.ctx.deps.claude.rm = rm;
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2);
+  assert.equal(s.lane.sessionId, 's2');
+});
+
+test('blocked session with a fresh failed record notifies laneFailed and halts', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'failed', { reason: 'tests broke', at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  assert.equal(s.halted, true);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneFailed']);
+  assert.equal(h.launched.length, 1);
+});
+
+test('blocked session with a stale needs-owner record waits as blocked; a working one with a fresh record runs', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'old reason', at: '2025-12-31T23:59:00.000Z' });
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify + 1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneBlocked']);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'owner sign-off', at: '2026-01-01T00:11:00.000Z' });
+  h.agents[0].state = 'working';
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneBlocked']);
+  assert.equal(s.lane.blockedSince, null);
+  assert.equal(h.launched.length, 1);
+});
+
+// Claude Code 2.1.292 lists a session that finished its turn as state "blocked", status idle.
+test('a finished (blocked) session on a completed phase: removed before phaseDone, the next phase gets its own session', async () => {
+  const h = harness({ phases: [P('2'), P('3', ['2'])] });
+  const order = [];
+  const { rm } = h.ctx.deps.claude;
+  h.ctx.deps.claude.rm = (id) => { order.push(`rm ${id}`); return rm(id); };
+  const notify = h.ctx.deps.notify;
+  h.ctx.deps.notify = async (key, vars) => { order.push(key); return notify(key, vars); };
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  h.phases[0].complete = true;
+  s = await tick(s, h.ctx);
+  assert.deepEqual(order, ['rm s1', 'phaseDone']);
+  assert.equal(s.lane, null);
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.phase, '3');
+  assert.equal(s.lane.sessionId, 's2');
+  assert.deepEqual(h.agents.map((a) => a.id), ['s2']);
+});
+
+test('a finished (blocked) session that rm cannot remove keeps the lane: no phaseDone, no next launch, retried', async () => {
+  const h = harness({ phases: [P('2'), P('3', ['2'])] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  h.phases[0].complete = true;
+  const rm = h.ctx.deps.claude.rm;
+  h.ctx.deps.claude.rm = () => { throw new Error('claude rm failed: permission denied'); };
+  s = await tick(s, h.ctx);
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.phase, '2');
+  assert.deepEqual(h.notes, []);
+  assert.equal(h.launched.length, 1);
+  h.ctx.deps.claude.rm = rm;
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane, null);
+  assert.deepEqual(h.notes.map((x) => x.key), ['phaseDone']);
+  assert.deepEqual(h.agents, []);
+});
+
+test('a finished (blocked) safe-mode session on a human_needed phase: one laneNeedsOwner, the session kept', async () => {
+  const h = harness({ phases: [P('2', [], false, 'human_needed')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify + 1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, [{ key: 'laneNeedsOwner', vars: { phase: '2', reason: 'human verification' } }]);
+  assert.deepEqual(h.removed, []);
+  assert.equal(h.launched.length, 1);
 });
 
 test('milestone done when all phases complete', async () => {

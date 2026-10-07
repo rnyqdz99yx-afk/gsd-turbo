@@ -94,6 +94,7 @@ function fakeGsd() {
     process.stdout.write(b.configGet.out);
     if (b.configGet.exit) { console.error('config-get broke'); process.exitCode = b.configGet.exit; }
   } else if (args[0] === 'init' && args[1] === 'manager') process.stdout.write(JSON.stringify({ milestone_version: 'v1', phases: b.phases }));
+  else if (args[0] === 'loop' && args[1] === 'render-hooks') process.stdout.write(JSON.stringify({ point: args[2], activeHooks: [] }));
   else if (args[0] !== 'config-set') process.exitCode = 2;
 }
 
@@ -122,6 +123,12 @@ function fakeProject({
   // win32: an npm-style shim that resolveBin maps to node + claude-fake.cjs (never run by cmd.exe)
   fs.writeFileSync(path.join(bin, 'claude.cmd'), '@"%dp0%\\claude-fake.cjs" %*\r\n');
   fs.writeFileSync(path.join(bin, 'claude'), `#!/usr/bin/env node\n(${fakeClaude})();\n`, { mode: 0o755 });
+  // stage 2: doctor reports full mode only with the turbo-phase skill and the turbo-uat agent installed
+  const home = path.join(root, 'claude-home');
+  fs.mkdirSync(path.join(home, 'skills', 'turbo-phase'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'skills', 'turbo-phase', 'SKILL.md'), 'x');
+  fs.mkdirSync(path.join(home, 'agents'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'agents', 'turbo-uat.md'), 'x');
   const env = { ...process.env, [PATH_KEY]: `${bin}${path.delimiter}${process.env[PATH_KEY]}`, CLAUDE_CONFIG_DIR: path.join(root, 'claude-home') };
   return {
     root,
@@ -452,6 +459,36 @@ test('stop sweeps this project\'s alive lane sessions even when supervisor.json 
   assert.deepEqual(p.claudeCalls().filter((x) => x[0] === 'stop').map((x) => x[1]), ['late01', 'late01']);
 });
 
+test('status and stop name the GSD gates and docs commits a stopped phase left off, and never restore them (I4)', async () => {
+  const p = fakeProject();
+  const gatesDir = path.join(p.root, '.planning', 'turbo', 'gates');
+  const docs = path.join(runDirOf(p.root), 'docs-p4.json');
+  fs.mkdirSync(gatesDir, { recursive: true });
+  fs.mkdirSync(runDirOf(p.root), { recursive: true });
+  const state = JSON.stringify({ phase: '3', original: { 'workflow.code_review': true } });
+  fs.writeFileSync(path.join(gatesDir, 'p3.json'), state);
+  fs.writeFileSync(docs, JSON.stringify({ key: 'phase_commit_docs.4', original: '__turbo_absent__' }));
+  const want = ['gates off: phase 3 (run: turbo-run gates restore 3)', 'docs commits off: phase 4 (run: turbo-run gates docs-restore 4)'];
+  // never started, then with a supervisor record: both text views list the leftovers
+  for (const sup of [null, { lane: null, finished: true, halted: false, pid: null }]) {
+    if (sup) writeSup(p.root, sup);
+    const text = run(['status'], p.root, p.env);
+    for (const l of want) assert.ok(text.includes(`${l}\n`), text);
+    assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, p.env)).gatesOff, ['3']);
+  }
+  const r = await runAsync(['stop'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  for (const l of want) assert.ok(r.stdout.includes(`${l}\n`), r.stdout);
+  assert.equal(fs.readFileSync(path.join(gatesDir, 'p3.json'), 'utf8'), state, 'never restored by status or stop');
+  assert.ok(fs.existsSync(docs));
+  assert.equal(p.gsdCalls().length, 0, 'no gsd-tools call: nothing was restored');
+  fs.rmSync(gatesDir, { recursive: true });
+  fs.rmSync(docs);
+  assert.doesNotMatch(run(['status'], p.root, p.env), /off: phase/);
+  assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, p.env)).gatesOff, []);
+  assert.doesNotMatch((await runAsync(['stop'], p.root, p.env)).stdout, /off: phase/);
+});
+
 test('a daemon that dies on a fatal error notifies the owner', async () => {
   const p = fakeProject({ config: { notify: { desktop: true, telegram: false } } });
   fs.mkdirSync(path.join(runDirOf(p.root), 'supervisor.json'), { recursive: true }); // state cannot be written
@@ -519,12 +556,16 @@ test('resume with a dead daemon pid clears the phase and arms a forced relaunch'
   const root = plainProject();
   writeSup(root, { pid: DEAD_PID, updatedAt: ago(0), halted: true, lane: { phase: '4', sessionId: 'abc', restarts: 3, notified: { owner: true } } });
   fs.writeFileSync(path.join(runDirOf(root), 'p4.json'), JSON.stringify({ phase: '4', status: 'failed' }));
+  // the owner's resume gives the stopped step a fresh budget of bounded rounds; the steps done stay done
+  fs.writeFileSync(path.join(runDirOf(root), 'phase-p4.json'), JSON.stringify({ phase: '4', done: ['freshness'], notes: {}, attempts: { fix: 4 }, updatedAt: ago(1) }));
   assert.match(run(['resume', '04'], root), /phase 4 cleared; run: turbo-run start/);
   const sup = readSup(root);
   assert.equal(sup.pid, null);
   assert.equal(sup.halted, false);
   assert.deepEqual(sup.lane, { phase: '4', sessionId: 'abc', restarts: 0, notified: {}, forceRelaunch: true });
   assert.equal(fs.existsSync(path.join(runDirOf(root), 'p4.json')), false);
+  const progress = readJsonFile(path.join(runDirOf(root), 'phase-p4.json'));
+  assert.deepEqual([progress.done, progress.attempts], [['freshness'], {}]);
 });
 
 test('resume with a stale heartbeat kills nothing and revokes the lock lease', async (t) => {
@@ -570,6 +611,24 @@ test('resume --start launches a daemon that relaunches the lane; stop ends it', 
   assert.equal(stop.code, 0, stop.stderr);
   assert.equal(readSup(p.root).pid, null);
   assert.equal(pidExists(sup.pid), false);
+});
+
+test('start passes doctor\'s full mode to the daemon: the lane runs the turbo-phase skill', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  const r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /started supervisor pid \d+ \(mode full\)/);
+  const bg = await waitFor(() => p.claudeCalls().find((a) => a[0] === '--bg'), 15000);
+  assert.ok(bg, logOf(p.root));
+  assert.equal(bg.at(-1), 'Run the turbo-phase skill with arguments: 4');
+  assert.match(bg[bg.indexOf('--append-system-prompt') + 1], /lane-status 4 done .*close step/);
+  // the settings JSON crosses a real process boundary intact (on win32 too: the shim resolves to node, no cmd.exe)
+  assert.deepEqual(JSON.parse(bg[bg.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' } });
+  const sup = await waitFor(() => { const s = readSup(p.root); return s?.lane?.mode ? s : null; }, 15000);
+  assert.equal(sup?.lane?.mode, 'full', logOf(p.root));
+  const stop = await runAsync(['stop'], p.root, p.env);
+  assert.equal(stop.code, 0, stop.stderr);
 });
 
 test('start refuses an unsupported environment with exit 2 and the failed checks', async () => {

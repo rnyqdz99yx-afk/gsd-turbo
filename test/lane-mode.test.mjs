@@ -132,7 +132,7 @@ test('supervisor safe mode never relaunches or adopts a full lane on a phase GSD
   assert.equal(h.launched.length, 0);
   assert.equal(s.lane.sessionId, 's0');
   assert.equal(s.lane.mode, 'full');
-  assert.deepEqual(h.notes, [{ key: 'laneDowngraded', vars: { phase: '2' } }]);
+  assert.deepEqual(h.notes, [{ key: 'laneDowngraded', vars: { phase: '2', turboRun: 'node x' } }]);
   h.fp = 'B';
   s = await tick(s, h.ctx);
   assert.equal(h.launched.length, 0, 'no safe relaunch: gsd-autonomous would end at once on the completed phase');
@@ -171,20 +171,71 @@ test('an adopted live session keeps the full mode; when it ends on a completed p
   assert.ok(s.lane && s.lane.mode === 'full');
 });
 
+test('an adopted session takes the stricter mode: a safe lane adopting its own timed-out turbo-phase launch records full', async () => {
+  const h = harness({ phases: [P('2')], mode: 'full' });
+  let s = fullLane(h);
+  s.lane.mode = 'safe'; // recorded by an earlier safe-mode supervisor
+  const launch = h.ctx.deps.claude.launchBg;
+  let first = true;
+  h.ctx.deps.claude.launchBg = (o) => {
+    const id = launch(o); // the session registers ...
+    if (first) { first = false; throw new Error('claude --bg timed out after 60000 ms'); } // ... then --bg times out
+    return id;
+  };
+  h.fp = 'B';
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.equal(h.launched[0].prompt, 'Resume phase 2. Run the turbo-phase skill with arguments: 2 --resume');
+  assert.equal(s.lane.sessionId, 's0', 'a failed launch keeps the previous state');
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1, 'adopted, not launched again');
+  assert.equal(s.lane.sessionId, 's1');
+  assert.equal(s.lane.mode, 'full', 'the adopted session runs turbo-phase');
+  h.phases[0].complete = true; // GSD's verifier passed inside execute-phase (G9)
+  h.agents.find((a) => a.id === 's1').state = 'done'; // paused for context before its fan-out
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.ok(!h.notes.some((x) => x.key === 'phaseDone'), 'GSD completion alone never ends a full lane');
+  assert.equal(h.launched.length, 2);
+  assert.equal(h.launched[1].prompt, 'Resume phase 2. Run the turbo-phase skill with arguments: 2 --resume');
+});
+
+test('a held lane in the forced-relaunch state ends on the owner\'s done record without a new session', async () => {
+  const h = harness({ phases: [P('2', [], true)], mode: 'safe' });
+  let s = fullLane(h);
+  s.lane.forceRelaunch = true; // resume N --start while doctor still reports safe
+  s = await tick(s, h.ctx);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneDowngraded']);
+  assert.equal(h.launched.length, 0);
+  h.advance(1);
+  // the owner ran the remaining steps and recorded the lane done
+  writeLaneStatus(h.root, '2', 'done', { at: h.ctx.deps.now().toISOString() });
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 0, 'no needless gsd-autonomous session');
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneDowngraded', 'phaseDone']);
+  assert.equal(s.lane, null);
+});
+
 test('the downgrade notice names the way out and never claims the rest of the phase is done', () => {
   const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
   const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
   assert.deepEqual(holes(msg('ru', 'laneDowngraded', keep)), holes(msg('en', 'laneDowngraded', keep)));
-  const en = msg('en', 'laneDowngraded', { phase: '2' });
+  // the commands are runnable as printed: the supervisor's own turbo-run invocation, never a bare turbo-run (not on PATH)
+  const vars = { phase: '2', turboRun: "node '/t/turbo-run.mjs'" };
+  const en = msg('en', 'laneDowngraded', vars);
   assert.equal(en.title, 'Phase 2 waits for full mode');
-  assert.match(en.body, /^GSD marked phase 2 complete before turbo's gates finished, and doctor now reports safe mode/);
-  assert.match(en.body, /\/turbo-autonomous resume 2 .*turbo-run lane-status 2 done\)$/);
+  assert.match(en.body, /^GSD marked phase 2 complete before turbo-phase ran its gate fan-out and UAT, and doctor now reports safe mode/);
+  assert.match(en.body, /Fix what node '\/t\/turbo-run\.mjs' doctor reports, then run: \/turbo-autonomous resume 2\./);
+  assert.match(en.body, /steps restore, fanout, fix, final-gate and uat yourself, then: node '\/t\/turbo-run\.mjs' lane-status 2 done$/);
   assert.doesNotMatch(en.body, /Everything else/);
-  const ru = msg('ru', 'laneDowngraded', { phase: '2' });
+  const ru = msg('ru', 'laneDowngraded', vars);
   assert.equal(ru.title, 'Фаза 2 ждёт полного режима');
-  assert.match(ru.body, /^GSD отметил фазу 2 завершённой раньше, чем turbo прогнал гейты/);
-  assert.match(ru.body, /\/turbo-autonomous resume 2 .*turbo-run lane-status 2 done\)$/);
+  assert.match(ru.body, /^GSD отметил фазу 2 завершённой раньше, чем turbo-phase прогнал fan-out гейтов и UAT/);
+  assert.match(ru.body, /Исправь то, что показывает node '\/t\/turbo-run\.mjs' doctor, и запусти: \/turbo-autonomous resume 2\./);
+  assert.match(ru.body, /шаги turbo-phase restore, fanout, fix, final-gate и uat, затем: node '\/t\/turbo-run\.mjs' lane-status 2 done$/);
   assert.doesNotMatch(ru.body, /Остальное в фазе сделано/);
+  for (const m of [en, ru]) assert.doesNotMatch(m.body, /(^|[\s(])turbo-run /);
 });
 
 test('a full lane with its fresh done record ends in safe mode too', async () => {

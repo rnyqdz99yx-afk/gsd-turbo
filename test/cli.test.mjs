@@ -459,6 +459,36 @@ test('stop sweeps this project\'s alive lane sessions even when supervisor.json 
   assert.deepEqual(p.claudeCalls().filter((x) => x[0] === 'stop').map((x) => x[1]), ['late01', 'late01']);
 });
 
+test('status and stop name the GSD gates and docs commits a stopped phase left off, and never restore them (I4)', async () => {
+  const p = fakeProject();
+  const gatesDir = path.join(p.root, '.planning', 'turbo', 'gates');
+  const docs = path.join(runDirOf(p.root), 'docs-p4.json');
+  fs.mkdirSync(gatesDir, { recursive: true });
+  fs.mkdirSync(runDirOf(p.root), { recursive: true });
+  const state = JSON.stringify({ phase: '3', original: { 'workflow.code_review': true } });
+  fs.writeFileSync(path.join(gatesDir, 'p3.json'), state);
+  fs.writeFileSync(docs, JSON.stringify({ key: 'phase_commit_docs.4', original: '__turbo_absent__' }));
+  const want = ['gates off: phase 3 (run: turbo-run gates restore 3)', 'docs commits off: phase 4 (run: turbo-run gates docs-restore 4)'];
+  // never started, then with a supervisor record: both text views list the leftovers
+  for (const sup of [null, { lane: null, finished: true, halted: false, pid: null }]) {
+    if (sup) writeSup(p.root, sup);
+    const text = run(['status'], p.root, p.env);
+    for (const l of want) assert.ok(text.includes(`${l}\n`), text);
+    assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, p.env)).gatesOff, ['3']);
+  }
+  const r = await runAsync(['stop'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  for (const l of want) assert.ok(r.stdout.includes(`${l}\n`), r.stdout);
+  assert.equal(fs.readFileSync(path.join(gatesDir, 'p3.json'), 'utf8'), state, 'never restored by status or stop');
+  assert.ok(fs.existsSync(docs));
+  assert.equal(p.gsdCalls().length, 0, 'no gsd-tools call: nothing was restored');
+  fs.rmSync(gatesDir, { recursive: true });
+  fs.rmSync(docs);
+  assert.doesNotMatch(run(['status'], p.root, p.env), /off: phase/);
+  assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, p.env)).gatesOff, []);
+  assert.doesNotMatch((await runAsync(['stop'], p.root, p.env)).stdout, /off: phase/);
+});
+
 test('a daemon that dies on a fatal error notifies the owner', async () => {
   const p = fakeProject({ config: { notify: { desktop: true, telegram: false } } });
   fs.mkdirSync(path.join(runDirOf(p.root), 'supervisor.json'), { recursive: true }); // state cannot be written

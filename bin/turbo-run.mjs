@@ -17,6 +17,7 @@ import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
 import { clearAttempts } from '../lib/phase-progress.mjs';
+import { gatesLeftovers } from '../lib/gates.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|test-changed|phase-step|staleness|gates|jobs|uat> [args]';
@@ -339,6 +340,13 @@ function projectLaneAgents(agents, root) {
   return agents.filter((a) => String(a.name).startsWith(prefix) && Boolean(a.cwd) && dirKey(a.cwd) === home);
 }
 
+// A phase stopped by the owner or a crashed lane can leave GSD's gates or docs commits off; they stay off until
+// restored by hand, so status and stop name them with the command. Never restored here.
+function printLeftovers({ gates, docs }) {
+  for (const p of gates) out(`gates off: phase ${p} (run: turbo-run gates restore ${p})`);
+  for (const p of docs) out(`docs commits off: phase ${p} (run: turbo-run gates docs-restore ${p})`);
+}
+
 // Runs once the daemon is gone. Stops the lane recorded before and after its death, and every
 // alive lane session of this project: a daemon stopped while launching never records the session
 // it started. A failed `claude stop` counts as stopped only when claude no longer lists the
@@ -492,10 +500,12 @@ async function main() {
       const sup = readJson(supPath(root), null);
       const running = supAlive(sup, config.poll_seconds);
       const ownerRequests = ownerRequestFiles(root); // a phase run by hand has one without a supervisor
-      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ownerRequests }, null, 2)); return 0; }
+      const leftovers = gatesLeftovers(root);
+      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ownerRequests, gatesOff: leftovers.gates }, null, 2)); return 0; }
       if (!sup) out('supervisor: not running (never started)');
       else printStatus(sup, running);
       for (const f of ownerRequests) out(`owner request: ${f}`);
+      printLeftovers(leftovers);
       return 0;
     }
     case 'stop': {
@@ -504,7 +514,9 @@ async function main() {
       stopDaemon(root, sup);
       // supervisor.json may be missing (never started) or unreadable for any reason: this
       // project's lane sessions are swept either way
-      return stopLanes(root, sup);
+      const code = stopLanes(root, sup);
+      printLeftovers(gatesLeftovers(root));
+      return code;
     }
     case 'lane-status': {
       const [phase, status] = pos;

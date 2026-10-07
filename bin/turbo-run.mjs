@@ -16,6 +16,7 @@ import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
+import { clearAttempts } from '../lib/phase-progress.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|test-changed|phase-step|staleness|gates|jobs|uat> [args]';
@@ -527,6 +528,8 @@ async function main() {
       // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
       stopDaemon(root, readJson(supPath(root), null));
       fs.rmSync(path.join(runDir(root), `p${id}.json`), { force: true });
+      // the owner's resume gives turbo-phase's bounded rounds a fresh budget; the steps done stay done
+      clearAttempts(root, id);
       const sup = readJson(supPath(root), null);
       if (sup) {
         const lane = sup.lane && String(sup.lane.phase) === id ? { ...sup.lane, notified: {}, restarts: 0, forceRelaunch: true } : sup.lane || null;

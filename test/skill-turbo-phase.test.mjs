@@ -22,6 +22,9 @@ test('turbo-phase skill: frontmatter, every step in order, the commands it drive
     'args="N --no-transition"', 'args="N --gaps-only --no-transition"', 'args="N --chunked"', '--research-phase N', 'discuss-phase-assumptions.md',
     'auto_advance', 'args="N --fix"', 'Verify all open threats', 'gsd-verify-work', 'planner-revision.md', 'ONE message', 'gsd-tools commit',
     'gsd-tools phase uat-passed N --uat-only',
+    // bounded rounds count across sessions (I1)
+    'turbo-run phase-step N --attempt execute', 'turbo-run phase-step N --attempt fix', 'turbo-run phase-step N --attempt final-gate',
+    'turbo-run phase-step N --attempt uat', 'budget used up across sessions',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
   assert.ok(!/gsd-turbo-/.test(s));

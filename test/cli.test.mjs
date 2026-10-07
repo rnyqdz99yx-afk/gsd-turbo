@@ -526,12 +526,16 @@ test('resume with a dead daemon pid clears the phase and arms a forced relaunch'
   const root = plainProject();
   writeSup(root, { pid: DEAD_PID, updatedAt: ago(0), halted: true, lane: { phase: '4', sessionId: 'abc', restarts: 3, notified: { owner: true } } });
   fs.writeFileSync(path.join(runDirOf(root), 'p4.json'), JSON.stringify({ phase: '4', status: 'failed' }));
+  // the owner's resume gives the stopped step a fresh budget of bounded rounds; the steps done stay done
+  fs.writeFileSync(path.join(runDirOf(root), 'phase-p4.json'), JSON.stringify({ phase: '4', done: ['freshness'], notes: {}, attempts: { fix: 4 }, updatedAt: ago(1) }));
   assert.match(run(['resume', '04'], root), /phase 4 cleared; run: turbo-run start/);
   const sup = readSup(root);
   assert.equal(sup.pid, null);
   assert.equal(sup.halted, false);
   assert.deepEqual(sup.lane, { phase: '4', sessionId: 'abc', restarts: 0, notified: {}, forceRelaunch: true });
   assert.equal(fs.existsSync(path.join(runDirOf(root), 'p4.json')), false);
+  const progress = readJsonFile(path.join(runDirOf(root), 'phase-p4.json'));
+  assert.deepEqual([progress.done, progress.attempts], [['freshness'], {}]);
 });
 
 test('resume with a stale heartbeat kills nothing and revokes the lock lease', async (t) => {

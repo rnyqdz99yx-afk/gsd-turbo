@@ -27,7 +27,7 @@ Repeat:
 
 1. `turbo-run phase-step N` prints the next step. On `next none` the phase is closed: run `turbo-run lane-status N done --reason "already closed"` and stop.
 2. Context: if your context usage is at or above the stop percentage in the lane rules (55 percent when you run by hand), do not start the step. Commit finished work, run the `gsd-pause-work` skill, run `turbo-run lane-status N paused-context --reason "before <step>"`, and end your turn.
-3. Run the step's section below. Every section is safe to run again from its start.
+3. Run the step's section below. Every section is safe to run again from its start. Its bounded rounds (gap closure, fix iterations, final-gate rounds, the UAT repeat) are counted with `turbo-run phase-step N --attempt <step>`, which keeps the count across sessions: a restarted step goes on from the earlier sessions' count, and only the owner's `/turbo-autonomous resume N` starts a fresh budget.
 4. `turbo-run phase-step N --done <step> --note "<one line: what happened>"`. The close section marks itself.
 
 ### Stopping early
@@ -93,7 +93,7 @@ Spec §4.3.4; Stage 2 executes through GSD.
 1. `Skill(skill="gsd-execute-phase", args="N --no-transition")`. GSD runs the waves, its post-merge test gate after each wave, its regression gate and its verifier. Once every plan has a summary, turbo's test runner switches to a full run by itself, so the regression gate sees the whole suite (spec §4.7); that rule ends when this step is marked done. GSD may mark the phase complete here (G9); that is not the end of this skill.
 2. `gsd-tools verification status <phase dir>`:
    - `passed` or `human_needed`: done.
-   - `gaps_found`: one gap-closure round (G13): `Skill(skill="gsd-plan-phase", args="N --gaps")` (when it reaches its Auto-Advance Check, do not launch execute-phase; G5), then `Skill(skill="gsd-execute-phase", args="N --gaps-only --no-transition")`, then check again. Still `gaps_found` → **stop for the owner** ("verification gaps remain after one gap-closure round").
+   - `gaps_found`: first `turbo-run phase-step N --attempt execute`. It prints `attempt execute <n>`; `n` above 1 means an earlier session already ran this round → **stop for the owner** ("execute budget used up across sessions: verification gaps remain after one gap-closure round"). Otherwise one gap-closure round (G13): `Skill(skill="gsd-plan-phase", args="N --gaps")` (when it reaches its Auto-Advance Check, do not launch execute-phase; G5), then `Skill(skill="gsd-execute-phase", args="N --gaps-only --no-transition")`, then check again. Still `gaps_found` → **stop for the owner** ("verification gaps remain after one gap-closure round").
    - Anything else: when its `route` is `execute-phase` (`stale`, `missing`), run `Skill(skill="gsd-execute-phase", args="N --no-transition")` once and check again. Still neither `passed` nor `human_needed`, or a status no re-run fixes (`unparseable`, `phase_dir_not_found`) → **fail** with its `next_action`.
 
 ### restore
@@ -120,7 +120,7 @@ Spec §4.6: the gates GSD would run one by one, in parallel.
 Spec §4.6: one finding per commit, tests after every iteration.
 
 1. `turbo-run jobs N outcome --json` (a refusal while the gates are off: as in point 1 of step **fanout**). `reviewFindings` and `securityOpen` both 0: done.
-2. Code-review findings (`reviewFindings` above 0), at most 3 iterations:
+2. Code-review findings (`reviewFindings` above 0), at most 3 iterations. Each iteration starts with `turbo-run phase-step N --attempt fix`: it prints `attempt fix <n>`, and `n` above 3 (iterations counted across sessions) → **stop for the owner** ("fix budget used up across sessions").
    1. A `code-review` entry in the outcome's `unreadable` that says REVIEW.md `is unreadable (` means it proves no review; its count of 1 is not a finding. (A readable REVIEW.md with a count problem takes the normal path from sub-point 2.) Never run `--fix` on it: regenerate it as in point 8 of step **fanout** and read `turbo-run jobs N outcome --json` again. Still unreadable → leave the code-review fixes, keep the reason for the note, and go to point 3.
    2. `Skill(skill="gsd-code-review", args="N --fix")`. With a REVIEW.md present it applies the findings; gsd-code-fixer commits one finding per commit (G11).
    3. `turbo-run test-changed`. Red: find the fix commit that broke it, then fix forward in one commit or `git revert --no-edit <sha>`, and run it again. At most 2 such rounds; still red → `git revert --no-edit` every fix commit of this iteration, newest first, and **stop for the owner** ("tests red after the code-review fixes").
@@ -134,9 +134,9 @@ Spec §4.7: the phase's own full run.
 
 Re-verification and gap closure first, the full run last: once execute is done, GSD's own regression gate runs targeted tests only.
 
-1. `gsd-tools verification status <phase dir>`. Route `execute-phase` (`stale` or `missing`: the fixes changed covered code, G9): `Skill(skill="gsd-execute-phase", args="N --no-transition")`; GSD resumes at its gates and re-runs the verifier. The gates are on again, so this re-run goes through GSD's gates one by one; that cost is accepted. Then check again:
+1. `turbo-run phase-step N --attempt final-gate` first, on every pass through points 1 and 2 (the first pass and each red round of point 3): it prints `attempt final-gate <n>`, and `n` above 3 (the first pass and 2 red rounds, counted across sessions) → **stop for the owner** ("final-gate budget used up across sessions"). Then `gsd-tools verification status <phase dir>`. Route `execute-phase` (`stale` or `missing`: the fixes changed covered code, G9): `Skill(skill="gsd-execute-phase", args="N --no-transition")`; GSD resumes at its gates and re-runs the verifier. The gates are on again, so this re-run goes through GSD's gates one by one; that cost is accepted. Then check again:
    - `passed` or `human_needed`: go on.
-   - `gaps_found`: as in point 2 of step **execute**.
+   - `gaps_found`: as in point 2 of step **execute**, without its `--attempt execute` (this pass is counted already).
    - Anything else → **fail** with its `next_action`.
 2. `TURBO_FULL=1 turbo-run test-changed`.
 3. Red: at most 2 rounds of finding the cause (systematic debugging), fixing it in one commit, and running points 1 and 2 again. Still red → **fail** ("full test suite red at the end of phase N").
@@ -153,7 +153,7 @@ Spec §6.
 3. `turbo-run uat owner-request N --json`. Keep `needsOwner` and `reason`.
 4. `needsOwner` true → **stop for the owner** with that `reason`, before verify-work. `needsOwner` follows GSD's UAT predicate: it is true while any row is neither `pass`, an `issue`, nor a deferred follow-up. That covers turbo's D items, a live half recorded `[pending]`, and every row GSD left `[pending]` that turbo-uat did not record, D items included. verify-work would stop at the first such row and wait for an answer only the owner may give. The owner runs `/gsd-verify-work N` (signs the D items, completes the session), then `/turbo-autonomous resume N`; this step then starts again from point 1. Deferred C items alone (`counts.checklist`) do not stop the lane: owner-request sends the owner their checklist once, and they pass as deferred follow-ups.
 5. `Skill(skill="gsd-verify-work", args="N")`. Resume the existing session. It completes the session and, with no open issue, marks the phase complete (G12). Keep deferred follow-ups in the UAT file (answer K).
-6. If verify-work found issues (turbo-uat `issue` rows), it plans their gap closure. Then `Skill(skill="gsd-execute-phase", args="N --gaps-only --no-transition")`, then `TURBO_FULL=1 turbo-run test-changed` (red → **fail** ("full test suite red after UAT gap closure")), and repeat points 1–5 once. Issues still open → **stop for the owner** ("UAT issues remain after one gap-closure round").
+6. If verify-work found issues (turbo-uat `issue` rows), it plans their gap closure. Then `turbo-run phase-step N --attempt uat`: it prints `attempt uat <n>`, and `n` above 1 means the one repeat was already used, in this session or an earlier one → **stop for the owner** ("uat budget used up across sessions: UAT issues remain after one gap-closure round"). Otherwise `Skill(skill="gsd-execute-phase", args="N --gaps-only --no-transition")`, then `TURBO_FULL=1 turbo-run test-changed` (red → **fail** ("full test suite red after UAT gap closure")), and repeat points 1–5 once. Issues still open → **stop for the owner** ("UAT issues remain after one gap-closure round").
 7. Otherwise done.
 
 ### close

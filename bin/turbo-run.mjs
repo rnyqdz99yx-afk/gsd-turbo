@@ -21,7 +21,7 @@ const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-statu
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy']);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy', '--mode']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const CONFIG_ERROR = /^invalid turbo config /;
@@ -145,7 +145,7 @@ function clearDaemonPid(root, state) {
 function printStatus(sup, running) {
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.finished ? ' · milestone finished' : ''}${sup.halted ? ' · halted' : ''}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
-  if (sup.lane) out(`lane: phase ${sup.lane.phase} · session ${sup.lane.sessionId} · restarts ${sup.lane.restarts} · since ${sup.lane.launchedAt}\n  watch: claude attach ${sup.lane.sessionId}`);
+  if (sup.lane) out(`lane: phase ${sup.lane.phase} · session ${sup.lane.sessionId} · restarts ${sup.lane.restarts} · mode ${sup.lane.mode || 'safe'} · since ${sup.lane.launchedAt}\n  watch: claude attach ${sup.lane.sessionId}`);
 }
 
 function fingerprint(root) {
@@ -163,14 +163,14 @@ function fingerprint(root) {
   };
 }
 
-function makeCtx(root) {
+function makeCtx(root, mode = 'safe') {
   const config = runtimeConfig(loadConfig(root));
   const core = gsdCoreDir(root);
   const claude = createClaude({ bin: resolveBin() });
   ensureDir(logsDir(root));
   const logFile = path.join(logsDir(root), 'supervisor.log');
   return {
-    root, config, turboRun: `node ${shQuote(SELF.replace(/\\/g, '/'))}`,
+    root, config, mode: mode === 'full' ? 'full' : 'safe', turboRun: `node ${shQuote(SELF.replace(/\\/g, '/'))}`,
     deps: {
       loadPhases: () => {
         if (!core) throw new Error('gsd-core not found');
@@ -225,7 +225,7 @@ async function start(root) {
   ensureDir(logsDir(root));
   const fd = fs.openSync(path.join(logsDir(root), 'supervisor.log'), 'a');
   const spawnedAt = Date.now();
-  const child = spawn(process.execPath, [SELF, 'daemon', '--project', root], { cwd: root, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
+  const child = spawn(process.execPath, [SELF, 'daemon', '--project', root, '--mode', r.mode === 'full' ? 'full' : 'safe'], { cwd: root, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
   let ended = null;
   child.once('exit', (code, signal) => { ended = signal ? `signal ${signal}` : `exit code ${code}`; });
   child.once('error', (e) => { ended = e.code || e.message; });
@@ -273,8 +273,8 @@ function leaseSleep(root, log) {
   };
 }
 
-async function daemon(root) {
-  const ctx = makeCtx(root);
+async function daemon(root, mode = 'safe') {
+  const ctx = makeCtx(root, mode);
   const poll = ctx.config.poll_seconds;
   const lock = acquireLock(root, poll);
   if (!lock.ok) { out(`already running${lock.pid ? ` (pid ${lock.pid})` : ''}`); return 0; }
@@ -482,7 +482,7 @@ async function main() {
     }
     case 'daemon': {
       if (!root) die('no .planning directory found');
-      return daemon(root);
+      return daemon(root, flag(args, '--mode', 'safe'));
     }
     case 'status': {
       if (!root) die('no .planning directory found');

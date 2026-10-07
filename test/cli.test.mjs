@@ -94,6 +94,7 @@ function fakeGsd() {
     process.stdout.write(b.configGet.out);
     if (b.configGet.exit) { console.error('config-get broke'); process.exitCode = b.configGet.exit; }
   } else if (args[0] === 'init' && args[1] === 'manager') process.stdout.write(JSON.stringify({ milestone_version: 'v1', phases: b.phases }));
+  else if (args[0] === 'loop' && args[1] === 'render-hooks') process.stdout.write(JSON.stringify({ point: args[2], activeHooks: [] }));
   else if (args[0] !== 'config-set') process.exitCode = 2;
 }
 
@@ -122,6 +123,12 @@ function fakeProject({
   // win32: an npm-style shim that resolveBin maps to node + claude-fake.cjs (never run by cmd.exe)
   fs.writeFileSync(path.join(bin, 'claude.cmd'), '@"%dp0%\\claude-fake.cjs" %*\r\n');
   fs.writeFileSync(path.join(bin, 'claude'), `#!/usr/bin/env node\n(${fakeClaude})();\n`, { mode: 0o755 });
+  // stage 2: doctor reports full mode only with the turbo-phase skill and the turbo-uat agent installed
+  const home = path.join(root, 'claude-home');
+  fs.mkdirSync(path.join(home, 'skills', 'turbo-phase'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'skills', 'turbo-phase', 'SKILL.md'), 'x');
+  fs.mkdirSync(path.join(home, 'agents'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'agents', 'turbo-uat.md'), 'x');
   const env = { ...process.env, [PATH_KEY]: `${bin}${path.delimiter}${process.env[PATH_KEY]}`, CLAUDE_CONFIG_DIR: path.join(root, 'claude-home') };
   return {
     root,

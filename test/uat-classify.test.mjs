@@ -23,6 +23,7 @@ test('classifyItem: first match wins, strictest first, English and Russian', () 
     ['Реальный платёж проходит', 'D'],
     ['Withdraw 10 USD and the balance page updates', 'D'],
     ['Вывести средства и страница баланса обновляется', 'D'],
+    ['После вывода средств страница баланса обновляется', 'D'],
     ['Owner approves the release on the page', 'D'],
     ['The owner must approve the release on the page', 'D'],
     ['Owner has approved the release and the page shows it', 'D'],
@@ -119,6 +120,24 @@ test('splitItem: owner-only and live word forms split off their observable claus
     ['hermetic', 'A', 'страница открывается'],
     ['live', 'C', 'Отправить на прод'],
   ]);
+});
+
+test('splitItem never lowers the live part below the whole item\'s class', () => {
+  const shape = (t, autonomy) => splitItem(t, { autonomy }).map((p) => [p.part ?? 'whole', p.class]);
+  // the owner-decision match spans a clause separator, so no single clause carries the D
+  for (const t of [
+    'The owner reviews and approves the release on the page and an SMS arrives',
+    'Owner then approves the release on the page and a push notification arrives',
+    'Владелец затем одобряет релиз на странице и смс приходит',
+  ]) assert.deepEqual(shape(t), [['whole', 'D']], t);
+  assert.deepEqual(
+    uatPlan([{ number: 1, name: 'Release approval', expected: 'The owner reviews and approves the release on the page and an SMS arrives', result: 'pending' }])
+      .map((i) => [i.test, i.class, i.split ?? '']),
+    [[1, 'D', '']],
+  );
+  assert.deepEqual(shape('Owner signs the release and the page shows the badge'), [['hermetic', 'A'], ['live', 'D']]);
+  assert.deepEqual(shape('Deploy the hub and the page loads'), [['hermetic', 'A'], ['live', 'D']]);
+  assert.deepEqual(shape('Deploy the hub and the page loads', 'max'), [['hermetic', 'A'], ['live', 'C']]);
 });
 
 test('uatPlan covers pending tests only and splits mixed ones', () => {

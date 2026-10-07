@@ -90,6 +90,14 @@ test('finalClass never lowers the deterministic class', () => {
   assert.equal(finalClass(null, undefined), 'C');
 });
 
+test('finalClass lets a proposal raise a C floor to D, and still never lowers D', () => {
+  assert.equal(finalClass('C', 'D'), 'D');
+  assert.equal(finalClass('D', 'C'), 'D');
+  assert.equal(finalClass('C', 'C'), 'C');
+  assert.equal(finalClass('C', undefined), 'C');
+  assert.equal(finalClass('D', 'Z'), 'D');
+});
+
 test('splitItem: hermetic and live halves become two items', () => {
   const parts = splitItem('Settings page shows the saved value and an SMS arrives on the phone');
   assert.deepEqual(parts.map((p) => [p.part, p.class]), [['hermetic', 'A'], ['live', 'C']]);

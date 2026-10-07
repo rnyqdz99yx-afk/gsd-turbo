@@ -23,6 +23,12 @@ test('turbo-uat agent: owner-only list, refusal handling, isolation and record o
     'fresh, empty profile', 'no isolated browser', 'no isolated data dir', 'every A and B item needs a non-empty request log', 'no requests logged',
     'Never edit the UAT file', 'new record line', 'At most 3 record attempts', 'live part, split from test',
     'Record before cleanup', 'only after step 4', '.planning/turbo/run/uat-pN/',
+    'the value never reaches command output, evidence or your reply', 'when unsure between C and D, D',
+    'A proposal may raise A, B, `null` or C to D', 'only a Node Playwright script', '`chromium.launch()` and `browser.newContext()`',
+    'Never use a browser MCP tool for stand checks', 'B items checked over HTTP or sockets still run',
+    'capture clean evidence again or record that item `deferred` C', 'A refusal is atomic', 'the whole results array',
+    'an `owner` D entry stays `owner` D, never `deferred` C',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
+  assert.ok(!s.includes('playwright-mcp'), 'the agent never names the MCP harness');
 });

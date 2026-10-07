@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { comparePhase, nextPhase, relaunchDecision, isFinished } from '../lib/scheduler.mjs';
+import { comparePhase, nextPhase, relaunchDecision, isFinished, inRange, rangeLabel } from '../lib/scheduler.mjs';
 
 const P = (number, deps = [], complete = false) => ({ number, deps, complete });
 // checked off in the ROADMAP and fully implemented, but GSD reports it unfinished (verification stale)
@@ -35,6 +35,25 @@ test('a closed phase is never started again and satisfies the deps on it', () =>
   assert.equal(nextPhase([C('1'), P('2', ['1']), P('3', ['2'])]).number, '2');
   assert.equal(nextPhase([C('1'), C('2', ['1'])]), null);
   assert.deepEqual([P('1', [], true), C('2'), P('3'), { number: '4', deps: [] }].map(isFinished), [true, true, false, false]);
+});
+
+test('a range starts only the phases inside it (comparePhase, inclusive); deps outside it count as satisfied', () => {
+  const phases = [P('1'), P('2', ['1']), P('2.1', ['2']), P('2A'), P('3', ['2'])];
+  assert.equal(nextPhase(phases, { range: { from: '2', to: '2' } }).number, '2');
+  assert.equal(nextPhase(phases, { range: { from: '2.1', to: null } }).number, '2.1');
+  assert.equal(nextPhase(phases, { range: { from: null, to: '1' } }).number, '1');
+  assert.equal(nextPhase(phases, { range: { from: '3', to: '3' } }).number, '3');
+  assert.equal(nextPhase(phases, { range: { from: '2B', to: '2C' } }), null);
+  assert.equal(nextPhase(phases, { range: null }).number, '1');
+});
+
+test('inRange and rangeLabel: either end may be open; no range is the whole milestone', () => {
+  assert.equal(inRange('5', null), true);
+  assert.equal(inRange('5', { from: '5', to: '5' }), true);
+  assert.equal(inRange('5.1', { from: '5', to: '5' }), false);
+  assert.equal(inRange('4', { from: '5', to: null }), false);
+  assert.equal(inRange('12', { from: null, to: '9' }), false);
+  assert.deepEqual([{ from: '3', to: '7' }, { from: '3', to: null }, { from: null, to: '7' }].map(rangeLabel), ['3–7', '3–end', 'start–7']);
 });
 
 test('relaunchDecision resets on progress and halts after max no-progress restarts', () => {

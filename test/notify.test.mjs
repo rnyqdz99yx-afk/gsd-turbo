@@ -19,6 +19,11 @@ test('msg renders supervisorFailing in en and ru', () => {
   assert.deepEqual(msg('ru', 'supervisorFailing', { error: 'launch phase 2 failed' }), { title: 'gsd-turbo не может продолжить', body: 'launch phase 2 failed. Проверь: /turbo-autonomous status' });
 });
 
+test('msg renders rangeDone in en and ru', () => {
+  assert.deepEqual(msg('en', 'rangeDone', { range: '4–5' }), { title: 'Phases 4–5 done', body: 'The range is complete; the supervisor stopped.' });
+  assert.deepEqual(msg('ru', 'rangeDone', { range: '4–5' }), { title: 'Фазы 4–5 готовы', body: 'Диапазон выполнен; супервизор остановлен.' });
+});
+
 test('msg renders launchHalted in en and ru, ending with the resume command', () => {
   const vars = { phase: '2', error: 'launch phase 2 failed: claude --bg failed: exit status 1' };
   for (const lang of ['en', 'ru']) {
@@ -42,7 +47,7 @@ test('laneHalted, laneFailed and phaseMissing end with the resume command in en 
 });
 
 test('every message exists in en and ru with the same placeholders', () => {
-  const keys = ['laneNeedsOwner', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'supervisorFailing'];
+  const keys = ['laneNeedsOwner', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'supervisorFailing'];
   const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` }); // renders each {name} as itself
   const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
   for (const key of keys) {

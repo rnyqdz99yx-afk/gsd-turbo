@@ -140,6 +140,23 @@ test('splitItem never lowers the live part below the whole item\'s class', () =>
   assert.deepEqual(shape('Deploy the hub and the page loads', 'max'), [['hermetic', 'A'], ['live', 'C']]);
 });
 
+test('splitItem: the live part keeps every live rule the whole item matched', () => {
+  const shape = (t, autonomy) => splitItem(t, { autonomy }).map((p) => [p.part ?? 'whole', p.class]);
+  // the owner-decision match spans a clause separator, and the live part reaches D only through another rule
+  for (const t of [
+    'The owner reviews and approves the release on the page and signs the contract',
+    'The owner reviews and approves the release on the page and then deploys it',
+    'Владелец затем одобряет релиз на странице и подписывает акт',
+    'Release approved by admin and owner shows on the page and the hub is redeployed',
+  ]) assert.deepEqual(shape(t), [['whole', 'D']], t);
+  assert.deepEqual(shape('The owner reviews and approves the release on the page and then deploys it', 'max'), [['whole', 'D']]);
+  assert.deepEqual(
+    uatPlan([{ number: 1, name: 'Release approval', expected: 'The owner reviews and approves the release on the page and signs the contract', result: 'pending' }])
+      .map((i) => [i.test, i.class, i.split ?? '']),
+    [[1, 'D', '']],
+  );
+});
+
 test('uatPlan covers pending tests only and splits mixed ones', () => {
   const tests = [
     { number: 1, name: 'Page shows the value', expected: 'value visible', result: 'pending' },

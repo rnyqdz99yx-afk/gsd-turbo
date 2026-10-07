@@ -8,6 +8,9 @@ import { applyUatResults, parseUat, ownerRequest, ownerRequestFiles } from '../l
 import { msg } from '../lib/messages.mjs';
 import { UAT, HEAD } from './fixtures/uat-sample.mjs';
 
+// a pass carries evidence (M7): a manifest entry as recordUat hands it to applyUatResults
+const EV = [{ file: '.planning/turbo/run/evidence/p3/t.txt', sha256: 'cd'.repeat(32) }];
+
 test('loopback URLs only', () => {
   for (const u of ['http://localhost:3000/x', 'http://127.0.0.1:8080', 'http://[::1]:5173/', 'ws://app.localhost:1/s']) assert.ok(isLoopbackUrl(u), u);
   for (const u of ['https://example.com', 'http://10.0.0.5', 'http://localhost.example.com', 'file:///etc/passwd', 'nonsense']) assert.ok(!isLoopbackUrl(u), u);
@@ -111,7 +114,7 @@ test('the stand and evidence directories refuse a phase id with a path separator
 
 test('ownerRequest: one message in the configured language; D items make the phase wait', () => {
   const recorded = applyUatResults(UAT, [
-    { test: 1, result: 'pass', class: 'A' },
+    { test: 1, result: 'pass', class: 'A', evidence: EV },
     { test: 2, result: 'owner', class: 'D' },
     { test: 3, result: 'deferred', class: 'C', reason: 'needs a physical phone' },
     { test: 4, result: 'issue', class: 'A', reported: 'nothing happens' },
@@ -132,7 +135,7 @@ test('ownerRequest: one message in the configured language; D items make the pha
 test('ownerRequest: a live half the recorder left pending makes the phase wait', () => {
   const { tests: src } = parseUat(UAT);
   const recorded = applyUatResults(UAT, [
-    { test: 3, split: 'hermetic', expected: 'Page shows the code; the code is visible', result: 'pass', class: 'A' },
+    { test: 3, split: 'hermetic', expected: 'Page shows the code; the code is visible', result: 'pass', class: 'A', evidence: EV },
   ], { head: HEAD, phase: '3' });
   const { tests } = parseUat(recorded);
   const live = tests.find((t) => t.number === src.length + 1);
@@ -144,7 +147,7 @@ test('ownerRequest: a live half the recorder left pending makes the phase wait',
 });
 
 test('ownerRequest: rows turbo never recorded make the phase wait', () => {
-  const { tests } = parseUat(applyUatResults(UAT, [{ test: 1, result: 'pass', class: 'A' }], { head: HEAD, phase: '3' }));
+  const { tests } = parseUat(applyUatResults(UAT, [{ test: 1, result: 'pass', class: 'A', evidence: EV }], { head: HEAD, phase: '3' }));
   const r = ownerRequest({ phase: '3', tests, lang: 'en', file: 'f' });
   assert.deepEqual([r.needsOwner, r.counts], [true, { passed: 1, failed: 0, checklist: 0, signoff: 3 }]);
   assert.match(r.text, /^- 2\. Owner signs the release — the release is signed$/m);

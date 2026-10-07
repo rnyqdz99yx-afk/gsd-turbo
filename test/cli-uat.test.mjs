@@ -21,6 +21,15 @@ function project(uat = UAT) {
   return { root, dir, run, lines, notes };
 }
 
+// A prepared stand and one small evidence file: a pass needs evidence (M7), and evidence needs the stand's
+// one-time credentials for the record's secret scan.
+async function standEvidence(p) {
+  assert.equal(await p.run('stand', '3', 'prepare'), 0);
+  const file = path.join(JSON.parse(p.lines.at(-1)).evidenceDir, 't.txt');
+  fs.writeFileSync(file, 'the page showed the value');
+  return [path.relative(p.root, file).split(path.sep).join('/')];
+}
+
 test('uat plan classifies pending items and checks the stand', async () => {
   const p = project();
   assert.equal(await p.run('plan', '3'), 0);
@@ -71,11 +80,12 @@ test('uat stand prepare and net-check refuse a stand config that standCheck refu
 test('uat record + owner-request: D items make the phase wait, C-only sends one checklist notification', async () => {
   const p = project();
   const results = path.join(p.root, 'results.json');
+  const pev = await standEvidence(p);
   fs.writeFileSync(results, JSON.stringify([
-    { test: 1, result: 'pass', class: 'A', harness: 'http' },
+    { test: 1, result: 'pass', class: 'A', harness: 'http', evidence: pev },
     { test: 2, result: 'owner', class: 'D' },
     { test: 3, result: 'deferred', class: 'C', reason: 'needs a physical phone' },
-    { test: 4, result: 'pass', class: 'A', harness: 'http' },
+    { test: 4, result: 'pass', class: 'A', harness: 'http', evidence: pev },
   ]));
   assert.equal(await p.run('record', '3', '--results', results), 0);
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: p.root, encoding: 'utf8' }).trim();
@@ -101,10 +111,11 @@ test('uat record + owner-request: D items make the phase wait, C-only sends one 
   const answered = before.replace('### 2. Owner signs the release\nexpected: the release is signed\nresult: [pending]', '### 2. Owner signs the release\nexpected: the release is signed\nresult: pass');
   assert.notEqual(answered, before);
   fs.writeFileSync(uatFile, answered);
+  const cev = await standEvidence(c);
   fs.writeFileSync(path.join(c.root, 'r.json'), JSON.stringify([
-    { test: 1, result: 'pass', class: 'A', harness: 'http' },
+    { test: 1, result: 'pass', class: 'A', harness: 'http', evidence: cev },
     { test: 3, result: 'deferred', class: 'C', reason: 'phone' },
-    { test: 4, result: 'pass', class: 'A', harness: 'http' },
+    { test: 4, result: 'pass', class: 'A', harness: 'http', evidence: cev },
   ]));
   assert.equal(await c.run('record', '3', '--results', path.join(c.root, 'r.json')), 0);
   assert.equal(await c.run('owner-request', '3', '--json'), 0);

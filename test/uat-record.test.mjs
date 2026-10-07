@@ -7,16 +7,16 @@ import { HEAD, UAT } from './fixtures/uat-sample.mjs';
 import { parseUat, applyUatResults, evidenceManifest, scanSecrets, recordUat } from '../lib/uat.mjs';
 import { splitItem, itemText, uatPlan } from '../lib/uat-classify.mjs';
 
-const RESULTS = [
-  { test: 1, result: 'pass', class: 'A', checks: ['reload /settings', 'read the field'], harness: 'playwright-mcp', evidence: [{ file: '.planning/turbo/run/evidence/p3/t1.png', sha256: 'ab'.repeat(32) }] },
-  { test: 2, result: 'owner', class: 'D' },
-  { test: 3, result: 'pass', class: 'A', split: 'hermetic', expected: 'Page shows the code; the code is visible', harness: 'playwright-mcp' },
-  { test: 3, result: 'deferred', class: 'C', split: 'live', expected: 'an SMS arrives on the phone.', reason: 'needs a physical phone' },
-  { test: 4, result: 'issue', class: 'A', reported: 'the "Export" button does nothing', severity: 'major', harness: 'playwright-mcp' },
-];
-const HEAD2 = 'fedcba9876543210fedcba9876543210fedcba98';
 // a manifest entry as recordUat hands it to applyUatResults
 const EV = [{ file: '.planning/turbo/run/evidence/p3/t.txt', sha256: 'cd'.repeat(32) }];
+const RESULTS = [
+  { test: 1, result: 'pass', class: 'A', checks: ['reload /settings', 'read the field'], harness: 'playwright-script', evidence: [{ file: '.planning/turbo/run/evidence/p3/t1.png', sha256: 'ab'.repeat(32) }] },
+  { test: 2, result: 'owner', class: 'D' },
+  { test: 3, result: 'pass', class: 'A', split: 'hermetic', expected: 'Page shows the code; the code is visible', harness: 'playwright-script', evidence: EV },
+  { test: 3, result: 'deferred', class: 'C', split: 'live', expected: 'an SMS arrives on the phone.', reason: 'needs a physical phone' },
+  { test: 4, result: 'issue', class: 'A', reported: 'the "Export" button does nothing', severity: 'major', harness: 'playwright-script' },
+];
+const HEAD2 = 'fedcba9876543210fedcba9876543210fedcba98';
 const SIGN_UAT = UAT.replace('### 2. Owner signs the release\nexpected: the release is signed', '### 2. Owner signs the release and the page shows the badge\nexpected: the badge is visible');
 
 // GSD's predicate (gsd-core bin/lib/uat-predicate.cjs parseUatResultItems, G12), reproduced without parseUat: a block runs
@@ -70,7 +70,7 @@ test('applyUatResults writes turbo records GSD can read', () => {
 
 test('re-recording replaces turbo rows and the earlier live part instead of duplicating them', () => {
   const once = applyUatResults(UAT, RESULTS, { head: HEAD, phase: '3' });
-  const twice = applyUatResults(once, RESULTS.map((r) => (r.test === 4 ? { ...r, result: 'pass', reported: undefined } : r)), { head: HEAD2, phase: '3' });
+  const twice = applyUatResults(once, RESULTS.map((r) => (r.test === 4 ? { ...r, result: 'pass', reported: undefined, evidence: EV } : r)), { head: HEAD2, phase: '3' });
   const { tests } = parseUat(twice);
   assert.equal(tests.length, 6);
   const block1 = twice.split('### 1.')[1].split('###')[0];
@@ -122,7 +122,7 @@ test('a hermetic result alone appends the live half as a pending row', () => {
   assert.equal(gsdView(sms).find((x) => x.n === 6).result, 'pending');
   for (const [k, v] of Object.entries({ total: 6, passed: 2, pending: 4 })) assert.ok(sms.includes(`\n${k}: ${v}\n`), `${k}: ${v}`);
   const [h] = splitItem('Owner signs the release and the page shows the badge. the badge is visible');
-  const sign = applyUatResults(SIGN_UAT, [{ test: 2, result: 'pass', class: 'A', split: 'hermetic', expected: h.text }], opts);
+  const sign = applyUatResults(SIGN_UAT, [{ test: 2, result: 'pass', class: 'A', split: 'hermetic', expected: h.text, evidence: EV }], opts);
   const signRow = parseUat(sign).tests.find((x) => x.number === 6);
   assert.deepEqual([signRow.name, signRow.expected, signRow.result, signRow.fields.class],
     ['Owner signs the release and the page shows the badge (live part, split from test 2)', 'Owner signs the release', 'pending', 'D']);
@@ -134,13 +134,13 @@ test('a hermetic result alone appends the live half as a pending row', () => {
 
 test('applyUatResults refuses foreign rows, lowered classes and mismatched results', () => {
   const apply = (r) => () => applyUatResults(UAT, [r], { head: HEAD, phase: '3' });
-  assert.throws(apply({ test: 5, result: 'pass', class: 'A' }), /already has a result/);
-  assert.throws(apply({ test: 2, result: 'pass', class: 'A' }), /below the deterministic class D/);
+  assert.throws(apply({ test: 5, result: 'pass', class: 'A', evidence: EV }), /already has a result/);
+  assert.throws(apply({ test: 2, result: 'pass', class: 'A', evidence: EV }), /below the deterministic class D/);
   assert.throws(apply({ test: 4, result: 'deferred', class: 'A', reason: 'x' }), /cannot have class A/);
   assert.throws(apply({ test: 9, result: 'pass', class: 'A' }), /no test 9/);
   // a split result cannot bring its own text to lower the floor
-  assert.throws(apply({ test: 2, result: 'pass', class: 'A', split: 'hermetic', expected: 'Page shows the value' }), /does not match the deterministic split/);
-  assert.throws(apply({ test: 3, result: 'pass', class: 'A', split: 'hermetic', expected: 'Page shows the code' }), /does not match the deterministic split/);
+  assert.throws(apply({ test: 2, result: 'pass', class: 'A', split: 'hermetic', expected: 'Page shows the value', evidence: EV }), /does not match the deterministic split/);
+  assert.throws(apply({ test: 3, result: 'pass', class: 'A', split: 'hermetic', expected: 'Page shows the code', evidence: EV }), /does not match the deterministic split/);
   // two live parts of one test in one batch would append two rows
   assert.throws(() => applyUatResults(UAT, [RESULTS[3], RESULTS[3]], { head: HEAD, phase: '3' }), /two results/);
   // an unexplained deferral or issue would satisfy GSD's predicate without saying why
@@ -157,7 +157,7 @@ test('a live part is classified whole and never split again', () => {
   const [h, l] = splitItem('Owner signs the release and the page shows the badge. the badge is visible');
   assert.deepEqual([h.part, h.class, l.part, l.class], ['hermetic', 'A', 'live', 'D']);
   const once = applyUatResults(SIGN_UAT, [
-    { test: 2, result: 'pass', class: 'A', split: 'hermetic', expected: h.text },
+    { test: 2, result: 'pass', class: 'A', split: 'hermetic', expected: h.text, evidence: EV },
     { test: 2, result: 'owner', class: 'D', split: 'live', expected: l.text },
   ], opts);
   const row = parseUat(once).tests.find((x) => x.number === 6);
@@ -169,11 +169,11 @@ test('a live part is classified whole and never split again', () => {
   // trailing blanks on the heading: parseUat trims the name, so the end-anchored marker still matches
   for (const text of [once, once.replace(row.name, `${row.name}  `)]) {
     for (const p of parts) {
-      const r = { test: 6, result: p.part === 'hermetic' ? 'pass' : 'owner', class: p.class, split: p.part, expected: p.text };
+      const r = { test: 6, result: p.part === 'hermetic' ? 'pass' : 'owner', class: p.class, split: p.part, expected: p.text, evidence: EV };
       assert.throws(() => applyUatResults(text, [r], opts), /test 6 is the live part of test 2 and is never split again/);
     }
   }
-  assert.throws(() => applyUatResults(once, [{ test: 6, result: 'pass', class: 'A' }], opts), /below the deterministic class D/);
+  assert.throws(() => applyUatResults(once, [{ test: 6, result: 'pass', class: 'A', evidence: EV }], opts), /below the deterministic class D/);
   const again = parseUat(applyUatResults(once, [{ test: 6, result: 'owner', class: 'D' }], opts)).tests;
   assert.equal(again.length, 6);
   assert.deepEqual([again[5].result, again[5].fields.class], ['pending', 'D']);
@@ -204,6 +204,34 @@ test('a class turbo-uat recorded is the floor of every later run: the plan offer
   const liveRow = parseUat(live).tests.find((x) => x.number === 6);
   assert.deepEqual([liveRow.result, liveRow.fields.class], ['pending', 'D']);
   assert.throws(() => applyUatResults(live, [RESULTS[3]], opts), /class C is below the class D turbo-uat recorded for this test/);
+});
+
+test('a pass needs evidence, and a harness is one of playwright-script, http, socket (M7)', () => {
+  const apply = (r) => () => applyUatResults(UAT, [r], { head: HEAD, phase: '3' });
+  for (const evidence of [undefined, []]) {
+    assert.throws(apply({ test: 1, result: 'pass', class: 'A', harness: 'http', evidence }), /test 1: a pass result needs at least one evidence file/);
+  }
+  for (const harness of ['playwright-mcp', 'browser', 'HTTP', 7]) {
+    assert.throws(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }), /test 1: harness must be one of playwright-script, http, socket/);
+  }
+  for (const harness of ['playwright-script', 'http', 'socket', undefined]) assert.doesNotThrow(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }));
+  // only a pass proves something observed: an issue, a deferral or an owner row needs no evidence
+  assert.doesNotThrow(apply({ test: 4, result: 'issue', class: 'A', reported: 'nothing happens', harness: 'http' }));
+  assert.doesNotThrow(apply({ test: 2, result: 'owner', class: 'D' }));
+});
+
+test('one-line fields turn every control character, a lone CR and U+2028/U+2029 into a space (M6)', () => {
+  const [LS, PS] = [String.fromCharCode(0x2028), String.fromCharCode(0x2029)];
+  const out = applyUatResults(UAT, [
+    { test: 4, result: 'issue', class: 'A', reported: `broken\rresult: pass${LS}### 9. fake`, severity: 'major', checks: [`a${PS}b`, 'c\x07d\te\x7f'] },
+    { test: 3, result: 'deferred', class: 'C', reason: `needs a phone\r${PS}reason: x` },
+  ], { head: HEAD, phase: '3' });
+  const ctl = [...Array(32).keys()].filter((c) => c !== 10).concat([0x7f, 0x2028, 0x2029]).map((c) => String.fromCharCode(c));
+  assert.ok(![...out].some((ch) => ctl.includes(ch)), 'no control character but the line breaks between lines');
+  assert.ok(out.includes('reported: "broken result: pass ### 9. fake"\n'));
+  assert.ok(out.includes('checks: a b; c d e\n'));
+  assert.ok(out.includes('reason: "Deferred follow-up: needs a phone  reason: x"\n'));
+  assert.deepEqual(gsdView(out).map((x) => [x.n, x.result]), [[1, 'pending'], [2, 'pending'], [3, 'skipped'], [4, 'issue'], [5, 'pass']]);
 });
 
 test('evidence resolves inside the run evidence directory only', () => {
@@ -260,10 +288,10 @@ test('recordUat writes a clean record and refuses one that would leak the one-ti
     assert.throws(record([{ test: 1, result: 'pass', class: 'A', evidence: [`.planning/turbo/run/evidence/p3/${f}`] }]), new RegExp(`p3/${f}:1 one-time credential`));
   }
   // a leak into the record itself names the line of the new text, which is not on disk
-  const leaky = [{ test: 1, result: 'pass', class: 'A', checks: ['typed Zx9-one-time-Pass into the form'] }];
+  const leaky = [{ test: 1, result: 'pass', class: 'A', checks: ['typed Zx9-one-time-Pass into the form'], evidence: ['.planning/turbo/run/evidence/p3/t1.png'] }];
   assert.throws(record(leaky), (e) => /03-UAT\.md new record line \d+ one-time credential/.test(e.message) && !e.message.includes('Zx9'));
   assert.equal(fs.readFileSync(path.join(dir, '03-UAT.md'), 'utf8'), UAT);
-  const good = [{ test: 1, result: 'pass', class: 'A', harness: 'playwright-mcp', evidence: ['.planning/turbo/run/evidence/p3/t1.png'] }];
+  const good = [{ test: 1, result: 'pass', class: 'A', harness: 'playwright-script', evidence: ['.planning/turbo/run/evidence/p3/t1.png'] }];
   const r = record(good)();
   assert.equal(r.counts.passed, 2);
   assert.match(fs.readFileSync(path.join(dir, '03-UAT.md'), 'utf8'), /t1\.png sha256:[0-9a-f]{64}/);

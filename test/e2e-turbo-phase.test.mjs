@@ -106,15 +106,17 @@ test('a scripted /turbo-phase run drives every deterministic step and leaves GSD
   const stand = JSON.parse(await run('uat', 'stand', '3', 'prepare'));
   fs.writeFileSync(path.join(stand.evidenceDir, 't1-settings.png'), Buffer.from([137, 80, 78, 71]));
   fs.writeFileSync(path.join(stand.evidenceDir, 'requests-t1.log'), 'http://localhost:3000/settings\n');
+  fs.writeFileSync(path.join(stand.evidenceDir, 't3-code.png'), Buffer.from([137, 80, 78, 71]));
+  fs.writeFileSync(path.join(stand.evidenceDir, 't4-download.txt'), 'a CSV file downloaded with 3 rows');
   await run('uat', 'net-check', '3', '--log', path.join(stand.evidenceDir, 'requests-t1.log'));
   const ev = (f) => path.relative(root, path.join(stand.evidenceDir, f)).split(path.sep).join('/');
   const resultsFile = path.join(root, '.planning/turbo/run/uat-p3/results.json');
   fs.writeFileSync(resultsFile, JSON.stringify([
-    { test: 1, result: 'pass', class: 'A', checks: ['open /settings'], harness: 'playwright-mcp', evidence: [ev('t1-settings.png'), ev('requests-t1.log')] },
+    { test: 1, result: 'pass', class: 'A', checks: ['open /settings'], harness: 'playwright-script', evidence: [ev('t1-settings.png'), ev('requests-t1.log')] },
     { test: 2, result: 'owner', class: 'D' },
-    { test: 3, result: 'pass', class: 'A', split: 'hermetic', expected: plan.items[2].expected, harness: 'playwright-mcp' },
+    { test: 3, result: 'pass', class: 'A', split: 'hermetic', expected: plan.items[2].expected, harness: 'playwright-script', evidence: [ev('t3-code.png')] },
     { test: 3, result: 'deferred', class: 'C', split: 'live', expected: plan.items[3].expected, reason: 'needs a physical phone' },
-    { test: 4, result: 'pass', class: 'A', harness: 'http' },
+    { test: 4, result: 'pass', class: 'A', harness: 'http', evidence: [ev('t4-download.txt')] },
   ]));
   await run('uat', 'record', '3', '--results', resultsFile);
   const req = JSON.parse(await run('uat', 'owner-request', '3', '--json'));

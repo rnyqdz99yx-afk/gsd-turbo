@@ -27,6 +27,8 @@ test('turbo-phase skill: frontmatter, every step in order, the commands it drive
     'turbo-run phase-step N --attempt uat', 'budget used up across sessions',
     // a stand turbo-uat left running is found by its pid file only (I5)
     '.planning/turbo/run/uat-pN/stand.pid', 'taskkill', 'Never kill processes by name',
+    // the lane kills only a live stand.pid process: Windows reuses PIDs, and POSIX pid 0 or 1 would hit far more
+    'a positive integer above 1', 'process.kill(pid, 0)', 'process.kill(pid,0)',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
   assert.ok(!/gsd-turbo-/.test(s));

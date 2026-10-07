@@ -32,6 +32,9 @@ test('turbo-uat agent: owner-only list, refusal handling, isolation and record o
     // I2: nothing is installed; I5: the stand process is found by its pid file only; M3: popups and new pages too
     'Never install packages or browsers', '.planning/turbo/run/uat-pN/stand.pid', 'Never kill processes by name', 'taskkill',
     "context.on('request')",
+    // a stale or bogus stand.pid kills nothing; the spawn never holds the Bash call open
+    'a positive integer above 1', 'process.kill(pid, 0)', 'process.kill(pid,0)', 'delete `stand.pid` at once',
+    'detached: true', "never `'inherit'` or pipes", 'child.unref()',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
   assert.ok(!s.includes('playwright-mcp'), 'the agent never names the MCP harness');

@@ -547,6 +547,86 @@ test('failed session notifies and halts', async () => {
   assert.equal(h.notes.at(-1).key, 'laneFailed');
 });
 
+// A lane that writes its record and ends its turn stays listed as state "blocked" (Claude Code 2.1.292).
+test('blocked session with a fresh needs-owner record: one laneNeedsOwner with its reason, never laneBlocked', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'owner sign-off', at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify + 1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, [{ key: 'laneNeedsOwner', vars: { phase: '2', reason: 'owner sign-off' } }]);
+  assert.equal(h.launched.length, 1);
+  assert.deepEqual(h.removed, []);
+});
+
+test('blocked session with a fresh paused-context record is removed, then the lane is relaunched', async () => {
+  const h = harness({ phases: [P('2')] });
+  const order = [];
+  const { rm, launchBg } = h.ctx.deps.claude;
+  h.ctx.deps.claude.rm = (id) => { order.push(`rm ${id}`); return rm(id); };
+  h.ctx.deps.claude.launchBg = (opts, cwd) => { const id = launchBg(opts, cwd); order.push(`launch ${id}`); return id; };
+  let s = await tick(fresh(), h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'paused-context', { reason: 'ctx 56%', at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  h.fp = 'B';
+  s = await tick(s, h.ctx);
+  assert.deepEqual(order, ['launch s1', 'rm s1', 'launch s2']);
+  assert.equal(s.lane.sessionId, 's2');
+  assert.match(h.launched[1].prompt, /HANDOFF/);
+  assert.deepEqual(h.agents.map((a) => a.id), ['s2']);
+});
+
+test('a blocked paused-context session that rm cannot remove is never relaunched next to', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'paused-context', { at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  const rm = h.ctx.deps.claude.rm;
+  h.ctx.deps.claude.rm = () => { throw new Error('claude rm failed: permission denied'); };
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.ok(h.logs.some((l) => /tick error: claude rm failed/.test(l)), h.logs.join('\n'));
+  h.ctx.deps.claude.rm = rm;
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2);
+  assert.equal(s.lane.sessionId, 's2');
+});
+
+test('blocked session with a fresh failed record notifies laneFailed and halts', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'failed', { reason: 'tests broke', at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  assert.equal(s.halted, true);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneFailed']);
+  assert.equal(h.launched.length, 1);
+});
+
+test('blocked session with a stale needs-owner record waits as blocked; a working one with a fresh record runs', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'old reason', at: '2025-12-31T23:59:00.000Z' });
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify + 1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneBlocked']);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'owner sign-off', at: '2026-01-01T00:11:00.000Z' });
+  h.agents[0].state = 'working';
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneBlocked']);
+  assert.equal(s.lane.blockedSince, null);
+  assert.equal(h.launched.length, 1);
+});
+
 test('milestone done when all phases complete', async () => {
   const h = harness({ phases: [P('1', [], true)] });
   const s = await tick(fresh(), h.ctx);

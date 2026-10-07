@@ -72,6 +72,24 @@ test('waiting agent → blocked', () => {
   assert.equal(inferStatus({ agent: { state: 'waiting' }, phase: phase(), launchedAt: T0 }), 'blocked');
 });
 
+// A lane that wrote `lane-status N needs-owner` and ended its turn is listed as state "blocked"
+// (status idle, Claude Code 2.1.292): its fresh trusted record decides; a live state still wins.
+test('blocked agent with a fresh trusted lane record → the record status; stale or untrusted → blocked', () => {
+  for (const state of ['blocked', 'waiting']) {
+    for (const status of ['needs-owner', 'paused-context', 'failed']) {
+      assert.equal(inferStatus({ agent: { state }, laneRecord: { status, at: later }, phase: phase(), launchedAt: T0 }), status, `${state}/${status}`);
+    }
+    assert.equal(inferStatus({ agent: { state }, laneRecord: { status: 'needs-owner', at: T0 }, phase: phase(), launchedAt: later }), 'blocked', `${state}/stale`);
+    for (const status of ['running', 'done']) {
+      assert.equal(inferStatus({ agent: { state }, laneRecord: { status, at: later }, phase: phase({ complete: true }), launchedAt: T0, mode: 'full' }), 'blocked', `${state}/${status}`);
+    }
+    assert.equal(inferStatus({ agent: { state }, phase: phase({ verification: 'human_needed' }), launchedAt: T0 }), 'blocked', `${state}/no record`);
+  }
+  for (const state of ['working', 'busy']) {
+    assert.equal(inferStatus({ agent: { state }, laneRecord: { status: 'needs-owner', at: later }, phase: phase(), launchedAt: T0 }), 'running', state);
+  }
+});
+
 test('isAgentAlive: false only for ended states (done/failed/idle/stopped) and an empty or missing state', () => {
   for (const state of ['working', 'busy', 'blocked', 'waiting', 'running', 'stopping']) assert.equal(isAgentAlive({ state }), true, state);
   for (const state of ['done', 'failed', 'idle', 'stopped', '']) assert.equal(isAgentAlive({ state }), false, state);

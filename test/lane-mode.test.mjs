@@ -123,6 +123,27 @@ test('supervisor full mode: human_needed relaunches for turbo-uat; the lane reco
   assert.equal(h.notes.at(-1).vars.reason, '1 item needs your sign-off');
 });
 
+// Smoke run, Claude Code 2.1.292: a lane that wrote its record and ended its turn is listed as state "blocked".
+test('supervisor full mode: a blocked lane session follows its fresh record (paused-context relaunches, needs-owner notifies)', async () => {
+  const h = harness({ phases: [P('2', [], false, 'human_needed')], mode: 'full' });
+  let s = await tick(fresh(), h.ctx);
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'paused-context', { at: h.ctx.deps.now().toISOString() });
+  last(h).state = 'blocked';
+  h.fp = 'B';
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.agents.map((a) => [a.id, a.state]), [['s2', 'working']], 'the blocked session is removed before the relaunch');
+  assert.equal(h.launched[1].prompt, 'Resume phase 2. Run the turbo-phase skill with arguments: 2 --resume');
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: '1 item needs your sign-off', at: h.ctx.deps.now().toISOString() });
+  last(h).state = 'blocked';
+  s = await tick(s, h.ctx);
+  h.advance(DEFAULTS.blocked_minutes_before_notify + 1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes, [{ key: 'laneNeedsOwner', vars: { phase: '2', reason: '1 item needs your sign-off' } }]);
+  assert.equal(h.launched.length, 2);
+});
+
 test('supervisor safe mode (no ctx.mode): gsd-autonomous with the gates restore first', async () => {
   const h = harness({ phases: [P('2')], mode: undefined });
   const s = await tick(fresh(), h.ctx);

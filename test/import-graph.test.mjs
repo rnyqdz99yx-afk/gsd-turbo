@@ -28,11 +28,31 @@ test('collectGraph keeps project files of test entries; testsLoading finds the l
   assert.equal(collectGraph({ root, dir, fullSha: 'X', isTest: isTestFile }), null);
 });
 
-test('planRun with a graph: the loading tests join the mention rule; a file neither finds → full', () => {
-  const a = planRun({ ...base, changed: ['src/a.mjs'], graph: GRAPH });
-  assert.deepEqual([a.mode, a.groups[0].args.slice(-1)], ['targeted', ['test/a.test.mjs']], 'the graph adds a test the mention rule misses');
+test('planRun with a graph: the graph adds tests to a targeted run; a stage-1 full run stays full', () => {
+  assert.equal(planRun({ ...base, changed: ['src/a.mjs'], graph: GRAPH }).mode, 'full', 'no test mentions src/a.mjs: full, although the graph knows a loader');
   assert.equal(planRun({ ...base, changed: ['src/new.mjs'], graph: GRAPH }).mode, 'full');
   assert.equal(planRun({ ...base, changed: ['src/shared.mjs'] }).mode, 'targeted', 'without a graph the mention rule applies');
+  // test/a names src/a.mjs; test/b loads it through src/b.mjs and an import alias, which only the graph sees
+  const files = { 'test/a.test.mjs': "import '../src/a.mjs'", 'test/b.test.mjs': "import '../src/b.mjs'" };
+  const graph = { fullSha: 'X', tests: { 'test/a.test.mjs': ['src/a.mjs'], 'test/b.test.mjs': ['src/a.mjs', 'src/b.mjs'] } };
+  const sel = (g) => planRun({ ...base, readFile: (f) => files[f], changed: ['src/a.mjs'], graph: g }).groups[0].args.slice(-2);
+  assert.deepEqual(sel(graph), ['test/a.test.mjs', 'test/b.test.mjs']);
+  assert.deepEqual(sel(null).slice(-1), ['test/a.test.mjs']);
+});
+
+test('planRun: a module only aliases reach stays full with a graph (a child-process loader is not in it)', () => {
+  // src/engine.mjs is loaded through '#lib' by src/b.mjs (in test/b's process) and by bin/cli.mjs (test/cli spawns it)
+  const files = {
+    'src/engine.mjs': 'export const v = 2;\n',
+    'src/b.mjs': "import { v } from '#lib';\nexport const b = v + 1;\n",
+    'bin/cli.mjs': "import { v } from '#lib';\nif (v !== 1) process.exit(3);\n",
+    'test/b.test.mjs': "import { test } from 'node:test';\nimport { b } from '../src/b.mjs';\ntest('b', () => {});\n",
+    'test/cli.test.mjs': "import { test } from 'node:test';\nimport { execFileSync } from 'node:child_process';\ntest('cli', () => { execFileSync(process.execPath, ['bin/cli.mjs']); });\n",
+  };
+  const all = Object.keys(files);
+  const graph = { fullSha: 'X', tests: { 'test/b.test.mjs': ['src/b.mjs', 'src/engine.mjs'], 'test/cli.test.mjs': [] } };
+  const p = planRun({ ...base, testFiles: all.filter(isTestFile), sourceFiles: all.filter((f) => !isTestFile(f)), allFiles: all, packages: [{ dir: '', testScript: 'node --test' }], readFile: (f) => files[f], changed: ['src/engine.mjs'], graph });
+  assert.deepEqual([p.mode, p.reason], ['full', 'no related test for src/engine.mjs']);
 });
 
 test('planRun with a graph never selects fewer tests than the mention rule', () => {

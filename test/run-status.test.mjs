@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { writeLaneStatus, readLaneStatus, inferStatus, isAgentAlive, unknownAgentState } from '../lib/run-status.mjs';
+import { writeLaneStatus, readLaneStatus, inferStatus, isAgentAlive, turnEnded, unknownAgentState } from '../lib/run-status.mjs';
 
 const root = () => { const r = tmpDir('rs'); fs.mkdirSync(path.join(r, '.planning')); return r; };
 const phase = (o = {}) => ({ number: '2', complete: false, verification: null, ...o });
@@ -106,6 +106,12 @@ test('blocked agent (turn finished) ends the phase like an ended one; it waits a
   for (const mode of ['safe', 'full']) {
     assert.equal(inferStatus({ agent: { state: 'working' }, laneRecord: doneRec, phase: phase({ complete: true }), launchedAt: T0, mode }), 'running', `working/${mode}`);
   }
+});
+
+test('turnEnded: ended states and a finished turn (blocked, waiting); never a live or unknown state', () => {
+  for (const state of ['blocked', 'waiting', 'done', 'failed', 'idle', 'stopped', '']) assert.equal(turnEnded({ state }), true, state);
+  for (const state of ['working', 'busy', 'running', 'stopping']) assert.equal(turnEnded({ state }), false, state);
+  assert.equal(turnEnded(undefined), true);
 });
 
 test('isAgentAlive: false only for ended states (done/failed/idle/stopped) and an empty or missing state', () => {

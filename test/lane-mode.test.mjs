@@ -192,60 +192,67 @@ test('safe prompts also put back docs commits after the gates', () => {
   assert.match(laneUserPrompt({ phase: '3', turboRun: 'node x', resume: true }), /^Resume phase 3\. First run node x gates restore 3 and then node x gates docs-restore 3 \(.*--only 3\. The state on disk/);
 });
 
-// A lane left by a full-mode supervisor, with its session ended.
-function fullLane(h, phase = '2') {
+// A lane left by a full-mode supervisor, with its session ended (or listed blocked: it finished its turn).
+function fullLane(h, phase = '2', state = 'done') {
   const name = laneSessionName(h.root, phase);
-  h.agents.push({ id: 's0', name, state: 'done', cwd: h.root });
+  h.agents.push({ id: 's0', name, state, cwd: h.root });
   return { lane: { phase, sessionId: 's0', name, launchedAt: '2026-01-01T00:00:00.000Z', mode: 'full', restarts: 0, fingerprint: 'A', notified: {}, blockedSince: null }, finished: false, halted: false };
 }
 
-test('supervisor safe mode never relaunches or adopts a full lane on a phase GSD already completed', async () => {
-  const h = harness({ phases: [P('2', [], true)], mode: 'safe' });
-  let s = fullLane(h);
-  // an alive session of the lane that a launch timing out would leave: never adopted while held
-  h.agents.push({ id: 'sx', name: laneSessionName(h.root, '2'), state: 'working', cwd: h.root });
-  s = await tick(s, h.ctx);
-  assert.equal(h.launched.length, 0);
-  assert.equal(s.lane.sessionId, 's0');
-  assert.equal(s.lane.mode, 'full');
-  assert.deepEqual(h.notes, [{ key: 'laneDowngraded', vars: { phase: '2', turboRun: 'node x' } }]);
-  h.fp = 'B';
-  s = await tick(s, h.ctx);
-  assert.equal(h.launched.length, 0, 'no safe relaunch: gsd-autonomous would end at once on the completed phase');
-  assert.equal(h.notes.length, 1, 'notified once');
-  assert.ok(s.lane && !s.halted && !s.finished);
-  // resume N --start while doctor still says safe: the forced relaunch waits too, and tells the owner again
-  s.lane = { ...s.lane, notified: {}, restarts: 0, forceRelaunch: true };
-  s = await tick(s, h.ctx);
-  assert.equal(h.launched.length, 0);
-  assert.equal(h.notes.length, 2);
-  assert.equal(s.lane.mode, 'full');
-  // doctor fixed: a full-mode supervisor resumes the lane through turbo-phase
-  h.agents = h.agents.filter((a) => a.id !== 'sx');
-  h.ctx.mode = 'full';
-  s = await tick(s, h.ctx);
-  assert.equal(h.launched.length, 1);
-  assert.equal(h.launched[0].prompt, 'Resume phase 2. Run the turbo-phase skill with arguments: 2 --resume');
-  assert.equal(s.lane.mode, 'full');
-});
+for (const finished of ['done', 'blocked']) {
+  test(`supervisor safe mode never relaunches or adopts a full lane on a phase GSD already completed (session ${finished})`, async () => {
+    const h = harness({ phases: [P('2', [], true)], mode: 'safe' });
+    let s = fullLane(h, '2', finished);
+    // an alive session of the lane that a launch timing out would leave: never adopted while held
+    h.agents.push({ id: 'sx', name: laneSessionName(h.root, '2'), state: 'working', cwd: h.root });
+    s = await tick(s, h.ctx);
+    assert.equal(h.launched.length, 0);
+    assert.equal(s.lane.sessionId, 's0');
+    assert.equal(s.lane.mode, 'full');
+    assert.deepEqual(h.notes, [{ key: 'laneDowngraded', vars: { phase: '2', turboRun: 'node x' } }]);
+    h.fp = 'B';
+    h.advance(DEFAULTS.blocked_minutes_before_notify + 1); // a held lane never turns into a generic laneBlocked
+    s = await tick(s, h.ctx);
+    assert.equal(h.launched.length, 0, 'no safe relaunch: gsd-autonomous would end at once on the completed phase');
+    assert.equal(h.notes.length, 1, 'notified once');
+    assert.ok(s.lane && !s.halted && !s.finished);
+    // resume N --start while doctor still says safe: the forced relaunch waits too, and tells the owner again
+    s.lane = { ...s.lane, notified: {}, restarts: 0, forceRelaunch: true };
+    s = await tick(s, h.ctx);
+    assert.equal(h.launched.length, 0);
+    assert.equal(h.notes.length, 2);
+    assert.equal(s.lane.mode, 'full');
+    // doctor fixed: a full-mode supervisor resumes the lane through turbo-phase
+    h.agents = h.agents.filter((a) => a.id !== 'sx');
+    h.ctx.mode = 'full';
+    s = await tick(s, h.ctx);
+    assert.equal(h.launched.length, 1);
+    assert.equal(h.launched[0].prompt, 'Resume phase 2. Run the turbo-phase skill with arguments: 2 --resume');
+    assert.equal(s.lane.mode, 'full');
+  });
+}
 
-test('an adopted live session keeps the full mode; when it ends on a completed phase the lane waits for the owner', async () => {
-  const h = harness({ phases: [P('2')], mode: 'safe' });
-  let s = fullLane(h);
-  // a live session of the lane left by the earlier full-mode supervisor (its --bg timed out after registering)
-  h.agents.push({ id: 'sx', name: laneSessionName(h.root, '2'), state: 'working', cwd: h.root });
-  s = await tick(s, h.ctx);
-  assert.equal(h.launched.length, 0);
-  assert.equal(s.lane.sessionId, 'sx');
-  assert.equal(s.lane.mode, 'full', 'the adopted session still runs turbo-phase');
-  h.phases[0].complete = true; // GSD's verifier passed inside execute-phase (G9)
-  h.agents.find((a) => a.id === 'sx').state = 'done'; // ended before its fan-out wrote a done record
-  h.advance(1);
-  s = await tick(s, h.ctx);
-  assert.deepEqual(h.notes.map((x) => x.key), ['laneDowngraded'], 'not phaseDone');
-  assert.equal(h.launched.length, 0);
-  assert.ok(s.lane && s.lane.mode === 'full');
-});
+for (const finished of ['done', 'blocked']) {
+  test(`an adopted live session keeps the full mode; when it ends on a completed phase the lane waits for the owner (session ${finished})`, async () => {
+    const h = harness({ phases: [P('2')], mode: 'safe' });
+    let s = fullLane(h);
+    // a live session of the lane left by the earlier full-mode supervisor (its --bg timed out after registering)
+    h.agents.push({ id: 'sx', name: laneSessionName(h.root, '2'), state: 'working', cwd: h.root });
+    s = await tick(s, h.ctx);
+    assert.equal(h.launched.length, 0);
+    assert.equal(s.lane.sessionId, 'sx');
+    assert.equal(s.lane.mode, 'full', 'the adopted session still runs turbo-phase');
+    h.phases[0].complete = true; // GSD's verifier passed inside execute-phase (G9)
+    h.agents.find((a) => a.id === 'sx').state = finished; // ended (or finished its turn) before its fan-out wrote a done record
+    h.advance(1);
+    s = await tick(s, h.ctx);
+    h.advance(DEFAULTS.blocked_minutes_before_notify + 1);
+    s = await tick(s, h.ctx);
+    assert.deepEqual(h.notes.map((x) => x.key), ['laneDowngraded'], 'not phaseDone');
+    assert.equal(h.launched.length, 0);
+    assert.ok(s.lane && s.lane.mode === 'full');
+  });
+}
 
 test('an adopted session takes the stricter mode: a safe lane adopting its own timed-out turbo-phase launch records full', async () => {
   const h = harness({ phases: [P('2')], mode: 'full' });
@@ -276,22 +283,25 @@ test('an adopted session takes the stricter mode: a safe lane adopting its own t
   assert.equal(h.launched[1].prompt, 'Resume phase 2. Run the turbo-phase skill with arguments: 2 --resume');
 });
 
-test('a held lane in the forced-relaunch state ends on the owner\'s done record without a new session', async () => {
-  const h = harness({ phases: [P('2', [], true)], mode: 'safe' });
-  let s = fullLane(h);
-  s.lane.forceRelaunch = true; // resume N --start while doctor still reports safe
-  s = await tick(s, h.ctx);
-  s = await tick(s, h.ctx);
-  assert.deepEqual(h.notes.map((x) => x.key), ['laneDowngraded']);
-  assert.equal(h.launched.length, 0);
-  h.advance(1);
-  // the owner ran the remaining steps and recorded the lane done
-  writeLaneStatus(h.root, '2', 'done', { at: h.ctx.deps.now().toISOString() });
-  s = await tick(s, h.ctx);
-  assert.equal(h.launched.length, 0, 'no needless gsd-autonomous session');
-  assert.deepEqual(h.notes.map((x) => x.key), ['laneDowngraded', 'phaseDone']);
-  assert.equal(s.lane, null);
-});
+for (const finished of ['done', 'blocked']) {
+  test(`a held lane in the forced-relaunch state ends on the owner's done record without a new session (session ${finished})`, async () => {
+    const h = harness({ phases: [P('2', [], true)], mode: 'safe' });
+    let s = fullLane(h, '2', finished);
+    s.lane.forceRelaunch = true; // resume N --start while doctor still reports safe
+    s = await tick(s, h.ctx);
+    s = await tick(s, h.ctx);
+    assert.deepEqual(h.notes.map((x) => x.key), ['laneDowngraded']);
+    assert.equal(h.launched.length, 0);
+    h.advance(1);
+    // the owner ran the remaining steps and recorded the lane done
+    writeLaneStatus(h.root, '2', 'done', { at: h.ctx.deps.now().toISOString() });
+    s = await tick(s, h.ctx);
+    assert.equal(h.launched.length, 0, 'no needless gsd-autonomous session');
+    assert.deepEqual(h.notes.map((x) => x.key), ['laneDowngraded', 'phaseDone']);
+    assert.equal(s.lane, null);
+    assert.deepEqual(h.agents, [], 'its session is removed');
+  });
+}
 
 test('the downgrade notice names the way out and never claims the rest of the phase is done', () => {
   const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });

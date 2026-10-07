@@ -394,6 +394,21 @@ test('a lane whose phase left the roadmap keeps a live session, and halts once i
   assert.deepEqual(h.notes, [{ key: 'phaseMissing', vars: { phase: '2', id: 's1' } }]);
 });
 
+test('a finished (blocked) session of a phase that left the roadmap halts like an ended one, even with a fresh paused-context record', async () => {
+  const h = harness({ phases: [P('2'), P('3')] });
+  let s = await tick(fresh(), h.ctx);
+  h.phases = [P('3')];
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'paused-context', { at: '2026-01-01T00:01:00.000Z' });
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  assert.equal(s.halted, true);
+  assert.equal(s.lane, null);
+  assert.equal(h.launched.length, 1, 'never relaunched for a phase GSD no longer lists');
+  assert.deepEqual(h.removed, [], 'the session is kept for inspection');
+  assert.deepEqual(h.notes, [{ key: 'phaseMissing', vars: { phase: '2', id: 's1' } }]);
+});
+
 test('adoption takes launchedAt from the session start, so a record it wrote before adoption counts', async () => {
   const h = harness({ phases: [P('2')] });
   const working = h.ctx.deps.claude.launchBg;
@@ -536,6 +551,26 @@ test('forceRelaunch never adopts the session it has just removed', async () => {
   assert.deepEqual(h.removed, ['s1']);
   assert.equal(h.launched.length, 2);
   assert.equal(s.lane.sessionId, 's2');
+});
+
+test('forceRelaunch of a finished (blocked) session that rm cannot remove launches nothing until rm succeeds', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  s.lane.forceRelaunch = true;
+  const rm = h.ctx.deps.claude.rm;
+  h.ctx.deps.claude.rm = () => { throw new Error('claude rm failed: permission denied'); };
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.equal(s.lane.forceRelaunch, true, 'the resume is still pending');
+  assert.ok(h.logs.some((l) => /tick error: claude rm failed/.test(l)), h.logs.join('\n'));
+  h.ctx.deps.claude.rm = rm;
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2);
+  assert.equal(s.lane.sessionId, 's2');
+  assert.equal(s.lane.forceRelaunch, false);
+  assert.deepEqual(h.agents.map((a) => a.id), ['s2']);
 });
 
 test('failed session notifies and halts', async () => {

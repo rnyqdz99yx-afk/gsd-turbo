@@ -22,7 +22,26 @@ test('prompts: full mode runs turbo-phase; safe mode keeps gsd-autonomous and re
   assert.match(full, /lane-status 3 done.*close step/);
   assert.match(full, /turbo-uat/);
   assert.ok(!full.includes('"') && !full.includes('%'));
-  assert.match(laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard' }), /when GSD has marked the phase complete/);
+  const safe = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard' });
+  assert.match(safe, /when GSD has marked the phase complete/);
+  // I3: in full mode only the skill's uat step handles human_needed items, and every stop goes through Stopping early
+  assert.match(full, /human_needed verification items are handled only by the turbo-phase skill's uat step \(the turbo-uat agent and node x uat record\): never check them yourself and never edit the UAT file\./);
+  assert.match(full, /Stopping early section, which restores GSD's gates first/);
+  assert.match(full, /55 percent/);
+  const OLD = ['verify yourself everything you can', 'Record evidence in the UAT file', 'Defer only owner-only items', 'Do everything else in the phase first'];
+  for (const s of OLD) assert.ok(!full.includes(s), s);
+  for (const s of OLD) assert.ok(safe.includes(s), `safe mode keeps: ${s}`);
+  // the turbo-phase skill has no deploy step: a full lane never deploys on its own, under max autonomy either
+  assert.ok(!laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'max', mode: 'full' }).includes('deploy yourself'));
+});
+
+test('the needs-owner notice gives the reason, never a claim that the rest of the phase is done (M5)', () => {
+  const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
+  const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
+  assert.deepEqual(holes(msg('ru', 'laneNeedsOwner', keep)), holes(msg('en', 'laneNeedsOwner', keep)));
+  const vars = { phase: '2', reason: '1 item needs your sign-off' };
+  assert.deepEqual(msg('en', 'laneNeedsOwner', vars), { title: 'Phase 2 needs you', body: '1 item needs your sign-off. Run: /turbo-autonomous status' });
+  assert.deepEqual(msg('ru', 'laneNeedsOwner', vars), { title: 'Фаза 2: нужен ты', body: '1 item needs your sign-off. Подробности: /turbo-autonomous status' });
 });
 
 test('inferStatus full mode: done needs the fresh done record; human_needed is not needs-owner', () => {

@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpGitRepo } from './helpers/tmp.mjs';
 import { fakeGsdCore } from './helpers/fake-gsd.mjs';
 import { UAT } from './fixtures/uat-sample.mjs';
@@ -18,7 +19,9 @@ const HOOKS = {
   'execute:post': [{ kind: 'step', capId: 'code-review' }],
   'plan:pre': [{ kind: 'step', capId: 'research', ref: { agent: 'gsd-phase-researcher' } }],
 };
-const BIN = path.resolve('bin/turbo-run.mjs');
+const BIN = fileURLToPath(new URL('../bin/turbo-run.mjs', import.meta.url));
+const GATES_OFF = 'chore(turbo): phase 3 built-in gates off while GSD executes';
+const GATES_RESTORED = 'chore(turbo): phase 3 built-in gates restored';
 
 test('a scripted /turbo-phase run drives every deterministic step and leaves GSD config as it was', async (t) => {
   const root = tmpGitRepo();
@@ -78,7 +81,9 @@ test('a scripted /turbo-phase run drives every deterministic step and leaves GSD
 
   // fanout: jobs from the active gates the restore kept; docs commits off while workers write; one commit after
   assert.deepEqual(JSON.parse(await run('jobs', '3', 'fanout', '--json')).map((j) => j.id), ['security', 'code-review', 'nyquist']);
-  await run('gates', 'docs-off', '3');
+  // the CLI exits 0 on a refusal too: check that docs commits really went off
+  assert.equal(await run('gates', 'docs-off', '3'), 'gates docs-off 3: done');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.planning/config.json'), 'utf8')).phase_commit_docs['3'], false);
   write(`${dir}/03-SECURITY.md`, '---\nthreats_open: 0\n---\n');
   write(`${dir}/03-REVIEW.md`, '---\nstatus: issues_found\nfindings:\n  critical: 0\n  warning: 1\n---\n');
   write(`${dir}/03-VALIDATION.md`, '---\nstatus: validated\nnyquist_compliant: true\n---\n');
@@ -125,7 +130,14 @@ test('a scripted /turbo-phase run drives every deterministic step and leaves GSD
   const realCore = gsdCoreDir(null, process.env);
   if (realCore && versionInRange(readVersion(realCore))) {
     write('.planning/ROADMAP.md', '# Roadmap\n\n### Phase 3: Demo\n**Goal**: demo\n');
-    const res = JSON.parse(execFileSync(process.execPath, [path.join(realCore, 'bin', 'gsd-tools.cjs'), 'phase', 'uat-passed', '3', '--uat-only', '--cwd', root], { encoding: 'utf8' }));
+    // a failing verdict exits 1 (GSD #5170): read the JSON at any exit status so the checks are shown
+    const r = spawnSync(process.execPath, [path.join(realCore, 'bin', 'gsd-tools.cjs'), 'phase', 'uat-passed', '3', '--uat-only', '--cwd', root], { encoding: 'utf8', stdio: 'pipe' });
+    let res;
+    try {
+      res = JSON.parse(r.stdout);
+    } catch {
+      assert.fail(`uat-passed exit ${r.status}: ${r.stdout}${r.stderr}`);
+    }
     assert.equal(res.passed, true, JSON.stringify(res.checks));
   } else {
     t.diagnostic('GSD 1.16 not installed: skipped the real uat-passed check');
@@ -139,4 +151,12 @@ test('a scripted /turbo-phase run drives every deterministic step and leaves GSD
   assert.equal(readProgress(root, '3').done.length, STEPS.length);
   assert.ok(!fs.existsSync(path.join(root, '.planning/turbo/gates/p3.json')));
   assert.equal(fs.readFileSync(path.join(root, '.planning/config.json'), 'utf8'), CONFIG);
+
+  // one gates-off and one gates-restored commit; the restore lands right after GSD's execute commits, before the fan-out
+  const log = g('log', '--reverse', '--format=%s').split('\n');
+  assert.deepEqual([log.filter((s) => s === GATES_OFF).length, log.filter((s) => s === GATES_RESTORED).length], [1, 1], log.join(' | '));
+  const at = (s) => log.indexOf(s);
+  assert.ok(at(GATES_OFF) < at('phase 3 executed'), log.join(' | '));
+  assert.equal(at(GATES_RESTORED), at('phase 3 executed') + 1, log.join(' | '));
+  assert.ok(at(GATES_RESTORED) < at('docs(phase-3): gate fan-out'), log.join(' | '));
 });

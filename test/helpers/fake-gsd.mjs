@@ -6,7 +6,8 @@ export function fakeGsdCore(root, { hooks = {}, goal = 'Ship the demo feature', 
   const core = path.join(root, '.claude', 'gsd-core');
   fs.mkdirSync(path.join(core, 'bin'), { recursive: true });
   fs.writeFileSync(path.join(core, 'VERSION'), `${version}\n`);
-  fs.writeFileSync(path.join(core, 'bin', 'gsd-tools.cjs'), STUB.replace('__HOOKS__', JSON.stringify(hooks)).replace('__GOAL__', JSON.stringify(goal)));
+  // function replacers: "$&" and the like inside the JSON are never expanded
+  fs.writeFileSync(path.join(core, 'bin', 'gsd-tools.cjs'), STUB.replace('__HOOKS__', () => JSON.stringify(hooks)).replace('__GOAL__', () => JSON.stringify(goal)));
   return core;
 }
 
@@ -14,9 +15,10 @@ export function fakeGsdCore(root, { hooks = {}, goal = 'Ship the demo feature', 
 const STUB = String.raw`'use strict';
 const fs = require('fs');
 const path = require('path');
-const cp = require('child_process');
 const HOOKS = __HOOKS__;
 const GOAL = __GOAL__;
+// the capability registry's "when:" keys of the four built-in gates (G6): a step hook whose key is false is inactive
+const GATE = { nyquist: 'workflow.nyquist_validation', security: 'workflow.security_enforcement', ui: 'workflow.ui_review', 'code-review': 'workflow.code_review' };
 const argv = process.argv.slice(2);
 const args = [];
 let root = process.cwd();
@@ -31,7 +33,29 @@ const at = (o, k) => k.split('.').reduce((x, s) => (x && typeof x === 'object' &
 const out = (v) => process.stdout.write(typeof v === 'string' ? v : JSON.stringify(v));
 const phaseDir = (n) => {
   const base = path.join(root, '.planning', 'phases');
-  return path.join(base, fs.readdirSync(base).find((x) => Number(x.split('-')[0]) === Number(n)));
+  let names = [];
+  try { names = fs.readdirSync(base); } catch (e) { return null; }
+  const hit = names.find((x) => Number(x.split('-')[0]) === Number(n));
+  return hit ? path.join(base, hit) : null;
+};
+// frontmatter as flat strings plus one level of nested maps (G15)
+const frontmatter = (text) => {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  const o = {};
+  let parent = null;
+  for (const line of (m ? m[1] : '').split(/\r?\n/)) {
+    const kv = /^(\s*)([\w-]+):\s*(.*)$/.exec(line);
+    if (!kv) continue;
+    if (kv[1] && parent) o[parent][kv[2]] = kv[3];
+    else if (!kv[1] && kv[3] === '') { parent = kv[2]; o[parent] = {}; }
+    else if (!kv[1]) { parent = null; o[kv[2]] = kv[3]; }
+  }
+  return o;
+};
+// a flow list "[a, b]" as an array of strings
+const list = (v) => {
+  const m = /^\[(.*)\]$/.exec(String(v || '').trim());
+  return m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
 };
 const cmd = args[0];
 const sub = args[1];
@@ -51,36 +75,27 @@ if (cmd === 'config-get') {
   fs.writeFileSync(cfgFile, JSON.stringify(c, null, 2));
   out({ updated: true });
 } else if (cmd === 'loop') {
-  out({ point: args[2], activeHooks: HOOKS[args[2]] || [] });
+  const cfg = load();
+  out({ point: args[2], activeHooks: (HOOKS[args[2]] || []).filter((h) => !(GATE[h.capId] && at(cfg, GATE[h.capId]) === false)) });
 } else if (cmd === 'phase-plan-index') {
-  const files = fs.readdirSync(phaseDir(sub));
-  out({ phase: sub, plans: files.filter((f) => f.endsWith('-PLAN.md')).map((f) => {
-    const id = f.slice(0, -'-PLAN.md'.length);
-    return { id, files_modified: [], files_deleted: [], has_summary: files.includes(id + '-SUMMARY.md') };
-  }) });
-} else if (cmd === 'frontmatter') {
-  const text = fs.readFileSync(path.resolve(root, args[2]), 'utf8');
-  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
-  const o = {};
-  let parent = null;
-  for (const line of (m ? m[1] : '').split(/\r?\n/)) {
-    const kv = /^(\s*)([\w-]+):\s*(.*)$/.exec(line);
-    if (!kv) continue;
-    if (kv[1] && parent) o[parent][kv[2]] = kv[3];
-    else if (!kv[1] && kv[3] === '') { parent = kv[2]; o[parent] = {}; }
-    else if (!kv[1]) { parent = null; o[kv[2]] = kv[3]; }
+  const dir = phaseDir(sub);
+  // a missing phase still exits 0, as gsd-core phase.cjs answers it
+  if (!dir) {
+    out({ phase: sub, error: 'Phase not found', plans: [] });
+  } else {
+    const files = fs.readdirSync(dir);
+    out({ phase: sub, plans: files.filter((f) => f.endsWith('-PLAN.md')).map((f) => {
+      const id = f.slice(0, -'-PLAN.md'.length);
+      const fm = frontmatter(fs.readFileSync(path.join(dir, f), 'utf8'));
+      return { id, files_modified: list(fm.files_modified), files_deleted: list(fm.files_deleted), has_summary: files.includes(id + '-SUMMARY.md') };
+    }) });
   }
-  out(o);
+} else if (cmd === 'frontmatter') {
+  out(frontmatter(fs.readFileSync(path.resolve(root, args[2]), 'utf8')));
 } else if (cmd === 'check') {
   out({ frontend: false, hasUiSpec: false, block: false });
 } else if (cmd === 'roadmap') {
   out(GOAL);
-} else if (cmd === 'commit') {
-  const fi = args.indexOf('--files');
-  const files = fi >= 0 ? args.slice(fi + 1) : [];
-  cp.execFileSync('git', ['add', '-A', '--'].concat(files), { cwd: root });
-  cp.execFileSync('git', ['commit', '-q', '-m', args.slice(1, fi >= 0 ? fi : args.length).join(' '), '--'].concat(files), { cwd: root });
-  out({ committed: true });
 } else {
   process.stderr.write('fake gsd-tools: unsupported ' + args.join(' ') + '\n');
   process.exit(2);

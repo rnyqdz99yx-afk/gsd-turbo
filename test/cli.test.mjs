@@ -579,6 +579,22 @@ test('resume --start launches a daemon that relaunches the lane; stop ends it', 
   assert.equal(pidExists(sup.pid), false);
 });
 
+test('start passes doctor\'s full mode to the daemon: the lane runs the turbo-phase skill', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  const r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /started supervisor pid \d+ \(mode full\)/);
+  const bg = await waitFor(() => p.claudeCalls().find((a) => a[0] === '--bg'), 15000);
+  assert.ok(bg, logOf(p.root));
+  assert.equal(bg.at(-1), 'Run the turbo-phase skill with arguments: 4');
+  assert.match(bg[bg.indexOf('--append-system-prompt') + 1], /lane-status 4 done .*close step/);
+  const sup = await waitFor(() => { const s = readSup(p.root); return s?.lane?.mode ? s : null; }, 15000);
+  assert.equal(sup?.lane?.mode, 'full', logOf(p.root));
+  const stop = await runAsync(['stop'], p.root, p.env);
+  assert.equal(stop.code, 0, stop.stderr);
+});
+
 test('start refuses an unsupported environment with exit 2 and the failed checks', async () => {
   const p = fakeProject({ claudeVersion: '2.1.100' });
   const r = await runAsync(['start'], p.root, p.env);

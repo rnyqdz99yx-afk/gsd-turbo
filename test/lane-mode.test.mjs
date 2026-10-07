@@ -10,6 +10,7 @@ import { tick } from '../lib/supervisor.mjs';
 import { doctor } from '../lib/doctor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
+import { laneSessionName } from '../lib/claude.mjs';
 
 test('prompts: full mode runs turbo-phase; safe mode keeps gsd-autonomous and restores gates first', () => {
   assert.equal(laneUserPrompt({ phase: '3', mode: 'full' }), 'Run the turbo-phase skill with arguments: 3');
@@ -109,6 +110,68 @@ test('supervisor safe mode (no ctx.mode): gsd-autonomous with the gates restore 
   assert.match(h.launched[0].prompt, /^First run node x gates restore 2 .*gsd-autonomous skill with arguments: --only 2$/);
 });
 
+test('safe prompts also put back docs commits after the gates', () => {
+  assert.match(laneUserPrompt({ phase: '3', turboRun: 'node x' }), /^First run node x gates restore 3 and then node x gates docs-restore 3 \(/);
+  assert.match(laneUserPrompt({ phase: '3', turboRun: 'node x', resume: true }), /^Resume phase 3\. First run node x gates restore 3 and then node x gates docs-restore 3 \(.*--only 3\. The state on disk/);
+});
+
+// A lane left by a full-mode supervisor, with its session ended.
+function fullLane(h, phase = '2') {
+  const name = laneSessionName(h.root, phase);
+  h.agents.push({ id: 's0', name, state: 'done', cwd: h.root });
+  return { lane: { phase, sessionId: 's0', name, launchedAt: '2026-01-01T00:00:00.000Z', mode: 'full', restarts: 0, fingerprint: 'A', notified: {}, blockedSince: null }, finished: false, halted: false };
+}
+
+test('supervisor safe mode never relaunches or adopts a full lane on a phase GSD already completed', async () => {
+  const h = harness({ phases: [P('2', [], true)], mode: 'safe' });
+  let s = fullLane(h);
+  // an alive session of the lane that a launch timing out would leave: never adopted while held
+  h.agents.push({ id: 'sx', name: laneSessionName(h.root, '2'), state: 'working', cwd: h.root });
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 0);
+  assert.equal(s.lane.sessionId, 's0');
+  assert.equal(s.lane.mode, 'full');
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneNeedsOwner']);
+  assert.match(h.notes[0].vars.reason, /GSD completed phase 2 before turbo's gates finished; doctor now reports safe mode/);
+  h.fp = 'B';
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 0, 'no safe relaunch: gsd-autonomous would end at once on the completed phase');
+  assert.equal(h.notes.length, 1, 'notified once');
+  assert.ok(s.lane && !s.halted && !s.finished);
+  // resume N --start while doctor still says safe: the forced relaunch waits too, and tells the owner again
+  s.lane = { ...s.lane, notified: {}, restarts: 0, forceRelaunch: true };
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 0);
+  assert.equal(h.notes.length, 2);
+  assert.equal(s.lane.mode, 'full');
+  // doctor fixed: a full-mode supervisor resumes the lane through turbo-phase
+  h.agents = h.agents.filter((a) => a.id !== 'sx');
+  h.ctx.mode = 'full';
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.equal(h.launched[0].prompt, 'Resume phase 2. Run the turbo-phase skill with arguments: 2 --resume');
+  assert.equal(s.lane.mode, 'full');
+});
+
+test('a full lane with its fresh done record ends in safe mode too', async () => {
+  const h = harness({ phases: [P('2', [], true)], mode: 'safe' });
+  let s = fullLane(h);
+  writeLaneStatus(h.root, '2', 'done', { at: '2026-01-01T00:01:00.000Z' });
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.map((x) => x.key), ['phaseDone']);
+  assert.equal(s.lane, null);
+});
+
+test('supervisor safe mode relaunches a full lane on an unfinished phase with the safe resume prompt', async () => {
+  const h = harness({ phases: [P('2')], mode: undefined });
+  let s = fullLane(h);
+  h.fp = 'B';
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.match(h.launched[0].prompt, /^Resume phase 2\. First run node x gates restore 2 .*gsd-autonomous skill with arguments: --only 2\. /);
+  assert.equal(s.lane.mode, 'safe');
+});
+
 function doctorSetup({ skill = true, agent = true } = {}) {
   const home = tmpDir('home');
   const root = tmpDir('proj');
@@ -141,7 +204,9 @@ test('doctor: full only with the turbo-phase skill, the turbo-uat agent and GSD 
   const noAgent = doctorSetup({ agent: false });
   assert.equal(doctor({ root: noAgent.root, env: { CLAUDE_CONFIG_DIR: noAgent.home }, exec: fakeExec(), claudeBin }).mode, 'safe');
   const badHooks = doctorSetup();
-  assert.equal(doctor({ root: badHooks.root, env: { CLAUDE_CONFIG_DIR: badHooks.home }, exec: fakeExec({ nope: 1 }), claudeBin }).mode, 'safe');
+  const bad = doctor({ root: badHooks.root, env: { CLAUDE_CONFIG_DIR: badHooks.home }, exec: fakeExec({ nope: 1 }), claudeBin });
+  assert.equal(bad.mode, 'safe');
+  assert.match(bad.checks.find((c) => c.name === 'gsd-render-hooks').detail, /render-hooks verify:post returned no activeHooks list/);
 });
 
 test('turbo-run status shows the lane mode', () => {

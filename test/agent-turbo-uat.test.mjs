@@ -4,7 +4,8 @@ import fs from 'node:fs';
 
 test('turbo-uat agent: frontmatter, safety rules and the CLI it drives', () => {
   const s = fs.readFileSync('agents/turbo-uat.md', 'utf8');
-  assert.match(s, /^---\nname: turbo-uat\ndescription: .+\n---\n/);
+  // the tools line makes the bans on MCP tools and on spawning agents a real restriction (M9)
+  assert.match(s, /^---\nname: turbo-uat\ndescription: .+\ntools: Bash, Read, Write, Edit, Glob, Grep\n---\n/);
   const needles = [
     'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs"',
     'turbo-run uat plan N', 'turbo-run uat stand N prepare', 'turbo-run uat stand N cleanup', 'turbo-run uat net-check N', 'turbo-run uat record N',
@@ -28,7 +29,12 @@ test('turbo-uat agent: owner-only list, refusal handling, isolation and record o
     'Never use a browser MCP tool for stand checks', 'B items checked over HTTP or sockets still run',
     'capture clean evidence again or record that item `deferred` C', 'A refusal is atomic', 'the whole results array',
     'an `owner` D entry stays `owner` D, never `deferred` C',
+    // I2: nothing is installed; I5: the stand process is found by its pid file only; M3: popups and new pages too
+    'Never install packages or browsers', '.planning/turbo/run/uat-pN/stand.pid', 'Never kill processes by name', 'taskkill',
+    "context.on('request')",
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
   assert.ok(!s.includes('playwright-mcp'), 'the agent never names the MCP harness');
+  assert.ok(!/\bnpx\b/.test(s), 'no npx: it may download a package');
+  assert.ok(!s.includes("page.on('request')"), 'a page listener misses popups and new pages');
 });

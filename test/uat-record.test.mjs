@@ -5,7 +5,7 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { HEAD, UAT } from './fixtures/uat-sample.mjs';
 import { parseUat, applyUatResults, evidenceManifest, scanSecrets, recordUat } from '../lib/uat.mjs';
-import { splitItem, itemText } from '../lib/uat-classify.mjs';
+import { splitItem, itemText, uatPlan } from '../lib/uat-classify.mjs';
 
 const RESULTS = [
   { test: 1, result: 'pass', class: 'A', checks: ['reload /settings', 'read the field'], harness: 'playwright-mcp', evidence: [{ file: '.planning/turbo/run/evidence/p3/t1.png', sha256: 'ab'.repeat(32) }] },
@@ -15,6 +15,8 @@ const RESULTS = [
   { test: 4, result: 'issue', class: 'A', reported: 'the "Export" button does nothing', severity: 'major', harness: 'playwright-mcp' },
 ];
 const HEAD2 = 'fedcba9876543210fedcba9876543210fedcba98';
+// a manifest entry as recordUat hands it to applyUatResults
+const EV = [{ file: '.planning/turbo/run/evidence/p3/t.txt', sha256: 'cd'.repeat(32) }];
 const SIGN_UAT = UAT.replace('### 2. Owner signs the release\nexpected: the release is signed', '### 2. Owner signs the release and the page shows the badge\nexpected: the badge is visible');
 
 // GSD's predicate (gsd-core bin/lib/uat-predicate.cjs parseUatResultItems, G12), reproduced without parseUat: a block runs
@@ -84,28 +86,31 @@ test('re-recording replaces turbo rows and the earlier live part instead of dupl
 
 test('a re-record rewrites turbo\'s own Gaps and Deferred Follow-Ups entries and leaves GSD\'s alone', () => {
   const opts = { head: HEAD, phase: '3' };
-  // an unclassified item: the agent may record it as C once and as A later
+  // an unclassified item: the agent may record it as C once and as D later, never lower (C1)
   const uat = UAT.replace('## Summary', '### 6. Nightly job finishes\nexpected: it completes\nresult: [pending]\n\n## Summary');
   const issue = { test: 4, result: 'issue', class: 'A', reported: 'nothing happens', severity: 'major' };
   const defer = { test: 6, result: 'deferred', class: 'C', reason: 'needs a full night' };
   const once = applyUatResults(uat, [issue, defer], opts);
   assert.ok(entry(once, '- test: 6').includes('idea: "needs a full night"'));
-  const twice = applyUatResults(once, [{ test: 4, result: 'pass', class: 'A' }, { test: 6, result: 'pass', class: 'A' }], { head: HEAD2, phase: '3' });
+  // a deferral again rewrites turbo's one entry
+  const again = applyUatResults(once, [{ ...defer, reason: 'needs two nights' }], opts);
+  assert.equal(again.match(/^- test: 6$/gm).length, 1);
+  assert.ok(entry(again, '- test: 6').includes('idea: "needs two nights"'));
+  const twice = applyUatResults(again, [{ test: 4, result: 'pass', class: 'A', evidence: EV }, { test: 6, result: 'owner', class: 'D' }], { head: HEAD2, phase: '3' });
   assert.ok(entry(twice, '- gap_id: G-3-4').includes('\n  status: resolved\n'));
   assert.equal(entry(twice, '- test: 6'), null, 'a test that is no longer deferred has no deferred entry');
-  assert.deepEqual(gsdView(twice).filter((x) => [4, 6].includes(x.n)).map((x) => x.result), ['pass', 'pass']);
-  // an issue again replaces turbo's resolved entry; a deferral again writes one fresh entry
-  const thrice = applyUatResults(twice, [{ ...issue, reported: 'still nothing', severity: 'minor' }, { ...defer, reason: 'needs two nights' }], opts);
+  assert.deepEqual(gsdView(twice).filter((x) => [4, 6].includes(x.n)).map((x) => x.result), ['pass', 'pending']);
+  // an issue again replaces turbo's resolved entry; the D row never goes back to a deferral
+  const thrice = applyUatResults(twice, [{ ...issue, reported: 'still nothing', severity: 'minor' }], opts);
   const gap = entry(thrice, '- gap_id: G-3-4');
   assert.equal(thrice.match(/^- gap_id: G-3-4$/gm).length, 1);
   for (const l of ['  status: failed', '  reason: "turbo-uat reported: still nothing"', '  severity: minor']) assert.ok(gap.split('\n').includes(l), l);
   assert.ok(!/resolved_(by|at)/.test(gap), gap);
-  assert.equal(thrice.match(/^- test: 6$/gm).length, 1);
-  assert.ok(entry(thrice, '- test: 6').includes('idea: "needs two nights"'));
+  assert.throws(() => applyUatResults(twice, [defer], opts), /class C is below the class D turbo-uat recorded for this test/);
   // a gap GSD wrote for the same id: an issue would hide behind it, so turbo refuses; a pass leaves it as it is
   const foreign = uat.replace('## Gaps\n', '## Gaps\n\n- gap_id: G-3-4\n  truth: "x"\n  status: failed\n  reason: "User reported: y"\n  test: 4\n');
   assert.throws(() => applyUatResults(foreign, [issue], opts), /G-3-4 .*did not write/);
-  assert.equal(entry(applyUatResults(foreign, [{ test: 4, result: 'pass', class: 'A' }], opts), '- gap_id: G-3-4'), entry(foreign, '- gap_id: G-3-4'));
+  assert.equal(entry(applyUatResults(foreign, [{ test: 4, result: 'pass', class: 'A', evidence: EV }], opts), '- gap_id: G-3-4'), entry(foreign, '- gap_id: G-3-4'));
 });
 
 test('a hermetic result alone appends the live half as a pending row', () => {
@@ -172,6 +177,33 @@ test('a live part is classified whole and never split again', () => {
   const again = parseUat(applyUatResults(once, [{ test: 6, result: 'owner', class: 'D' }], opts)).tests;
   assert.equal(again.length, 6);
   assert.deepEqual([again[5].result, again[5].fields.class], ['pending', 'D']);
+});
+
+test('a class turbo-uat recorded is the floor of every later run: the plan offers it, the recorder refuses lower (C1)', () => {
+  const opts = { head: HEAD, phase: '3' };
+  // a known floor gap: the classifier reads this owner-only item as A, and the agent raises it to D
+  const uat = UAT.replace('### 1. Settings page shows the saved value\nexpected: the value persists after reload', '### 1. Owner confirms the pricing page copy\nexpected: the copy is final');
+  assert.notEqual(uat, UAT);
+  assert.deepEqual(uatPlan(parseUat(uat).tests).filter((i) => i.test === 1).map((i) => i.class), ['A']);
+  const once = applyUatResults(uat, [{ test: 1, result: 'owner', class: 'D' }], opts);
+  const row = parseUat(once).tests.find((x) => x.number === 1);
+  assert.deepEqual([row.result, row.fields.source, row.fields.class], ['pending', 'turbo-uat', 'D']);
+  // run 2 (a uat-step repeat, a resumed session, an owner resume without signing)
+  const plan = uatPlan(parseUat(once).tests).filter((i) => i.test === 1);
+  assert.deepEqual(plan.map((i) => [i.class, i.rule]), [['D', 'class D recorded by turbo-uat']]);
+  for (const r of [{ result: 'pass', class: 'A', evidence: EV }, { result: 'issue', class: 'B', reported: 'x' }, { result: 'deferred', class: 'C', reason: 'x' }]) {
+    assert.throws(() => applyUatResults(once, [{ test: 1, ...r }], opts), new RegExp(`class ${r.class} is below the class D turbo-uat recorded for this test`));
+  }
+  const again = parseUat(applyUatResults(once, [{ test: 1, result: 'owner', class: 'D' }], opts)).tests[0];
+  assert.deepEqual([again.result, again.fields.class], ['pending', 'D']);
+  // a recorded class on a row turbo did not write is not turbo's: the deterministic floor alone applies
+  const foreign = uat.replace('expected: the copy is final\nresult: [pending]', 'expected: the copy is final\nresult: [pending]\nclass: D');
+  assert.deepEqual(uatPlan(parseUat(foreign).tests).filter((i) => i.test === 1).map((i) => i.class), ['A']);
+  // the live row of a split test carries its own recorded class to its live part
+  const live = applyUatResults(UAT, [{ ...RESULTS[2], evidence: EV }, { ...RESULTS[3], result: 'owner', class: 'D', reason: undefined }], opts);
+  const liveRow = parseUat(live).tests.find((x) => x.number === 6);
+  assert.deepEqual([liveRow.result, liveRow.fields.class], ['pending', 'D']);
+  assert.throws(() => applyUatResults(live, [RESULTS[3]], opts), /class C is below the class D turbo-uat recorded for this test/);
 });
 
 test('evidence resolves inside the run evidence directory only', () => {

@@ -21,6 +21,7 @@ test('turbo-phase skill: frontmatter, every step in order, the commands it drive
     'isolation="worktree"', 'subagent_type="turbo-uat"', 'turbo-run uat owner-request N --json',
     'args="N --no-transition"', 'args="N --gaps-only --no-transition"', 'args="N --chunked"', '--research-phase N', 'discuss-phase-assumptions.md',
     'auto_advance', 'args="N --fix"', 'Verify all open threats', 'gsd-verify-work', 'planner-revision.md', 'ONE message', 'gsd-tools commit',
+    'gsd-tools phase uat-passed N --uat-only',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
   assert.ok(!/gsd-turbo-/.test(s));

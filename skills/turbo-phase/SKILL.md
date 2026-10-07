@@ -164,5 +164,6 @@ Spec §4.3.7.
 2. `gsd-tools verification status <phase dir>` must be `passed` (verify-work turns `human_needed` into `passed`, G12). Any other status → **stop for the owner** ("verification status <status> at close").
 3. `gsd-tools init manager` must show the phase with `phase_complete: true` or `disk_status: "complete"`. If it does not, run `Skill(skill="gsd-execute-phase", args="N --no-transition")` once; GSD resumes at `update_roadmap` (G9). Still not complete → **stop for the owner** ("verified, but GSD did not mark the phase complete").
 4. `turbo-run jobs N outcome --json`: `securityOpen` above 0 → **stop for the owner** ("<securityOpen> security threats open"). verify-work, the only GSD step that blocks on open threats, does not run when verification was `passed` from the start.
-5. `turbo-run phase-step N --done close --note "<summary>"`.
-6. `turbo-run lane-status N done --reason "<one line: gates run, fixes, UAT counts, the owner checklist file if any>"`, then end your turn.
+5. When the phase directory has a UAT file (`*-UAT.md`): `gsd-tools phase uat-passed N --uat-only`, GSD's own check of the UAT rows. It prints JSON and exits 1 when the verdict fails; read the JSON either way. `passed` not true → **stop for the owner** ("UAT not passed at close: <its failing checks>").
+6. `turbo-run phase-step N --done close --note "<summary>"`.
+7. `turbo-run lane-status N done --reason "<one line: gates run, fixes, UAT counts, the owner checklist file if any>"`, then end your turn.

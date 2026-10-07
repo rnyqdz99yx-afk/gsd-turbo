@@ -148,6 +148,9 @@ test('splitItem: the live part keeps every live rule the whole item matched', ()
     'The owner reviews and approves the release on the page and then deploys it',
     'Владелец затем одобряет релиз на странице и подписывает акт',
     'Release approved by admin and owner shows on the page and the hub is redeployed',
+    // the same rule also matches inside a live clause on its own; the cross-clause match still keeps the item whole
+    'The owner reviews and approves the release on the page and the owner\'s decision is final',
+    'The owner\'s decision is final and the owner reviews and approves the release on the page',
   ]) assert.deepEqual(shape(t), [['whole', 'D']], t);
   assert.deepEqual(shape('The owner reviews and approves the release on the page and then deploys it', 'max'), [['whole', 'D']]);
   assert.deepEqual(

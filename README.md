@@ -10,7 +10,7 @@ This is v0.2.0 (stage 2 of the [roadmap](#roadmap)). Each phase now runs as `/tu
 
 - Node.js ≥ 20 and git.
 - Claude Code ≥ 2.1.234 (background sessions: `claude --bg`, `claude agents --json --all`).
-- GSD core 1.16.x, installed with `npx @opengsd/gsd-core@latest` (or `npx @opengsd/gsd-core@1.16` to stay inside the tested range). `turbo-run doctor` is tested against `>=1.16.0 <1.17.0`. A different GSD version, including newer minor and major releases, runs in safe mode if the other checks pass: doctor prints `FAIL gsd-version …` and then `mode: safe`. If `gsd-tools init manager` changed incompatibly, doctor reports `mode: unsupported` and the run does not start. The supervisor runs phases as `/turbo-phase` only in full mode, which also needs the tested range (see [Full and safe mode](#full-and-safe-mode)).
+- GSD core 1.16.x, installed with `npx @opengsd/gsd-core@latest` (or `npx @opengsd/gsd-core@1.16` to stay inside the tested range). `turbo-run doctor` is tested against `>=1.16.0 <1.17.0`. A different GSD version, including newer minor and major releases, runs in safe mode if the other checks pass: doctor prints `FAIL gsd-version …` and then `mode: safe`. If `gsd-tools init manager` changed incompatibly, doctor reports `mode: unsupported` and the run does not start. `/turbo-phase` (whether the supervisor or you start it) needs full mode, which also needs the tested GSD range (see [Full and safe mode](#full-and-safe-mode)).
 - Windows, macOS or Linux.
 - Claude Code must trust the project folder: run `claude` in it once and accept the trust prompt. In a folder it does not trust, every background session fails to start; the supervisor then stops at the first attempt and notifies you.
 - For automated browser checks (`turbo-uat`): Playwright (`playwright` or `@playwright/test`) installed in the project, with its Chromium browser. turbo never installs packages or browsers; without them, the items that need a browser go on your checklist.
@@ -104,7 +104,7 @@ node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor   # al
 
 Below, `turbo-run` stands for this `node …/turbo-run.mjs` call; the installer does not put it on your PATH. Its other subcommands, such as `phase-step`, `staleness`, `gates`, `jobs`, `uat`, `lane-status` and `test-changed`, are the deterministic steps the supervisor and the sessions call. You need them only for recovery: `turbo-run gates restore <N>` ([GSD settings turbo writes](#gsd-settings-turbo-writes)) and `turbo-run lane-status <N> done` ([Full and safe mode](#full-and-safe-mode)).
 
-To run a single phase without the supervisor, run `/turbo-phase <N>` in Claude Code, in a clean checkout.
+To run a single phase without the supervisor, run `/turbo-phase <N>` in Claude Code, in a clean checkout. It needs `turbo-run doctor` to report `mode: full`; otherwise it stops at once.
 
 The background sessions work in your checkout. Do not run GSD phase commands in the same checkout while the supervisor is running.
 
@@ -124,7 +124,7 @@ The background sessions work in your checkout. Do not run GSD phase commands in 
 - `mode: safe`: one or more of those checks prints `FAIL`, and every other check passes. Each phase runs `gsd-autonomous --only <N>` as in v0.1. Before that, the session runs `turbo-run gates restore <N>` and `turbo-run gates docs-restore <N>`, which put back what an interrupted `/turbo-phase` run left switched off (they do nothing otherwise).
 - `mode: unsupported`: node, git, Claude Code, the project, GSD core or `gsd-tools init manager` fails; the run does not start.
 
-If doctor drops from full to safe while a phase that GSD already marked complete has not finished turbo's gates and UAT, the supervisor does not relaunch that phase: `gsd-autonomous` would end at once on the completed phase and skip them. You get one notification ("Phase N waits for full mode") with two ways out: fix what `turbo-run doctor` reports, then run `/turbo-autonomous resume <N>`; or run the remaining `/turbo-phase` steps (restore, fanout, fix, final-gate, uat) yourself, then `turbo-run lane-status <N> done`. A session the supervisor adopts (one that is already running for the phase) keeps the stricter mode: a full-mode phase stays full.
+If doctor (which runs when the supervisor starts) drops from full to safe while a phase that GSD already marked complete has not finished turbo's gates and UAT, the supervisor does not relaunch that phase: `gsd-autonomous` would end at once on the completed phase and skip them. You get one notification ("Phase N waits for full mode") with two ways out: fix what `turbo-run doctor` reports, then run `/turbo-autonomous resume <N>`; or do the remaining `/turbo-phase` steps (restore, fanout, fix, final-gate, uat) by hand (the skill itself stops in safe mode), then `turbo-run lane-status <N> done`. A session the supervisor adopts (one that is already running for the phase) keeps the stricter mode: a full-mode phase stays full.
 
 ### Inside a phase (`/turbo-phase`)
 
@@ -151,13 +151,13 @@ A full test run ends every phase. From the moment every plan of the phase has a 
 
 ## GSD settings turbo writes
 
-turbo writes only these documented keys to `.planning/config.json`, always through `gsd-tools config-set`:
+turbo writes only these documented keys to `.planning/config.json`, always through `gsd-tools config-set` (a restore may then check out the file's committed bytes when they mean the same configuration):
 
 | Setting | When | What |
 |---|---|---|
 | `workflow.test_command` | `turbo-run init` | `turbo-run test-changed`, only when a full test command is known (see Targeted tests above). It stays after an uninstall; see [Uninstall](#uninstall). |
 | `planning.chunked_parallel` | the prologue (`turbo-run gates chunked`) | Set to `true` once, only when the key is absent; an explicit `false` is kept. Committed when git tracks `.planning/config.json`. |
-| `workflow.nyquist_validation`, `workflow.security_enforcement`, `workflow.ui_review`, `workflow.code_review` | only while GSD's execute-phase runs (`turbo-run gates off <N>`, then `gates restore <N>`) | Set to `false`. The old values are saved in `.planning/turbo/gates/p<N>.json`, and both files are committed when git tracks `.planning/config.json`. They are restored right after execute, before turbo runs these gates itself in parallel, because GSD's gate skills do nothing while their key is off. The four keys always get their old values back; when nothing else in `.planning/config.json` changed meanwhile (GSD's own `workflow._auto_chain_active: false` counts as no change), the file also gets back the exact bytes it had before `gates off`. |
+| `workflow.nyquist_validation`, `workflow.security_enforcement`, `workflow.ui_review`, `workflow.code_review` | only while GSD's execute-phase runs (`turbo-run gates off <N>`, then `gates restore <N>`) | Set to `false`. The old values are saved in `.planning/turbo/gates/p<N>.json`, and both files are committed when git tracks `.planning/config.json`. They are restored right after execute, before turbo runs these gates itself in parallel, because GSD's gate skills do nothing while their key is off. The four keys always get their old values back; when git tracks `.planning/config.json` and nothing else in it changed meanwhile (GSD's own `workflow._auto_chain_active: false` counts as no change), the file also gets back the exact bytes it had before `gates off`. |
 | `phase_commit_docs.<N>` | only while the parallel workers of the prologue and the fan-out run (`turbo-run gates docs-off <N>`, then `gates docs-restore <N>`) | Set to `false` and put back right after; never committed. For a decimal phase such as `3.1` GSD cannot key this setting: `gates docs-off` answers `not done`, and that phase's workers run one at a time. |
 
 Safeguards:
@@ -189,7 +189,7 @@ Stand rules:
 - **Temporary data.** `turbo-run uat stand <N> prepare` creates a temporary `DATA_DIR` under `.planning/turbo/run/uat-p<N>/`. A stand boots only when the app takes its data directory from `DATA_DIR`; otherwise its A and B items go on your checklist.
 - **One-time credentials.** `prepare` also writes a random test account to a credentials file, which the agent reads only inside its scripts. The values are never printed and never written to evidence or the UAT file.
 - **Isolated browser.** Browser checks run only from a Node script in a fresh Playwright context, never through a browser MCP tool or your browser profile. The project must have Playwright installed; turbo never installs packages or browsers. Items that cannot run that way go on your checklist.
-- **Secret-scan.** `turbo-run uat record` scans the text evidence and the new UAT lines for the one-time credentials and common token formats. A finding refuses the whole record and names file, line and rule, never the value.
+- **Secret-scan.** `turbo-run uat record` scans the text evidence and the new UAT lines for the one-time password and common token formats. A finding refuses the whole record and names file, line and rule, never the value.
 - **Cleanup.** `turbo-run uat stand <N> cleanup` removes the data directory, the credentials and the results file after every run, once the results are recorded.
 
 Evidence: screenshots (PNG) and text logs go to `.planning/turbo/run/evidence/p<N>/`, which is git-ignored; the UAT file gets only their sha256 hashes.
@@ -244,8 +244,8 @@ What is left for you goes into one file per phase, `.planning/turbo/run/p<N>-own
 
   Verification items GSD marks `human_needed` are checked without you where possible: in full mode by the `turbo-uat` agent (see [Automated UAT](#automated-uat-turbo-uat)), in safe mode by the session itself (browser checks with Playwright against a locally started app, HTTP and socket checks, test accounts in the app under test); only owner-only items are left to you. Only with `autonomy: "max"` are sessions told to deploy themselves.
 - **Git and data.** Sessions are told never to force-push, never to rewrite published history and never to delete data without a dry run first.
-- **GSD stays untouched.** turbo never modifies GSD files and writes to the GSD config only the keys in [GSD settings turbo writes](#gsd-settings-turbo-writes), through `gsd-tools config-set`.
-- **Supervisor files.** State, logs and locks live in `.planning/turbo/run/`, `logs/` and `locks/`, which `init` adds to a `.gitignore` there. `run/` also holds the `/turbo-phase` progress, the owner requests, the UAT stand and its evidence. `.planning/turbo/gates/` is committed and holds a file only while a phase has GSD's gates off. The targeted-test runner keeps its last-green marker outside the working tree, in the git directory (`git rev-parse --git-path turbo-last-green`, usually `.git/turbo-last-green`).
+- **GSD stays untouched.** turbo never modifies GSD files and writes to the GSD config only the keys in [GSD settings turbo writes](#gsd-settings-turbo-writes), through `gsd-tools config-set` (a restore may then check out the file's committed bytes when they mean the same configuration).
+- **Supervisor files.** State, logs and locks live in `.planning/turbo/run/`, `logs/` and `locks/`, which `init` adds to a `.gitignore` there. `run/` also holds the `/turbo-phase` progress, the owner requests, the UAT stand and its evidence. `.planning/turbo/gates/` holds a file only while a phase has GSD's gates off, committed when git tracks `.planning/config.json`. The targeted-test runner keeps its last-green marker outside the working tree, in the git directory (`git rev-parse --git-path turbo-last-green`, usually `.git/turbo-last-green`).
 
 ## Telegram (optional)
 

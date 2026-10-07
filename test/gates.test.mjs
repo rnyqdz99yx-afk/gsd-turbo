@@ -49,6 +49,29 @@ function project(text) {
   return root;
 }
 
+// .planning/ is git-ignored, but its config.json was committed before that and stays tracked.
+function ignoredPlanning(text) {
+  const root = repo();
+  fs.mkdirSync(path.join(root, '.planning'));
+  fs.writeFileSync(cfgPath(root), text);
+  git(root, 'add', '-A');
+  git(root, 'commit', '-q', '-m', 'config');
+  fs.writeFileSync(path.join(root, '.gitignore'), '.planning/\n');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-q', '-m', 'ignore planning');
+  return root;
+}
+
+// A pre-commit hook that rejects every commit until the returned function removes it (tmpGitRepo points core.hooksPath here).
+function rejectCommits(root) {
+  const hook = path.join(root, '.git', 'hooks', 'pre-commit');
+  fs.mkdirSync(path.dirname(hook), { recursive: true });
+  fs.writeFileSync(hook, '#!/bin/sh\necho "hook says no" >&2\nexit 1\n', { mode: 0o755 });
+  return () => fs.rmSync(hook);
+}
+
+const GATES_ON = '{\n  "workflow": {\n    "security_enforcement": true\n  }\n}\n';
+
 test('gates off commits config + state; restore brings back the exact bytes, removes the state, keeps the active list', () => {
   const original = '{\n  "workflow": {\n    "code_review": true,\n    "ui_review": false\n  }\n}\n';
   const root = project(original);
@@ -113,42 +136,61 @@ test('a git-ignored or untracked .planning/config.json: toggles work, nothing is
 });
 
 test('a tracked config inside a git-ignored .planning/ is committed alone; the ignored state file never is', () => {
-  const original = '{\n  "workflow": {\n    "security_enforcement": true\n  }\n}\n';
-  const root = repo();
-  fs.mkdirSync(path.join(root, '.planning'));
-  fs.writeFileSync(cfgPath(root), original);
-  git(root, 'add', '-A');
-  git(root, 'commit', '-q', '-m', 'config');
-  fs.writeFileSync(path.join(root, '.gitignore'), '.planning/\n'); // the config stays tracked
-  git(root, 'add', '-A');
-  git(root, 'commit', '-q', '-m', 'ignore planning');
+  const root = ignoredPlanning(GATES_ON);
   const cfg = fakeCfg(root);
   assert.equal(gatesOff({ root, phase: '3', cfg }).commit.committed, true);
   assert.equal(JSON.parse(git(root, 'show', 'HEAD:.planning/config.json')).workflow.security_enforcement, false);
   assert.deepEqual(gatesOff({ root, phase: '3', cfg }).commit, { committed: false, reason: 'no changes' }, 'a re-run does not trip over the ignored state file');
   assert.equal(gatesRestore({ root, phase: '3', cfg }).commit.committed, true);
-  assert.equal(fs.readFileSync(cfgPath(root), 'utf8'), original);
-  assert.equal(git(root, 'show', 'HEAD:.planning/config.json'), original.trim());
+  assert.equal(fs.readFileSync(cfgPath(root), 'utf8'), GATES_ON);
+  assert.equal(git(root, 'show', 'HEAD:.planning/config.json'), GATES_ON.trim());
   assert.equal(git(root, 'ls-files', '--', '.planning'), '.planning/config.json');
   assert.equal(git(root, 'status', '--porcelain'), '');
 });
 
-test('gates restore again retries a restore commit that a pre-commit hook rejected', () => {
-  const original = '{\n  "workflow": {\n    "security_enforcement": true\n  }\n}\n';
-  const root = project(original);
+test('a restore commit a hook rejected keeps the state, so gates restore again commits (state tracked, or ignored with the config tracked)', () => {
+  for (const make of [project, ignoredPlanning]) {
+    const root = make(GATES_ON);
+    const cfg = fakeCfg(root, ['security']);
+    gatesOff({ root, phase: '3', cfg });
+    const allow = rejectCommits(root);
+    assert.throws(() => gatesRestore({ root, phase: '3', cfg }), /git commit failed/);
+    assert.ok(fs.existsSync(path.join(root, gatesRel('3'))), `${make.name}: the state is kept for the retry`);
+    allow();
+    const again = gatesRestore({ root, phase: '3', cfg });
+    assert.deepEqual([again.changed, again.commit], [true, { committed: true }]);
+    assert.ok(!fs.existsSync(path.join(root, gatesRel('3'))));
+    assert.equal(fs.readFileSync(cfgPath(root), 'utf8'), GATES_ON);
+    assert.equal(git(root, 'show', 'HEAD:.planning/config.json'), GATES_ON.trim());
+    assert.equal(git(root, 'ls-tree', '-r', '--name-only', 'HEAD', '--', '.planning/turbo/gates'), '');
+    assert.equal(git(root, 'status', '--porcelain'), '');
+    assert.deepEqual(gatesRestore({ root, phase: '3', cfg }), { changed: false });
+  }
+});
+
+test('a restore that stopped before its commit is committed by the next restore (HEAD still has the state)', () => {
+  const root = project(GATES_ON);
   const cfg = fakeCfg(root, ['security']);
   gatesOff({ root, phase: '3', cfg });
-  const hook = path.join(root, '.git', 'hooks', 'pre-commit'); // tmpGitRepo points core.hooksPath here
-  fs.mkdirSync(path.dirname(hook), { recursive: true });
-  fs.writeFileSync(hook, '#!/bin/sh\necho "hook says no" >&2\nexit 1\n', { mode: 0o755 });
-  assert.throws(() => gatesRestore({ root, phase: '3', cfg }), /git commit failed/);
-  assert.ok(!fs.existsSync(path.join(root, gatesRel('3'))), 'the state is gone from the working tree, HEAD still has the gates off');
-  fs.rmSync(hook);
+  fs.writeFileSync(cfgPath(root), GATES_ON); // what the stopped restore left: values back, state removed, no commit
+  fs.rmSync(path.join(root, gatesRel('3')));
   assert.deepEqual(gatesRestore({ root, phase: '3', cfg }), { changed: false, commit: { committed: true } });
-  assert.equal(git(root, 'show', 'HEAD:.planning/config.json'), original.trim());
+  assert.equal(git(root, 'show', 'HEAD:.planning/config.json'), GATES_ON.trim());
   assert.equal(git(root, 'ls-tree', '-r', '--name-only', 'HEAD', '--', '.planning/turbo/gates'), '');
   assert.equal(git(root, 'status', '--porcelain'), '');
-  assert.deepEqual(gatesRestore({ root, phase: '3', cfg }), { changed: false });
+});
+
+test('a restore after a gates-off commit that never landed is complete: "no changes" keeps no state', () => {
+  const root = project(GATES_ON);
+  const cfg = fakeCfg(root);
+  const allow = rejectCommits(root);
+  assert.throws(() => gatesOff({ root, phase: '3', cfg }), /git commit failed/);
+  allow();
+  assert.deepEqual(gatesRestore({ root, phase: '3', cfg }).commit, { committed: false, reason: 'no changes' });
+  assert.ok(!fs.existsSync(path.join(root, gatesRel('3'))));
+  assert.equal(fs.readFileSync(cfgPath(root), 'utf8'), GATES_ON);
+  assert.equal(git(root, 'status', '--porcelain'), '');
+  assert.equal(gatesOff({ root, phase: '4', cfg }).changed, true, 'another phase is not blocked by a kept state');
 });
 
 test('a repository without a commit: gates and docs toggles work, nothing is committed', () => {

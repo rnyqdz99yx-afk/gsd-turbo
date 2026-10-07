@@ -98,7 +98,7 @@ Spec §4.3.4; Stage 2 executes through GSD.
 
 ### restore
 
-`turbo-run gates restore N`. If it fails, run it once more; still failing → **fail** with its error. GSD's four gates are back on before the fan-out: in GSD 1.16, `gsd-validate-phase`, `gsd-secure-phase` and `gsd-code-review` (also with `--fix`) exit at once while their key is off (G16). `turbo-run jobs N fanout` still knows which gates were on before `gates off`. From here GSD's own verify-work enforces the gates too; for example, open threats block completion (G12).
+`turbo-run gates restore N`. If it fails, run it once more; still failing → **fail** with its error. GSD's four gates are back on before the fan-out: in GSD 1.16, `gsd-validate-phase`, `gsd-secure-phase` and `gsd-code-review` (also with `--fix`) exit at once while their key is off (G16). `turbo-run jobs N fanout` still knows which gates were on before `gates off`. From here GSD's own verify-work enforces the gates too, but only verify-work blocks on open threats (G12), and it runs only when verification is `human_needed`, so step **close** stops for the owner while any threat is open.
 
 ### fanout
 

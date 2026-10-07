@@ -139,11 +139,15 @@ A full-mode session runs these steps in order. `turbo-run phase-step <N>` shows 
 7. `restore`: `turbo-run gates restore <N>` switches the gates back on.
 8. `fanout`: the gates that were on (security, UI review, code review, Nyquist validation) run in parallel; Nyquist validation writes its tests in its own git worktree, merged afterwards. `turbo-run jobs <N> outcome` reads their reports; a report that cannot be read counts as a finding.
 9. `fix`: code-review findings are fixed one per commit (at most 3 review rounds) and open security threats are mitigated, with targeted tests after every iteration; a fix that turns the tests red is fixed forward or reverted.
-10. `final-gate`: `TURBO_FULL=1 turbo-run test-changed`, the phase's full test run. GSD's verifier runs again when the fixes changed covered code.
+10. `final-gate`: re-verification first (GSD's verifier runs again when the fixes changed covered code, with one gap-closure round when it finds gaps), and the phase's full test run last: `TURBO_FULL=1 turbo-run test-changed`, with at most 2 rounds of fixes when it is red.
 11. `uat`: when GSD's verification is `human_needed`, the `turbo-uat` agent checks the items (see [Automated UAT](#automated-uat-turbo-uat)); then GSD's `gsd-verify-work` completes the UAT session and marks the phase complete.
-12. `close`: checks that GSD marked the phase complete and writes the lane's done record.
+12. `close`: writes the lane's done record only when verification passed, GSD marked the phase complete, no security threat is open, and, when the phase has a UAT file, GSD's own `phase uat-passed` check passes; otherwise it stops for you.
 
 When only you can continue (for example verification gaps left after one gap-closure round, tests still red after the fixes, or UAT items that need your signature), the session stops the phase as `needs-owner`; on an error it stops it as `failed`. Either way it first switches GSD's gates back on. `/turbo-autonomous resume <N>` runs the stopped step again.
+
+The bounded rounds (one gap-closure round in `execute`, 3 code-review fix iterations, 2 red rounds in `final-gate`, one UAT repeat) are counted across sessions: a session that restarts a step after a context pause or a crash goes on from the earlier count, and the phase stops for you when a budget is used up. Your `/turbo-autonomous resume <N>` starts a fresh budget.
+
+turbo keeps a phase's progress (the steps done, their notes and those counts) in `.planning/turbo/run/phase-p<N>.json`. When a new milestone reuses phase numbers (`/gsd-new-milestone --reset-phase-numbers`), run `turbo-run phase-step <N> --reset` for each reused number before that phase starts; otherwise the new phase N inherits the old phase N's finished steps.
 
 GSD may mark a phase complete before turbo's gates and UAT finish: its execute-phase does that as soon as its verifier passes. The supervisor therefore waits for the lane's own done record (`turbo-run lane-status <N> done`, written by the close step), and `human_needed` alone never stops a full-mode phase.
 
@@ -166,7 +170,7 @@ Safeguards:
 - `turbo-run jobs <N> fanout` and `jobs <N> outcome` refuse while phase N's gates are still off.
 - Every early stop of a phase (`needs-owner`, `failed`) restores the gates first.
 
-If a phase was interrupted with its gates off (`.planning/turbo/gates/p<N>.json` exists), `turbo-run gates restore <N>` puts them back, and `turbo-run gates docs-restore <N>` does the same for `phase_commit_docs.<N>` (left over as `.planning/turbo/run/docs-p<N>.json`). Both print `nothing to do` when nothing is off. A safe-mode lane runs both by itself.
+If a phase was interrupted with its gates off (`.planning/turbo/gates/p<N>.json` exists), `turbo-run gates restore <N>` puts them back, and `turbo-run gates docs-restore <N>` does the same for `phase_commit_docs.<N>` (left over as `.planning/turbo/run/docs-p<N>.json`). Both print `nothing to do` when nothing is off. A safe-mode lane runs both by itself. `turbo-run status` and `turbo-run stop` list every such leftover with its command (`status --json`: `gatesOff`, the phases whose gates are off); neither restores anything.
 
 ## Automated UAT (`turbo-uat`)
 

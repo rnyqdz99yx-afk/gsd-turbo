@@ -141,6 +141,24 @@ test('gateOutcome: counts are strict integers; a bad or left-out tier counts one
   assert.deepEqual(out({ nyquist: { status: 'draft' } }).unreadable, [], 'a draft is missing, not unreadable');
 });
 
+test('gateOutcome: a YAML flow list or an empty value is never a gate status (M1)', () => {
+  const jobs = fanoutJobs({ phase: '3', active: ['security', 'code-review', 'nyquist'], artifacts: {} });
+  const clean = { security: { threats_open: '0' }, 'code-review': { status: 'clean' }, nyquist: { status: 'validated', nyquist_compliant: 'true' } };
+  const files = { security: '03-SECURITY.md', 'code-review': '03-REVIEW.md', nyquist: '03-VALIDATION.md' };
+  const out = (patch) => gateOutcome({ jobs, fm: { ...clean, ...patch }, files });
+  // GSD's frontmatter get answers `status: [clean]` with ["clean"] and an empty `status:` with {}
+  for (const status of [['clean'], ['issues_found'], ['skipped'], {}]) {
+    const o = out({ 'code-review': { status, findings: { critical: '0', warning: '0' } } });
+    assert.deepEqual([o.reviewFindings, o.next, o.missing], [1, 'fix', ['code-review']], JSON.stringify(status));
+    assert.match(o.unreadable.join('\n'), /^code-review: 03-REVIEW\.md is unreadable \(status .+, not one of clean, issues_found, skipped\)$/m, JSON.stringify(status));
+  }
+  for (const [status, why] of [[['validated'], /^nyquist: 03-VALIDATION\.md status \["validated"\] is not a string$/m], [{}, /^nyquist: 03-VALIDATION\.md status is missing$/m]]) {
+    const o = out({ nyquist: { status, nyquist_compliant: 'true' } });
+    assert.deepEqual([o.missing, o.blockingMissing, o.next, o.nyquist.status], [['nyquist'], ['nyquist'], 'retry', ''], JSON.stringify(status));
+    assert.match(o.unreadable.join('\n'), why);
+  }
+});
+
 test('jobs outcome reads 03-SECURITY.md and a draft 03-VALIDATION.md through their own artifact keys', async () => {
   const root = tmpDir('jobs-files');
   const dir = path.join(root, '.planning', 'phases', '03-alpha');

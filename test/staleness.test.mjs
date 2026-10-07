@@ -22,10 +22,10 @@ test('extractRefs finds paths and line references', () => {
   assert.ok(!r.paths.includes('read_first') && !r.paths.includes('/read_first'));
 });
 
-test('classifyArtifact: deleted → rebuild, cited line changed or file created → reground, context only on deletion', () => {
+test('classifyArtifact: deleted → rebuild, any change or creation → reground, line citations only word the reason, context only on deletion', () => {
   const changes = new Map([['a.js', 'D'], ['b.js', 'M'], ['c.js', 'M'], ['n.js', 'A']]);
   assert.equal(classifyArtifact({ kind: 'plan', refs: ['b.js'], lineRefs: ['b.js'], changes }).action, 'reground');
-  assert.equal(classifyArtifact({ kind: 'plan', refs: ['c.js'], lineRefs: [], changes }).action, 'fresh');
+  assert.deepEqual(classifyArtifact({ kind: 'plan', refs: ['c.js'], lineRefs: [], changes }), { action: 'reground', reasons: ['c.js: changed since the artifact was written'] });
   assert.equal(classifyArtifact({ kind: 'plan', refs: ['n.js'], changes }).action, 'reground');
   const both = classifyArtifact({ kind: 'plan', refs: ['b.js', 'a.js'], lineRefs: ['b.js'], changes });
   assert.equal(both.action, 'rebuild');
@@ -62,7 +62,7 @@ test('stalenessReport: commit base, recorded base, executed plans skipped', () =
   assert.equal(by['03-01-PLAN.md'].action, 'rebuild');
   assert.match(by['03-01-PLAN.md'].reasons.join(), /src\/gone\.js: deleted/);
   assert.equal(by['03-02-PLAN.md'].action, 'reground');
-  assert.equal(by['03-03-PLAN.md'].action, 'fresh');
+  assert.deepEqual([by['03-03-PLAN.md'].action, by['03-03-PLAN.md'].reasons], ['reground', ['src/keep.js: changed since the artifact was written']]);
   recordBases(phaseDir, ['03-01-PLAN.md', '03-02-PLAN.md'], rep.head);
   const again = stalenessReport({ root: r.root, phaseDir, plans });
   const p1 = again.artifacts.find((x) => x.file === '03-01-PLAN.md');
@@ -227,7 +227,7 @@ test('recordBases orders keys by code unit, independent of locale', () => {
   assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(f, 'utf8'))), ['B.md', 'PLAN.md', 'a.md', 'plans/PLAN-01.md']);
 });
 
-test('extractRefs: separate line citations and bracketed path segments', () => {
+test('extractRefs: same-line citations and bracketed path segments', () => {
   const r = extractRefs([
     'Copy auth pattern from `src/controllers/users.ts` lines 12-25.',
     'Analog `src/a.ts` (L12-L30), and src/b.ts at line 4; see lines 3-5 of src/c.ts',
@@ -246,7 +246,7 @@ test('extractRefs: separate line citations and bracketed path segments', () => {
     'src/app/[slug]/page.tsx', 'app/(auth)/login/page.tsx', 'src/g.ts', 'src/h.ts', 'src/i.ts', 'src/j.ts', '@src/j.ts']) {
     assert.ok(r.paths.includes(p), p);
   }
-  assert.deepEqual(r.lineRefs.sort(), ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/controllers/users.ts', 'src/d.ts']);
+  assert.deepEqual(r.lineRefs.sort(), ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/controllers/users.ts', 'src/fenced.ts']);
 });
 
 test('stalenessReport: a changed analog range regrounds; a deleted bracketed path or sibling plan rebuilds', () => {
@@ -276,28 +276,32 @@ test('stalenessReport: a changed analog range regrounds; a deleted bracketed pat
   r.commit('later');
   const plans = ['03-01', '03-02', '03-03'].map((id) => ({ id, files_modified: [], has_summary: false }));
   const by = Object.fromEntries(stalenessReport({ root: r.root, phaseDir: path.join(r.root, dir), plans }).artifacts.map((x) => [x.file, x]));
-  assert.deepEqual([by['03-PATTERNS.md'].action, by['03-PATTERNS.md'].reasons], ['reground', ['src/controllers/users.ts: changed at a referenced line']]);
+  assert.deepEqual([by['03-PATTERNS.md'].action, by['03-PATTERNS.md'].reasons], ['reground', ['src/controllers/users.ts: changed since the artifact was written']]);
   assert.deepEqual([by['03-01-PLAN.md'].action, by['03-01-PLAN.md'].reasons], ['reground', ['src/controllers/users.ts: changed at a referenced line']]);
   assert.deepEqual([by['03-02-PLAN.md'].action, by['03-02-PLAN.md'].reasons], ['rebuild', ['src/app/[slug]/page.tsx: deleted or renamed']]);
   assert.deepEqual([by['03-03-PLAN.md'].action, by['03-03-PLAN.md'].reasons], ['rebuild', [`${dir}/03-09-PLAN.md: deleted or renamed`]]);
 });
 
-test('extractRefs: a citation covers every path of its line and of its heading section', () => {
-  const has = (lines, p) => extractRefs(lines.join('\n')).lineRefs.includes(p);
-  const analog = 'src/controllers/users.ts';
-  assert.ok(has(['### `src/controllers/auth.ts` (controller)', '', `**Analog:** \`${analog}\``, '',
-    '**Header/doc-comment convention** (lines 1-40):', '```ts', 'x', '```', '**Auth pattern** (lines 12-18):'], analog), 'label');
-  assert.ok(has([`**Analog:** \`${analog}\` (e.g. same Express.Router shape)`, '', '**Auth pattern** (lines 12-18):'], analog), 'analog note');
-  assert.ok(has(['Copy from `src/a.ts` (v2.0 API) lines 12-25'], 'src/a.ts'), 'v2.0 between');
-  assert.ok(has(['Edit `src/a.ts` lines 12-25 in `utils.parse`'], 'src/a.ts'), 'in-target');
-  assert.ok(!has(['## One', 'See src/x.ts', '## Two', '(lines 1-2)'], 'src/x.ts'), 'a heading starts a new section');
-  assert.ok(!has(['````md', '```', 'src/in-fence.ts lines 1-2', '```', '````'], 'src/in-fence.ts'), 'a shorter fence does not close');
-  assert.ok(has(['```', 'src/z.ts lines 4-5'], 'src/z.ts'), 'an unclosed fence leaves the rest unfenced');
+test('extractRefs: every line yields paths, fence lines included; a citation names only the paths of its own line', () => {
+  const r = extractRefs([
+    'Copy from `src/a.ts` (v2.0 API) lines 12-25',
+    'Edit `src/b.ts` lines 12-25 in `utils.parse`',
+    '**Analog:** `src/c.ts`',
+    '#### Auth pattern (lines 12-18)',
+    '```ts src/d.ts',
+    'import x from "src/e.ts"; // lines 1-2',
+    '```</action>',
+    'Then src/f.ts',
+    '```',
+  ].join('\n'));
+  for (const p of ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts']) assert.ok(r.paths.includes(p), p);
+  for (const p of ['src/a.ts', 'src/b.ts', 'src/e.ts']) assert.ok(r.lineRefs.includes(p), `cited ${p}`);
+  for (const p of ['src/c.ts', 'src/d.ts', 'src/f.ts']) assert.ok(!r.lineRefs.includes(p), `not cited ${p}`);
 });
 
-test('extractRefs: a bracket glued to a path keeps the path; tsc (line,col) is a line citation', () => {
-  const r = extractRefs(['src/lib/auth.ts(42,7): error TS2345', 'see src/b.ts(12)', '(src/c.ts)—the analog', 'require(src/d.ts)', '_(src/e.ts)_', 'x=(src/f.ts)'].join('\n'));
-  for (const p of ['src/lib/auth.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts']) assert.ok(r.paths.includes(p), p);
+test('extractRefs: a bracket glued to a path keeps the path; tsc (line,col) is a line citation and keeps the original token', () => {
+  const r = extractRefs(['src/lib/auth.ts(42,7): error TS2345', 'see src/b.ts(12)', '(src/c.ts)—the analog', 'require(src/d.ts)', '_(src/e.ts)_', 'x=(src/f.ts)', 'edit src/file(1).ts'].join('\n'));
+  for (const p of ['src/lib/auth.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts', 'src/file(1).ts']) assert.ok(r.paths.includes(p), p);
   assert.ok(r.lineRefs.includes('src/lib/auth.ts') && r.lineRefs.includes('src/b.ts'), r.lineRefs.join());
 });
 
@@ -329,7 +333,54 @@ test('stalenessReport: labels and notes never steal the analog; tsc paths rebuil
   r.commit('later');
   const plans = ['03-01', '03-02'].map((id) => ({ id, files_modified: [], has_summary: false }));
   const by = Object.fromEntries(stalenessReport({ root: r.root, phaseDir: path.join(r.root, dir), plans }).artifacts.map((x) => [x.file, x]));
-  assert.deepEqual([by['03-PATTERNS.md'].action, by['03-PATTERNS.md'].reasons], ['reground', ['src/routes/users.ts: changed at a referenced line']]);
+  assert.deepEqual([by['03-PATTERNS.md'].action, by['03-PATTERNS.md'].reasons], ['reground', ['src/routes/users.ts: changed since the artifact was written']]);
   assert.deepEqual([by['03-01-PLAN.md'].action, by['03-01-PLAN.md'].reasons], ['rebuild', ['src/lib/auth.ts: deleted or renamed']]);
   assert.deepEqual([by['03-02-PLAN.md'].action, by['03-02-PLAN.md'].reasons], ['reground', [`${dir}/03-CONTEXT.md: changed at a referenced line`]]);
+});
+
+test('stalenessReport: any change to a referenced file regrounds, line-cited or not; a deleted "(n)" file rebuilds', () => {
+  const r = repo();
+  r.write('src/routes/users.ts', '1\n2\n3\n');
+  r.write('src/a.ts', 'a1\na2\n');
+  r.write('src/file(1).ts', 'f\n');
+  r.write('src/plain.ts', 'p\n');
+  const dir = '.planning/phases/03-alpha';
+  r.write(`${dir}/03-PATTERNS.md`, [
+    '### `src/routes/orders.ts` (route)',
+    '',
+    '**Analog:** `src/routes/users.ts`',
+    '',
+    '#### Imports pattern (lines 1-2)',
+    '```ts',
+    "import { Router } from 'express';",
+    '```',
+    '',
+  ].join('\n'));
+  r.write(`${dir}/03-01-PLAN.md`, [
+    '<action>',
+    '```ts',
+    'const x = 1;',
+    '```</action>',
+    'Then update src/a.ts lines 1-2 to match.',
+    '<verify>',
+    '```bash',
+    'npm test',
+    '```',
+    '</verify>',
+    '',
+  ].join('\n'));
+  r.write(`${dir}/03-02-PLAN.md`, 'Rename the export in src/file(1).ts\n');
+  r.write(`${dir}/03-03-PLAN.md`, 'Keep src/plain.ts as it is.\n');
+  r.commit('plan');
+  r.write('src/routes/users.ts', '1\nTWO\n3\n');
+  r.write('src/a.ts', 'A1\na2\n');
+  r.g('rm', '-q', 'src/file(1).ts');
+  r.write('src/plain.ts', 'P\n');
+  r.commit('later');
+  const plans = ['03-01', '03-02', '03-03'].map((id) => ({ id, files_modified: [], has_summary: false }));
+  const by = Object.fromEntries(stalenessReport({ root: r.root, phaseDir: path.join(r.root, dir), plans }).artifacts.map((x) => [x.file, x]));
+  assert.deepEqual([by['03-PATTERNS.md'].action, by['03-PATTERNS.md'].reasons], ['reground', ['src/routes/users.ts: changed since the artifact was written']], '#### sub-heading');
+  assert.deepEqual([by['03-01-PLAN.md'].action, by['03-01-PLAN.md'].reasons], ['reground', ['src/a.ts: changed at a referenced line']], 'fence closed by ```</action>');
+  assert.deepEqual([by['03-02-PLAN.md'].action, by['03-02-PLAN.md'].reasons], ['rebuild', ['src/file(1).ts: deleted or renamed']], '(n) in a file name');
+  assert.deepEqual([by['03-03-PLAN.md'].action, by['03-03-PLAN.md'].reasons], ['reground', ['src/plain.ts: changed since the artifact was written']], 'no line citation anywhere');
 });

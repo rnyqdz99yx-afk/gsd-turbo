@@ -490,10 +490,11 @@ async function main() {
       const config = runtimeConfig(loadConfig(root)); // a corrupt config stops the daemon; report it instead of a normal status
       const sup = readJson(supPath(root), null);
       const running = supAlive(sup, config.poll_seconds);
-      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup }, null, 2)); return 0; }
-      if (!sup) { out('supervisor: not running (never started)'); return 0; }
-      printStatus(sup, running);
-      for (const f of ownerRequestFiles(root)) out(`owner request: ${f}`);
+      const ownerRequests = ownerRequestFiles(root); // a phase run by hand has one without a supervisor
+      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ownerRequests }, null, 2)); return 0; }
+      if (!sup) out('supervisor: not running (never started)');
+      else printStatus(sup, running);
+      for (const f of ownerRequests) out(`owner request: ${f}`);
       return 0;
     }
     case 'stop': {

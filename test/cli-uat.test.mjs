@@ -49,6 +49,10 @@ test('uat net-check fails on a request outside the allowlist', async () => {
   assert.equal(await p.run('net-check', '3', '--log', log), 1);
   assert.ok(p.lines.some((l) => /forbidden host: https:\/\/api\.example\.com$/.test(l)));
   assert.ok(!p.lines.join('\n').includes('zzz'), 'a violation never shows the path or query');
+  // an empty log is reported as such; whether one was required is the turbo-uat procedure's call
+  fs.writeFileSync(log, '\n  \n');
+  assert.equal(await p.run('net-check', '3', '--log', log), 0);
+  assert.equal(p.lines.at(-1), 'no requests logged');
 });
 
 test('uat stand prepare and net-check refuse a stand config that standCheck refuses', async () => {
@@ -109,13 +113,70 @@ test('uat record + owner-request: D items make the phase wait, C-only sends one 
   assert.ok(fs.existsSync(path.join(c.root, cr.file)));
   assert.deepEqual(c.notes.map((n) => n.key), ['ownerChecklist']);
   assert.deepEqual(c.notes[0].vars, { phase: '3', n: 1, file: '.planning/turbo/run/p3-owner.md' });
+
+  // the lane's uat step runs owner-request more than once: the same checklist is never sent twice
+  const sidecar = path.join(c.root, '.planning', 'turbo', 'run', 'p3-owner.notified');
+  assert.ok(fs.existsSync(sidecar));
+  assert.equal(await c.run('owner-request', '3', '--json'), 0);
+  assert.equal(c.notes.length, 1);
+  // a new C item changes the checklist: the owner hears about it once more
+  fs.writeFileSync(path.join(c.root, 'r4.json'), JSON.stringify([{ test: 4, result: 'deferred', class: 'C', reason: 'a real browser download' }]));
+  assert.equal(await c.run('record', '3', '--results', path.join(c.root, 'r4.json')), 0);
+  assert.equal(await c.run('owner-request', '3', '--json'), 0);
+  assert.deepEqual(c.notes.map((n) => n.vars.n), [1, 2]);
+  assert.equal(await c.run('owner-request', '3', '--json'), 0);
+  assert.equal(c.notes.length, 2);
+  // the owner closes both checks through verify-work: the stale request and its sidecar go away
+  const open = fs.readFileSync(uatFile, 'utf8');
+  const closed = open.replaceAll('result: skipped', 'result: pass');
+  assert.notEqual(closed, open);
+  fs.writeFileSync(uatFile, closed);
+  assert.equal(await c.run('owner-request', '3', '--json'), 0);
+  const done = JSON.parse(c.lines.at(-1));
+  assert.deepEqual([done.file, done.needsOwner, done.counts.checklist, done.counts.signoff], [null, false, 0, 0]);
+  assert.ok(!fs.existsSync(path.join(c.root, '.planning', 'turbo', 'run', 'p3-owner.md')));
+  assert.ok(!fs.existsSync(sidecar));
+  assert.equal(c.notes.length, 2);
 });
 
-test('turbo-run status lists owner requests', () => {
+test('uat record refuses evidence without the stand credentials, and a repository without a commit', async () => {
   const p = project();
-  fs.mkdirSync(path.join(p.root, '.planning', 'turbo', 'run'), { recursive: true });
-  fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'run', 'p3-owner.md'), 'x');
-  fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lane: null, finished: false, halted: false, pid: null }));
-  const out = execFileSync(process.execPath, [path.resolve('bin/turbo-run.mjs'), 'status', '--project', p.root], { encoding: 'utf8' });
+  const uatFile = path.join(p.dir, '03-UAT.md');
+  const ev = path.join(p.root, '.planning', 'turbo', 'run', 'evidence', 'p3');
+  fs.mkdirSync(ev, { recursive: true });
+  fs.writeFileSync(path.join(ev, 'note.txt'), 'the value persisted\n');
+  const results = path.join(p.root, 'results.json');
+  fs.writeFileSync(results, JSON.stringify([{ test: 1, result: 'pass', class: 'A', harness: 'http', evidence: ['.planning/turbo/run/evidence/p3/note.txt'] }]));
+  const before = fs.readFileSync(uatFile, 'utf8');
+  // never prepared (or already cleaned up): the known-credential scan would run blind
+  assert.equal(await p.run('record', '3', '--results', results), 1);
+  assert.match(p.lines.at(-1), /record before stand cleanup/);
+  assert.equal(fs.readFileSync(uatFile, 'utf8'), before);
+  assert.equal(await p.run('stand', '3', 'prepare'), 0);
+  assert.equal(await p.run('record', '3', '--results', results), 0);
+  assert.equal(parseUat(fs.readFileSync(uatFile, 'utf8')).tests[0].result, 'pass');
+
+  const q = project();
+  execFileSync('git', ['update-ref', '-d', 'HEAD'], { cwd: q.root });
+  fs.writeFileSync(path.join(q.root, 'r.json'), JSON.stringify([{ test: 1, result: 'pass', class: 'A', harness: 'http' }]));
+  assert.equal(await q.run('record', '3', '--results', path.join(q.root, 'r.json')), 1);
+  assert.equal(q.lines.at(-1), 'turbo-run uat: record needs a commit');
+});
+
+test('turbo-run status lists owner requests in every view', () => {
+  const p = project();
+  const run = path.join(p.root, '.planning', 'turbo', 'run');
+  fs.mkdirSync(run, { recursive: true });
+  fs.writeFileSync(path.join(run, 'p3-owner.md'), 'x');
+  fs.writeFileSync(path.join(run, 'p3-owner.notified'), '{}');
+  const status = (...a) => execFileSync(process.execPath, [path.resolve('bin/turbo-run.mjs'), 'status', '--project', p.root, ...a], { encoding: 'utf8' });
+  const want = ['.planning/turbo/run/p3-owner.md'];
+  // never started: a phase run by hand still shows its request
+  assert.match(status(), /never started\)\nowner request: \.planning\/turbo\/run\/p3-owner\.md\n$/);
+  assert.deepEqual(JSON.parse(status('--json')).ownerRequests, want);
+  fs.writeFileSync(path.join(run, 'supervisor.json'), JSON.stringify({ lane: null, finished: false, halted: false, pid: null }));
+  const out = status();
   assert.match(out, /owner request: \.planning\/turbo\/run\/p3-owner\.md/);
+  assert.equal(out.match(/owner request:/g).length, 1, 'the notification sidecar is not an owner request');
+  assert.deepEqual(JSON.parse(status('--json')).ownerRequests, want);
 });

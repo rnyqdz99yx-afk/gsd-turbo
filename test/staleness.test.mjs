@@ -384,3 +384,24 @@ test('stalenessReport: any change to a referenced file regrounds, line-cited or 
   assert.deepEqual([by['03-02-PLAN.md'].action, by['03-02-PLAN.md'].reasons], ['rebuild', ['src/file(1).ts: deleted or renamed']], '(n) in a file name');
   assert.deepEqual([by['03-03-PLAN.md'].action, by['03-03-PLAN.md'].reasons], ['reground', ['src/plain.ts: changed since the artifact was written']], 'no line citation anywhere');
 });
+
+test('stalenessReport: edits to top-level planning docs never reground; deleting one rebuilds', () => {
+  const r = repo();
+  r.write('.planning/STATE.md', 's1\n');
+  r.write('.planning/ROADMAP.md', 'r1\n');
+  r.write('src/k.ts', 'k\n');
+  const dir = '.planning/phases/03-alpha';
+  r.write(`${dir}/03-01-PLAN.md`, '<context>\n@.planning/STATE.md\n@.planning/ROADMAP.md\n</context>\nEdit src/k.ts\n');
+  r.write(`${dir}/03-02-PLAN.md`, 'Status in @.planning/STATE.md lines 1-2\n');
+  r.commit('plan');
+  r.write('.planning/STATE.md', 's2\n');
+  r.write('.planning/ROADMAP.md', 'r2\n');
+  r.commit('docs(state): phase 3 planned');
+  const plans = ['03-01', '03-02'].map((id) => ({ id, files_modified: [], has_summary: false }));
+  const report = () => stalenessReport({ root: r.root, phaseDir: path.join(r.root, dir), plans }).artifacts.map((x) => [x.file, x.action, x.reasons]);
+  assert.deepEqual(report(), [['03-01-PLAN.md', 'fresh', []], ['03-02-PLAN.md', 'fresh', []]]);
+  r.g('rm', '-q', '.planning/STATE.md');
+  r.commit('drop state');
+  const gone = ['.planning/STATE.md: deleted or renamed'];
+  assert.deepEqual(report(), [['03-01-PLAN.md', 'rebuild', gone], ['03-02-PLAN.md', 'rebuild', gone]]);
+});

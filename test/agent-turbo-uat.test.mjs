@@ -13,3 +13,16 @@ test('turbo-uat agent: frontmatter, safety rules and the CLI it drives', () => {
   for (const n of needles) assert.ok(s.includes(n), n);
   assert.ok(!/gsd-turbo-/.test(s));
 });
+
+test('turbo-uat agent: owner-only list, refusal handling, isolation and record order', () => {
+  const s = fs.readFileSync('agents/turbo-uat.md', 'utf8');
+  const needles = [
+    'D for real money, a signature or legal review, private/offline keys, 2FA, an owner\'s decision, and under `standard` autonomy any deploy or production write',
+    'C for production reads, third-party platforms, the owner\'s accounts, devices or phones, desktop apps, and email/SMS delivery',
+    '`uat.base_url` is one of `uat.forbidden_hosts`', '`stand.reason` exactly as printed', 'stop and reply with its error',
+    'fresh, empty profile', 'no isolated browser', 'no isolated data dir', 'every A and B item needs a non-empty request log', 'no requests logged',
+    'Never edit the UAT file', 'new record line', 'At most 3 record attempts', 'live part, split from test',
+    'Record before cleanup', 'only after step 4', '.planning/turbo/run/uat-pN/',
+  ];
+  for (const n of needles) assert.ok(s.includes(n), n);
+});

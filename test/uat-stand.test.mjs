@@ -20,6 +20,17 @@ test('standCheck refuses a non-loopback base_url and marks an empty one as infer
   assert.equal(standCheck({}).inferred, true);
 });
 
+test('refusals never echo URL credentials, paths or query strings', () => {
+  const r = standCheck({ base_url: 'https://user:secretpw@prod.example.com/p?token=abc123' });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /https:\/\/prod\.example\.com$/);
+  for (const s of ['secretpw', 'user:', '@', 'token', 'abc123', '?']) assert.ok(!r.reason.includes(s), s);
+  assert.ok(!standCheck({ base_url: 'http://u:secretpw@exa mple.com' }).reason.includes('secretpw'));
+  const bad = netViolations(['http://u:secretpw@cdn.example.com/a', 'u:secretpw@cdn.example.com/b', 'http://u:secretpw@exa mple.com/c']);
+  assert.deepEqual(bad.map((b) => b.why), ['not loopback', 'not loopback', 'unparsable']);
+  assert.ok(!JSON.stringify(bad).includes('secretpw'), JSON.stringify(bad));
+});
+
 test('netViolations flags forbidden and non-loopback hosts and never echoes query strings', () => {
   const bad = netViolations(['http://localhost:3000/a?token=s3cret', 'data:image/png;base64,xx', 'https://cdn.example.com/x.js?k=v', 'https://sub.api.example.com/p', ''], { forbiddenHosts: ['api.example.com'] });
   assert.deepEqual(bad, [{ url: 'https://cdn.example.com/x.js', why: 'not loopback' }, { url: 'https://sub.api.example.com/p', why: 'forbidden host' }]);

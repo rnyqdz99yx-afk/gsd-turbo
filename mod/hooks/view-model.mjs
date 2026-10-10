@@ -294,10 +294,27 @@ export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || lis
 
 // The argv of S1's single answer arbiter (spec §5.3) for a press in the pane: option is the 1-based option number,
 // text a free answer, passed as one argument (no shell); --rev is always the revision the pane drew, so an answer to
-// a question that changed since records nothing (exit 4).
-export function answerArgv({ turboRun, question, option = null, text = null }) {
+// a question that changed since records nothing (exit 4). node is the absolute node the mod found (nodeCandidates).
+export function answerArgv({ node, turboRun, question, option = null, text = null }) {
   const pick = text !== null ? ['--text', String(text)] : ['--option', String(option)];
-  return ['node', turboRun, 'answer', String(question.phase), String(question.id), ...pick, '--by', 'pane', '--rev', String(question.rev)];
+  return [node, turboRun, 'answer', String(question.phase), String(question.id), ...pick, '--by', 'pane', '--rev', String(question.rev)];
+}
+
+// A Windows path: a drive (C:\, c:/) or a network share (\\server\share).
+export const isWindowsPath = (p) => /^[A-Za-z]:[\\/]|^[\\/]{2}[^\\/]/.test(String(p ?? ''));
+
+// Where node may be, in PATH order: node.exe (Windows) or node in each absolute PATH directory. A bare `node` is
+// looked up in the child's working directory (the project) first on Windows, and an empty or relative PATH entry
+// names the working directory too, so neither is ever used: a node placed in a project never runs.
+export function nodeCandidates({ pathVar, windows }) {
+  const out = [];
+  for (const entry of String(pathVar ?? '').split(windows ? ';' : ':')) {
+    const dir = entry.trim().replace(/^"(.*)"$/, '$1');
+    if (!(windows ? isWindowsPath(dir) : dir.startsWith('/'))) continue;
+    const file = joinPath(dir, windows ? 'node.exe' : 'node');
+    if (!out.includes(file)) out.push(file);
+  }
+  return out;
 }
 
 // The "Other…" field: { inputFor (the question whose field is open), draft (what is typed), draftFor (its question) }.

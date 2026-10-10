@@ -2,7 +2,7 @@
 // .planning/turbo/, reads `turbo-run view --json` on a clock, draws the pane and the band above the prompt, shows
 // toasts, and sends pane answers to `turbo-run answer … --by pane --rev <n>`. Module state is lost on a reload; the
 // next read rebuilds it.
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, bandLine, diffViews, firstLine, joinPath, keepDraft, openField, parseView, refreshMs, render, shouldAutoOpen, turboRunPath } from './view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, bandLine, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, turboRunPath } from './view-model.mjs';
 
 const VIEW_TIMEOUT_MS = 10000;
 const ANSWER_TIMEOUT_MS = 30000;
@@ -11,6 +11,7 @@ const TONES = { title: { bold: true }, normal: {}, dim: { dimColor: true }, warn
 
 let root = null; // the project directory whose .planning/ holds turbo/, or null
 let bin = null; // turbo-run.mjs
+let node = null; // the absolute node that runs it (findNode)
 let view = null; // the last view read
 let seen = {}; // each lane as last seen, for the toasts (view-model.mjs diffViews)
 let error = null; // why the last read failed
@@ -37,6 +38,16 @@ async function findBin($) {
   return turboRunPath({ bin: await $.env.get('TURBO_VIEW_BIN'), configDir: await $.env.get('CLAUDE_CONFIG_DIR'), home: (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) });
 }
 
+// The absolute node every child process of the mod runs with: the first absolute PATH directory that has it. A bare
+// `node` would be looked up in the project (the child's working directory) first on Windows.
+async function findNode($) {
+  const pathVar = (await $.env.get('PATH')) || (await $.env.get('Path')) || '';
+  for (const file of nodeCandidates({ pathVar, windows: isWindowsPath(root) })) {
+    if (await $.fs.exists(file)) return file;
+  }
+  throw new Error('node not found in PATH');
+}
+
 // One clock for every read: view.refresh_seconds while a surface is attached, 15 s otherwise and outside turbo.
 async function arm($) {
   const surfaces = await $.session.surfaces();
@@ -59,7 +70,16 @@ async function read($) {
   }
   bin = bin || (await findBin($));
   if (!bin) throw new Error('cannot find turbo-run: neither CLAUDE_CONFIG_DIR nor a home directory is set');
-  const r = await $.process.run(['node', bin, 'view', '--json'], { cwd: root, timeoutMs: VIEW_TIMEOUT_MS });
+  // checked on every read: node run on a missing script prints only its loader's stack
+  if (!(await $.fs.exists(bin))) throw new Error(`turbo-run not found at ${bin}`);
+  node = node || (await findNode($));
+  let r;
+  try {
+    r = await $.process.run([node, bin, 'view', '--json'], { cwd: root, timeoutMs: VIEW_TIMEOUT_MS });
+  } catch (err) {
+    node = null; // looked up again at the next read: node moved, or a version manager switched it
+    throw err;
+  }
   if (r.exitCode !== 0) throw new Error(firstLine(r.stderr) || `turbo-run view exited with ${r.exitCode}`);
   const next = parseView(r.stdout);
   const changes = diffViews(view, next, seen);
@@ -107,10 +127,10 @@ async function refresh($, force) {
 // One answer per question at a time. S1's arbiter prints one line on stdout for every outcome (answered, already
 // answered, changed since it was shown, refused); that line is the toast. The pane reads the run again at once.
 async function send($, q, choice) {
-  if (sending.has(q.id) || !bin || !root) return;
+  if (sending.has(q.id) || !bin || !node || !root) return;
   sending.add(q.id);
   try {
-    const r = await $.process.run(answerArgv({ turboRun: bin, question: q, ...choice }), { cwd: root, timeoutMs: ANSWER_TIMEOUT_MS });
+    const r = await $.process.run(answerArgv({ node, turboRun: bin, question: q, ...choice }), { cwd: root, timeoutMs: ANSWER_TIMEOUT_MS });
     $.ui.toast(firstLine(r.stdout) || firstLine(r.stderr) || `turbo-run answer exited with ${r.exitCode}`, { timeoutMs: TOAST_MS });
     field = afterAnswer(field, q.id, r.exitCode);
   } catch (err) {

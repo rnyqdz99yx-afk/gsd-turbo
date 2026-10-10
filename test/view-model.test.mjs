@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, cut, diffViews, firstLine, joinPath, keepDraft, openField, parseView, refreshMs, render, shouldAutoOpen, textWidth, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, cut, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, textWidth, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
 
 const AT = '2026-01-01T11:00:00.000Z';
 const agent = (over) => ({ agentId: 'a1', type: 'gsd-executor', description: '', plan: '32-07', task: '2', model: 'opus', worktreeBranch: null, state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, startedAt: '2026-01-01T10:54:00.000Z', lastAt: '2026-01-01T10:59:50.000Z', elapsedMs: 360000, tokens: 166000, sessionId: 's', transcript: 't', ...over });
@@ -197,9 +197,16 @@ test('the pane opens by itself only while the supervisor runs or a question is o
 
 test('answerArgv passes the option number or the free text as one argument, whatever it holds, and always the drawn rev (Review Focus 2)', () => {
   const question = { phase: '32', id: 'q1', rev: 2 };
-  assert.deepEqual(answerArgv({ turboRun: '/h/turbo-run.mjs', question, option: 2 }), ['node', '/h/turbo-run.mjs', 'answer', '32', 'q1', '--option', '2', '--by', 'pane', '--rev', '2']);
+  assert.deepEqual(answerArgv({ node: '/usr/bin/node', turboRun: '/h/turbo-run.mjs', question, option: 2 }), ['/usr/bin/node', '/h/turbo-run.mjs', 'answer', '32', 'q1', '--option', '2', '--by', 'pane', '--rev', '2']);
   const text = '--by telegram "x"; $(rm -rf /) да 👍';
-  assert.deepEqual(answerArgv({ turboRun: '/h/turbo-run.mjs', question, text }), ['node', '/h/turbo-run.mjs', 'answer', '32', 'q1', '--text', text, '--by', 'pane', '--rev', '2']);
+  assert.deepEqual(answerArgv({ node: '/usr/bin/node', turboRun: '/h/turbo-run.mjs', question, text }), ['/usr/bin/node', '/h/turbo-run.mjs', 'answer', '32', 'q1', '--text', text, '--by', 'pane', '--rev', '2']);
+});
+
+test('node is looked for in absolute PATH directories only: a node.exe in the project (the child cwd) or under a relative entry never runs', () => {
+  assert.deepEqual(nodeCandidates({ pathVar: '.;C:\\Program Files\\nodejs\\;"C:\\tools\\node";;relative\\bin;\\\\srv\\share\\bin;C:\\Program Files\\nodejs', windows: true }), ['C:\\Program Files\\nodejs/node.exe', 'C:\\tools\\node/node.exe', '\\\\srv\\share\\bin/node.exe']);
+  assert.deepEqual(nodeCandidates({ pathVar: ':/usr/local/bin::.:bin:/usr/bin/', windows: false }), ['/usr/local/bin/node', '/usr/bin/node']);
+  assert.deepEqual(nodeCandidates({ pathVar: undefined, windows: false }), []);
+  for (const [p, w] of [['C:\\work', true], ['c:/work', true], ['//srv/share/work', true], ['/home/dev/work', false]]) assert.equal(isWindowsPath(p), w, p);
 });
 
 test('the Other… field after an answer: 0 and 3 close it and drop the draft, 4 closes it and keeps the draft, 1 and 2 leave both; a draft dies with its question (Review Focus 3)', () => {

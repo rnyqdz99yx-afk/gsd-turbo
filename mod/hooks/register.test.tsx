@@ -22,19 +22,28 @@ const PANE = { plugin: 'turbo-view', surface: 'terminal', component: 'Pane', req
 
 type Run = { exitCode: number; stdout: string; stderr: string }
 
+const NODE = '/usr/bin/node'
+
 // A session in /work: .planning/turbo/ exists unless turbo is false; views[i] answers the i-th view read; surfaces
-// is what $.session.surfaces() reports (none: a background session nobody is attached to).
-function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCode: 0, stdout: 'answered q1 (pane)\n', stderr: '' } as Run, answerDelayMs = 0, surfaces = ['terminal'] } = {}) {
+// is what $.session.surfaces() reports (none: a background session nobody is attached to). PATH holds a relative
+// entry and a directory without node before /usr/bin; the project itself has a node that must never run.
+function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCode: 0, stdout: 'answered q1 (pane)\n', stderr: '' } as Run, answerDelayMs = 0, surfaces = ['terminal'], binExists = true, pathVar = '.:relative/bin:/opt/none:/usr/bin' } = {}) {
   const calls: string[][] = []
   const toasts: string[] = []
+  const probed: string[] = []
   let reads = 0
   const clock = mock.clock(on)
-  mock.env(on, { CLAUDE_CONFIG_DIR: '/home/dev/.claude' })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/home/dev/.claude', PATH: pathVar })
   on('session.start', () => ({ cwd: '/work' }))
   on('session.cwd', () => ({ value: '/work' }))
   on('session.surfaces', () => ({ value: surfaces }))
   // the kit hands fs paths over absolute, in the platform's form (C:\work\.planning on Windows)
-  on('fs.exists', (_$, e) => ({ value: turbo && /[\\/]work[\\/]\.planning([\\/]turbo)?$/.test(e.path) }))
+  on('fs.exists', (_$, e) => {
+    probed.push(e.path)
+    if (/[\\/]home[\\/]dev[\\/]\.claude[\\/]turbo[\\/]bin[\\/]turbo-run\.mjs$/.test(e.path)) return { value: binExists }
+    if (/[\\/]usr[\\/]bin[\\/]node$/.test(e.path) || /[\\/]work[\\/]node(\.exe)?$/.test(e.path) || /relative[\\/]bin[\\/]node$/.test(e.path)) return { value: true }
+    return { value: turbo && /[\\/]work[\\/]\.planning([\\/]turbo)?$/.test(e.path) }
+  })
   on('command.register', () => ({ value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }) as never)
   on('ui.log', () => ({ value: undefined }))
@@ -52,7 +61,7 @@ function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCo
     const v = views[Math.min(reads++, views.length - 1)]
     return { value: typeof v === 'string' ? { exitCode: 1, stdout: '', stderr: v } : { exitCode: 0, stdout: JSON.stringify(v), stderr: '' } }
   })
-  return { calls, toasts, clock }
+  return { calls, toasts, clock, probed }
 }
 
 const start = ($, isInteractive = true) => $.session.start({ cwd: '/work', surface: isInteractive ? 'terminal' : null, isInteractive })
@@ -61,14 +70,14 @@ test('in a turbo project the band and the pane show the view, and an option butt
   const { calls, clock } = stub(on)
   await start($)
   await clock.settle()
-  expect(calls[0]).toEqual(['node', BIN, 'view', '--json'])
+  expect(calls[0]).toEqual([NODE, BIN, 'view', '--json'])
   const band = await $.ui.mount(BAND)
   expect(await band.find({ type: 'Text', text: 'turbo p32 execute · 1 agent · ? 1 question · CI ✓' })).toBeDefined()
   const pane = await $.ui.mount(PANE)
   expect(await pane.find({ type: 'Text', text: /gsd-executor +32-07 Task 2 +Edit lib\/x\.mjs +6m · 166k/ })).toBeDefined()
   await pane.press({ key: 'q:q1:1' })
   await clock.settle()
-  expect(calls.find((c) => c[2] === 'answer')).toEqual(['node', BIN, 'answer', '32', 'q1', '--option', '1', '--by', 'pane', '--rev', '1'])
+  expect(calls.find((c) => c[2] === 'answer')).toEqual([NODE, BIN, 'answer', '32', 'q1', '--option', '1', '--by', 'pane', '--rev', '1'])
 })
 
 test('Other… opens a field whose text reaches turbo-run answer as one argument; an empty field sends nothing', async ($, on) => {
@@ -82,7 +91,7 @@ test('Other… opens a field whose text reaches turbo-run answer as one argument
   await pane.press({ key: 'q:q1:other' })
   await pane.input({ key: 'q:q1:text', text: '-x "y"; да 👍' })
   await clock.settle()
-  expect(calls.find((c) => c[2] === 'answer')).toEqual(['node', BIN, 'answer', '32', 'q1', '--text', '-x "y"; да 👍', '--by', 'pane', '--rev', '1'])
+  expect(calls.find((c) => c[2] === 'answer')).toEqual([NODE, BIN, 'answer', '32', 'q1', '--text', '-x "y"; да 👍', '--by', 'pane', '--rev', '1'])
 })
 
 test('a double press sends one answer while the first is on its way', async ($, on) => {
@@ -94,6 +103,32 @@ test('a double press sends one answer while the first is on its way', async ($, 
   await pane.press({ key: 'q:q1:2' })
   await clock.advance(1000)
   expect(calls.filter((c) => c[2] === 'answer')).toHaveLength(1)
+})
+
+test('node runs from an absolute PATH directory: never a node in the project, never a relative PATH entry', async ($, on) => {
+  const { calls, clock, probed } = stub(on)
+  await start($)
+  await clock.settle()
+  expect(calls[0][0]).toBe(NODE)
+  expect(probed.some((p) => /[\\/]work[\\/]node(\.exe)?$/.test(p) || /relative[\\/]bin[\\/]node$/.test(p))).toBe(false)
+})
+
+test('without node in PATH the band says so and nothing runs', async ($, on) => {
+  const { calls, clock } = stub(on, { pathVar: '.:/opt/none' })
+  await start($)
+  await clock.settle()
+  expect(calls).toEqual([])
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: 'Text', text: 'turbo · ⚠ node not found in PATH' })).toBeDefined()
+})
+
+test('a missing turbo-run shows where it was looked for, and nothing is spawned', async ($, on) => {
+  const { calls, clock } = stub(on, { binExists: false })
+  await start($)
+  await clock.settle()
+  expect(calls).toEqual([])
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: 'Text', text: `turbo · ⚠ turbo-run not found at ${BIN}` })).toBeDefined()
 })
 
 test('a failing turbo-run view shows one line in the band, keeps reading, and recovers', async ($, on) => {

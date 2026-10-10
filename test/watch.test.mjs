@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { CLEAR, quietOnClosedPipe, watch } from '../lib/watch.mjs';
+import { EOL, EOS, HOME, quietOnClosedPipe, watch } from '../lib/watch.mjs';
 
 test('a closed pipe ends the watch quietly with exit 0 (EPIPE on POSIX, EOF on Windows); other stream errors still throw', () => {
   const stream = new EventEmitter();
@@ -15,23 +15,26 @@ test('a closed pipe ends the watch quietly with exit 0 (EPIPE on POSIX, EOF on W
 
 const NOW = () => new Date(2026, 0, 1, 10, 59, 58);
 
-test('on a terminal every frame clears the screen, ends with the time and the period, and the next one waits that long', async () => {
+test('on a terminal every frame is drawn in place from the top, each line and the rest of the screen erased, never the whole screen (no scrollback flood)', async () => {
   const writes = [];
   const sleeps = [];
   let n = 0;
-  await watch({ frame: () => ({ text: `frame ${++n}`, seconds: n === 1 ? 3 : 5 }), write: (s) => writes.push(s), tty: true, sleep: async (ms) => sleeps.push(ms), now: NOW, rounds: 3 });
+  await watch({ frame: () => ({ text: ++n === 1 ? 'frame 1\nsecond line' : 'frame 2', seconds: n === 1 ? 3 : 5 }), write: (s) => writes.push(s), tty: true, sleep: async (ms) => sleeps.push(ms), now: NOW, rounds: 3 });
   assert.deepEqual(writes, [
-    `${CLEAR}frame 1\nupdated 10:59:58 · every 3 s · Ctrl+C stops\n`,
-    `${CLEAR}frame 2\nupdated 10:59:58 · every 5 s · Ctrl+C stops\n`,
-    `${CLEAR}frame 3\nupdated 10:59:58 · every 5 s · Ctrl+C stops\n`,
+    `${HOME}frame 1${EOL}\nsecond line${EOL}\nupdated 10:59:58 · every 3 s · Ctrl+C stops${EOL}\n${EOS}`,
+    `${HOME}frame 2${EOL}\nupdated 10:59:58 · every 5 s · Ctrl+C stops${EOL}\n${EOS}`,
+    `${HOME}frame 2${EOL}\nupdated 10:59:58 · every 5 s · Ctrl+C stops${EOL}\n${EOS}`,
   ]);
+  assert.equal(writes.some((w) => w.includes('\x1b[2J')), false);
   assert.deepEqual(sleeps, [3000, 5000]);
 });
 
-test('into a pipe the frames follow one another without escape codes', async () => {
+test('into a pipe (or mintty without ConPTY) a frame is printed only when the view changed, after a blank line, without escape codes', async () => {
   const writes = [];
-  await watch({ frame: () => ({ text: 'x', seconds: 3 }), write: (s) => writes.push(s), tty: false, sleep: async () => {}, now: NOW, rounds: 2 });
-  assert.deepEqual(writes, ['x\nupdated 10:59:58 · every 3 s · Ctrl+C stops\n', '\nx\nupdated 10:59:58 · every 3 s · Ctrl+C stops\n']);
+  const texts = ['x', 'x', 'y', 'y'];
+  let i = 0;
+  await watch({ frame: () => ({ text: texts[i++], seconds: 3 }), write: (s) => writes.push(s), tty: false, sleep: async () => {}, now: NOW, rounds: 4 });
+  assert.deepEqual(writes, ['x\nupdated 10:59:58 · every 3 s · Ctrl+C stops\n', '\ny\nupdated 10:59:58 · every 3 s · Ctrl+C stops\n']);
 });
 
 test('a frame that throws shows its error on one line and the watch goes on at the last period', async () => {

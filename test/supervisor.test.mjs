@@ -898,3 +898,18 @@ test('runDaemon survives a tick error, persists state every tick, stops when fin
   assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).finished, true);
   assert.ok(h.logs.some((l) => /tick error: gsd-tools failed/.test(l)));
 });
+
+test('push work runs in every tick but its errors never fail the lane tick (S2)', async () => {
+  const h = harness({ phases: [P('2')] });
+  h.ctx.config.push = { ...DEFAULTS.push, mode: 'after-wave' };
+  h.ctx.deps.git = () => { throw new Error('git is broken'); };
+  h.ctx.deps.gh = () => { throw new Error('gh is broken'); };
+  const run = path.join(h.root, '.planning', 'turbo', 'run');
+  fs.mkdirSync(run, { recursive: true });
+  fs.writeFileSync(path.join(run, 'p2-push-request.json'), JSON.stringify({ id: 'r1', phase: '2', head: 'a'.repeat(40), at: '2026-01-01T00:00:00.000Z' }));
+  const s = await tick(fresh(), h.ctx);
+  assert.equal(s.lane.phase, '2');
+  assert.equal(h.launched.length, 1);
+  assert.ok(!('failingSince' in s));
+  assert.ok(h.logs.includes('push p2: git is broken'), h.logs.join('\n'));
+});

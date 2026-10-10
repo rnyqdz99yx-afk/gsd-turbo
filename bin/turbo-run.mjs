@@ -8,6 +8,8 @@ import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '
 import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, pushSettings } from '../lib/config.mjs';
 import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
+import { createGit } from '../lib/push.mjs';
+import { createGh } from '../lib/ci.mjs';
 import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
 import { createClaude, resolveBin, laneSessionName, sessionFreeEnv } from '../lib/claude.mjs';
 import { loadPhases, normalizePhaseId } from '../lib/gsd.mjs';
@@ -216,6 +218,9 @@ function makeCtx(root, mode = 'safe') {
         return loadPhases(root, core).phases;
       },
       claude,
+      // the supervisor's push and CI work (spec §6, S2); unused while push.mode is off
+      git: createGit(root),
+      gh: createGh(root),
       fingerprint: fingerprint(root),
       notify: (key, vars) => notify(config, msg(config.lang, key, vars)),
       now: () => new Date(),

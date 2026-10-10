@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { createGit, scanRange, requestPush, requestFile, recordFile } from '../lib/push.mjs';
-import { pushSettings } from '../lib/config.mjs';
+import { createGit, scanRange, requestPush, requestFile, recordFile, pushTick } from '../lib/push.mjs';
+import { DEFAULTS, pushSettings } from '../lib/config.mjs';
 import { readJson, writeJsonAtomic } from '../lib/fsx.mjs';
 
 // built at run time: no token-shaped literal in this file
@@ -107,4 +107,155 @@ test('requestPush writes one request per head and reuses it for the same head un
   // a new commit: a new request
   r.commit('src/a.mjs', 'export const a = 1;\n');
   assert.equal(ask().request.id, 'id-3');
+});
+
+const NOW = new Date('2026-01-01T00:00:00Z');
+
+// The supervisor's ctx around a pushRepo: every git call recorded, notifications and log lines collected.
+function supervisorCtx(r, push = {}) {
+  const calls = [];
+  const notes = [];
+  const logs = [];
+  const ctx = {
+    root: r.root,
+    config: { ...structuredClone(DEFAULTS), push: pushSettings({ mode: 'after-wave', ci: 'none', ...push }) },
+    deps: {
+      git: (args, opts) => { calls.push(args); return r.git(args, opts); },
+      gh: () => { throw new Error('gh is not expected here'); },
+      notify: async (key, vars) => { notes.push({ key, vars }); },
+      log: (l) => logs.push(l),
+    },
+  };
+  return { ctx, calls, notes, logs };
+}
+const ask = (r, settings) => requestPush({ root: r.root, phase: '3', settings, git: r.git });
+
+test('the supervisor pushes the requested head once: fetch, ancestor check, scan, then a plain push of that sha', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes } = supervisorCtx(r);
+  const sha = r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), sha);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.deepEqual([rec.outcome, rec.sha, rec.branch, rec.remote, rec.at, rec.ci], ['pushed', sha, 'main', 'origin', NOW.toISOString(), { state: 'none', reason: 'push.ci is none' }]);
+  assert.deepEqual(calls.map((a) => a[0]), ['symbolic-ref', 'rev-parse', 'fetch', 'merge-base', 'log', 'log', 'push']);
+  const push = calls.at(-1);
+  assert.deepEqual(push, ['push', '--quiet', 'origin', `${sha}:refs/heads/main`]);
+  assert.ok(!push.some((a) => /^(-f|--force.*|--no-verify|--mirror|--delete|-d|--all|--tags)$/.test(a) || a.startsWith('+')));
+  await pushTick(ctx, NOW);
+  assert.equal(calls.filter((a) => a[0] === 'push').length, 1, 'a handled request is never pushed again');
+  assert.deepEqual(notes, []);
+});
+
+test('a commit the lane makes during the tick is never pushed unscanned: the supervisor pushes the sha it scanned', async () => {
+  const r = pushRepo();
+  const { ctx } = supervisorCtx(r);
+  const scanned = r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  const inner = ctx.deps.git;
+  ctx.deps.git = (args, opts) => {
+    const out = inner(args, opts);
+    // the lane commits a secret right after the scan read the patches
+    if (args[0] === 'log' && args.includes('-p')) r.commit('src/late.mjs', `export const t = '${GH}';\n`);
+    return out;
+  };
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), scanned);
+  assert.notEqual(r.sh('rev-parse', 'HEAD'), scanned);
+});
+
+test('a remote branch that is not an ancestor of HEAD: nothing pushed, pushDiverged', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes } = supervisorCtx(r);
+  const remoteOnly = r.sh('commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'remote only');
+  r.sh('push', '-q', 'origin', `${remoteOnly}:refs/heads/main`);
+  r.commit('src/b.mjs', 'export const b = 2;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), remoteOnly);
+  assert.equal(readJson(recordFile(r.root, '3')).outcome, 'diverged');
+  assert.deepEqual(notes, [{ key: 'pushDiverged', vars: { phase: '3', remote: 'origin', branch: 'main' } }]);
+  assert.ok(!calls.some((a) => a[0] === 'push'));
+});
+
+test('a secret or forbidden file in the range: nothing pushed, file and kind named, never the value; the same findings notify once', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes } = supervisorCtx(r);
+  const before = r.remoteHead();
+  r.commit('src/conf.mjs', `export const t = '${GH}';\n`);
+  r.commit('data/app.sqlite', 'x');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), before);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.equal(rec.outcome, 'refused');
+  assert.deepEqual(rec.findings, [{ file: 'data/app.sqlite', kind: 'forbidden name *.sqlite' }, { file: 'src/conf.mjs', kind: 'github token' }]);
+  assert.deepEqual(notes, [{ key: 'pushRefused', vars: { phase: '3', remote: 'origin', branch: 'main', findings: 'data/app.sqlite (forbidden name *.sqlite), src/conf.mjs (github token)' } }]);
+  // the next wave adds a clean commit: the same findings, refused again, not notified again
+  r.commit('src/ok.mjs', 'export const ok = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(readJson(recordFile(r.root, '3')).outcome, 'refused');
+  assert.equal(notes.length, 1);
+  assert.ok(!calls.some((a) => a[0] === 'push'));
+  assert.ok(!(fs.readFileSync(recordFile(r.root, '3'), 'utf8') + JSON.stringify(notes)).includes(GH));
+  // the owner checked the files and pushed the range by hand: turbo pushes again from there
+  r.sh('push', '-q', 'origin', 'main');
+  const sha = r.commit('src/next.mjs', 'export const next = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), sha);
+});
+
+test('a failing pre-push hook runs (no --no-verify) and fails the push: recorded, masked, notified; the next request tries again', async () => {
+  const r = pushRepo();
+  const { ctx, notes } = supervisorCtx(r);
+  const hook = path.join(r.root, '.git', 'hooks', 'pre-push');
+  fs.mkdirSync(path.dirname(hook), { recursive: true });
+  fs.writeFileSync(hook, "#!/bin/sh\necho \"fatal: unable to access 'https://bob:s3cretpw@example.com/r.git/'\" >&2\nexit 1\n");
+  fs.chmodSync(hook, 0o755);
+  const before = r.remoteHead();
+  r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), before);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.equal(rec.outcome, 'failed');
+  assert.match(rec.reason, /^git push to origin\/main failed: .*unable to access 'https:\/\/\[secret\]@example\.com/);
+  assert.deepEqual(notes.map((n) => n.key), ['pushFailed']);
+  assert.ok(!JSON.stringify([rec, notes]).includes('s3cretpw'));
+  fs.rmSync(hook);
+  const sha = r.commit('src/b.mjs', 'export const b = 2;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), sha);
+});
+
+test('a detached HEAD, or a branch the remote does not have yet: failed with the reason, nothing pushed', async () => {
+  const r = pushRepo();
+  const { ctx, notes } = supervisorCtx(r);
+  r.sh('checkout', '-q', '--detach');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(readJson(recordFile(r.root, '3')).reason, 'HEAD is detached; turbo pushes a branch only');
+  r.sh('checkout', '-q', '-b', 'feature');
+  r.commit('src/f.mjs', 'export const f = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.match(readJson(recordFile(r.root, '3')).reason, /^git fetch origin feature failed: /);
+  assert.deepEqual(notes.map((n) => n.key), ['pushFailed', 'pushFailed']);
+});
+
+test('push off, or a daemon that lost its lease: no git call, no record', async () => {
+  const r = pushRepo();
+  const { ctx, calls } = supervisorCtx(r);
+  ask(r, ctx.config.push);
+  ctx.deps.leaseHeld = () => false;
+  await pushTick(ctx, NOW);
+  ctx.deps.leaseHeld = () => true;
+  ctx.config.push = pushSettings();
+  await pushTick(ctx, NOW);
+  assert.deepEqual(calls, []);
+  assert.ok(!fs.existsSync(recordFile(r.root, '3')));
 });

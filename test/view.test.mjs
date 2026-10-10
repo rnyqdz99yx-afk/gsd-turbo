@@ -128,6 +128,23 @@ test('openQuestions reads every phase file in phase order and skips files that a
   assert.deepEqual(openQuestions(tmpDir('none')), []);
 });
 
+test('open questions show their text with secrets masked; ids, rev, state, plan, task and agentId stay as written', () => {
+  const root = tmpDir('qm');
+  const run = runDirOf(root);
+  fs.mkdirSync(run, { recursive: true });
+  const option = { label: `Use ${SECRET}`, description: `rotate ${SECRET} first`, recommended: true, signal: 'approved' };
+  const q = { id: 'q1', rev: 3, phase: '32', plan: '32-09', task: '3', kind: 'decision', header: `H ${SECRET}`, question: `Deploy with ${SECRET}?`, context: `token=${SECRET}`, condition: `CI green for ${SECRET}`, options: [option, 'odd'], allowOther: true, agentId: 'a2000000000000001', state: 'open' };
+  writeJsonAtomic(path.join(run, 'p32-questions.json'), [q]);
+  const [shown] = openQuestions(root);
+  assert.equal(JSON.stringify(shown).includes(SECRET), false);
+  const m = maskSecrets;
+  assert.deepEqual(shown, {
+    ...q,
+    header: m(q.header), question: m(q.question), context: m(q.context), condition: m(q.condition),
+    options: [{ ...option, label: m(option.label), description: m(option.description) }, 'odd'],
+  });
+});
+
 test('recentCommits lists the last five subjects with secrets masked; none outside a repository', () => {
   const repo = tmpGitRepo();
   const git = (...a) => execFileSync('git', a, { cwd: repo, stdio: 'pipe' });

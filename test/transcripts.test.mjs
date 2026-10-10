@@ -157,6 +157,14 @@ test('planOf reads the plan and task GSD dispatch descriptions name', () => {
   assert.deepEqual(planOf('Continue plan 32-07 from Task 2'), { plan: '32-07', task: '2' });
   assert.deepEqual(planOf('Verify phase 32 goal achievement'), { plan: null, task: null });
   assert.deepEqual(planOf(undefined), { plan: null, task: null });
+  // a bare plan id, with or without a task
+  assert.deepEqual(planOf('Execute 32-07 task 3'), { plan: '32-07', task: '3' });
+  assert.deepEqual(planOf('Execute 32-07'), { plan: '32-07', task: null });
+  assert.deepEqual(planOf('Execute 4.1-02 Task 1'), { plan: '4.1-02', task: '1' });
+  assert.deepEqual(planOf('Fix 32-07-PLAN.md wording'), { plan: '32-07', task: null });
+  // not a plan id: a CVE number, a date
+  assert.deepEqual(planOf('Fix CVE-2024-1234 in the parser'), { plan: null, task: null });
+  assert.deepEqual(planOf('Release notes for 2026-10-11'), { plan: null, task: null });
 });
 
 test('normalCwd turns a Git Bash path into a Windows one on win32 only; cwdInside accepts the root and directories below it', () => {

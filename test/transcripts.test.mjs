@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { AGENT, AGENT2, FORK, SESSION, entry, jsonl, projectDirFor, setMtime, usage, writeAgent, writeSession } from './helpers/transcripts.mjs';
-import { TAIL_MAX, actionOf, agentIndex, contextTokens, findAgentTranscript, headEntry, planOf, projectDirs, projectKey, sessionTranscripts, tailEntries } from '../lib/transcripts.mjs';
+import { AGENT, AGENT2, FORK, SESSION, entry, jsonl, projectDirFor, setMtime, usage, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
+import { TAIL_MAX, actionOf, agentIndex, contextTokens, cwdInside, findAgentTranscript, findTranscript, headEntry, jobState, laneTranscript, normalCwd, planOf, projectDirs, projectKey, sessionTranscripts, tailEntries } from '../lib/transcripts.mjs';
 
 const T0 = '2026-01-01T10:00:00.000Z';
 
@@ -135,4 +135,89 @@ test('planOf reads the plan and task GSD dispatch descriptions name', () => {
   assert.deepEqual(planOf('Continue plan 32-07 from Task 2'), { plan: '32-07', task: '2' });
   assert.deepEqual(planOf('Verify phase 32 goal achievement'), { plan: null, task: null });
   assert.deepEqual(planOf(undefined), { plan: null, task: null });
+});
+
+test('normalCwd turns a Git Bash path into a Windows one on win32 only; cwdInside accepts the root and directories below it', () => {
+  assert.equal(normalCwd('/c/work/app', 'win32'), 'C:/work/app');
+  assert.equal(normalCwd('/d', 'win32'), 'D:/');
+  assert.equal(normalCwd('D:\\work\\app', 'win32'), 'D:/work/app');
+  assert.equal(normalCwd('/cache/x', 'win32'), '/cache/x');
+  assert.equal(normalCwd('/c/work/app', 'linux'), '/c/work/app');
+  const { root } = setup();
+  // the spelling Git Bash gives the root on Windows; elsewhere the root as is
+  const shell = process.platform === 'win32' ? root.replace(/^([A-Za-z]):\\/, (m, d) => `/${d.toLowerCase()}/`).replace(/\\/g, '/') : root;
+  assert.ok(cwdInside(root, root));
+  assert.ok(cwdInside(`${shell}/lib/sub`, root));
+  assert.equal(cwdInside(`${root}-other`, root), false);
+  assert.equal(cwdInside(path.dirname(root), root), false);
+  assert.equal(cwdInside(null, root), false);
+});
+
+const JOB = '1a2b3c4d';
+const STALE = `${JOB}-2222-4333-8444-555555555555`;
+const CURRENT = '99999999-8888-4777-8666-555555555555';
+
+test('a lane resumed onto another transcript: the job state wins over the stale file its job id prefixes', () => {
+  const { root, home, dir } = setup();
+  const stale = writeSession(dir, STALE, [entry.user('first run', T0)]);
+  const current = writeSession(dir, CURRENT, [entry.user('resumed', T0)]);
+  setMtime(stale, new Date('2026-01-01T12:00:00Z')); // newer than the current one: a prefix lookup alone would pick it
+  setMtime(current, new Date('2026-01-01T11:00:00Z'));
+  writeJob(home, JOB, { sessionId: STALE, resumeSessionId: CURRENT, linkScanPath: current });
+  assert.deepEqual(laneTranscript({ home, root, jobId: JOB }), { file: current, sessionId: CURRENT, via: 'job-link' });
+  writeJob(home, JOB, { sessionId: STALE, resumeSessionId: CURRENT, linkScanPath: path.join(dir, 'gone.jsonl') });
+  assert.deepEqual(laneTranscript({ home, root, jobId: JOB }), { file: current, sessionId: CURRENT, via: 'job-session' });
+  // a linkScanPath outside <claude-home>/projects/ is never read
+  const outside = path.join(path.dirname(home), 'elsewhere.jsonl');
+  fs.writeFileSync(outside, '');
+  writeJob(home, JOB, { sessionId: STALE, resumeSessionId: CURRENT, linkScanPath: outside });
+  assert.deepEqual(laneTranscript({ home, root, jobId: JOB }), { file: current, sessionId: CURRENT, via: 'job-session' });
+  fs.rmSync(path.join(home, 'jobs'), { recursive: true });
+  assert.deepEqual(laneTranscript({ home, root, jobId: JOB }), { file: stale, sessionId: STALE, via: 'job-prefix' });
+  assert.equal(laneTranscript({ home, root, jobId: '../x' }), null);
+  assert.equal(jobState(home, JOB), null);
+});
+
+test('a root spelled differently from the path the lane started in: the lane transcript is still found (Review Focus 1)', () => {
+  const base = tmpDir('trj');
+  const real = path.join(base, 'real');
+  const link = path.join(base, 'link');
+  fs.mkdirSync(real);
+  fs.symlinkSync(real, link, 'junction'); // a junction on Windows (no admin needed); the type is ignored elsewhere
+  const home = path.join(base, 'home');
+  const dir = projectDirFor(home, link); // Claude Code names the directory after the path the session started in
+  const file = writeSession(dir, STALE, [entry.user('go', T0)]);
+  assert.deepEqual(projectDirs(home, real), []);
+  assert.deepEqual(laneTranscript({ home, root: real, jobId: JOB }), { file, sessionId: STALE, via: 'job-prefix' });
+  assert.equal(laneTranscript({ home, root: real, jobId: 'feedbeef' }), null);
+  assert.deepEqual(projectDirs(home, link), [dir]);
+  if (process.platform === 'win32') assert.equal(projectDirs(home, link.toLowerCase()).length, 1);
+});
+
+test('findTranscript: the calling session (CLAUDE_CODE_SESSION_ID), its job (CLAUDE_JOB_DIR), the lane, then the newest transcript whose cwd is in the root', () => {
+  const { root, home, dir } = setup();
+  const otherRoot = path.join(path.dirname(root), 'other project');
+  const other = projectDirFor(home, otherRoot);
+  // Git Bash spells the root /c/… on Windows, and Bash may have moved into a subfolder
+  const shell = process.platform === 'win32' ? root.replace(/^([A-Za-z]):\\/, (m, d) => `/${d.toLowerCase()}/`).replace(/\\/g, '/') : root;
+  const mine = writeSession(dir, CURRENT, [{ ...entry.user('hi', T0), cwd: `${shell}/lib` }]);
+  const laneFile = writeSession(dir, STALE, [entry.user('lane', T0)]);
+  const foreign = writeSession(other, FORK, [{ ...entry.user('hi', T0), cwd: otherRoot }]);
+  setMtime(mine, new Date('2026-01-01T10:00:00Z'));
+  setMtime(laneFile, new Date('2026-01-01T09:00:00Z'));
+  setMtime(foreign, new Date('2026-01-01T11:00:00Z'));
+  // an id needs no cwd check: here it names the other project's transcript, and it comes before a recorded lane
+  assert.deepEqual(findTranscript({ home, root, env: { CLAUDE_CODE_SESSION_ID: FORK }, lane: JOB }), { file: foreign, sessionId: FORK, via: 'session' });
+  // a session id is exact: a mere prefix of a transcript's name names no session
+  assert.deepEqual(findTranscript({ home, root, env: { CLAUDE_CODE_SESSION_ID: '99999999' }, lane: JOB }), { file: laneFile, sessionId: STALE, via: 'lane' });
+  const jobDir = writeJob(home, 'feedbeef', { sessionId: 'feedbeef-0000-4000-8000-000000000000', resumeSessionId: CURRENT, linkScanPath: mine });
+  assert.deepEqual(findTranscript({ home, root, env: { CLAUDE_JOB_DIR: jobDir }, lane: JOB }), { file: mine, sessionId: CURRENT, via: 'job' });
+  assert.deepEqual(findTranscript({ home, root, env: {} }), { file: mine, sessionId: CURRENT, via: 'newest' });
+  assert.equal(findTranscript({ home, root: path.join(path.dirname(root), 'third'), env: {} }), null);
+});
+
+test('the newest-transcript fallback reads past a last line longer than the tail window', () => {
+  const { root, home, dir } = setup();
+  const file = writeSession(dir, CURRENT, [{ ...entry.user('hi', T0), cwd: root }, { ...entry.user('z'.repeat(600 * 1024), T0), cwd: undefined }]);
+  assert.deepEqual(findTranscript({ home, root, env: {} }), { file, sessionId: CURRENT, via: 'newest' });
 });

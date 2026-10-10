@@ -46,7 +46,15 @@ test('createGit: argument array, no shell, never a credential prompt, a time lim
   assert.equal(c.args.at(-1), 'status');
   assert.ok(c.args.includes('core.quotepath=false'));
   assert.deepEqual([c.opts.cwd, c.opts.shell, c.opts.timeout, c.opts.env.KEEP, c.opts.env.GIT_TERMINAL_PROMPT, c.opts.env.GCM_INTERACTIVE], ['/proj', undefined, 1234, '1', '0', 'never']);
-  assert.equal((createGit('/proj', { exec: (cmd, args, opts) => opts.timeout })(['fetch'])), 60000, 'a default time limit');
+  assert.equal((createGit('/proj', { exec: (cmd, args, opts) => opts.timeout })(['status'])), 60000, 'a default time limit');
+  // fetch and push run under lib/tree-timeout.mjs, which ends git's hooks, ssh and remote helpers at the time limit
+  const net = [];
+  createGit('/proj', { exec: (cmd, args, opts) => { net.push({ cmd, args, opts }); return ''; } })(['-c', 'k=v', 'push', 'origin', 'x'], { timeout: 5000 });
+  const p = net.at(-1);
+  assert.deepEqual([p.cmd, path.basename(p.args[0]), p.args[1], p.args[2], p.args.at(-3)], [process.execPath, 'tree-timeout.mjs', '5000', 'git', 'push']);
+  assert.ok(p.opts.timeout > 5000, 'a later backstop for the wrapper itself');
+  const tree = createGit('/proj', { exec: () => { throw Object.assign(new Error('x'), { status: 124, stderr: 'fatal: x\nturbo: timed out, process tree ended\n' }); } });
+  assert.throws(() => tree(['fetch'], { timeout: 5000 }), (e) => e.message === 'timed out after 5 s' && e.status === null);
   const denied = createGit('/proj', { exec: () => { throw Object.assign(new Error('Command failed: git push x'), { status: 128, stderr: "remote: denied\nfatal: unable to access 'https://bob:s3cretpw@example.com/r.git/': 403\n" }); } });
   assert.throws(() => denied(['push']), (e) => e.status === 128 && e.message === "remote: denied / fatal: unable to access 'https://[secret]@example.com/r.git/': 403");
   const hung = createGit('/proj', { exec: () => { throw Object.assign(new Error('x'), { code: 'ETIMEDOUT' }); } });

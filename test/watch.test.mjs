@@ -1,6 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CLEAR, watch } from '../lib/watch.mjs';
+import { EventEmitter } from 'node:events';
+import { CLEAR, quietOnClosedPipe, watch } from '../lib/watch.mjs';
+
+test('a closed pipe ends the watch quietly with exit 0 (EPIPE on POSIX, EOF on Windows); other stream errors still throw', () => {
+  const stream = new EventEmitter();
+  const exits = [];
+  quietOnClosedPipe(stream, (code) => exits.push(code));
+  stream.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+  stream.emit('error', Object.assign(new Error('write EOF'), { code: 'EOF' }));
+  assert.deepEqual(exits, [0, 0]);
+  assert.throws(() => stream.emit('error', Object.assign(new Error('disk on fire'), { code: 'EIO' })), /disk on fire/);
+});
 
 const NOW = () => new Date(2026, 0, 1, 10, 59, 58);
 

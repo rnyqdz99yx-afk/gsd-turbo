@@ -34,3 +34,20 @@ test('turbo-run status --watch redraws the view every view.refresh_seconds until
   assert.match(out, /^updated \d\d:\d\d:\d\d · every 1 s · Ctrl\+C stops$/m);
   assert.equal(out.includes('\x1b['), false);
 });
+
+test('turbo-run status --watch into a pipe that closes (| head) exits 0 without a stack trace', async () => {
+  const root = tmpGitRepo();
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ view: { refresh_seconds: 1 } }));
+  const child = spawn(process.execPath, [CLI, 'status', '--watch'], { cwd: root, env: { ...process.env, CLAUDE_CONFIG_DIR: tmpDir('home') }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  let err = '';
+  child.stderr.on('data', (d) => { err += d; });
+  const closed = new Promise((resolve, reject) => {
+    const guard = setTimeout(() => { child.kill(); reject(new Error(`still running 15 s after its pipe closed; stderr: ${err}`)); }, 15000);
+    child.on('close', (code) => { clearTimeout(guard); resolve(code); });
+  });
+  await new Promise((resolve) => child.stdout.once('data', resolve));
+  child.stdout.destroy();
+  assert.equal(await closed, 0, err);
+  assert.equal(err, '');
+});

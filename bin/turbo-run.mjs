@@ -22,7 +22,7 @@ import { clearAttempts } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
-import { watch } from '../lib/watch.mjs';
+import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|state-sync> [args]';
@@ -612,6 +612,7 @@ async function main() {
     case 'status': {
       if (!root) die('no .planning directory found');
       if (args.includes('--watch')) {
+        quietOnClosedPipe(process.stdout);
         // the live view without the mod: view's text form, redrawn every view.refresh_seconds until Ctrl+C
         await watch({
           frame: () => {

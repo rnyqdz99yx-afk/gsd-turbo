@@ -18,12 +18,13 @@ import { runDaemon, resumableLane } from '../lib/supervisor.mjs';
 import { comparePhase, inRange, rangeLabel } from '../lib/scheduler.mjs';
 import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
-import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
+import { PHASE_COMMANDS, VALUE_FLAGS as PHASE_VALUE_FLAGS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
 import { clearAttempts } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
+import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync> [args]';
@@ -54,7 +55,23 @@ function positional(args) {
   }
   return out;
 }
-function projectArg(args) { const p = flag(args, '--project'); return p ? path.resolve(p) : findProjectRoot(process.cwd()); }
+// Flags of any command whose next argument is their value: bin's, the phase commands' (cli-phase, so a flag added
+// there is covered here too) and turbo-run answer's.
+const ANSWER_VALUE_FLAGS = ['--text', '--by', '--rev', '--option'];
+const ARG_VALUE_FLAGS = new Set([...VALUE_FLAGS, ...PHASE_VALUE_FLAGS, ...ANSWER_VALUE_FLAGS]);
+// --project read in order: the value of another flag is skipped, so an answer text or a reason that says --project
+// never names the project, and nothing after -- is a flag. --project may still follow the positional arguments.
+function projectArg(args) {
+  let p = '';
+  for (let i = 0; i < args.length && args[i] !== '--'; i++) {
+    if (args[i] === '--project') {
+      p = args[i + 1] ?? '';
+      break;
+    }
+    if (ARG_VALUE_FLAGS.has(args[i])) i++;
+  }
+  return p ? path.resolve(p) : findProjectRoot(process.cwd());
+}
 // The range flags of start (and of the daemon it spawns): undefined without any (start keeps the
 // stored range), null for --all, else { from, to } of normalized ids, a missing end null (open).
 function rangeFlags(args) {
@@ -520,6 +537,13 @@ function coverNestedPackages(root, res, known) {
   return null;
 }
 
+// The view of the project, read fresh: what view prints and status --watch redraws.
+function readView(root) {
+  const config = runtimeConfig(loadConfig(root));
+  const sup = readJson(supPath(root), null);
+  return buildView({ root, sup, running: supAlive(sup, config.poll_seconds), config });
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   const root = projectArg(args);
@@ -611,6 +635,19 @@ async function main() {
     }
     case 'status': {
       if (!root) die('no .planning directory found');
+      if (args.includes('--watch')) {
+        quietOnClosedPipe(process.stdout);
+        // the live view without the mod: view's text form, redrawn every view.refresh_seconds until Ctrl+C
+        await watch({
+          frame: () => {
+            const view = readView(root);
+            return { text: formatView(view), seconds: view.ui.refreshSeconds };
+          },
+          write: (s) => process.stdout.write(s),
+          tty: Boolean(process.stdout.isTTY),
+        });
+        return 0;
+      }
       const config = runtimeConfig(loadConfig(root)); // a corrupt config stops the daemon; report it instead of a normal status
       const sup = readJson(supPath(root), null);
       const running = supAlive(sup, config.poll_seconds);
@@ -625,9 +662,7 @@ async function main() {
     }
     case 'view': {
       if (!root) die('no .planning directory found');
-      const config = runtimeConfig(loadConfig(root));
-      const sup = readJson(supPath(root), null);
-      const view = buildView({ root, sup, running: supAlive(sup, config.poll_seconds), config });
+      const view = readView(root);
       out(args.includes('--json') ? JSON.stringify(view) : formatView(view));
       return 0;
     }

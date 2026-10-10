@@ -10,6 +10,7 @@ This is v0.2.2 (stage 2 of the [roadmap](#roadmap)). Each phase now runs as `/tu
 
 - Node.js ≥ 20 and git.
 - Claude Code ≥ 2.1.234 (background sessions: `claude --bg`, `claude agents --json --all`).
+- For the live view in Claude Code (the `turbo-view` mod): Claude Code ≥ 2.1.290. With an older version the installer leaves the mod out, and `turbo-run status --watch` shows the run in any terminal.
 - GSD core 1.16.x, installed with `npx @opengsd/gsd-core@latest` (or `npx @opengsd/gsd-core@1.16` to stay inside the tested range). `turbo-run doctor` is tested against `>=1.16.0 <1.17.0`. A different GSD version, including newer minor and major releases, runs in safe mode if the other checks pass: doctor prints `FAIL gsd-version …` and then `mode: safe`. If `gsd-tools init manager` changed incompatibly, doctor reports `mode: unsupported` and the run does not start. `/turbo-phase` (whether the supervisor or you start it) needs full mode, which also needs the tested GSD range (see [Full and safe mode](#full-and-safe-mode)).
 - Windows, macOS or Linux.
 - Claude Code must trust the project folder: run `claude` in it once and accept the trust prompt. In a folder it does not trust, every background session fails to start; the supervisor then stops at the first attempt and notifies you.
@@ -27,6 +28,7 @@ The installer copies files into your Claude Code config directory (`~/.claude`, 
 - `skills/turbo-autonomous/`: the `/turbo-autonomous` skill;
 - `skills/turbo-phase/`: the `/turbo-phase` skill, which a full-mode background session runs for its phase;
 - `agents/turbo-uat.md`: the `turbo-uat` agent, which `/turbo-phase` starts for automated UAT.
+- `skills/turbo-view/`: the `turbo-view` mod, the live view in your Claude Code sessions (see [Live view](#live-view)); only with Claude Code ≥ 2.1.290, otherwise the installer prints `turbo-view mod not installed: …`.
 
 It never writes `gsd-*` paths. `node install.mjs --dry-run` shows only how many files would be installed and where, without writing anything.
 
@@ -50,7 +52,7 @@ Then run, from the gsd-turbo clone (the installer itself is not copied into your
 node install.mjs --uninstall
 ```
 
-`node install.mjs --uninstall --dry-run` shows how many files would be removed. Only files listed in the install manifest are removed. Without a manifest in the config directory, the uninstaller prints `no gsd-turbo install manifest in <directory>` and exits with code 1 (check `CLAUDE_CONFIG_DIR`).
+`node install.mjs --uninstall --dry-run` shows how many files would be removed. Only files listed in the install manifest are removed, plus the whole `skills/turbo-view/` directory of the mod (with any files Claude Code wrote into it; a link there is left alone). Without a manifest in the config directory, the uninstaller prints `no gsd-turbo install manifest in <directory>` and exits with code 1 (check `CLAUDE_CONFIG_DIR`).
 
 Projects keep their turbo files: `.planning/turbo/`, the last-green marker of the targeted tests (`turbo-last-green` in the git directory, usually `.git/turbo-last-green`; you can delete it) and, where `init` set it, the GSD setting `workflow.test_command`. In each project, from the project root, in a bash-compatible shell (Git Bash on Windows), check the setting:
 
@@ -115,7 +117,7 @@ To watch a phase live, run `claude attach <session id>` (the id is in the status
 The same commands work without the skill, in a bash-compatible shell (Git Bash on Windows):
 
 ```sh
-node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor   # also: init, start [--from <N>] [--to <N>], start --only <N>, start --all, status, view [--json], stop, resume <phase> [--start], context [<phase>] [--json]
+node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor   # also: init, start [--from <N>] [--to <N>], start --only <N>, start --all, status [--watch], view [--json], stop, resume <phase> [--start], context [<phase>] [--json]
 ```
 
 Below, `turbo-run` stands for this `node …/turbo-run.mjs` call; the installer does not put it on your PATH. Its other subcommands, such as `phase-step`, `staleness`, `gates`, `jobs`, `uat`, `lane-status`, `state-sync`, `context` and `test-changed`, are the deterministic steps the supervisor and the sessions call. You need them only for recovery: `turbo-run gates restore <N>` ([GSD settings turbo writes](#gsd-settings-turbo-writes)), `turbo-run lane-status <N> done` ([Full and safe mode](#full-and-safe-mode)) and `turbo-run state-sync <N>` ([Context and the resume position](#context-and-the-resume-position)).
@@ -127,6 +129,20 @@ To run a single phase without the supervisor, run `/turbo-phase <N>` in Claude C
 The background sessions work in your checkout. Each lane runs with `worktree.bgIsolation: "none"` passed to its session, so it edits the project folder directly, as GSD expects; your own settings are not changed. Do not run GSD phase commands in the same checkout while the supervisor is running.
 
 Each lane also gets its own temporary directory in the git directory, outside the working tree: `turbo/tmp/<project key>/p<N>/` under `git rev-parse --git-path` (usually `.git/turbo/tmp/<project key>/p<N>/`, where the key is the 6-hex hash of the project root that the lane session names carry too, so two GSD projects in one repository never share it; outside a repository `.planning/turbo/run/tmp/p<N>/`), so linters and type checkers that glob the tree never see it and nothing in it can be committed. The supervisor creates it before the launch, after removing what an earlier session of the phase left there; the same `--settings` set `TMP`, `TEMP` and `TMPDIR` of the session to it, and the lane's rules say that temporary files, stands and copies of data go there, never to `/tmp` or the system temp directory (in Git Bash on Windows `/tmp` stays the system temp directory whatever `TMP` says). The supervisor removes it once it has finished the phase and removed the session; `lane-status <N> done` does not, because the session may still use it (Claude Code's own scratch files and GSD's hook files can live there). Only that one directory is ever removed: a `p<N>` that is a link or resolves elsewhere, and a `turbo/tmp` (or a folder between it and the git directory or project root) that is a link, are refused and logged.
+
+### Live view
+
+With Claude Code 2.1.290 or newer, the installer adds the `turbo-view` mod to `skills/turbo-view/` in your config directory. Claude Code loads it in every session as `turbo-view@skills-dir`, without a marketplace or a settings change. Outside a project with `.planning/turbo/` it does nothing. In such a project it runs `turbo-run view --json` every `view.refresh_seconds` seconds (every 15 seconds in a background session no terminal is attached to; never in `claude -p` runs), starting at the first draw of the prompt or at `/turbo-view`, and shows (a session no terminal is attached to gets no pane and no toasts):
+
+- a band above the prompt, for example `turbo p32 execute · 3 agents · ? 2 questions · CI ✓`;
+- a pane with the supervisor and its range, each lane with its `/turbo-phase` step and status, the lane's subagents (type, plan, current action, time, context tokens; `quiet` with ⚠), the open owner questions in full with their options listed and numbered, a numbered button per option (`[1] [2] [Other…]`) and **Other…** for your own answer, and the last commits. The pane opens by itself while the supervisor runs or a question is open, in a terminal at least 144 columns wide (110 once you have opened it); `/turbo-view` opens it at any width;
+- toasts for a new question, a finished phase, red CI, a lane that stopped (`needs-owner`, `failed`) and a halted supervisor.
+
+A button runs `turbo-run answer --project <project> <phase> <id> --option <n> --by pane --rev <r>`, where `<r>` is the question's revision as the pane showed it; **Other…** opens a field whose text goes last, as `--text <your answer>`, so a text that reads like a flag stays text. The mod runs turbo-run with the `node` it finds in an absolute `PATH` directory and in turbo's install directory, never in the project. The first answer from any channel counts, and the command's reply shows as a toast. If the question changed since the pane showed it, nothing is recorded: the toast says so, the pane reads the run again, and **Other…** brings back what you typed. Texts follow `lang`. The mod runs nothing but these two `turbo-run` commands and writes no files.
+
+To turn the mod off, set `"turbo-view@skills-dir": false` under `enabledPlugins` in your Claude Code settings. Without the mod, `turbo-run status --watch` shows what `turbo-run view` shows, in any terminal, and redraws it every `view.refresh_seconds` seconds until you press Ctrl+C. In a terminal it redraws in place; into a pipe or a file it prints a new frame only when the view changed. Git Bash's mintty is not a terminal to Node without ConPTY, so there it prints like into a pipe: for a live redraw run it through `winpty` or use PowerShell or Windows Terminal.
+
+To see the mod without a real run, run `node scripts/turbo-view-demo.mjs` (or `node scripts/turbo-view-demo.mjs --lang ru`) in the gsd-turbo clone. It builds a demo project with a scripted run in a new temporary folder and prints the command that opens it in Claude Code, and what to check.
 
 ## What happens
 
@@ -245,7 +261,7 @@ What is left for you goes into one file per phase, `.planning/turbo/run/p<N>-own
 
 | Key | Default | Meaning |
 |---|---|---|
-| `lang` | `"en"` | Language of notifications and of the UAT owner request: `en` or `ru` (`init --lang`). |
+| `lang` | `"en"` | Language of notifications, of the UAT owner request and of the live view: `en` or `ru` (`init --lang`). |
 | `max_lanes` | `3` | Reserved for stage 3 (parallel phases). Not used in v0.2, which runs one phase at a time. |
 | `max_executors` | `20` | Reserved for stage 4 (execution graph). Not used in v0.2. |
 | `lane_permission_mode` | `"bypassPermissions"` | `--permission-mode` of every background session. turbo reads a session that Claude Code lists as `blocked` as one that finished its turn, which assumes this default: with another mode, a session waiting on a permission prompt looks the same. |
@@ -257,6 +273,7 @@ What is left for you goes into one file per phase, `.planning/turbo/run/p<N>-own
 | `max_restarts_without_progress` | `3` | Restarts in a row without a new commit or plan summary before the supervisor halts and notifies you (at least 1). |
 | `blocked_minutes_before_notify` | `10` | Minutes a session may wait for input, or the supervisor may keep failing, before you are notified (at least 1). |
 | `stall_minutes` | `15` | Minutes without a transcript write after which `turbo-run view` shows a subagent or a lane as `quiet` (at least 1). Only a mark: nothing is stopped or restarted because of it. |
+| `view.refresh_seconds` | `3` | Seconds between two reads of the live view: the turbo-view mod while a terminal is attached (every 15 s otherwise) and `turbo-run status --watch`. A whole number from 1 to 60; anything else counts as 3. |
 | `notify.desktop` | `true` | Desktop notifications (Windows toast, `osascript` on macOS, `notify-send` on Linux). |
 | `notify.telegram` | `false` | Telegram notifications; see [Telegram](#telegram-optional). |
 | `test.full` | `"npm test"` | The full test command, run through `bash -c` like GSD does. `init` sets it to your previous `workflow.test_command` when there was one; otherwise, unless GSD itself would run `npm test` in your project, set it to your full test command and run `turbo-run init` again. A list runs several packages; see [Several packages in `test.full`](#several-packages-in-testfull). |

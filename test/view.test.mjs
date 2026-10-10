@@ -9,7 +9,8 @@ import { completeStep } from '../lib/phase-progress.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
-import { buildView, formatView, openQuestions, recentCommits, stallMs } from '../lib/view.mjs';
+import { buildView, formatView, openQuestions, pushOf, recentCommits, stallMs } from '../lib/view.mjs';
+import { DEFAULTS, viewRefreshSeconds } from '../lib/config.mjs';
 
 const NOW = new Date('2026-01-01T11:00:00.000Z');
 const at = (hhmm) => `2026-01-01T${hhmm}:00.000Z`;
@@ -36,7 +37,7 @@ const agentEntries = (id, from, to, tokens = 166000) => [
 test('without supervisor.json the view has no supervisor and no lanes, and still lists questions and commits', () => {
   const { root, env } = laneProject();
   const v = buildView({ root, sup: null, env, now: NOW, commits: COMMITS });
-  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], questions: [], commits: COMMITS() });
+  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], questions: [], commits: COMMITS(), ui: { lang: 'en', refreshSeconds: 3 } });
 });
 
 test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
@@ -208,4 +209,74 @@ test('formatView prints one line per lane, subagent, question and commit', () =>
     '  a1b2c3d fix: something',
   ].join('\n'));
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [] }), 'supervisor: not running (never started)');
+});
+
+test('the view carries the live view settings (ui) and each lane its last push as S2 recorded it', () => {
+  const { root, sup, env } = laneProject();
+  const v = buildView({ root, sup, config: { lang: 'ru', view: { refresh_seconds: 5 } }, env, now: NOW, commits: COMMITS });
+  assert.deepEqual(v.ui, { lang: 'ru', refreshSeconds: 5 });
+  assert.equal(v.lanes[0].push, null);
+  // S2's record (lib/push.mjs): the latest request's outcome and time at the top, the last push and its CI watch in
+  // lastPush, carried over by later requests
+  const record = path.join(runDirOf(root), 'p32-push.json');
+  const sha = 'f'.repeat(40);
+  const lastPush = { requestId: 'r1', sha, branch: 'main', remote: 'origin', at: at('10:50'), ci: { state: 'red', since: at('10:50'), runs: [] } };
+  writeJsonAtomic(record, { requestId: 'r1', phase: '32', remote: 'origin', at: at('10:50'), outcome: 'pushed', branch: 'main', sha, lastPush });
+  assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes[0].push, { outcome: 'pushed', at: at('10:50'), sha: 'fffffff', ci: 'red' });
+  writeJsonAtomic(record, { requestId: 'r2', phase: '32', remote: 'origin', at: at('10:55'), outcome: 'refused', findings: [{ file: '.env', kind: 'forbidden name' }], lastPush });
+  assert.deepEqual(pushOf(root, '32'), { outcome: 'refused', at: at('10:55'), sha: 'fffffff', ci: 'red' }, 'a refused request keeps the last push and its CI');
+  writeJsonAtomic(record, { requestId: 'r1', phase: '32', remote: 'origin', at: at('10:50'), outcome: 'refused', findings: [] });
+  assert.deepEqual(pushOf(root, '32'), { outcome: 'refused', at: at('10:50'), sha: null, ci: null }, 'refused before any push');
+  fs.writeFileSync(record, '{"outcome":');
+  assert.equal(pushOf(root, '32'), null);
+  writeJsonAtomic(record, { outcome: 'exploded' });
+  assert.equal(pushOf(root, '32'), null);
+});
+
+test('view.refresh_seconds is a whole number of seconds from 1 to 60; anything else counts as 3', () => {
+  assert.equal(DEFAULTS.view.refresh_seconds, 3);
+  assert.equal(viewRefreshSeconds({ view: { refresh_seconds: 1 } }), 1);
+  assert.equal(viewRefreshSeconds({ view: { refresh_seconds: 60 } }), 60);
+  for (const bad of [0, 61, 2.5, null, 'x']) assert.equal(viewRefreshSeconds({ view: { refresh_seconds: bad } }), 3, String(bad));
+  assert.equal(viewRefreshSeconds({}), 3);
+});
+
+test('open questions reach the view as S1 writes them, rev included: the pane answers with that rev', () => {
+  const { root, sup, env } = laneProject();
+  const q = { id: '32-09-t2', phase: '32', plan: '32-09', task: '2', kind: 'decision', header: '32-09 T2', question: 'Select the provider', context: '', options: [{ label: 'Clerk', description: '', recommended: true, signal: 'clerk', defer: false }], allowOther: true, condition: null, class: 'decision', agentId: null, stopped: false, state: 'open', answer: null, delivery: null, rev: 2, source: 'plan' };
+  writeJsonAtomic(path.join(runDirOf(root), 'p32-questions.json'), [q, { ...q, id: '32-09-t3', state: 'answered', rev: 1 }]);
+  assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).questions, [q]);
+});
+
+test('recentCommits never runs a git planted in the project (Windows looks for a bare program in the working directory first)', { skip: process.platform !== 'win32' && 'only Windows looks in the working directory' }, () => {
+  const repo = tmpGitRepo();
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'feat: real'], { cwd: repo });
+  // a small program that is not git and fails on `git log` arguments
+  fs.copyFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'whoami.exe'), path.join(repo, 'git.exe'));
+  // a Node whose environment lacks NoDefaultCurrentDirectoryInExePath: the default, where Windows looks in the cwd
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== 'nodefaultcurrentdirectoryinexepath'));
+  const script = `import { recentCommits } from ${JSON.stringify(new URL('../lib/view.mjs', import.meta.url).href)}; process.stdout.write(String(recentCommits(process.argv[1])[0]?.subject));`;
+  assert.equal(execFileSync(process.execPath, ['--input-type=module', '-e', script, repo], { env, encoding: 'utf8' }), 'feat: real');
+});
+
+test('escape sequences and bidi overrides in repository data are dropped where the view reads them, so view --json, view and status --watch draw none', () => {
+  // OSC 52 (clipboard), ESC[2J (clear), colors and U+202E, built at run time
+  const E = String.fromCharCode(27);
+  const evil = `${E}]52;c;SGVsbG8=${String.fromCharCode(7)}${E}[2J${E}[31mred${E}[0m‮evil`;
+  const unsafe = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
+  const strings = (x) => (typeof x === 'string' ? [x] : x && typeof x === 'object' ? Object.values(x).flatMap(strings) : []);
+  const { root, dir, sup, env } = laneProject();
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', `fix: ${evil}`], { cwd: root });
+  writeLaneStatus(root, '32', 'needs-owner', { reason: `checkpoint ${evil}`, at: at('10:40') });
+  writeSession(dir, SESSION, [entry.user('run phase 32', at('09:48')), entry.launched('toolu_1', 'a2000000000000001', at('10:00'))]);
+  setMtime(writeAgent(dir, SESSION, 'a2000000000000001', [entry.agentUser('a2000000000000001', `Execute ${evil}`, at('10:00')), entry.assistant({ ts: at('10:58'), tool: { name: 'Bash', input: { command: `echo ${evil}` } }, usage: usage(0, 0, 1000), sidechain: true })], { agentType: `gsd-executor${evil}`, description: `Plan 32-07 ${evil}`, spawnDepth: 1 }), new Date(at('10:58')));
+  writeJsonAtomic(path.join(runDirOf(root), 'p32-questions.json'), [{ id: 'q1', phase: '32', plan: '32-09', task: '3', header: `H ${evil}`, question: `Deploy? ${evil}`, context: evil, options: [{ label: `Yes ${evil}`, description: evil, signal: evil }], state: 'open' }]);
+  const v = buildView({ root, sup, env, now: NOW });
+  for (const s of strings(v)) assert.ok(!unsafe.test(s), JSON.stringify(s));
+  assert.equal(v.commits[0].subject, 'fix: redevil');
+  assert.equal(v.lanes[0].reason, 'checkpoint redevil');
+  assert.equal(v.questions[0].question, 'Deploy? redevil');
+  assert.ok(v.lanes[0].agents[0].action.detail.includes('echo redevil'), JSON.stringify(v.lanes[0].agents[0]));
+  assert.ok(!unsafe.test(formatView({ ...v, commits: [{ sha: 'abc1234', subject: `raw ${evil}` }] })), 'formatView drops them from a view built elsewhere too');
 });

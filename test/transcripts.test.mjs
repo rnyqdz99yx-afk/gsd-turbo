@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { AGENT, AGENT2, FORK, SESSION, entry, jsonl, notification, projectDirFor, setMtime, usage, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
-import { TAIL_MAX, actionOf, agentIndex, contextTokens, cwdInside, findAgentTranscript, findTranscript, harnessNotificationText, headEntry, jobState, laneTranscript, launchedAgentId, normalCwd, parseNotifications, planOf, projectDirs, projectKey, scanLaneTranscript, sessionTranscripts, tailEntries } from '../lib/transcripts.mjs';
+import { TAIL_MAX, actionOf, agentIndex, agentSnapshot, agentState, contextTokens, cwdInside, findAgentTranscript, findTranscript, harnessNotificationText, headEntry, jobState, laneAgents, laneTranscript, launchedAgentId, normalCwd, parseNotifications, planOf, projectDirs, projectKey, scanLaneTranscript, sessionTranscripts, tailEntries } from '../lib/transcripts.mjs';
 
 const T0 = '2026-01-01T10:00:00.000Z';
 
@@ -297,4 +297,107 @@ test('scanLaneTranscript reads only what was appended, keeps a line without its 
   writeSession(dir, SESSION, [entry.launched('toolu_9', AGENT2, T0)]);
   assert.deepEqual(scanLaneTranscript(file, done).launched, [AGENT2]);
   assert.deepEqual(scanLaneTranscript(file, { scanned: 'bad' }).launched, [AGENT2]);
+});
+
+const NOW = new Date('2026-01-01T11:00:00.000Z');
+const STALL = 15 * 60000;
+const at = (hhmm) => `2026-01-01T${hhmm}:00.000Z`;
+// A subagent transcript: its prompt at `from`, then one tool call at `to` with the given usage.
+const agentEntries = (id, from, to, tool = { name: 'Bash', input: { command: 'node --test test/a.test.mjs' } }) => [
+  entry.agentUser(id, 'Execute the plan', at(from)),
+  entry.assistant({ ts: at(to), tool, usage: usage(1, 1000, 40000), sidechain: true }),
+];
+
+test('agentState: a notification the agent did not outlive decides; else running within the stall window, else quiet', () => {
+  const base = { lastAt: at('10:20'), writtenMs: Date.parse(at('10:20')), nowMs: NOW.getTime(), stallMs: STALL };
+  assert.equal(agentState({ ...base, note: { status: 'completed', at: at('10:20') } }), 'completed');
+  assert.equal(agentState({ ...base, note: { status: 'stopped', at: at('10:20') } }), 'stopped');
+  assert.equal(agentState({ ...base, note: { status: 'failed', at: at('10:20') } }), 'failed');
+  assert.equal(agentState({ ...base, note: null }), 'quiet');
+  assert.equal(agentState({ ...base, note: null, writtenMs: Date.parse(at('10:50')) }), 'running');
+  // resumed with SendMessage after a stop: it wrote again after the notification
+  assert.equal(agentState({ ...base, note: { status: 'stopped', at: at('10:10') }, writtenMs: Date.parse(at('10:58')) }), 'running');
+});
+
+test('agentSnapshot reads first and last time, the last tool call and the last context; an unchanged file returns the cached snapshot', () => {
+  const root = tmpDir('snap');
+  const { dir } = setup();
+  const file = writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:40', { name: 'Edit', input: { file_path: path.join(root, 'lib', 'x.mjs') } }));
+  const s = agentSnapshot(file, root);
+  assert.equal(s.firstAt, at('10:00'));
+  assert.equal(s.lastAt, at('10:40'));
+  assert.deepEqual(s.action, { tool: 'Edit', detail: 'lib/x.mjs' });
+  assert.equal(s.tokens, 41001);
+  assert.equal(agentSnapshot(file, root, s), s);
+  fs.appendFileSync(file, jsonl([entry.assistant({ ts: at('10:45'), text: 'done', sidechain: true })]));
+  const grown = agentSnapshot(file, root, s);
+  assert.notEqual(grown, s);
+  assert.equal(grown.lastAt, at('10:45'));
+  assert.deepEqual(grown.action, { tool: 'Edit', detail: 'lib/x.mjs' });
+  assert.equal(agentSnapshot(file, root, { size: 'x' }).firstAt, at('10:00'));
+});
+
+test('laneAgents: states from the lane transcript, nested agents left out, active ones first', () => {
+  const root = tmpDir('lane');
+  const { dir } = setup();
+  const ids = { done: 'a1000000000000001', run: 'a1000000000000002', quiet: 'a1000000000000003', killed: 'a1000000000000004', failed: 'a1000000000000005', resumed: 'a1000000000000006', nested: 'a1000000000000007' };
+  const laneFile = writeSession(dir, SESSION, [
+    entry.user('run phase 32', at('09:59')),
+    ...Object.values(ids).filter((id) => id !== ids.nested).map((id, i) => entry.launched(`toolu_${i}`, id, at('10:00'))),
+    entry.note(ids.done, 'completed', at('10:30')),
+    entry.attachedNote(ids.killed, 'killed', at('10:31')),
+    entry.note(ids.failed, 'failed', at('10:32')),
+    entry.note(ids.resumed, 'stopped', at('10:20')),
+  ]);
+  const write = (id, from, to, mtime, meta) => setMtime(writeAgent(dir, SESSION, id, agentEntries(id, from, to), meta), new Date(at(mtime)));
+  write(ids.done, '10:00', '10:30', '10:30');
+  write(ids.run, '10:00', '10:50', '10:50');
+  write(ids.quiet, '10:00', '10:30', '10:30');
+  write(ids.killed, '10:00', '10:31', '10:31');
+  write(ids.failed, '10:00', '10:32', '10:32');
+  write(ids.resumed, '10:00', '10:55', '10:55');
+  write(ids.nested, '10:00', '10:58', '10:58', { agentType: 'gsd-code-reviewer', spawnDepth: 2 });
+  const used = {};
+  const r = laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: SESSION }, root, now: NOW, stallMs: STALL, used });
+  const byId = Object.fromEntries(r.agents.map((a) => [a.agentId, a]));
+  assert.deepEqual([r.transcript, r.sessionId], [laneFile, SESSION]);
+  assert.equal(byId[ids.done].state, 'completed');
+  assert.equal(byId[ids.run].state, 'running');
+  assert.equal(byId[ids.quiet].state, 'quiet');
+  assert.equal(byId[ids.killed].state, 'stopped');
+  assert.equal(byId[ids.failed].state, 'failed');
+  assert.equal(byId[ids.resumed].state, 'running');
+  assert.equal(byId[ids.nested], undefined);
+  assert.deepEqual(r.agents.slice(0, 3).map((a) => a.state).sort(), ['quiet', 'running', 'running']);
+  const done = byId[ids.done];
+  assert.equal(done.elapsedMs, 30 * 60000);
+  assert.equal(byId[ids.run].elapsedMs, 60 * 60000);
+  assert.deepEqual([done.type, done.plan, done.task, done.model, done.tokens], ['gsd-executor', '32-07', null, 'opus', 41001]);
+  assert.deepEqual(done.action, { tool: 'Bash', detail: 'node --test test/a.test.mjs' });
+  assert.ok(used[r.transcript] && used[done.transcript]);
+});
+
+test('background shell tasks and progress events in the lane transcript are never agents and never change one (Review Focus 4)', () => {
+  const { root, dir } = setup();
+  const event = { ...entry.attachedNote('b9q8r7s6t', 'completed', at('10:41')) };
+  event.attachment = { ...event.attachment, prompt: '<task-notification>\n<task-id>b9q8r7s6t</task-id>\n<summary>printed a line</summary>\n<event>output</event>\n</task-notification>' };
+  const laneFile = writeSession(dir, SESSION, [
+    entry.launched('toolu_1', AGENT, at('10:00')),
+    entry.note('b1x2y3z4w', 'completed', at('10:40')),
+    event,
+    { ...entry.toolResult('toolu_b', 'Command running in background with ID: b1x2y3z4w', at('10:39')), toolUseResult: { backgroundTaskId: 'b1x2y3z4w' } },
+  ]);
+  setMtime(writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:55')), new Date(at('10:55')));
+  const r = laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: SESSION }, root, now: NOW, stallMs: STALL });
+  assert.deepEqual(r.agents.map((a) => [a.agentId, a.state]), [[AGENT, 'running']]);
+});
+
+test('laneAgents after a fork: the current session finds agents launched before the fork in the old session directory', () => {
+  const { root, dir } = setup();
+  const laneFile = writeSession(dir, FORK, [entry.launched('toolu_1', AGENT, at('10:00')), entry.launched('toolu_2', AGENT2, at('10:01'))]);
+  writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:58'));
+  writeAgent(dir, FORK, AGENT2, agentEntries(AGENT2, '10:01', '10:59'));
+  const r = laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: FORK }, root, now: NOW, stallMs: STALL });
+  assert.deepEqual(r.agents.map((a) => [a.agentId, a.sessionId]).sort(), [[AGENT, SESSION], [AGENT2, FORK]].sort());
+  assert.deepEqual(laneAgents({ dirs: [dir], main: null, root, now: NOW, stallMs: STALL }), { transcript: null, sessionId: null, lastAt: null, agents: [] });
 });

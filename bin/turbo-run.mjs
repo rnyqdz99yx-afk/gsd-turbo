@@ -53,7 +53,21 @@ function positional(args) {
   }
   return out;
 }
-function projectArg(args) { const p = flag(args, '--project'); return p ? path.resolve(p) : findProjectRoot(process.cwd()); }
+// Flags of any command whose next argument is their value (the phase commands' and turbo-run answer's included).
+const ARG_VALUE_FLAGS = new Set([...VALUE_FLAGS, '--done', '--note', '--results', '--log', '--attempt', '--text', '--by', '--rev', '--option']);
+// --project read in order: the value of another flag is skipped, so an answer text or a reason that says --project
+// never names the project, and nothing after -- is a flag. --project may still follow the positional arguments.
+function projectArg(args) {
+  let p = '';
+  for (let i = 0; i < args.length && args[i] !== '--'; i++) {
+    if (args[i] === '--project') {
+      p = args[i + 1] ?? '';
+      break;
+    }
+    if (ARG_VALUE_FLAGS.has(args[i])) i++;
+  }
+  return p ? path.resolve(p) : findProjectRoot(process.cwd());
+}
 // The range flags of start (and of the daemon it spawns): undefined without any (start keeps the
 // stored range), null for --all, else { from, to } of normalized ids, a missing end null (open).
 function rangeFlags(args) {

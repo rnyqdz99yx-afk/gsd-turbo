@@ -98,6 +98,21 @@ test('state-sync leaves STATE.md alone without plans, with every plan summarized
   }
 });
 
+// begin-phase must take its first-run branch for a phase whose execution never started
+test('state-sync does nothing before execution started (no SUMMARY, step gates-off not done); gates-off done is enough', async () => {
+  const root = fixture({ summaries: 0 });
+  let { gsd, calls } = fakeGsd(root);
+  let r = await sync(root, { gsd });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.lines, ['STATE.md: left as it is (execution of phase 05 has not started: no plan has a SUMMARY and step gates-off is not done)']);
+  assert.ok(!calls.some((c) => c[0] === 'state' || c[0] === 'commit'));
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'phase-p5.json'), JSON.stringify({ phase: '5', done: ['freshness', 'discuss', 'prologue', 'plan', 'gates-off'] }));
+  ({ gsd, calls } = fakeGsd(root));
+  r = await sync(root, { gsd });
+  assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-01 (1 of 4); committed']);
+});
+
 test('state-sync fails with GSD\'s error line when a state command fails', async () => {
   const root = fixture();
   const { gsd } = fakeGsd(root);

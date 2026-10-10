@@ -232,3 +232,16 @@ test('laneStalled exists in en and ru with the same placeholders (S1)', () => {
   assert.deepEqual(holes(ru), holes(en));
   assert.match(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, /1a2b3c4d wrote nothing for 16 min, also after 2 wakes/);
 });
+
+test('questionsReady exists in en and ru with the same placeholders (S1)', () => {
+  const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
+  const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
+  const en = msg('en', 'questionsReady', keep);
+  const ru = msg('ru', 'questionsReady', keep);
+  assert.notEqual(en.title, 'questionsReady');
+  assert.notEqual(ru.title, en.title);
+  assert.deepEqual(holes(ru), holes(en));
+  const m = msg('en', 'questionsReady', { phase: '3', n: 2, list: '03-01 T2: Pick one' });
+  assert.equal(m.title, 'Phase 3: 2 question(s) for you');
+  assert.equal(m.body, '03-01 T2: Pick one. Answer: /turbo-autonomous answer');
+});

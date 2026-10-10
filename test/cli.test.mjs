@@ -838,6 +838,15 @@ test('init: a config it creates gets test.full as a list, the root command first
   assert.match(rOut, /workflow\.test_command set/);
 });
 
+test('start review 7b: an invalid test.full list refuses to start, with the config error', async () => {
+  const p = fakeProject({ config: { notify: { desktop: false, telegram: false }, test: { full: ['npm test', { dir: 'missing', command: 'npm test' }] } } });
+  const r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /^invalid turbo config .*test\.full\[1\]\.dir "missing" is not a directory in the project/);
+  assert.equal(readSup(p.root), null);
+  assert.equal(fs.existsSync(path.join(p.root, '.planning', 'turbo', 'logs')), false, 'no daemon was spawned');
+});
+
 test('init review 5: a root package.json without a real test script (workspaces, npm\'s stub) gets the nested packages only', () => {
   const nested = { 'server/package.json': pkgJson('node --test'), 'app/package.json': pkgJson('vitest run') };
   const list = [{ dir: 'app', command: 'npm test' }, { dir: 'server', command: 'npm test' }];

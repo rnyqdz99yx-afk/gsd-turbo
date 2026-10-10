@@ -244,7 +244,8 @@ function logTail(root, lines = 10) {
 // requested: rangeFlags' result (undefined keeps the range of a run that has not finished).
 async function start(root, requested = undefined) {
   const config = runtimeConfig(loadConfig(root)); // a corrupt config fails here, not inside the detached daemon
-  const running = () => { const sup = readJson(supPath(root), null); return supAlive(sup, config.poll_seconds) ? sup : null; };
+  fullEntries(config.test?.full, root); // an invalid test.full list too, not at every test gate of the lanes
+  const running =() => { const sup = readJson(supPath(root), null); return supAlive(sup, config.poll_seconds) ? sup : null; };
   const already = (sup) => { out(`already running (pid ${sup.pid})`); printStatus(sup, true); return 0; };
   let sup = running();
   if (sup) return already(sup);

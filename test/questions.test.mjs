@@ -271,3 +271,33 @@ test('the answers directory\'s .gitignore is put right when a crash left it empt
   assert.equal(fs.readFileSync(ignore, 'utf8'), RULE.replace(/\n/g, '\r\n'));
   assert.deepEqual(fs.readdirSync(dir).sort(), ['.gitignore', 'p32.json']);
 });
+
+test('a rename of the answers .gitignore that Windows refuses a few times is retried; one that keeps failing never costs the answer: it is written, with a warning', () => {
+  const { root } = project();
+  const ignore = path.join(root, '.planning', 'turbo', 'answers', '.gitignore');
+  const real = fs.renameSync;
+  let refuse = 0;
+  fs.renameSync = function (from, to, ...rest) {
+    if (to === ignore && refuse > 0) {
+      refuse -= 1;
+      throw Object.assign(new Error('operation not permitted, rename'), { code: 'EPERM' });
+    }
+    return real.call(this, from, to, ...rest);
+  };
+  const warnings = [];
+  try {
+    refuse = 2;
+    writeAnswers(root, '32', [], { warn: (l) => warnings.push(l) });
+    assert.equal(fs.readFileSync(ignore, 'utf8'), '*\n!p*.json\n!.gitignore\n');
+    assert.deepEqual(warnings, []);
+    fs.writeFileSync(ignore, '');
+    refuse = Infinity;
+    writeAnswers(root, '32', [{ id: '32-09-t2', answer: 'clerk' }], { warn: (l) => warnings.push(l) });
+  } finally {
+    fs.renameSync = real;
+  }
+  assert.deepEqual(readAnswers(root, '32').map((r) => r.answer), ['clerk']);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /^warn: \.planning\/turbo\/answers\/\.gitignore not written \(.*operation not permitted.*\); the answer is written all the same$/);
+  assert.deepEqual(fs.readdirSync(path.join(root, '.planning', 'turbo', 'run')).filter((n) => n.startsWith('answers-gitignore')), []);
+});

@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '../lib/paths.mjs';
 import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries } from '../lib/config.mjs';
-import { nestedTestPackages } from '../lib/test-changed.mjs';
+import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
 import { createClaude, resolveBin, laneSessionName } from '../lib/claude.mjs';
@@ -467,15 +467,18 @@ function knownFullCommand(root, config) {
 const showFull = (full) => (typeof full === 'string' ? full : JSON.stringify(full));
 
 // Nested packages with their own test script that test.full does not run. A config this init created gets
-// test.full as a list: the root command first (none when the root has no package.json), then one entry per
-// package. Otherwise init only warns and prints the entries to add. Returns the list it wrote, or null.
+// test.full as a list: the root command first (none when the root package.json is missing or has no real test
+// script: a workspaces root, npm's stub), then one entry per package. Otherwise init only warns and prints the
+// entries to add. Returns the list it wrote, or null.
 function coverNestedPackages(root, res, known) {
   const nested = nestedTestPackages(root);
   if (!nested.length) return null;
   const entries = fullEntries(loadConfig(root).test?.full, root);
   const missing = nested.filter((p) => !entries.some((e) => e.dir === p.dir));
   if (!missing.length) return null;
-  const rootCommand = typeof known.full === 'string' ? known.full : known.why === 'no package.json' ? '' : null;
+  const rootTests = realTestScript(readJson(path.join(root, 'package.json'), null)?.scripts?.test);
+  const noRootTests = ['no package.json', 'package.json has no test script'].includes(known.why) || (known.full === DEFAULTS.test.full && !rootTests);
+  const rootCommand = noRootTests ? '' : typeof known.full === 'string' ? known.full : null;
   if (res.created && rootCommand !== null) {
     const list = [...(rootCommand ? [rootCommand] : []), ...missing];
     writeJsonAtomic(res.file, deepMerge(readJson(res.file, {}), { test: { full: list } }));

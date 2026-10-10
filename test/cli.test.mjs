@@ -838,6 +838,18 @@ test('init: a config it creates gets test.full as a list, the root command first
   assert.match(rOut, /workflow\.test_command set/);
 });
 
+test('init review 5: a root package.json without a real test script (workspaces, npm\'s stub) gets the nested packages only', () => {
+  const nested = { 'server/package.json': pkgJson('node --test'), 'app/package.json': pkgJson('vitest run') };
+  const list = [{ dir: 'app', command: 'npm test' }, { dir: 'server', command: 'npm test' }];
+  for (const [name, rootPkg] of [['workspaces', JSON.stringify({ workspaces: ['server', 'app'], scripts: { build: 'tsc -b' } })], ['stub', pkgJson('echo "Error: no test specified" && exit 1')]]) {
+    const p = fakeProject({ config: null });
+    tracked(p.root, { 'package.json': rootPkg, ...nested });
+    const stdout = run(['init'], p.root, p.env);
+    assert.deepEqual(cfgOf(p.root).test.full, list, name);
+    assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD], `${name}: ${stdout}`);
+  }
+});
+
 test('init: an existing config only warns and prints the entries to add; a valid list counts as a known full command', () => {
   const p = fakeProject({ config: { test: { full: ['npm test', { dir: 'app', command: 'pnpm test' }] } } });
   tracked(p.root, NESTED);

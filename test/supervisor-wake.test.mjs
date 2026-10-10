@@ -7,7 +7,7 @@ import { tick } from '../lib/supervisor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName } from '../lib/claude.mjs';
-import { writeQuestions } from '../lib/questions.mjs';
+import { markDelivered, stopQuestion, writeQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 
 const WOKE = (id) => `backgrounded · ${id} · lane\nnote: woke session ${id} with its saved options (--name, --permission-mode, --settings, --append-system-prompt, --disallowedTools, --model)\n`;
@@ -133,7 +133,8 @@ test('an open stop keeps the lane waiting; the same answers wake it twice at mos
   const before = h.notes.length;
   s = await tick(s, h.ctx);
   assert.equal(h.resumed.length, 2);
-  assert.deepEqual([s.lane.woken.key, s.lane.woken.count], ['02-01-t2,02-02-t1', 2]);
+  assert.equal(s.lane.woken.count, 2);
+  assert.match(s.lane.woken.key, /^02-01-t2:2:\S+,02-02-t1:2:\S+$/);
   assert.deepEqual(h.notes.slice(before).map((x) => x.key), ['laneNeedsOwner']);
 });
 
@@ -265,4 +266,23 @@ test('the wake prompt the woken session only records is no progress: a session t
   assert.equal(h.resumed.length, 2);
   assert.equal(h.notes.filter((x) => x.key === 'laneStalled').length, 1);
   assert.equal(s.lane.stall.count, 2);
+});
+
+test('a new answer to a checkpoint that stopped again wakes the lane again: the bound counts wakes for the same answers, not the same ids (D13)', async () => {
+  const h = harness();
+  let s = await stoppedLane(h);
+  for (let round = 1; round <= 3; round++) {
+    if (round > 1) {
+      // the agent returned the same checkpoint again: the lane stops for the owner once more
+      stopQuestion(h.root, '2', '02-01-t2', { agentId: 'a0123456789abcdef', now: h.now() });
+      stopForOwner(h);
+      s = await tick(s, h.ctx);
+    }
+    owner(h, '02-01-t2', round === 2 ? 2 : 1);
+    h.advance(1);
+    const before = h.resumed.length;
+    s = await tick(s, h.ctx);
+    assert.equal(h.resumed.length, before + 1, `round ${round}: woken`);
+    markDelivered(h.root, '2', '02-01-t2', 'same-agent', { now: h.now() });
+  }
 });

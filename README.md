@@ -144,7 +144,7 @@ GSD's execute-phase starts with `state.begin-phase`, which on a phase already in
 
 - GSD's `state patch` rewrites the first bold `**Field:**` line anywhere in STATE.md, else the first `Field:` line, else a two-cell table row. state-sync sends a field only when that first match lies inside the Current Position section, and names the fields it left out (an archive's `**Phase:**`, for example).
 - It changes nothing with no plans yet, with every plan summarized, or before execution started (no SUMMARY yet and step `gates-off` not done): then `begin-phase` must take its first-run branch.
-- It is best effort: a failing GSD command or commit (a held `index.lock`, for example) prints a `warn:` line, puts STATE.md back as it was, so the tree stays clean, and exits 0. The callers never stop on it.
+- It is best effort: a failing GSD command or commit (a held `index.lock`, for example) prints a `warn:` line, puts STATE.md back to the bytes it had before (a clean STATE.md stays clean; one that already had uncommitted changes keeps them, so it stays dirty), and exits 0. The callers never stop on it.
 
 turbo never calls `begin-phase` or `planned-phase` itself.
 

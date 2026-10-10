@@ -18,7 +18,7 @@ import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
 import { clearAttempts } from '../lib/phase-progress.mjs';
-import { gatesLeftovers } from '../lib/gates.mjs';
+import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -264,7 +264,7 @@ async function start(root, requested = undefined) {
     for (const c of failed) process.stderr.write(`FAIL ${c.name} ${c.detail}\n`);
     die('doctor: mode unsupported; not starting', 2);
   }
-  for (const c of failed) out(`warn ${c.name} ${c.detail}`);
+  for (const c of r.checks.filter((x) => !x.ok || x.warn)) out(`warn ${c.name} ${c.detail}`);
   // doctor takes seconds: another start may have launched a daemon meanwhile
   sup = running();
   if (sup) return already(sup);
@@ -484,7 +484,7 @@ async function main() {
     case 'doctor': {
       const r = doctor({ root });
       if (args.includes('--json')) out(JSON.stringify(r, null, 2));
-      else { for (const c of r.checks) out(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name} ${c.detail}`); out(`mode: ${r.mode}`); }
+      else { for (const c of r.checks) out(`${!c.ok ? 'FAIL' : c.warn ? 'warn' : 'ok  '} ${c.name} ${c.detail}`); out(`mode: ${r.mode}`); }
       return r.mode === 'unsupported' ? 2 : 0;
     }
     case 'init': {
@@ -528,6 +528,18 @@ async function main() {
           out('targeted tests not enabled: set test.full in .planning/turbo/config.json, then run init again');
           if (prevIsTurbo) out('warn: workflow.test_command already runs turbo-run test-changed, but no full test command is known: set test.full and run init again, or reset workflow.test_command (see the README, Uninstall)');
         }
+        // GSD's adaptive prompts key on its own context_window (200000 when unset); a value the project set stays
+        const gsdCfg = createGsdConfig({ root, core });
+        const window = config.context_window;
+        try {
+          if (gsdCfg.get('context_window') === ABSENT) {
+            if (!Number.isInteger(window) || window <= 0) out(`warn: context_window ${JSON.stringify(window)} in .planning/turbo/config.json is not a positive integer; GSD's context_window not set`);
+            else {
+              gsdCfg.set('context_window', String(window));
+              out(`context_window set to ${window} in .planning/config.json (GSD had none; its default is 200000)`);
+            }
+          }
+        } catch (e) { die(`init: ${e.message}`); }
       } else {
         out('gsd-core not found: workflow.test_command not set');
       }

@@ -90,7 +90,11 @@ function fakeGsd() {
   const args = process.argv.slice(2);
   fs.appendFileSync(path.join(__dirname, 'gsd-argv.jsonl'), JSON.stringify(args) + '\n');
   const b = JSON.parse(fs.readFileSync(path.join(__dirname, 'behavior.json'), 'utf8'));
-  if (args[0] === 'config-get') {
+  if (args[0] === 'config-get' && args[1] === 'context_window') {
+    // absent unless set: the --default value, else GSD's schema default
+    const d = args.indexOf('--default');
+    process.stdout.write(b.contextWindow ?? (d >= 0 ? args[d + 1] : '200000'));
+  } else if (args[0] === 'config-get') {
     process.stdout.write(b.configGet.out);
     if (b.configGet.exit) { console.error('config-get broke'); process.exitCode = b.configGet.exit; }
   } else if (args[0] === 'init' && args[1] === 'manager') process.stdout.write(JSON.stringify({ milestone_version: 'v1', phases: b.phases }));
@@ -103,6 +107,7 @@ function fakeGsd() {
 function fakeProject({
   phases = [{ number: '1', name: 'one', phase_complete: true }],
   configGet = { out: '', exit: 0 },
+  contextWindow, // GSD's context_window in .planning/config.json (a string), absent by default
   claudeVersion = '2.1.291',
   config = { notify: { desktop: false, telegram: false } },
   agents = [],
@@ -116,7 +121,7 @@ function fakeProject({
   if (config) fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify(config));
   fs.writeFileSync(path.join(core, 'VERSION'), '1.16.0');
   fs.writeFileSync(path.join(core, 'bin', 'gsd-tools.cjs'), `(${fakeGsd})();\n`);
-  fs.writeFileSync(path.join(core, 'bin', 'behavior.json'), JSON.stringify({ configGet, phases }));
+  fs.writeFileSync(path.join(core, 'bin', 'behavior.json'), JSON.stringify({ configGet, contextWindow, phases }));
   const setClaude = (patch) => fs.writeFileSync(path.join(bin, 'behavior.json'), JSON.stringify({ version: claudeVersion, agents, ...patch }));
   setClaude({});
   fs.writeFileSync(path.join(bin, 'claude-fake.cjs'), `(${fakeClaude})();\n`);
@@ -832,7 +837,7 @@ test('init keeps the previous test command verbatim as test.full and sets the tu
   assert.deepEqual(calls[0], ['config-get', 'workflow.test_command', '--default', '', '--raw', '--cwd', p.root]);
   assert.deepEqual(calls[1], ['config-set', 'workflow.test_command', TURBO_TEST_CMD, '--cwd', p.root]);
   const gsd = spy.calls().filter((c) => /gsd-tools\.cjs$/.test(c.args[0] || ''));
-  assert.deepEqual(gsd.map((c) => [c.args[1], c.timeout]), [['config-get', 30000], ['config-set', 30000]]);
+  assert.deepEqual(gsd.map((c) => [c.args[1], c.args[2], c.timeout]), [['config-get', 'workflow.test_command', 30000], ['config-set', 'workflow.test_command', 30000], ['config-get', 'context_window', 30000], ['config-set', 'context_window', 30000]]);
 });
 
 test('init sets workflow.test_command only where GSD itself would run npm test, or a full command is known', () => {
@@ -858,7 +863,7 @@ test('init sets workflow.test_command only where GSD itself would run npm test, 
       fs.writeFileSync(path.join(p.root, rel), text);
     }
     const stdout = run(['init'], p.root, p.env);
-    assert.equal(p.gsdCalls().some((a) => a[0] === 'config-set'), set, `${name}: ${stdout}`);
+    assert.equal(p.gsdCalls().some((a) => a[0] === 'config-set' && a[1] === 'workflow.test_command'), set, `${name}: ${stdout}`);
     if (set) assert.match(stdout, /workflow\.test_command set/, name);
     else assert.match(stdout, /^targeted tests not enabled: set test\.full in \.planning\/turbo\/config\.json, then run init again$/m, name);
   }
@@ -869,12 +874,37 @@ test('init run again keeps test.full and re-sets the command when it is known, w
   let stdout = run(['init'], p.root, p.env);
   assert.doesNotMatch(stdout, /kept previous/);
   assert.equal(readJsonFile(path.join(p.root, '.planning', 'turbo', 'config.json')).test.full, 'pytest -q');
-  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD]);
+  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set' && a[1] === 'workflow.test_command').map((a) => a[2]), [TURBO_TEST_CMD]);
 
   const q = fakeProject({ config: { lang: 'en' }, configGet: { out: TURBO_TEST_CMD, exit: 0 } });
   stdout = run(['init'], q.root, q.env);
-  assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set'), stdout);
+  assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set' && a[1] === 'workflow.test_command'), stdout);
   assert.match(stdout, /^warn: workflow\.test_command already runs turbo-run/m);
+});
+
+test('init gives GSD turbo\'s context_window when .planning/config.json sets none, and says so; a set one stays', () => {
+  const p = fakeProject({ config: { context_window: 400000 } });
+  let stdout = run(['init'], p.root, p.env);
+  assert.deepEqual(p.gsdCalls().filter((a) => a[1] === 'context_window'), [
+    ['config-get', 'context_window', '--default', '__turbo_absent__', '--raw', '--cwd', p.root],
+    ['config-set', 'context_window', '400000', '--cwd', p.root],
+  ]);
+  assert.match(stdout, /^context_window set to 400000 in \.planning\/config\.json \(GSD had none; its default is 200000\)$/m);
+
+  const q = fakeProject({ contextWindow: '200000' });
+  stdout = run(['init'], q.root, q.env);
+  assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set' && a[1] === 'context_window'), stdout);
+  assert.doesNotMatch(stdout, /context_window set/);
+});
+
+test('doctor warns when GSD\'s effective context_window differs from turbo\'s; the mode stays', () => {
+  const p = fakeProject();
+  let stdout = run(['doctor'], p.root, p.env);
+  assert.match(stdout, /^warn context-window GSD's context_window is 200000, turbo's is 1000000/m);
+  assert.match(stdout, /^mode: full$/m);
+  const q = fakeProject({ contextWindow: '1000000' });
+  stdout = run(['doctor'], q.root, q.env);
+  assert.match(stdout, /^ok {3}context-window 1000000$/m);
 });
 
 test('init aborts before config-set when config-get fails, and on a corrupt turbo config', () => {

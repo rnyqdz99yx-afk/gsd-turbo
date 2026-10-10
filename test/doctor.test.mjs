@@ -37,6 +37,22 @@ test('full mode when everything is in range', () => {
   assert.equal(r.mode, 'full', JSON.stringify(r.checks));
 });
 
+test('context-window: a warning when GSD\'s effective context_window differs from turbo\'s, ok when they agree, nothing when GSD says nothing', () => {
+  const e = env();
+  const execWindow = (gsd) => (cmd, args) => (args.includes('config-get') ? gsd : execOk('2.1.291')(cmd, args));
+  const check = (r) => r.checks.find((c) => c.name === 'context-window');
+  let r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execWindow('200000\n'), claudeBin: BIN });
+  assert.deepEqual([check(r).ok, check(r).warn], [true, true]);
+  assert.match(check(r).detail, /^GSD's context_window is 200000, turbo's is 1000000/);
+  assert.equal(r.mode, 'full', 'a warning, never a failure');
+  fs.mkdirSync(path.join(e.root, '.planning', 'turbo'));
+  fs.writeFileSync(path.join(e.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ context_window: 200000 }));
+  r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execWindow('200000'), claudeBin: BIN });
+  assert.deepEqual(check(r), { name: 'context-window', ok: true, detail: '200000' });
+  r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execWindow(''), claudeBin: BIN });
+  assert.equal(check(r), undefined);
+});
+
 test('unsupported when claude too old', () => {
   const e = env();
   const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.100'), claudeBin: BIN });

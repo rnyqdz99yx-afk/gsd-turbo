@@ -82,6 +82,10 @@ test('createGit makes OpenSSH fail at once instead of asking for a passphrase; o
   assert.deepEqual(run({ GIT_SSH: 'plink' }).seen, [undefined, undefined, undefined]);
   assert.deepEqual(run({ GIT_SSH_COMMAND: 'plink -i k' }).seen, ['plink -i k', 'plink -i k', 'plink -i k']);
   assert.deepEqual(run({ GIT_SSH_COMMAND: 'ssh', GIT_SSH_VARIANT: 'plink' }).seen, ['ssh', 'ssh', 'ssh']);
+  // a push with -c options in front is still a push
+  const seen = [];
+  createGit('/proj', { env: {}, exec: (cmd, args, opts) => { if (!args.includes('core.sshCommand')) seen.push(opts.env.GIT_SSH_COMMAND); return ''; } })(['-c', 'remote.origin.mirror=false', 'push', 'origin', 'x']);
+  assert.deepEqual(seen, ['ssh -o BatchMode=yes']);
 });
 
 test('scanRange names forbidden files and secret kinds from every commit of the range, never the value', () => {
@@ -231,6 +235,8 @@ function supervisorCtx(r, push = {}) {
   return { ctx, calls, notes, logs };
 }
 const ask = (r, settings) => requestPush({ root: r.root, phase: '3', settings, git: r.git });
+// the git subcommand of a recorded call, after any -c <key=value> pairs
+const sub = (a) => a[a.findIndex((x, i) => !x.startsWith('-') && a[i - 1] !== '-c')];
 
 test('the supervisor pushes the requested head once: fetch, ancestor check, scan, then a plain push of that sha', async () => {
   const r = pushRepo();
@@ -241,12 +247,13 @@ test('the supervisor pushes the requested head once: fetch, ancestor check, scan
   assert.equal(r.remoteHead(), sha);
   const rec = readJson(recordFile(r.root, '3'));
   assert.deepEqual([rec.outcome, rec.sha, rec.branch, rec.remote, rec.at, rec.lastPush.ci], ['pushed', sha, 'main', 'origin', NOW.toISOString(), { state: 'none', reason: 'push.ci is none' }]);
-  assert.deepEqual(calls.map((a) => a[0]), ['symbolic-ref', 'merge-base', 'fetch', 'merge-base', 'log', 'log', 'log', 'push']);
+  assert.deepEqual(calls.map(sub), ['symbolic-ref', 'merge-base', 'config', 'fetch', 'merge-base', 'log', 'log', 'log', 'push']);
   const push = calls.at(-1);
-  assert.deepEqual(push, ['push', '--quiet', 'origin', `${sha}:refs/heads/main`]);
+  // config cannot widen the push: no mirror, no tags that follow, no submodule pushes
+  assert.deepEqual(push, ['-c', 'remote.origin.mirror=false', 'push', '--quiet', '--no-follow-tags', '--no-recurse-submodules', 'origin', `${sha}:refs/heads/main`]);
   assert.ok(!push.some((a) => /^(-f|--force.*|--no-verify|--mirror|--delete|-d|--all|--tags)$/.test(a) || a.startsWith('+')));
   await pushTick(ctx, NOW);
-  assert.equal(calls.filter((a) => a[0] === 'push').length, 1, 'a handled request is never pushed again');
+  assert.equal(calls.filter((a) => sub(a) === 'push').length, 1, 'a handled request is never pushed again');
   assert.deepEqual(notes, []);
 });
 
@@ -278,7 +285,7 @@ test('a remote branch that is not an ancestor of HEAD: nothing pushed, pushDiver
   assert.equal(r.remoteHead(), remoteOnly);
   assert.equal(readJson(recordFile(r.root, '3')).outcome, 'diverged');
   assert.deepEqual(notes, [{ key: 'pushDiverged', vars: { phase: '3', remote: 'origin', branch: 'main' } }]);
-  assert.ok(!calls.some((a) => a[0] === 'push'));
+  assert.ok(!calls.some((a) => sub(a) === 'push'));
 });
 
 test('a secret or forbidden file in the range: nothing pushed, file and kind named, never the value; the same findings notify once', async () => {
@@ -300,7 +307,7 @@ test('a secret or forbidden file in the range: nothing pushed, file and kind nam
   await pushTick(ctx, NOW);
   assert.equal(readJson(recordFile(r.root, '3')).outcome, 'refused');
   assert.equal(notes.length, 1);
-  assert.ok(!calls.some((a) => a[0] === 'push'));
+  assert.ok(!calls.some((a) => sub(a) === 'push'));
   assert.ok(!(fs.readFileSync(recordFile(r.root, '3'), 'utf8') + JSON.stringify(notes)).includes(GH));
   // the owner checked the files and pushed the range by hand: turbo pushes again from there
   r.sh('push', '-q', 'origin', 'main');
@@ -380,6 +387,20 @@ test('a request for another branch than the checkout\'s, or whose commit left it
   await pushTick(ctx, NOW);
   assert.deepEqual(notes.map((n) => n.key), ['pushFailed', 'pushFailed']);
   assert.ok(!calls.some((a) => a.includes('push')));
+  assert.equal(r.remoteHead(), before);
+});
+
+test('a remote configured as a mirror is refused with its reason and never pushed to', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes } = supervisorCtx(r);
+  const before = r.remoteHead();
+  r.sh('config', 'remote.origin.mirror', 'true');
+  r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(readJson(recordFile(r.root, '3')).reason, 'remote.origin.mirror is true: turbo never pushes to a mirror remote; nothing was pushed');
+  assert.deepEqual(notes.map((n) => n.key), ['pushFailed']);
+  assert.ok(!calls.some((a) => sub(a) === 'push'));
   assert.equal(r.remoteHead(), before);
 });
 

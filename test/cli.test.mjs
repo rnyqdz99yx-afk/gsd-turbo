@@ -178,38 +178,15 @@ test('lane-status writes the run file from inside the project', () => {
   assert.equal(rec.reason, 'owner sign-off');
 });
 
-test('lane-status N done removes the lane\'s temp directory run/tmp/pN and nothing else', () => {
+// The session may still run when it records done (Claude Code scratch files, GSD hook files): only the
+// supervisor removes the temp directory, once it has removed the session.
+test('lane-status N done records done and removes nothing', () => {
   const root = plainProject();
-  const tmp = path.join(runDirOf(root), 'tmp');
-  for (const d of ['p3', 'p4']) {
-    fs.mkdirSync(path.join(tmp, d, 'stand', 'data'), { recursive: true });
-    fs.writeFileSync(path.join(tmp, d, 'stand', 'data', 'db.json'), '{}');
-  }
-  fs.writeFileSync(path.join(tmp, 'keep.txt'), 'x');
-  assert.match(run(['lane-status', '03', 'running'], root), /lane 3: running/);
-  assert.ok(fs.existsSync(path.join(tmp, 'p3')), 'only done removes it');
-  const text = run(['lane-status', '03', 'done', '--reason', 'closed'], root);
-  assert.match(text, /lane 3: done/);
-  assert.match(text, /removed \.planning\/turbo\/run\/tmp\/p3/);
-  assert.equal(fs.existsSync(path.join(tmp, 'p3')), false);
-  assert.ok(fs.existsSync(path.join(tmp, 'p4', 'stand', 'data', 'db.json')));
-  assert.ok(fs.existsSync(path.join(tmp, 'keep.txt')));
-  assert.equal(JSON.parse(fs.readFileSync(path.join(runDirOf(root), 'p3.json'), 'utf8')).status, 'done');
-  assert.match(run(['lane-status', '3', 'done'], root), /^lane 3: done\r?\n$/, 'nothing to remove');
-});
-
-test('lane-status N done refuses a temp directory that resolves outside run/tmp, and still records done', async () => {
-  const root = plainProject();
-  const outside = tmpDir('outside');
-  fs.writeFileSync(path.join(outside, 'precious.txt'), 'x');
-  fs.mkdirSync(path.join(runDirOf(root), 'tmp'), { recursive: true });
-  fs.symlinkSync(outside, path.join(runDirOf(root), 'tmp', 'p3'), process.platform === 'win32' ? 'junction' : 'dir');
-  const r = await runAsync(['lane-status', '3', 'done'], root);
-  assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /lane 3: done/);
-  assert.match(r.stderr, /^warn: .*p3 not removed: it resolves outside .*run[\\/]tmp/m);
-  assert.ok(fs.existsSync(path.join(outside, 'precious.txt')));
-  assert.ok(fs.existsSync(path.join(runDirOf(root), 'tmp', 'p3')), 'the link itself is left for the owner too');
+  const tmp = path.join(runDirOf(root), 'tmp', 'p3');
+  fs.mkdirSync(tmp, { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'scratch.txt'), 'x');
+  assert.match(run(['lane-status', '03', 'done', '--reason', 'closed'], root), /^lane 3: done\r?\n$/);
+  assert.ok(fs.existsSync(path.join(tmp, 'scratch.txt')));
   assert.equal(JSON.parse(fs.readFileSync(path.join(runDirOf(root), 'p3.json'), 'utf8')).status, 'done');
 });
 

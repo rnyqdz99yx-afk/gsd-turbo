@@ -74,6 +74,8 @@ test('temporary files, stands and data copies go under the lane\'s temp director
     assert.ok(rule, mode);
     assert.match(rule, /stands/);
     assert.match(rule, /never \/tmp or the system temp directory/);
+    assert.match(rule, /the supervisor removes it once this session is gone/);
+    assert.ok(!rule.includes('lane-status 3 done removes'), 'the session may still use it after its done record');
     assert.ok(!s.includes('"') && !s.includes('%'), mode);
   }
 });

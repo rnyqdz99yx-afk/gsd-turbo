@@ -2,14 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmpDir } from './helpers/tmp.mjs';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { tick, runDaemon, resumableLane } from '../lib/supervisor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus, readLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName, parseAgents } from '../lib/claude.mjs';
 
-function harness({ phases, agents = [] }) {
-  const root = tmpDir('sup');
+function harness({ phases, agents = [], git = false }) {
+  const root = git ? tmpGitRepo() : tmpDir('sup');
   fs.mkdirSync(path.join(root, '.planning'));
   let clock = Date.parse('2026-01-01T00:00:00Z');
   const h = {
@@ -54,13 +54,32 @@ test('launches the next ready phase', async () => {
   assert.equal(h.launched[0].cwd, h.root);
 });
 
-test('a launch creates the lane\'s own temp directory first and hands it to the session and its rules', async () => {
-  const h = harness({ phases: [P('2')] });
+test('a launch creates the lane\'s own temp directory in the git directory, empties a stale one, and hands it to the session and its rules', async () => {
+  const h = harness({ phases: [P('2')], git: true });
+  const dir = path.join(h.root, '.git', 'turbo', 'tmp', 'p2');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'stale.json'), '{}'); // left by an earlier session of the phase
   await tick(fresh(), h.ctx);
-  const dir = path.join(h.root, '.planning', 'turbo', 'run', 'tmp', 'p2');
   assert.equal(h.launched[0].tmpDir, dir);
-  assert.ok(fs.statSync(dir).isDirectory());
+  assert.deepEqual(fs.readdirSync(dir), []);
   assert.ok(h.launched[0].systemPrompt.includes(dir.replace(/\\/g, '/')), h.launched[0].systemPrompt);
+  assert.ok(!fs.existsSync(path.join(h.root, '.planning', 'turbo', 'run', 'tmp')), 'nothing in the working tree');
+});
+
+test('the lane\'s temp directory stays while its session lives or waits, and goes once the supervisor finished the lane and removed the session', async () => {
+  const h = harness({ phases: [P('2'), P('3', ['2'])], git: true });
+  let s = await tick(fresh(), h.ctx);
+  const dir = path.join(h.root, '.git', 'turbo', 'tmp', 'p2');
+  fs.writeFileSync(path.join(dir, 'scratch.txt'), 'x');
+  writeLaneStatus(h.root, '2', 'done', { reason: 'closed', at: '2026-01-01T00:00:00.000Z' }); // lane-status 2 done: the session still runs
+  s = await tick(s, h.ctx);
+  assert.ok(fs.existsSync(path.join(dir, 'scratch.txt')), 'the session is still alive');
+  h.agents[0].state = 'blocked'; // it finished its turn
+  h.phases[0].complete = true;
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.removed, ['s1']);
+  assert.equal(fs.existsSync(dir), false);
+  assert.equal(s.lane, null);
 });
 
 test('adopts an already running session with the lane name instead of launching', async () => {

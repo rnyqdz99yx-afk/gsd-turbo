@@ -427,3 +427,25 @@ test('a git call that times out while the supervisor handles a request fails tha
   assert.equal(calls.length, n, 'the failed request is not tried again');
   assert.equal(notes.length, 1);
 });
+
+test('a tick starts no new push or CI work once its time budget is used; a watch it skipped goes first in the next tick', async () => {
+  const root = project();
+  for (const p of ['2', '3', '4']) pendingRecord(root, p, p.repeat(40));
+  writeJsonAtomic(requestFile(root, '9'), { id: 'r9', phase: '9', head: 'f'.repeat(40), at: NOW.toISOString() });
+  // a fake clock: every gh call takes 90 s
+  let t = NOW.getTime();
+  const { gh, calls } = ghScript(() => {
+    t += 90 * 1000;
+    return [runRow(1, 'CI', 'in_progress')];
+  });
+  const { ctx } = ciCtx(root, gh);
+  const logs = [];
+  ctx.deps.log = (l) => logs.push(l);
+  ctx.deps.now = () => new Date(t);
+  await pushTick(ctx, later(1));
+  assert.deepEqual(calls.map((a) => a[3][0]), ['2', '3'], 'the third watch is not started after 180 s');
+  assert.ok(!fs.existsSync(recordFile(root, '9')), 'no request is started after the budget');
+  assert.ok(logs.some((l) => /budget/.test(l)), logs.join('\n'));
+  await pushTick(ctx, later(2));
+  assert.deepEqual(calls.map((a) => a[3][0]), ['2', '3', '4', '2'], 'the skipped watch goes first');
+});

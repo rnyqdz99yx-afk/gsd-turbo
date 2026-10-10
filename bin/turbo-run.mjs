@@ -19,9 +19,10 @@ import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
 import { clearAttempts } from '../lib/phase-progress.mjs';
 import { gatesLeftovers } from '../lib/gates.mjs';
+import { measureContext } from '../lib/context.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|test-changed|phase-step|staleness|gates|jobs|uat> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
@@ -617,6 +618,22 @@ async function main() {
         return start(root);
       }
       out(`phase ${id} cleared; run: turbo-run start`);
+      return 0;
+    }
+    case 'context': {
+      // a lane decides on this (paused-context at or above its stop percentage): anything it cannot measure
+      // is an answer, `unknown`, with exit 0
+      const [phase] = pos;
+      if (phase !== undefined && !PHASE_ID.test(phase)) die('usage: turbo-run context [<phase>] [--json]');
+      let r;
+      if (!root) r = { unknown: 'no .planning directory found' };
+      else {
+        let window;
+        try { window = loadConfig(root).context_window; } catch (e) { r = { unknown: e.message.replace(/\s*\r?\n\s*/g, ' ') }; }
+        r ??= measureContext({ root, phase: phase === undefined ? null : normalizePhaseId(phase), window });
+      }
+      if (args.includes('--json')) out(JSON.stringify(r));
+      else out(r.unknown ? `context: unknown (${r.unknown})` : `context: ${r.used} of ${r.window} tokens (${r.pct}%)`);
       return 0;
     }
     case 'test-changed': {

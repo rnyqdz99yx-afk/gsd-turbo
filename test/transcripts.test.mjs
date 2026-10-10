@@ -145,8 +145,8 @@ test('actionOf: a path inside the root is relative, a command keeps its start, s
   const deep = actionOf({ name: 'Write', input: { file_path: path.join(root, ...Array(30).fill('dir'), 'end.mjs') } }, root);
   assert.equal(deep.detail.length, 80);
   assert.ok(deep.detail.startsWith('…') && deep.detail.endsWith('dir/end.mjs'));
-  const secret = `ghp_${'a'.repeat(36)}`;
-  assert.equal(actionOf({ name: 'Bash', input: { command: `curl -H "Authorization: token ${secret}" x` } }, root).detail.includes(secret), false);
+  const leak = `ghp_${'a'.repeat(36)}`;
+  assert.equal(actionOf({ name: 'Bash', input: { command: `curl -H "Authorization: token ${leak}" x` } }, root).detail.includes(leak), false);
   assert.deepEqual(actionOf({ name: 'Skill', input: { skill: 'gsd-execute-phase' } }), { tool: 'Skill', detail: 'gsd-execute-phase' });
   assert.deepEqual(actionOf({ name: 'TodoWrite', input: { todos: [] } }), { tool: 'TodoWrite', detail: '' });
 });
@@ -578,14 +578,14 @@ test('laneAgents keeps the identity first seen per agent: a meta rewritten to { 
 
 test('the identity laneAgents keeps for the cache holds the description masked, as view shows it', () => {
   const { root, dir } = setup();
-  const secret = `ghp_${'d'.repeat(36)}`;
+  const leak = `ghp_${'d'.repeat(36)}`;
   const laneFile = writeSession(dir, SESSION, [entry.launched('toolu_1', AGENT, at('10:00'))]);
-  writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:50'), { ...DEFAULT_META, description: `Execute plan 07 of phase 32 with ${secret}` });
+  writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:50'), { ...DEFAULT_META, description: `Execute plan 07 of phase 32 with ${leak}` });
   const used = {};
   const r = laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: SESSION }, root, now: NOW, stallMs: STALL, used });
   assert.equal(r.agents[0].plan, '32-07');
-  assert.equal(JSON.stringify(used).includes(secret), false);
-  assert.equal(JSON.stringify(r).includes(secret), false);
+  assert.equal(JSON.stringify(used).includes(leak), false);
+  assert.equal(JSON.stringify(r).includes(leak), false);
 });
 
 test('with a cold cache an agent of the lane session directory that the lane did not launch counts only with depth 1 and no parent agent', () => {

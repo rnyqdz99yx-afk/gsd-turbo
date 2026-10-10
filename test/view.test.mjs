@@ -15,7 +15,7 @@ const NOW = new Date('2026-01-01T11:00:00.000Z');
 const at = (hhmm) => `2026-01-01T${hhmm}:00.000Z`;
 const COMMITS = () => [{ sha: 'abc1234', subject: 'feat: something' }];
 const runDirOf = (root) => path.join(root, '.planning', 'turbo', 'run');
-const SECRET = `ghp_${'s'.repeat(36)}`;
+const LEAK = `ghp_${'s'.repeat(36)}`;
 
 // A project with a supervisor lane for phase 32 and its transcripts in a separate Claude home.
 function laneProject({ run = true } = {}) {
@@ -41,8 +41,8 @@ test('without supervisor.json the view has no supervisor and no lanes, and still
 
 test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
   const { root, dir, sup, env } = laneProject();
-  for (const s of ['freshness', 'discuss', 'prologue', 'plan', 'gates-off']) completeStep(root, '32', s, { note: s === 'plan' ? `path same-agent ${SECRET}` : '' });
-  writeLaneStatus(root, '32', 'needs-owner', { reason: `checkpoint 32-09 (${SECRET})`, at: at('10:40') });
+  for (const s of ['freshness', 'discuss', 'prologue', 'plan', 'gates-off']) completeStep(root, '32', s, { note: s === 'plan' ? `path same-agent ${LEAK}` : '' });
+  writeLaneStatus(root, '32', 'needs-owner', { reason: `checkpoint 32-09 (${LEAK})`, at: at('10:40') });
   writeSession(dir, SESSION, [entry.user('run phase 32', at('09:48')), entry.launched('toolu_1', 'a2000000000000001', at('10:00')), entry.launched('toolu_2', 'a2000000000000002', at('10:20')), entry.note('a2000000000000001', 'completed', at('10:30'))]);
   setMtime(writeAgent(dir, SESSION, 'a2000000000000001', agentEntries('a2000000000000001', '10:00', '10:30')), new Date(at('10:30')));
   setMtime(writeAgent(dir, SESSION, 'a2000000000000002', agentEntries('a2000000000000002', '10:20', '10:58', 41000), { agentType: 'gsd-executor', description: 'Continue plan 32-08 from Task 2', spawnDepth: 1 }), new Date(at('10:58')));
@@ -55,12 +55,12 @@ test('the view shows supervisor, range, the lane with its step, record and subag
   assert.deepEqual(v.range, { from: '32', to: '34' });
   const [lane] = v.lanes;
   assert.deepEqual([lane.phase, lane.step, lane.status, lane.mode, lane.sessionId, lane.elapsedMs], ['32', 'execute', 'needs-owner', 'full', SESSION.slice(0, 8), 72 * 60000]);
-  assert.equal(lane.reason, `checkpoint 32-09 (${maskSecrets(SECRET)})`);
-  assert.equal(lane.notes.plan, `path same-agent ${maskSecrets(SECRET)}`);
+  assert.equal(lane.reason, `checkpoint 32-09 (${maskSecrets(LEAK)})`);
+  assert.equal(lane.notes.plan, `path same-agent ${maskSecrets(LEAK)}`);
   assert.deepEqual(lane.agents.map((a) => [a.agentId, a.state, a.plan, a.task, a.tokens]), [['a2000000000000002', 'running', '32-08', '2', 41000], ['a2000000000000001', 'completed', '32-07', null, 166000]]);
   assert.deepEqual(v.questions.map((q) => q.id), ['q1']);
   assert.deepEqual(v.commits, COMMITS());
-  assert.equal(JSON.stringify(v).includes(SECRET), false);
+  assert.equal(JSON.stringify(v).includes(LEAK), false);
 });
 
 test('a lane record from before the lane launched does not count; a lane without its transcript has no agents', () => {
@@ -133,11 +133,11 @@ test('open questions show their text and signals with secrets masked; ids, rev, 
   const run = runDirOf(root);
   fs.mkdirSync(run, { recursive: true });
   // view only displays: an answer is given from the questions file, not from what view prints
-  const option = { label: `Use ${SECRET}`, description: `rotate ${SECRET} first`, recommended: true, signal: `approved ${SECRET}` };
-  const q = { id: 'q1', rev: 3, phase: '32', plan: '32-09', task: '3', kind: 'decision', header: `H ${SECRET}`, question: `Deploy with ${SECRET}?`, context: `token=${SECRET}`, condition: `CI green for ${SECRET}`, options: [option, 'odd'], allowOther: true, agentId: 'a2000000000000001', state: 'open' };
+  const option = { label: `Use ${LEAK}`, description: `rotate ${LEAK} first`, recommended: true, signal: `approved ${LEAK}` };
+  const q = { id: 'q1', rev: 3, phase: '32', plan: '32-09', task: '3', kind: 'decision', header: `H ${LEAK}`, question: `Deploy with ${LEAK}?`, context: `the deploy key is ${LEAK}`, condition: `CI green for ${LEAK}`, options: [option, 'odd'], allowOther: true, agentId: 'a2000000000000001', state: 'open' };
   writeJsonAtomic(path.join(run, 'p32-questions.json'), [q]);
   const [shown] = openQuestions(root);
-  assert.equal(JSON.stringify(shown).includes(SECRET), false);
+  assert.equal(JSON.stringify(shown).includes(LEAK), false);
   const m = maskSecrets;
   assert.deepEqual(shown, {
     ...q,
@@ -149,10 +149,10 @@ test('open questions show their text and signals with secrets masked; ids, rev, 
 test('recentCommits lists the last five subjects with secrets masked; none outside a repository', () => {
   const repo = tmpGitRepo();
   const git = (...a) => execFileSync('git', a, { cwd: repo, stdio: 'pipe' });
-  for (let i = 1; i <= 6; i++) git('commit', '-q', '--allow-empty', '-m', i === 6 ? `fix: rotate ${SECRET}` : `feat: step ${i}`);
+  for (let i = 1; i <= 6; i++) git('commit', '-q', '--allow-empty', '-m', i === 6 ? `fix: rotate ${LEAK}` : `feat: step ${i}`);
   const c = recentCommits(repo);
   assert.equal(c.length, 5);
-  assert.equal(c[0].subject, `fix: rotate ${maskSecrets(SECRET)}`);
+  assert.equal(c[0].subject, `fix: rotate ${maskSecrets(LEAK)}`);
   assert.equal(c[4].subject, 'feat: step 2');
   assert.match(c[0].sha, /^[0-9a-f]{7,}$/);
   assert.deepEqual(recentCommits(tmpDir('nogit')), []);

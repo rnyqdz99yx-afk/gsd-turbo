@@ -66,6 +66,21 @@ test('a launch creates the lane\'s own temp directory in the git directory, empt
   assert.ok(!fs.existsSync(path.join(h.root, '.planning', 'turbo', 'run', 'tmp')), 'nothing in the working tree');
 });
 
+test('a stale temp directory that cannot be removed is logged and the lane launches with it: never a launch failure', async () => {
+  const h = harness({ phases: [P('2')], git: true });
+  const base = path.join(h.root, '.git', 'turbo', 'tmp', projectHash(h.root));
+  const outside = tmpDir('outside');
+  fs.writeFileSync(path.join(outside, 'precious.txt'), 'x');
+  fs.mkdirSync(base, { recursive: true });
+  fs.symlinkSync(outside, path.join(base, 'p2'), process.platform === 'win32' ? 'junction' : 'dir'); // refused
+  const s = await tick(fresh(), h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.equal(s.launchFailures, undefined);
+  assert.ok(h.logs.some((l) => /^lane temp directory .*p2 kept: .*not removed/.test(l)), h.logs.join('\n'));
+  assert.ok(fs.existsSync(path.join(outside, 'precious.txt')));
+});
+
 test('the lane\'s temp directory stays while its session lives or waits, and goes once the supervisor finished the lane and removed the session', async () => {
   const h = harness({ phases: [P('2'), P('3', ['2'])], git: true });
   let s = await tick(fresh(), h.ctx);

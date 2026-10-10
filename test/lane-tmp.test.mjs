@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { laneTmpBase, laneTmpDir, prepareLaneTmp, removeLaneTmp } from '../lib/lane-tmp.mjs';
 import { laneSessionName, projectHash } from '../lib/claude.mjs';
@@ -50,6 +51,39 @@ test('prepareLaneTmp empties a stale directory and creates it; removeLaneTmp rem
   assert.equal(removeLaneTmp(repo, '3'), null, 'nothing there');
 });
 
+// A failed removal is never a launch failure: the lane gets the directory as it is.
+test('prepareLaneTmp is best effort about a stale directory: a refused removal is logged and the lane gets the directory as it is', () => {
+  const a = tmpGitRepo();
+  const outA = precious();
+  fs.mkdirSync(laneTmpBase(a), { recursive: true });
+  fs.symlinkSync(path.join(outA, 'tmp', 'p3'), laneTmpDir(a, '3'), LINK);
+  const logs = [];
+  assert.equal(prepareLaneTmp(a, '3', (l) => logs.push(l)), laneTmpDir(a, '3'));
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /^lane temp directory .*p3 kept: .*not removed: it resolves outside/);
+  assert.ok(fs.existsSync(path.join(outA, 'tmp', 'p3', 'precious.txt')));
+});
+
+// Windows refuses to delete a directory a process has as its cwd; a plain recursive delete would remove the
+// files around it first. The stale directory is renamed away as a whole first, or left as it is.
+test('a stale directory a leftover stand still works in is never partly deleted', async (t) => {
+  const repo = tmpGitRepo();
+  const dir = laneTmpDir(repo, '3');
+  fill(dir);
+  const stand = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: path.join(dir, 'stand'), stdio: 'ignore', windowsHide: true });
+  t.after(() => { try { stand.kill(); } catch { /* gone */ } });
+  await new Promise((resolve) => stand.once('spawn', resolve));
+  const logs = [];
+  assert.equal(prepareLaneTmp(repo, '3', (l) => logs.push(l)), dir);
+  if (process.platform === 'win32') {
+    assert.ok(fs.existsSync(path.join(dir, 'stand', 'db.json')), 'nothing was deleted');
+    assert.match(logs.join('\n'), /p3 kept: .*EPERM|EBUSY|EACCES/);
+  } else {
+    assert.deepEqual(fs.readdirSync(dir), [], 'POSIX lets it go');
+  }
+  assert.deepEqual(fs.readdirSync(laneTmpBase(repo)).filter((n) => n !== 'p3'), [], 'no renamed leftover stays behind');
+});
+
 test('removeLaneTmp and prepareLaneTmp refuse a p<N> that is a link, and a base that is itself a link or under one', () => {
   // p3 a link to outside
   const a = tmpGitRepo();
@@ -57,7 +91,6 @@ test('removeLaneTmp and prepareLaneTmp refuse a p<N> that is a link, and a base 
   fs.mkdirSync(laneTmpBase(a), { recursive: true });
   fs.symlinkSync(path.join(outA, 'tmp', 'p3'), laneTmpDir(a, '3'), LINK);
   assert.throws(() => removeLaneTmp(a, '3'), /not removed: it resolves outside/);
-  assert.throws(() => prepareLaneTmp(a, '3'), /resolves outside/);
   assert.ok(fs.existsSync(path.join(outA, 'tmp', 'p3', 'precious.txt')));
   // .git/turbo a link: the base resolves outside, so <target>/tmp/<project key>/p3 would go
   const b = tmpGitRepo();

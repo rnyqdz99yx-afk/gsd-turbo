@@ -254,3 +254,20 @@ test('deliveryState never lists a question whose id is unusable (a hand-edited f
   const d = deliveryState(root, '32');
   assert.deepEqual([d.ready.map((x) => x.id), d.waiting.map((x) => x.id)], [['32-09-t2'], []]);
 });
+
+test('the answers directory\'s .gitignore is put right when a crash left it empty or cut; a CRLF copy of the right one stays; nothing temporary is left there', () => {
+  const { root } = project();
+  const dir = path.join(root, '.planning', 'turbo', 'answers');
+  const ignore = path.join(dir, '.gitignore');
+  const RULE = '*\n!p*.json\n!.gitignore\n';
+  fs.mkdirSync(dir, { recursive: true });
+  for (const broken of ['', '*\n!p*']) {
+    fs.writeFileSync(ignore, broken);
+    writeAnswers(root, '32', []);
+    assert.equal(fs.readFileSync(ignore, 'utf8'), RULE, JSON.stringify(broken));
+  }
+  fs.writeFileSync(ignore, RULE.replace(/\n/g, '\r\n'));
+  writeAnswers(root, '32', []);
+  assert.equal(fs.readFileSync(ignore, 'utf8'), RULE.replace(/\n/g, '\r\n'));
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['.gitignore', 'p32.json']);
+});

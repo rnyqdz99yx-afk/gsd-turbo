@@ -380,3 +380,18 @@ test('a blocked lane under a safe-mode supervisor is the owner\'s, never stall-w
   assert.equal(h.resumed.length, 0);
   assert.deepEqual(h.notes.map((x) => x.key), ['laneBlocked']);
 });
+
+test('a session claude agents lists as ended whose rm fails stays the lane\'s: no new session starts beside it', async () => {
+  const h = harness();
+  let s = await stoppedLane(h);
+  owner(h, '02-01-t2', 1);
+  // claude stop works and the list says stopped, yet claude rm cannot remove the session
+  h.failRm = true;
+  h.ctx.deps.claude.resume = (target, prompt) => { h.resumed.push({ target, prompt }); return 'Resumed.\n'; };
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1, 'no second session');
+  assert.equal(s.lane.sessionId, '1a2b3c4d');
+  assert.equal(s.lane.woken.count, 1);
+  assert.ok(h.logs.some((l) => /session 1a2b3c4d was not removed/.test(l)), h.logs.join('\n'));
+});

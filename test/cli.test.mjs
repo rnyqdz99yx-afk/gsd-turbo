@@ -706,6 +706,27 @@ test('start --only/--from/--all set, keep, drop and clear the range; a lane outs
   assert.equal(p.claudeCalls().filter((a) => a[0] === '--bg').length, 0, 'the closed phase 3 is never started');
 });
 
+test('start with range flags while a run is going exits 1 naming the running range and changes nothing; without flags it reports the run', async (t) => {
+  const root = plainProject();
+  const child = sleeper(t);
+  for (const [range, label] of [[{ from: '4', to: '5' }, 'phases 4–5'], [undefined, 'the whole milestone']]) {
+    const sup = { pid: child.pid, updatedAt: ago(0), finished: false, halted: false, lane: null, ...(range ? { range } : {}) };
+    writeSup(root, sup);
+    for (const args of [['--only', '7'], ['--from', '2'], ['--to', '9'], ['--all']]) {
+      const r = await runAsync(['start', ...args], root);
+      assert.equal(r.code, 1, args.join(' '));
+      assert.ok(r.stderr.includes(`a run of ${label} is going (supervisor pid ${child.pid})`), r.stderr);
+      assert.match(r.stderr, /run turbo-run stop first/);
+    }
+    assert.deepEqual(readSup(root), sup);
+  }
+  assert.ok(pidExists(child.pid));
+  assert.equal(fs.existsSync(path.join(root, '.planning', 'turbo', 'logs')), false, 'no daemon was spawned');
+  const r = await runAsync(['start'], root);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`^already running \\(pid ${child.pid}\\)`));
+});
+
 // Preloaded into start only: supervisor.json reads see no pid, so start never sees its daemon report and
 // takes the path of a daemon that ran and exited before start confirmed it.
 function hideSupervisorPid() {

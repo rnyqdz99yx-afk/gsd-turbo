@@ -245,7 +245,16 @@ function logTail(root, lines = 10) {
 async function start(root, requested = undefined) {
   const config = runtimeConfig(loadConfig(root)); // a corrupt config fails here, not inside the detached daemon
   const running = () => { const sup = readJson(supPath(root), null); return supAlive(sup, config.poll_seconds) ? sup : null; };
-  const already = (sup) => { out(`already running (pid ${sup.pid})`); printStatus(sup, true); return 0; };
+  const already = (sup) => {
+    // range flags never change a run that is going: the owner stops it first
+    if (requested !== undefined) {
+      process.stderr.write(`a run of ${sup.range ? `phases ${rangeLabel(sup.range)}` : 'the whole milestone'} is going (supervisor pid ${sup.pid}); nothing was changed: run turbo-run stop first, then start with the new range\n`);
+      return 1;
+    }
+    out(`already running (pid ${sup.pid})`);
+    printStatus(sup, true);
+    return 0;
+  };
   let sup = running();
   if (sup) return already(sup);
   const r = doctor({ root });

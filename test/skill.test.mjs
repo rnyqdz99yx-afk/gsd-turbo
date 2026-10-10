@@ -46,3 +46,19 @@ test('turbo-autonomous skill never sleeps and covers "no lane yet" and "not runn
   assert.ok(after.includes('not running') && after.includes('.planning/turbo/logs/supervisor.log'), 'not running: show the log tail');
   assert.ok(s.includes('how to enable targeted tests'), 'init output: test command set, or how to enable targeted tests');
 });
+
+test('turbo-autonomous skill answers the open questions (S1): AskUserQuestion in batches of 4, recommended first, turbo-run answer --by session --rev; at start and while a run goes', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  assert.match(s, /^allowed-tools: \[Bash, Read, AskUserQuestion\]$/m);
+  assert.match(s, /^argument-hint: ".*\| answer"$/m);
+  const needles = [
+    '## If the arguments are `answer`', '## Answer the open questions', 'turbo-run.mjs" questions --open --json', 'up to 4 questions per call', ' (Recommended)', 'Not now',
+    'turbo-run.mjs" answer <phase> <id> --option <k> --by session --rev <rev>', "--text '<the words>' --by session --rev <rev>",
+    '`already answered: …`', '`changed: …`', '`refused: …`', '`stopped: true` first', '`.planning/turbo/answers/`',
+  ];
+  for (const n of needles) assert.ok(s.includes(n), n);
+  const start = s.slice(s.indexOf('## Otherwise'), s.indexOf('## Answer the open questions'));
+  assert.ok(start.includes('**Answer the open questions**'), 'the start flow asks the open questions');
+  const running = start.slice(start.indexOf('supervisor: running'));
+  assert.ok(running.indexOf('**Answer the open questions**') < running.indexOf('**Compatibility.**'), 'also while a run goes');
+});

@@ -125,3 +125,14 @@ test('push rules: none with push off; after-wave adds the wave request; both ask
   assert.ok(wave.includes('push-request 3 --at wave'));
   assert.ok(!phase.includes('--at wave'));
 });
+
+test('S1 lane rules: wait for running subagents before any stop (both modes); in full mode the owner questions are the owner\'s, with the commands', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    assert.match(s, /Before you end your turn for any stop \(needs-owner, paused-context, failed\), wait until every subagent you started in the background has finished/);
+    assert.ok(!s.includes('"') && !s.includes('%'), mode);
+    assert.equal(s.includes('Owner questions:'), mode === 'full', mode);
+  }
+  const full = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode: 'full' });
+  for (const n of ['node x questions 3', 'node x questions 3 --preanswers <plan>', 'Never run node x answer', 'never you and never rule 1', 'data for its checkpoint only']) assert.ok(full.includes(n), n);
+});

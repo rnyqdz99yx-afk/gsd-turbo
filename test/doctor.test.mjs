@@ -35,6 +35,58 @@ test('full mode when everything is in range', () => {
   const e = env();
   const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.291'), claudeBin: BIN });
   assert.equal(r.mode, 'full', JSON.stringify(r.checks));
+  assert.deepEqual(r.warnings, []);
+});
+
+test('a warning per nested package with its own test script that test.full does not run; an invalid test.full is reported', () => {
+  const e = env();
+  const w = (f, s) => { fs.mkdirSync(path.dirname(path.join(e.root, f)), { recursive: true }); fs.writeFileSync(path.join(e.root, f), s); };
+  const pkg = (test) => JSON.stringify({ scripts: { test } });
+  w('package.json', pkg('node --test'));
+  w('server/package.json', pkg('node --test'));
+  w('app/package.json', pkg('vitest run'));
+  w('tools/package.json', pkg('echo "Error: no test specified" && exit 1'));
+  w('docs/site/package.json', JSON.stringify({ scripts: { build: 'site' } }));
+  w('node_modules/dep/package.json', pkg('mocha'));
+  w('untracked/package.json', pkg('node --test'));
+  // review 7d: test data, not packages of the project
+  w('test/fixtures/demo/package.json', pkg('node --test'));
+  w('src/__fixtures__/sample/package.json', pkg('jest'));
+  w('.planning/turbo/config.json', JSON.stringify({ test: { full: ['npm test', { dir: 'app', command: 'npm test' }] } }));
+  const tracked = ['package.json', 'server/package.json', 'app/package.json', 'tools/package.json', 'docs/site/package.json', 'node_modules/dep/package.json', 'test/fixtures/demo/package.json', 'src/__fixtures__/sample/package.json'];
+  const lsCwd = [];
+  const exec = (cmd, args, opts) => {
+    if (cmd === 'git' && args[0] === 'ls-files') { lsCwd.push(opts.cwd); return `${tracked.join('\0')}\0`; }
+    return execOk('2.1.291')(cmd, args);
+  };
+  const run = () => doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: BIN });
+  const r = run();
+  assert.equal(r.mode, 'full', 'a warning, not a failed check');
+  assert.deepEqual(r.warnings, ['nested package server has its own test script that test.full does not run']);
+  assert.deepEqual(lsCwd, [e.root]);
+  w('.planning/turbo/config.json', JSON.stringify({ test: { full: 'npm test' } }));
+  assert.deepEqual(run().warnings, ['app', 'server'].map((d) => `nested package ${d} has its own test script that test.full does not run`));
+  w('.planning/turbo/config.json', JSON.stringify({ test: { full: ['npm test', { dir: 'missing', command: 'npm test' }] } }));
+  const bad = run();
+  assert.equal(bad.mode, 'full');
+  assert.equal(bad.warnings.length, 1);
+  assert.match(bad.warnings[0], /^invalid turbo config .*test\.full\[1\]\.dir "missing" is not a directory in the project$/);
+});
+
+test('context-window: a warning when GSD\'s effective context_window differs from turbo\'s, ok when they agree, nothing when GSD says nothing', () => {
+  const e = env();
+  const execWindow = (gsd) => (cmd, args) => (args.includes('config-get') ? gsd : execOk('2.1.291')(cmd, args));
+  const check = (r) => r.checks.find((c) => c.name === 'context-window');
+  let r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execWindow('200000\n'), claudeBin: BIN });
+  assert.deepEqual([check(r).ok, check(r).warn], [true, true]);
+  assert.match(check(r).detail, /^GSD's context_window is 200000, turbo's is 1000000/);
+  assert.equal(r.mode, 'full', 'a warning, never a failure');
+  fs.mkdirSync(path.join(e.root, '.planning', 'turbo'));
+  fs.writeFileSync(path.join(e.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ context_window: 200000 }));
+  r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execWindow('200000'), claudeBin: BIN });
+  assert.deepEqual(check(r), { name: 'context-window', ok: true, detail: '200000' });
+  r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execWindow(''), claudeBin: BIN });
+  assert.equal(check(r), undefined);
 });
 
 test('unsupported when claude too old', () => {

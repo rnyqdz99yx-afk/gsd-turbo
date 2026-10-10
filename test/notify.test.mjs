@@ -24,6 +24,17 @@ test('msg renders rangeDone in en and ru', () => {
   assert.deepEqual(msg('ru', 'rangeDone', { range: '4–5' }), { title: 'Фазы 4–5 готовы', body: 'Диапазон выполнен; супервизор остановлен.' });
 });
 
+test('msg renders rangeBlocked in en and ru: the range, the waiting phase, the unfinished dep outside it', () => {
+  const vars = { range: '4–6', phase: '4', dep: '3' };
+  assert.equal(msg('en', 'rangeBlocked', vars).title, 'Phases 4–6 are waiting');
+  assert.equal(msg('ru', 'rangeBlocked', vars).title, 'Фазы 4–6 ждут');
+  assert.match(msg('ru', 'rangeBlocked', vars).body, /^Фаза 4 зависит от фазы 3 вне диапазона, она не завершена/);
+  for (const lang of ['en', 'ru']) {
+    const m = msg(lang, 'rangeBlocked', vars);
+    assert.ok(m.body.includes('/turbo-autonomous --only 3') && m.body.includes('--all'), lang);
+  }
+});
+
 test('msg renders launchHalted in en and ru, ending with the resume command', () => {
   const vars = { phase: '2', error: 'launch phase 2 failed: claude --bg failed: exit status 1' };
   for (const lang of ['en', 'ru']) {

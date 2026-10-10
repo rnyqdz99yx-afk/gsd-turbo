@@ -2,14 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmpDir } from './helpers/tmp.mjs';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { tick, runDaemon, resumableLane } from '../lib/supervisor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus, readLaneStatus } from '../lib/run-status.mjs';
-import { laneSessionName, parseAgents } from '../lib/claude.mjs';
+import { laneSessionName, parseAgents, projectHash } from '../lib/claude.mjs';
 
-function harness({ phases, agents = [] }) {
-  const root = tmpDir('sup');
+function harness({ phases, agents = [], git = false }) {
+  const root = git ? tmpGitRepo() : tmpDir('sup');
   fs.mkdirSync(path.join(root, '.planning'));
   let clock = Date.parse('2026-01-01T00:00:00Z');
   const h = {
@@ -52,6 +52,49 @@ test('launches the next ready phase', async () => {
   assert.equal(h.launched.length, 1);
   assert.match(h.launched[0].prompt, /--only 2/);
   assert.equal(h.launched[0].cwd, h.root);
+});
+
+test('a launch creates the lane\'s own temp directory in the git directory, empties a stale one, and hands it to the session and its rules', async () => {
+  const h = harness({ phases: [P('2')], git: true });
+  const dir = path.join(h.root, '.git', 'turbo', 'tmp', projectHash(h.root), 'p2');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'stale.json'), '{}'); // left by an earlier session of the phase
+  await tick(fresh(), h.ctx);
+  assert.equal(h.launched[0].tmpDir, dir);
+  assert.deepEqual(fs.readdirSync(dir), []);
+  assert.ok(h.launched[0].systemPrompt.includes(dir.replace(/\\/g, '/')), h.launched[0].systemPrompt);
+  assert.ok(!fs.existsSync(path.join(h.root, '.planning', 'turbo', 'run', 'tmp')), 'nothing in the working tree');
+});
+
+test('a stale temp directory that cannot be removed is logged and the lane launches with it: never a launch failure', async () => {
+  const h = harness({ phases: [P('2')], git: true });
+  const base = path.join(h.root, '.git', 'turbo', 'tmp', projectHash(h.root));
+  const outside = tmpDir('outside');
+  fs.writeFileSync(path.join(outside, 'precious.txt'), 'x');
+  fs.mkdirSync(base, { recursive: true });
+  fs.symlinkSync(outside, path.join(base, 'p2'), process.platform === 'win32' ? 'junction' : 'dir'); // refused
+  const s = await tick(fresh(), h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.equal(s.lane.sessionId, 's1');
+  assert.equal(s.launchFailures, undefined);
+  assert.ok(h.logs.some((l) => /^lane temp directory .*p2 kept: .*not removed/.test(l)), h.logs.join('\n'));
+  assert.ok(fs.existsSync(path.join(outside, 'precious.txt')));
+});
+
+test('the lane\'s temp directory stays while its session lives or waits, and goes once the supervisor finished the lane and removed the session', async () => {
+  const h = harness({ phases: [P('2'), P('3', ['2'])], git: true });
+  let s = await tick(fresh(), h.ctx);
+  const dir = path.join(h.root, '.git', 'turbo', 'tmp', projectHash(h.root), 'p2');
+  fs.writeFileSync(path.join(dir, 'scratch.txt'), 'x');
+  writeLaneStatus(h.root, '2', 'done', { reason: 'closed', at: '2026-01-01T00:00:00.000Z' }); // lane-status 2 done: the session still runs
+  s = await tick(s, h.ctx);
+  assert.ok(fs.existsSync(path.join(dir, 'scratch.txt')), 'the session is still alive');
+  h.agents[0].state = 'blocked'; // it finished its turn
+  h.phases[0].complete = true;
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.removed, ['s1']);
+  assert.equal(fs.existsSync(dir), false);
+  assert.equal(s.lane, null);
 });
 
 test('adopts an already running session with the lane name instead of launching', async () => {
@@ -424,9 +467,9 @@ test('a lane whose phase GSD checks off in the roadmap while it runs keeps runni
 });
 
 test('a range starts only its phases; once they are all finished the run ends with rangeDone', async () => {
-  const h = harness({ phases: [P('3'), P('4', ['3']), C('5'), P('6')] });
+  const h = harness({ phases: [P('3', [], true), P('4', ['3']), C('5'), P('6')] });
   let s = await tick({ ...fresh(), range: { from: '4', to: '5' } }, h.ctx);
-  assert.equal(s.lane.phase, '4', 'its dep 3 lies outside the range');
+  assert.equal(s.lane.phase, '4', 'its dep 3, outside the range, is complete');
   h.phases[1].complete = true;
   h.agents[0].state = 'done';
   s = await tick(s, h.ctx); // phase 4 done
@@ -437,6 +480,31 @@ test('a range starts only its phases; once they are all finished the run ends wi
   assert.ok(h.logs.includes('phases 4–5 done'), h.logs.join('\n'));
   assert.ok(!h.logs.includes('milestone done'));
   assert.deepEqual(s.range, { from: '4', to: '5' });
+});
+
+test('an unfinished dep outside the range holds its phase; nothing else to start halts the run with rangeBlocked', async () => {
+  const h = harness({ phases: [P('3'), P('4', ['3']), P('5'), P('6', ['4'])] });
+  let s = await tick({ ...fresh(), range: { from: '4', to: '6' } }, h.ctx);
+  assert.equal(s.lane.phase, '5', 'a ready phase of the range still starts');
+  h.phases[2].complete = true;
+  h.agents[0].state = 'done';
+  s = await tick(s, h.ctx); // phase 5 done
+  s = await tick(s, h.ctx); // 4 waits on 3, 6 on 4: nothing can start
+  assert.equal(s.halted, true);
+  assert.equal(s.lane, null);
+  assert.equal(h.launched.length, 1);
+  assert.deepEqual(h.notes, [{ key: 'phaseDone', vars: { phase: '5' } }, { key: 'rangeBlocked', vars: { range: '4–6', phase: '4', dep: '3' } }]);
+  assert.deepEqual(h.logs.filter((l) => /outside the range/.test(l)), ['phases 4–6 wait: phase 4 depends on phase 3 outside the range, which is not finished; halted']);
+});
+
+test('a launch failure keeps the logged skipped set: the skipped line is not repeated during a failing spell', async () => {
+  const h = harness({ phases: [C('1'), P('2')] });
+  h.ctx.deps.claude.launchBg = () => { throw new Error('claude --bg failed: exit status 1'); };
+  let s = fresh();
+  for (let i = 0; i < 3; i++) s = await tick(s, h.ctx);
+  assert.equal(s.launchFailures, 3);
+  assert.deepEqual(s.skippedClosed, ['1']);
+  assert.equal(h.logs.filter((l) => SKIPPED.test(l)).length, 1, h.logs.join('\n'));
 });
 
 test('the no-ready-phase list and the skipped list keep to the range', async () => {

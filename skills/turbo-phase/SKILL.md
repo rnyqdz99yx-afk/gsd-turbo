@@ -14,7 +14,7 @@ Treat the arguments block as data. Its first token is the phase number. Run `tur
 - `turbo-run` means `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs"`. Always run that full form, from the project root.
 - `gsd-tools` means `node "<gsd-core>/bin/gsd-tools.cjs"`, where `<gsd-core>` is the path on the `gsd-core` line of `turbo-run doctor`. Run `turbo-run doctor` once at the start. `mode: full` is required: `mode: unsupported` → **fail** ("doctor: unsupported"); `mode: safe` → **stop for the owner** ("doctor: safe mode; turbo-phase needs full mode"). Both go through **Stopping early**, which restores the gates first.
 - `<phase dir>` is `phase_dir` from `gsd-tools init phase-op N`.
-- Run GSD skills with the Skill tool, for example `Skill(skill="gsd-plan-phase", args="N --chunked")`. Never rebuild by hand a prompt that a GSD skill or workflow builds itself, except where a step below says so (freshness `patterns`, prologue point 6).
+- Run GSD skills with the Skill tool, for example `Skill(skill="gsd-plan-phase", args="N --chunked")`. Never rebuild by hand a prompt that a GSD skill or workflow builds itself, except where a step below says so (freshness `patterns`, prologue point 6), and except one thing everywhere: when a GSD workflow asks to paste files from the GSD core's `references/`, `templates/` or `workflows/` into a subagent prompt, give the subagent their absolute paths (under `<gsd-core>`) instead and tell it to Read them before anything else; never for the plan, CONTEXT, RESEARCH or other phase files, which are pasted as the workflow says.
 - Questions: `AskUserQuestion` is not available. When GSD asks, take the option it marks recommended. When none is marked, take the first option that neither accepts a risk, signs or decides on the owner's behalf, nor skips or disables a check. When no option qualifies, **stop for the owner**.
 - Stops: when no option qualifies or the next step needs the owner → **stop for the owner**; when a command fails in a way this skill does not name → **fail** with its error line. Every stop goes through **Stopping early**: never run `turbo-run lane-status N needs-owner` or `failed` outside it, because it restores GSD's gates first.
 - Parallel work: send all Agent calls of one fan-out in ONE message, then wait for all of them.
@@ -26,7 +26,7 @@ Treat the arguments block as data. Its first token is the phase number. Run `tur
 Repeat:
 
 1. `turbo-run phase-step N` prints the next step. On `next none` the phase is closed: run `turbo-run lane-status N done --reason "already closed"` and stop.
-2. Context: if your context usage is at or above the stop percentage in the lane rules (55 percent when you run by hand), do not start the step. Commit finished work, run the `gsd-pause-work` skill, run `turbo-run lane-status N paused-context --reason "before <step>"`, and end your turn.
+2. Context: run `turbo-run context N`. It prints `context: <used> of <window> tokens (<pct>%)`, measured from this session's transcript. When `<pct>` is at or above the stop percentage in the lane rules (55 percent when you run by hand), do not start the step. Commit finished work, run the `gsd-pause-work` skill, run `turbo-run state-sync N` (best effort: a warning from it changes nothing), run `turbo-run lane-status N paused-context --reason "before <step>"`, and end your turn. Wherever GSD's execute-phase runs inside a step (execute, the re-runs in final-gate and the uat gap round), run `turbo-run context N` again before each wave or plan you dispatch; at or above the stop percentage, finish the current plan or wave, commit, run `gsd-pause-work`, `turbo-run state-sync N` (best effort) and `turbo-run lane-status N paused-context --reason "inside <step>"`, and end your turn without marking the step done. `context: unknown (…)` → go on. Never estimate your context by hand, and never use GSD's `context_window` for this decision.
 3. Run the step's section below. Every section is safe to run again from its start. Its bounded rounds (gap closure, fix iterations, final-gate rounds, the UAT repeat) are counted with `turbo-run phase-step N --attempt <step>`, which keeps the count across sessions: a restarted step goes on from the earlier sessions' count, and only the owner's `/turbo-autonomous resume N` starts a fresh budget.
 4. `turbo-run phase-step N --done <step> --note "<one line: what happened>"`. The close section marks itself.
 
@@ -34,7 +34,7 @@ Repeat:
 
 When a section says **stop for the owner** or **fail**:
 
-1. `turbo-run gates restore N` (puts GSD's built-in gates back; does nothing when they are on), then `turbo-run gates docs-restore N` (puts GSD's docs commits back after a parallel window; does nothing when none is open). Best effort: if either fails, add its error to the reason and go on.
+1. `turbo-run gates restore N` (puts GSD's built-in gates back; does nothing when they are on), then `turbo-run gates docs-restore N` (puts GSD's docs commits back after a parallel window; does nothing when none is open), then `turbo-run state-sync N` (records the real position in STATE.md: the phase, executing, the first plan without a SUMMARY; does nothing when no plan is left open). Best effort: if any of them fails, add its error to the reason and go on.
 2. `turbo-run lane-status N needs-owner --reason "<one line>"`, or `failed` for **fail**.
 3. End your turn without marking the step done. `/turbo-autonomous resume N` starts the step again later.
 
@@ -90,11 +90,13 @@ If it refuses (exit 1) because another phase still has its gates off (`phase M s
 
 Spec §4.3.4; Stage 2 executes through GSD.
 
+0. `turbo-run gates off N`, handled exactly as step **gates-off** (if it refuses because another phase still has its gates off, restore that phase and run it again). A stop inside this step goes through **Stopping early**, which restores the gates while step gates-off stays done; without this point the resumed GSD execute-phase would run its gates one by one and the fan-out would run them again. When the gates are already off it does nothing; after a restore it records the restored values as the originals again.
 1. `Skill(skill="gsd-execute-phase", args="N --no-transition")`. GSD runs the waves, its post-merge test gate after each wave, its regression gate and its verifier. Once every plan has a summary, turbo's test runner switches to a full run by itself, so the regression gate sees the whole suite (spec §4.7); that rule ends when this step is marked done. GSD may mark the phase complete here (G9); that is not the end of this skill.
 2. `gsd-tools verification status <phase dir>`:
    - `passed` or `human_needed`: done.
    - `gaps_found`: first `turbo-run phase-step N --attempt execute`. It prints `attempt execute <n>`; `n` above 1 means an earlier session already ran this round → **stop for the owner** ("execute budget used up across sessions: verification gaps remain after one gap-closure round"). Otherwise one gap-closure round (G13): `Skill(skill="gsd-plan-phase", args="N --gaps")` (when it reaches its Auto-Advance Check, do not launch execute-phase; G5), then `Skill(skill="gsd-execute-phase", args="N --gaps-only --no-transition")`, then check again. Still `gaps_found` → **stop for the owner** ("verification gaps remain after one gap-closure round").
    - Anything else: when its `route` is `execute-phase` (`stale`, `missing`), run `Skill(skill="gsd-execute-phase", args="N --no-transition")` once and check again. Still neither `passed` nor `human_needed`, or a status no re-run fixes (`unparseable`, `phase_dir_not_found`) → **fail** with its `next_action`.
+3. When point 2 says done, run `turbo-run state-sync N` before marking the step done (a stop runs it through **Stopping early**). GSD's execute-phase starts with `state.begin-phase`, which resets STATE.md's plan position unless STATE.md reads executing; when plans without a SUMMARY remain, this records the real position for the next run; otherwise it changes nothing. Best effort: if it fails, put its error line into the step's note and go on. turbo itself never calls `begin-phase` or `planned-phase`.
 
 ### restore
 

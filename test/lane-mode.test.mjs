@@ -26,7 +26,7 @@ test('prompts: full mode runs turbo-phase; safe mode keeps gsd-autonomous and re
   assert.match(safe, /when GSD has marked the phase complete/);
   // I3: in full mode only the skill's uat step handles human_needed items, and every stop goes through Stopping early
   assert.match(full, /human_needed verification items are handled only by the turbo-phase skill's uat step \(the turbo-uat agent and node x uat record\): never check them yourself and never edit the UAT file\./);
-  assert.match(full, /Stopping early section, which restores GSD's gates first/);
+  assert.match(full, /Stopping early section, which restores GSD's gates and syncs STATE\.md first/);
   assert.match(full, /55 percent/);
   const OLD = ['verify yourself everything you can', 'Record evidence in the UAT file', 'Defer only owner-only items', 'Do everything else in the phase first'];
   for (const s of OLD) assert.ok(!full.includes(s), s);

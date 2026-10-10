@@ -98,6 +98,24 @@ test('gates off commits config + state; restore brings back the exact bytes, rem
   assert.equal(gatesRestore({ root, phase: '3', cfg }).changed, false, 'idempotent');
 });
 
+// A stop inside step execute restores the gates (Stopping early); the resumed step execute turns them off again.
+test('off, restore, off, restore: the second off records the restored values as the originals, nothing is lost', () => {
+  const original = '{\n  "workflow": {\n    "code_review": true,\n    "ui_review": false\n  }\n}\n';
+  const root = project(original);
+  const cfg = fakeCfg(root, ['security', 'code-review']);
+  const first = gatesOff({ root, phase: '3', cfg });
+  gatesRestore({ root, phase: '3', cfg });
+  const second = gatesOff({ root, phase: '3', cfg });
+  assert.equal(second.changed, true, 'after a restore, gates off starts over instead of reusing a state');
+  assert.deepEqual(second.state.original, first.state.original);
+  assert.deepEqual(second.state.active, ['security', 'code-review']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(cfgPath(root), 'utf8')).workflow, { code_review: false, ui_review: false, nyquist_validation: false, security_enforcement: false });
+  assert.equal(gatesRestore({ root, phase: '3', cfg }).changed, true);
+  assert.equal(fs.readFileSync(cfgPath(root), 'utf8'), original);
+  assert.deepEqual(gatesActive(root, '3'), ['security', 'code-review'], 'the fan-out still knows the active gates');
+  assert.equal(git(root, 'status', '--porcelain'), '');
+});
+
 test('gates off again retries the commit an interrupted run left undone', () => {
   const root = project('{}\n');
   const cfg = fakeCfg(root);

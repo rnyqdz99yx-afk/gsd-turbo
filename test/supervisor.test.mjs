@@ -926,3 +926,18 @@ test('a lane launched with push on gets the push rule in its system prompt; with
   await tick(fresh(), off.ctx);
   assert.ok(!off.launched[0].systemPrompt.includes('push-request'));
 });
+
+test('the daemon lends its ticks its heartbeat writer, so long push work keeps the supervisor alive (S2)', async () => {
+  const h = harness({ phases: [P('2', [], true)] });
+  const statePath = path.join(h.root, '.planning', 'supervisor.json');
+  let mid = null;
+  h.ctx.deps.loadPhases = () => {
+    h.advance(7); // a tick that has worked for 7 minutes
+    h.ctx.deps.heartbeat();
+    mid = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    return h.phases;
+  };
+  let sleeps = 0;
+  await runDaemon({ ctx: h.ctx, statePath, intervalMs: 1, sleep: async () => { if (++sleeps > 3) throw new Error('runaway daemon'); } });
+  assert.deepEqual([mid?.pid, mid?.updatedAt], [process.pid, '2026-01-01T00:07:00.000Z']);
+});

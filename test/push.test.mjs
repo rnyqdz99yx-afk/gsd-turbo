@@ -724,3 +724,50 @@ test('every run cancelled is CI cancelled, not green: nothing notified, a waitin
   assert.equal(describeRecord(rec).code, 1);
   assert.deepEqual(notes, []);
 });
+
+test('a request whose tick ran out of time waits before its scan, goes on first in the next tick, and the heartbeat is kept between steps', async () => {
+  const r = pushRepo();
+  const { ctx, notes } = supervisorCtx(r);
+  let t = NOW.getTime();
+  ctx.deps.now = () => new Date(t);
+  const beats = [];
+  ctx.deps.heartbeat = () => beats.push(t);
+  const inner = ctx.deps.git;
+  // every fetch takes 150 s: more than the tick's budget
+  ctx.deps.git = (args, opts) => {
+    if (sub(args) === 'fetch') t += 150 * 1000;
+    return inner(args, opts);
+  };
+  const sha = r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.notEqual(r.remoteHead(), sha, 'nothing started after the budget');
+  assert.equal(readJson(recordFile(r.root, '3')).deferred.requestId, readJson(requestFile(r.root, '3')).id);
+  const before = beats.length;
+  await pushTick(ctx, later(5));
+  assert.equal(r.remoteHead(), sha, 'the deferred request finishes in the next tick, budget or not');
+  assert.ok(beats.length - before >= 3, `a heartbeat before the fetch, the scan and the push: ${beats.length - before}`);
+  assert.deepEqual(notes, []);
+});
+
+test('without a fresh heartbeat each git call\'s time limit ends inside the heartbeat window', async () => {
+  const r = pushRepo();
+  const { ctx } = supervisorCtx(r);
+  let t = NOW.getTime();
+  ctx.deps.now = () => new Date(t);
+  const limits = {};
+  const inner = ctx.deps.git;
+  ctx.deps.git = (args, opts = {}) => {
+    limits[sub(args)] = opts.timeout;
+    if (sub(args) === 'fetch') t += 6 * 60 * 1000; // a fetch that took 6 minutes
+    return inner(args, opts);
+  };
+  r.commit('src/a.mjs', 'export const a = 1;\n');
+  const { request } = ask(r, ctx.config.push);
+  // already deferred once: no budget check stops it
+  writeJsonAtomic(recordFile(r.root, '3'), { deferred: { requestId: request.id, at: NOW.toISOString() } });
+  await pushTick(ctx, NOW);
+  // 10 min window - 6 min spent - 30 s margin
+  assert.equal(limits.push, 210000);
+  assert.equal(limits.fetch, 120000);
+});

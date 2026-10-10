@@ -27,7 +27,7 @@ import { buildView, formatView } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync|questions|answer> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync|questions|answer|agent-tail> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';

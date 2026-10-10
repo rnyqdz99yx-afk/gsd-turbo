@@ -83,12 +83,37 @@ test('state-sync names the real position through GSD\'s own state commands: phas
   assert.ok(!calls.some((c) => c[0] === 'state' && ['begin-phase', 'planned-phase', 'advance-plan', 'sync'].includes(c[1])));
 });
 
-test('state-sync points the resume file at the handoff gsd-pause-work wrote, when there is one', async () => {
-  const root = fixture();
-  fs.writeFileSync(path.join(root, PHASE_REL, '.continue-here.md'), '# handoff\n');
+const resumeFileOf = async (root) => {
   const { gsd, calls } = fakeGsd(root);
   await sync(root, { gsd });
-  assert.deepEqual(calls.find((c) => c[1] === 'record-session').slice(-2), ['--resume-file', `${PHASE_REL}/.continue-here.md`]);
+  return calls.find((c) => c[1] === 'record-session').at(-1);
+};
+const touch = (file, iso) => fs.utimesSync(file, new Date(iso), new Date(iso));
+
+test('state-sync points the resume file at the handoff gsd-pause-work wrote only when it is newer than the newest SUMMARY', async () => {
+  const root = fixture();
+  const handoff = path.join(root, PHASE_REL, '.continue-here.md');
+  fs.writeFileSync(handoff, '# handoff\n');
+  for (const s of ['05-01-SUMMARY.md', '05-02-SUMMARY.md']) touch(path.join(root, PHASE_REL, s), '2026-01-02T00:00:00Z');
+  touch(handoff, '2026-01-03T00:00:00Z');
+  assert.equal(await resumeFileOf(root), `${PHASE_REL}/.continue-here.md`);
+  touch(handoff, '2026-01-01T00:00:00Z'); // left over from an earlier pause: plans were summarized since
+  assert.equal(await resumeFileOf(root), `${PHASE_REL}/05-03-PLAN.md`);
+});
+
+test('state-sync judges committed files by their commit time, not their mtime', async () => {
+  const root = fixture();
+  const handoff = path.join(root, PHASE_REL, '.continue-here.md');
+  fs.writeFileSync(handoff, '# handoff\n');
+  const commitAt = (iso, files) => {
+    const env = { ...process.env, GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso };
+    execFileSync('git', ['add', '--', ...files], { cwd: root, env });
+    execFileSync('git', ['commit', '-q', '-m', 'x', '--', ...files], { cwd: root, env });
+  };
+  commitAt('2026-01-01T00:00:00Z', [`${PHASE_REL}/.continue-here.md`]);
+  commitAt('2026-01-02T00:00:00Z', [`${PHASE_REL}/05-01-SUMMARY.md`, `${PHASE_REL}/05-02-SUMMARY.md`]);
+  touch(handoff, '2026-02-01T00:00:00Z'); // a checkout or an editor touched it later
+  assert.equal(await resumeFileOf(root), `${PHASE_REL}/05-03-PLAN.md`);
 });
 
 test('state-sync leaves STATE.md alone without plans, with every plan summarized, or without a phase directory', async () => {

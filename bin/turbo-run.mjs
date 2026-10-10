@@ -27,7 +27,7 @@ import { buildView, formatView } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync|questions|answer> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
@@ -55,10 +55,9 @@ function positional(args) {
   }
   return out;
 }
-// Flags of any command whose next argument is their value: bin's, the phase commands' (cli-phase, so a flag added
-// there is covered here too) and turbo-run answer's.
-const ANSWER_VALUE_FLAGS = ['--text', '--by', '--rev', '--option'];
-const ARG_VALUE_FLAGS = new Set([...VALUE_FLAGS, ...PHASE_VALUE_FLAGS, ...ANSWER_VALUE_FLAGS]);
+// Flags of any command whose next argument is their value: bin's and the phase commands' (cli-phase, turbo-run
+// questions and answer among them, so a flag added there is covered here too).
+const ARG_VALUE_FLAGS = new Set([...VALUE_FLAGS, ...PHASE_VALUE_FLAGS]);
 // --project read in order: the value of another flag is skipped, so an answer text or a reason that says --project
 // never names the project, and nothing after -- is a flag. --project may still follow the positional arguments.
 function projectArg(args) {

@@ -168,10 +168,10 @@ test('laneSessionName is stable, filesystem-safe and unique per root', () => {
 });
 
 test('buildBgArgs puts flags before the prompt, disables AskUserQuestion and turns off bg worktree isolation', () => {
-  const settings = '{"worktree":{"bgIsolation":"none"}}';
+  const settings = '{"worktree":{"bgIsolation":"none"},"env":{"TURBO_LANE":"1"}}';
   const args = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'bypassPermissions', model: '' });
   assert.deepEqual(args, ['--bg', '--name', 'n', '--permission-mode', 'bypassPermissions', '--settings', settings, '--disallowedTools', 'AskUserQuestion', '--append-system-prompt', 'S', 'P']);
-  assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' } });
+  assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' }, env: { TURBO_LANE: '1' } });
   const withModel = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: 'opus' });
   assert.ok(withModel.includes('opus'));
   assert.equal(withModel[withModel.indexOf('--settings') + 1], settings);
@@ -181,7 +181,7 @@ test('buildBgArgs puts flags before the prompt, disables AskUserQuestion and tur
 test('buildBgArgs points the lane session\'s TMP, TEMP and TMPDIR at its own temp directory, bg isolation still off', () => {
   const tmpDir = path.resolve('/p/.planning/turbo/run/tmp/p3');
   const args = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: '', tmpDir });
-  assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' }, env: { TMP: tmpDir, TEMP: tmpDir, TMPDIR: tmpDir } });
+  assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' }, env: { TURBO_LANE: '1', TMP: tmpDir, TEMP: tmpDir, TMPDIR: tmpDir } });
   assert.equal(args.at(-1), 'P');
 });
 
@@ -248,7 +248,7 @@ test('createClaude prepends the bin prefix and passes per-call timeouts with SIG
   ]);
   assert.equal(calls[0].opts.cwd, '/p');
   const bg = calls[0].args;
-  assert.equal(bg[bg.indexOf('--settings') + 1], '{"worktree":{"bgIsolation":"none"}}');
+  assert.equal(bg[bg.indexOf('--settings') + 1], '{"worktree":{"bgIsolation":"none"},"env":{"TURBO_LANE":"1"}}');
 });
 
 test('createClaude errors carry CLI output but never the argv', () => {

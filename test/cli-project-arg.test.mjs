@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tmpDir } from './helpers/tmp.mjs';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
 import { readProgress } from '../lib/phase-progress.mjs';
 import { VALUE_FLAGS as PHASE_VALUE_FLAGS } from '../lib/cli-phase.mjs';
+import { readAnswers } from '../lib/questions.mjs';
+import { DECISION_PLAN, writePhase } from './helpers/plans.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
 const run = (args, cwd) => execFileSync(process.execPath, [CLI, ...args], { cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: tmpDir('home') }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -51,4 +53,19 @@ test('--project after the positional arguments still names the project; argument
   run(['lane-status', '3', 'done', '--project', named], here);
   assert.equal(readLaneStatus(named, '3')?.status, 'done');
   assert.equal(JSON.parse(run(['view', '--json', '--', '--project', named], here)).ui.lang, 'en');
+});
+
+test('turbo-run questions and answer take their values through cli-phase VALUE_FLAGS: the pane\'s argv with a text that reads --project answers the named project', () => {
+  for (const f of ['--class', '--preanswers', '--stop', '--agent', '--kind', '--question', '--delivered', '--path', '--option', '--text', '--by', '--rev']) assert.ok(PHASE_VALUE_FLAGS.has(f), f);
+  const { here } = projects();
+  // a git repository: with no lane running, turbo-run answer commits the answers file
+  const named = tmpGitRepo();
+  writePhase(named, '32-auth', { '32-09-PLAN.md': DECISION_PLAN });
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: tmpDir('home'), TURBO_LANE: '' };
+  const cli = (args) => execFileSync(process.execPath, [CLI, ...args], { cwd: here, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  cli(['questions', '--project', named, '32']);
+  // the argv the turbo-view pane builds (mod/hooks/view-model.mjs answerArgv): the text last, after every real flag
+  assert.match(cli(['answer', '--project', named, '32', '32-09-t2', '--by', 'pane', '--rev', '1', '--text', '--project']), /^answered 32-09-t2: --project, pane, \S+ · committed\n$/);
+  assert.deepEqual(readAnswers(named, '32').map((r) => [r.answer, r.by]), [['--project', 'pane']]);
+  assert.deepEqual(readAnswers(here, '32'), []);
 });

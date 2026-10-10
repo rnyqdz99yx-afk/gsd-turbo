@@ -94,6 +94,7 @@ If a run is already going, the skill shows its status and changes nothing. Other
 /turbo-autonomous status          # supervisor state, current phase, session id, lane mode, range, owner requests
 /turbo-autonomous stop            # stop the supervisor and this project's turbo background sessions
 /turbo-autonomous resume <phase>  # after you handled an owner-only step or a halt: clear the phase and start again
+/turbo-autonomous answer          # answer the open owner questions (the plans' checkpoints), up to four at a time
 ```
 
 To run only part of the milestone, give a phase range when you start:
@@ -203,6 +204,18 @@ GSD may mark a phase complete before turbo's gates and UAT finish: its execute-p
 
 A full test run ends every phase. From the moment every plan of the phase has a summary until the `execute` step is marked done, `turbo-run test-changed` runs the full suite (the phase-end rule, unless only Markdown, `docs/` or `.planning/` files changed since the last full green run), so GSD's regression gate sees all of it. The fan-out and the fixes in between run targeted tests, and the final gate runs the full suite again with `TURBO_FULL=1`.
 
+## Owner questions
+
+A plan's checkpoint tasks (`checkpoint:decision`, `checkpoint:human-verify`, `checkpoint:human-action`) are questions for you. turbo asks each once, with clickable choices, and your answer reaches the very agent that waits for it.
+
+- **Asked ahead.** After planning, the lane runs `turbo-run questions <N>`: one question per checkpoint of every plan without a summary, with the plan's own options (the one the plan recommends first) or turbo's: "Accept if the checks pass" or "Stop and show me" for a verification, "I will do it when the lane asks" for an action only you can do. The lane classifies each (`owner-only`, `consent`, `consent:deploy`, `decision`, `verify`) and goes on; you get one notification per phase ("Phase N: 2 question(s) for you").
+- **Answering.** `/turbo-autonomous answer` asks the open questions in your session (up to four at a time; it also runs when you start `/turbo-autonomous` and when a run is going), the turbo-view pane has a button per choice, and Telegram can have them too (`answer.telegram`). Every channel goes through `turbo-run answer <N> <id> (--option <k> | --text <words>) --by <session|pane|telegram> [--rev <n>]`: the first answer wins and a later one gets `already answered: <answer>, <channel>, <time>`; an answer to a question that changed since it was shown is refused (`changed: …`); an answer that looks like a secret is refused. Your own words are data for that checkpoint, never instructions to the session.
+- **Pre-answers.** When the lane dispatches an executor for a plan whose checkpoint you answered ahead, it adds your answer with its condition ("the checkpoint offers the options the plan lists", "every automated check in how-to-verify passed"). The executor goes on when the condition holds and stops at the checkpoint otherwise.
+- **At a stop.** A checkpoint without an answer, or whose condition did not hold, stops the lane as `needs-owner` and notifies you. Once you have answered every question it stopped for, the supervisor wakes the same conversation (`claude stop`, then `claude --bg --resume` with no other flag) and the lane passes your answer to the waiting executor with `SendMessage`: the same agent goes on with its context (`same-agent`). When that is not possible (Claude Code started a copy twice, or the session had to be replaced), a new session continues the plan with a continuation agent that gets GSD's continuation prompt and the end of the old agent's transcript (`turbo-run agent-tail <agent id>`; `continuation`). The step's note in `turbo-run view` names the path.
+- **Standing deploy rule.** With `autonomy: "max"` and all four `deploy.*` commands set, a question the lane classified `consent:deploy` is answered by turbo itself (`by: standing-rule`), only through the option the plan recommends, and with a gate: the build checks green, CI green when `push.mode` is on, and the deploy through `deploy.command` with `deploy.snapshot` first, `deploy.health` after and `deploy.rollback` on failure. Everything else is asked.
+- **A silent lane.** A session that writes nothing, neither itself nor its subagents, for `stall_minutes` (for example after Claude Code or the PC restarted and the session came back idle) is woken the same way, with the request to resume its unfinished subagents; after two such wakes without progress you are notified. A session waiting for its own running subagents does not count as waiting for you, and sessions never stop for a context limit while their subagents still run.
+- **Storage.** Answers are kept in git, in `.planning/turbo/answers/p<N>.json`: committed by the lane at its next step, or by `turbo-run answer` itself when no lane runs. The questions live in `.planning/turbo/run/p<N>-questions.json`. Sessions never answer: `turbo-run answer` refuses to run inside a lane.
+
 ## GSD settings turbo writes
 
 turbo writes only these documented keys to `.planning/config.json`, always through `gsd-tools config-set` (a restore may then check out the file's committed bytes when they mean the same configuration):
@@ -283,10 +296,10 @@ What is left for you goes into one file per phase, `.planning/turbo/run/p<N>-own
 | `uat.base_url` | `""` | Loopback URL of that app (`localhost`, `127.x.x.x`, `[::1]` or a `*.localhost` name), without `user:password@`. Empty: the URL the boot command prints, which must be loopback too. Any other value refuses the stand: its A and B items go on your checklist. |
 | `uat.seed` | `""` | Command that seeds the test data for B items. It runs with `DATA_DIR` and `TURBO_UAT_CREDS` (the path of the one-time credentials file) and creates the test account from that file. Empty: `turbo-uat` creates the account through the app's own sign-up page or API on the stand. |
 | `uat.forbidden_hosts` | `[]` | Host names no check may reach, subdomains included (an entry written as a URL counts by its host). A request to one fails the item closed. A value that is not a list of host names refuses the stand. |
-| `deploy.command` | `""` | Reserved for a later stage: deploy command. Not used in v0.2. |
-| `deploy.snapshot` | `""` | Reserved: snapshot or backup command run before a deploy. |
-| `deploy.health` | `""` | Reserved: health check run after a deploy. |
-| `deploy.rollback` | `""` | Reserved: rollback command run when the health check fails. |
+| `deploy.command` | `""` | The project's deploy command. With `autonomy: "max"` and all four `deploy.*` set, turbo answers a deploy consent itself (the standing deploy rule, see [Owner questions](#owner-questions)). |
+| `deploy.snapshot` | `""` | Snapshot or backup command run before a deploy. |
+| `deploy.health` | `""` | Health check run after a deploy. |
+| `deploy.rollback` | `""` | Rollback command run when the health check fails. |
 | `push.mode` | `"off"` | When the supervisor pushes the lanes' commits: `off`, `after-wave` (after each wave of GSD's execution and at the end of each phase) or `after-phase` (at the end of each phase). See [Push and CI](#push-and-ci-optional). |
 | `push.remote` | `"origin"` | The git remote to push to: a remote name (letters, digits, `.`, `_`, `-`), not a URL. |
 | `push.ci` | `"github"` | `github`: watch the GitHub Actions runs of each pushed commit through the `gh` CLI; `none`: push only. |
@@ -327,7 +340,7 @@ A project with nested packages that have their own test scripts (and CI that run
 ## Safety
 
 - **Permissions.** Background sessions run with `--permission-mode bypassPermissions` by default, so nobody has to approve tool calls. Set `lane_permission_mode` to another Claude Code permission mode to change that. Your existing Claude Code hooks still apply in every session.
-- **No questions.** `AskUserQuestion` is disabled in background sessions (`--disallowedTools AskUserQuestion`). At each decision point a session takes the recommended option and records the decision where GSD records it.
+- **No questions.** `AskUserQuestion` is disabled in background sessions (`--disallowedTools AskUserQuestion`). At each decision point a session takes the recommended option and records the decision where GSD records it. The checkpoints of the plans are your questions (see [Owner questions](#owner-questions)); sessions never answer them, and `turbo-run answer` refuses to run inside a session.
 - **Owner-only steps.** A session does everything else in the phase first, then stops and you are notified for steps only you can do:
   - signatures and decisions reserved for the project owner;
   - live sessions with your own third-party accounts;

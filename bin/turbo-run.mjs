@@ -12,7 +12,7 @@ import { createClaude, resolveBin, laneSessionName } from '../lib/claude.mjs';
 import { loadPhases, normalizePhaseId } from '../lib/gsd.mjs';
 import { doctor } from '../lib/doctor.mjs';
 import { runDaemon, resumableLane } from '../lib/supervisor.mjs';
-import { comparePhase, rangeLabel } from '../lib/scheduler.mjs';
+import { comparePhase, inRange, rangeLabel } from '../lib/scheduler.mjs';
 import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
@@ -583,6 +583,15 @@ async function main() {
       const [phase] = pos;
       if (!root || !phase || !PHASE_ID.test(phase)) die('resume <phase> [--start]');
       const id = normalizePhaseId(phase);
+      if (args.includes('--start')) {
+        // start would keep this range and never resume a phase outside it: refuse before anything changes
+        const prev = readJson(supPath(root), null);
+        const kept = keptRange(prev);
+        if (kept && !inRange(id, kept)) {
+          const stopFirst = supAlive(prev, pollOf(root)) ? 'turbo-run stop, then ' : '';
+          die(`phase ${id} is outside the range ${rangeLabel(kept)} that start keeps; nothing was stopped, removed or started. To run phase ${id}, change the range: ${stopFirst}turbo-run start --only ${id} (or --from <phase>, or --all)`);
+        }
+      }
       // a live daemon (for example one waiting for the owner) rewrites supervisor.json every
       // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
       stopDaemon(root, readJson(supPath(root), null));

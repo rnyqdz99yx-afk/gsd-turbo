@@ -727,6 +727,28 @@ test('start with range flags while a run is going exits 1 naming the running ran
   assert.match(r.stdout, new RegExp(`^already running \\(pid ${child.pid}\\)`));
 });
 
+test('resume <N> --start with N outside the kept range exits 1 naming the range; nothing is stopped, removed or started', async (t) => {
+  const root = plainProject();
+  const child = sleeper(t);
+  const progress = { phase: '7', done: ['freshness'], notes: {}, attempts: { fix: 2 }, updatedAt: ago(1) };
+  for (const [pid, stopFirst] of [[null, false], [child.pid, true]]) {
+    const sup = { pid, updatedAt: ago(0), finished: false, halted: pid === null, lane: { phase: '7', sessionId: 'abc', restarts: 2 }, range: { from: '4', to: '5' } };
+    writeSup(root, sup);
+    fs.writeFileSync(path.join(runDirOf(root), 'p7.json'), JSON.stringify({ phase: '7', status: 'failed' }));
+    fs.writeFileSync(path.join(runDirOf(root), 'phase-p7.json'), JSON.stringify(progress));
+    const r = await runAsync(['resume', '07', '--start'], root);
+    assert.equal(r.code, 1, r.stdout);
+    assert.ok(r.stderr.includes('phase 7 is outside the range 4–5'), r.stderr);
+    for (const way of ['turbo-run start --only 7', '--from', '--all']) assert.ok(r.stderr.includes(way), way);
+    assert.equal(r.stderr.includes('turbo-run stop, then'), stopFirst, r.stderr);
+    assert.deepEqual(readSup(root), sup);
+    assert.ok(fs.existsSync(path.join(runDirOf(root), 'p7.json')), 'the lane record stays');
+    assert.deepEqual(readJsonFile(path.join(runDirOf(root), 'phase-p7.json')), progress, 'the attempts stay');
+  }
+  assert.ok(pidExists(child.pid), 'the running daemon was not stopped');
+  assert.equal(fs.existsSync(path.join(root, '.planning', 'turbo', 'logs')), false, 'no daemon was spawned');
+});
+
 // Preloaded into start only: supervisor.json reads see no pid, so start never sees its daemon report and
 // takes the path of a daemon that ran and exited before start confirmed it.
 function hideSupervisorPid() {

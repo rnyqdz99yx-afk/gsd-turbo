@@ -122,6 +122,45 @@ test('scanRange names the real path behind a C-quoted diff header and behind a n
   assert.deepEqual(scanRange(git, 'b', 'h'), [{ file: 'déjà "q".mjs', kind: 'github token' }, { file: 'sp ace.mjs', kind: 'github token' }]);
 });
 
+test('scanRange reads files git calls binary as text, and refuses Git LFS pointers whose content it cannot see', () => {
+  const r = pushRepo();
+  const base = r.sh('rev-parse', 'HEAD');
+  r.commit('.gitattributes', '*.txt -diff\n');
+  r.commit('notes.txt', `token ${GH}\n`);
+  r.commit('blob.bin', `\0${GH}\n`);
+  const sha = r.commit('art/big.psd', `version https://git-lfs.github.com/spec/v1\noid sha256:${'0'.repeat(64)}\nsize 12\n`);
+  assert.deepEqual(scanRange(r.git, base, sha), [
+    { file: 'art/big.psd', kind: 'lfs-content-not-scanned' },
+    { file: 'blob.bin', kind: 'github token' },
+    { file: 'notes.txt', kind: 'github token' },
+  ]);
+});
+
+test('scanRange shows merges separately whatever log.diffMerges says, and a header of any diff form starts a new file', () => {
+  // a combined-diff header (log.diffMerges=combined) after another file's hunk
+  const patch = [
+    'diff --git a/x.mjs b/x.mjs',
+    '+++ b/x.mjs',
+    '@@ -0,0 +1 @@',
+    '+const a = 1;',
+    'diff --cc y.mjs',
+    '--- a/y.mjs',
+    '+++ b/y.mjs',
+    '@@@ -1,1 -1,1 +1,2 @@@',
+    `++const t = '${GH}';`,
+  ].join('\n');
+  const calls = [];
+  const git = (args) => {
+    calls.push(args);
+    return args.includes('--name-only') ? Buffer.alloc(0) : args.includes('-p') ? patch : '';
+  };
+  assert.deepEqual(scanRange(git, 'b', 'h'), [{ file: 'y.mjs', kind: 'github token' }]);
+  for (const a of calls.filter((c) => c.includes('-p') || c.includes('--name-only'))) {
+    assert.ok(a.includes('--diff-merges=separate') && !a.includes('-m'), a.join(' '));
+  }
+  assert.ok(calls.find((c) => c.includes('-p')).includes('--text'));
+});
+
 test('scanRange refuses a file name it cannot read as UTF-8 instead of skipping it', () => {
   const git = (args) => (args.includes('--name-only') ? Buffer.from([0x61, 0xff, 0x2e, 0x6c, 0x6f, 0x67, 0x00]) : '');
   assert.deepEqual(scanRange(git, 'b', 'h'), [{ file: '(a file name that is not UTF-8)', kind: 'unreadable file name' }]);

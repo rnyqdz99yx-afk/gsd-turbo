@@ -206,7 +206,7 @@ test('notify telegram: a hanging fetch is aborted by the timeout and notify reso
 test('push and CI messages exist in en and ru with the same placeholders (S2)', () => {
   const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
   const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
-  for (const key of ['pushDiverged', 'pushRefused', 'pushFailed', 'ciRed', 'ciTimeout']) {
+  for (const key of ['pushDiverged', 'pushRefused', 'pushFailed', 'ciRed', 'ciTimeout', 'ciUnavailable']) {
     const en = msg('en', key, keep);
     const ru = msg('ru', key, keep);
     assert.notEqual(en.title, key, key);

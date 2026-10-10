@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createGh, parseRuns, ciVerdict, failedLogTail, RED_CONCLUSIONS } from '../lib/ci.mjs';
+import { createGh, parseRuns, ciVerdict, failedLogTail, githubRepo, RED_CONCLUSIONS } from '../lib/ci.mjs';
 
 const GH = `ghp_${'a1B2'.repeat(9)}`;
 
@@ -53,4 +53,35 @@ test('failedLogTail keeps the last 200 lines, the failing job and step, and no c
 test('parseRuns masks every text gh prints for a run (S2: all gh output is masked)', () => {
   const text = JSON.stringify([{ databaseId: 1, name: `deploy ${GH}`, status: 'completed', conclusion: 'failure' }]);
   assert.deepEqual(parseRuns(text), [{ id: 1, name: 'deploy [secret]', status: 'completed', conclusion: 'failure' }]);
+});
+
+test('githubRepo reads owner/repo from the GitHub URL forms git prints, and nothing else', () => {
+  const cases = {
+    'https://github.com/acme/app.git': 'acme/app',
+    'https://github.com/acme/app': 'acme/app',
+    'https://x-access@github.com/acme/app.git': 'acme/app',
+    'HTTPS://GitHub.com/acme/app.git/': 'acme/app',
+    'git@github.com:acme/app.git': 'acme/app',
+    'ssh://git@github.com/acme/app.git': 'acme/app',
+    'ssh://git@github.com:22/acme/my.app': 'acme/my.app',
+  };
+  for (const [url, repo] of Object.entries(cases)) assert.equal(githubRepo(url), repo, url);
+  for (const url of ['https://gitlab.com/acme/app.git', '/srv/git/app.git', 'https://github.com.evil.test/acme/app', 'https://github.com/acme', 'file:///tmp/x', '']) {
+    assert.equal(githubRepo(url), null, url);
+  }
+});
+
+test('createGh marks a missing gh or a missing login as unavailable, other failures not', () => {
+  const fail = (err) => {
+    try {
+      createGh('/p', { exec: () => { throw err; } })(['run', 'list']);
+    } catch (e) {
+      return e;
+    }
+    return null;
+  };
+  const missing = fail(Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }));
+  assert.deepEqual([missing.unavailable, missing.message], [true, 'gh run list failed: the GitHub CLI (gh) is not installed or not on PATH']);
+  assert.equal(fail(Object.assign(new Error('x'), { status: 4, stderr: 'To get started with GitHub CLI, please run:  gh auth login\n' })).unavailable, true);
+  assert.equal(fail(Object.assign(new Error('x'), { status: 1, stderr: 'HTTP 502: Bad Gateway\n' })).unavailable, undefined);
 });

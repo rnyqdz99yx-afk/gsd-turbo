@@ -434,7 +434,7 @@ const project = () => { const root = tmpDir('ci'); fs.mkdirSync(path.join(root, 
 // a record as the supervisor writes it after a push, CI still to watch
 const pendingRecord = (root, phase = '3', sha = SHA) => writeJsonAtomic(recordFile(root, phase), {
   requestId: 'r1', phase, remote: 'origin', branch: 'main', at: NOW.toISOString(), outcome: 'pushed', sha,
-  lastPush: { requestId: 'r1', sha, branch: 'main', remote: 'origin', at: NOW.toISOString(), ci: { state: 'pending', since: NOW.toISOString(), runs: [] } },
+  lastPush: { requestId: 'r1', sha, branch: 'main', remote: 'origin', repo: 'acme/app', at: NOW.toISOString(), ci: { state: 'pending', since: NOW.toISOString(), runs: [] } },
 });
 function ghScript(answer) {
   const calls = [];
@@ -445,6 +445,11 @@ function ghScript(answer) {
     return typeof a === 'string' ? a : JSON.stringify(a);
   };
   return { gh, calls };
+}
+// the remote reads as a GitHub repository (acme/app); fetch and push still go to the local bare one
+function onGithub(ctx) {
+  const inner = ctx.deps.git;
+  ctx.deps.git = (args, opts) => (args[0] === 'remote' && args[1] === 'get-url' ? 'https://github.com/acme/app.git\n' : inner(args, opts));
 }
 function ciCtx(root, gh, push = {}) {
   const notes = [];
@@ -462,7 +467,7 @@ test('CI green: every run of the pushed commit completed without a red conclusio
   const { gh, calls } = ghScript(() => [runRow(1, 'CI', 'completed', 'success'), runRow(2, 'Docs', 'completed', 'skipped')]);
   const { ctx, notes } = ciCtx(root, gh);
   await pushTick(ctx, later(1));
-  assert.deepEqual(calls, [['run', 'list', '--commit', SHA, '--json', 'databaseId,name,status,conclusion']]);
+  assert.deepEqual(calls, [['run', 'list', '--commit', SHA, '--json', 'databaseId,name,status,conclusion', '-R', 'acme/app']]);
   assert.equal(readJson(recordFile(root, '3')).lastPush.ci.state, 'green');
   assert.deepEqual(notes, []);
   assert.deepEqual(readInbox(root, '3'), []);
@@ -484,7 +489,7 @@ test('CI red: waits for every run, then puts each red run\'s failed log tail, ma
   assert.equal(readJson(recordFile(root, '3')).lastPush.ci.state, 'pending', 'one run still going');
   done = true;
   await pushTick(ctx, later(2));
-  assert.deepEqual(calls.at(-1), ['run', 'view', '7', '--log-failed']);
+  assert.deepEqual(calls.at(-1), ['run', 'view', '7', '--log-failed', '-R', 'acme/app']);
   const [m] = readInbox(root, '3');
   assert.deepEqual([m.kind, m.sha, m.run, m.workflow, m.conclusion, m.job, m.step, m.tail.at(-1)], ['ci-red', SHA, 7, 'CI', 'failure', 'test', 'Run npm test', 'Error: expected 1 to equal 2']);
   assert.ok(!fs.readFileSync(inboxFile(root, '3'), 'utf8').includes(GH));
@@ -527,12 +532,12 @@ test('no CI run within 5 minutes counts as no CI; a failing gh keeps waiting and
 
   const root2 = project();
   pendingRecord(root2);
-  const failing = ciCtx(root2, ghScript(() => new Error('gh run list failed: HTTP 401: Bad credentials')).gh);
+  const failing = ciCtx(root2, ghScript(() => new Error('gh run list failed: HTTP 502: Bad Gateway')).gh);
   await pushTick(failing.ctx, later(29));
   assert.equal(readJson(recordFile(root2, '3')).lastPush.ci.state, 'pending');
   await pushTick(failing.ctx, later(30));
   assert.equal(readJson(recordFile(root2, '3')).lastPush.ci.state, 'timeout');
-  assert.equal(failing.notes[0].vars.error, '; last gh error: gh run list failed: HTTP 401: Bad credentials');
+  assert.equal(failing.notes[0].vars.error, '; last gh error: gh run list failed: HTTP 502: Bad Gateway');
 });
 
 test('CI is checked before new requests: an older push\'s red result still reaches the inbox, then the new push supersedes other watches', async () => {
@@ -548,6 +553,7 @@ test('CI is checked before new requests: an older push\'s red result still reach
   });
   const { ctx } = ciCtx(r.root, gh, { ci: 'github' });
   ctx.deps.git = r.git;
+  onGithub(ctx);
   requestPush({ root: r.root, phase: '3', settings: ctx.config.push, git: r.git });
   await pushTick(ctx, later(1));
   assert.equal(readInbox(r.root, '3')[0].sha, old, 'the older push\'s red result reached the inbox');
@@ -620,6 +626,7 @@ test('a tick starts no new push or CI work once its time budget is used; a watch
 test('a refused request keeps the CI watch of the last push, whose red result still reaches the inbox', async () => {
   const r = pushRepo();
   const { ctx, notes } = supervisorCtx(r, { ci: 'github' });
+  onGithub(ctx);
   let red = false;
   ctx.deps.gh = (args) => (args[1] === 'view' ? 'test\tRun\t2026-10-10T10:00:00Z boom' : JSON.stringify([runRow(5, 'CI', red ? 'completed' : 'in_progress', red ? 'failure' : '')]));
   const pushed = r.commit('src/a.mjs', 'export const a = 1;\n');
@@ -636,4 +643,42 @@ test('a refused request keeps the CI watch of the last push, whose red result st
   assert.deepEqual([rec.outcome, rec.lastPush.ci.state], ['refused', 'red']);
   assert.equal(readInbox(r.root, '3')[0].sha, pushed);
   assert.deepEqual(notes.map((n) => n.key), ['pushRefused', 'ciRed']);
+});
+
+test('CI runs are read from the repository of push.remote; a remote not on GitHub counts as no CI and is told once', async () => {
+  const reason = 'remote origin is not a GitHub repository, so CI is not watched';
+  const r = pushRepo();
+  const { ctx, notes } = supervisorCtx(r, { ci: 'github' });
+  r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.deepEqual(rec.lastPush.ci, { state: 'none', reason });
+  assert.deepEqual(describeRecord(rec), { code: 0, line: `pushed ${rec.sha.slice(0, 7)} to origin/main · CI none (${reason})` });
+  r.commit('src/b.mjs', 'export const b = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.deepEqual(notes, [{ key: 'ciUnavailable', vars: { phase: '3', reason } }]);
+  // on GitHub: the watch names the repository for gh -R
+  onGithub(ctx);
+  r.commit('src/c.mjs', 'export const c = 1;\n');
+  ask(r, { ...ctx.config.push });
+  await pushTick(ctx, NOW);
+  assert.equal(readJson(recordFile(r.root, '3')).lastPush.repo, 'acme/app');
+});
+
+test('gh missing or not logged in: that push counts as having no CI at once, and the owner is told once', async () => {
+  const why = 'gh run list failed: the GitHub CLI (gh) is not installed or not on PATH';
+  const root = project();
+  pendingRecord(root, '3');
+  pendingRecord(root, '4', 'd'.repeat(40));
+  const { gh } = ghScript(() => Object.assign(new Error(why), { unavailable: true }));
+  const { ctx, notes } = ciCtx(root, gh);
+  await pushTick(ctx, later(1));
+  for (const p of ['3', '4']) {
+    const rec = readJson(recordFile(root, p));
+    assert.deepEqual([rec.lastPush.ci.state, rec.lastPush.ci.reason], ['none', `CI not watched: ${why}`]);
+    assert.equal(describeRecord(rec).code, 0, 'a waiting push-request returns at once');
+  }
+  assert.deepEqual(notes, [{ key: 'ciUnavailable', vars: { phase: '3', reason: `CI not watched: ${why}` } }]);
 });

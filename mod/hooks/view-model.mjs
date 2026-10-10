@@ -77,6 +77,14 @@ const TEXT = {
 const textOf = (view) => TEXT[view?.ui?.lang === 'ru' ? 'ru' : 'en'];
 const list = (v) => (Array.isArray(v) ? v : []);
 
+// Repository data (commit subjects, reasons, questions, agent actions) can hold terminal escapes and bidi controls:
+// OSC 52 rewrites the clipboard, ESC[2J clears the screen, U+202E reverses what follows. clean drops escape
+// sequences (CSI, OSC, DCS/SOS/PM/APC, two-character ones), C0/C1 controls except tab and newline, and bidi
+// overrides and isolates. Every string the mod draws goes through it.
+const ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[PX^_][^\x1b]*(?:\x1b\\)?|[@-Z\\-_])/g;
+const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+export const clean = (text) => String(text ?? '').replace(ESCAPES, '').replace(CONTROLS, '');
+
 // Grapheme clusters (what a terminal draws as one character: an emoji with its skin tone or ZWJ sequence, a flag, a
 // letter with its combining marks); code points where the runtime has no Intl.Segmenter.
 const SEGMENTER = typeof Intl === 'object' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('en', { granularity: 'grapheme' }) : null;
@@ -100,7 +108,7 @@ export const textWidth = (text) => graphemes(String(text ?? '')).reduce((n, g) =
 // One line at most max cells wide, whitespace collapsed, cut between grapheme clusters (an emoji, a flag or a letter
 // with its marks is never split) and ended with … when cut.
 export function cut(text, max) {
-  const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  const s = clean(text).replace(/\s+/g, ' ').trim();
   if (textWidth(s) <= max) return s;
   let out = '';
   let w = 0;
@@ -156,7 +164,7 @@ function questionRow(t, q) {
     phase: String(q.phase ?? ''),
     // the revision drawn (S1: every question starts at rev 1); turbo-run answer gets it as --rev
     rev: Number.isInteger(q.rev) && q.rev > 0 ? q.rev : 1,
-    text: `    ${planLabel(q)} · ${cut(q.question || q.header || '', 160)}`,
+    text: `    ${clean(planLabel(q))} · ${cut(q.question || q.header || '', 160)}`,
     // option is the 1-based number turbo-run answer --option takes
     options: list(q.options).map((o, i) => ({ key: `q:${id}:${i + 1}`, label: cut(o?.label || String(i + 1), 40), option: i + 1 })),
     other: q.allowOther !== false,
@@ -174,7 +182,7 @@ function questionRow(t, q) {
 export function render(view, { error = null } = {}) {
   const t = textOf(view);
   const rows = [];
-  const line = (text, tone = 'normal') => rows.push({ kind: 'text', text, tone });
+  const line = (text, tone = 'normal') => rows.push({ kind: 'text', text: clean(text), tone });
   if (error) line(`⚠ ${t.failed}: ${cut(error, 200)}`, 'error');
   if (!view) {
     if (!error) line(t.loading, 'dim');
@@ -221,7 +229,7 @@ export function bandLine(view, { error = null } = {}) {
   if (questions.length) parts.push(`? ${t.questions(questions.length)}`);
   const ci = lanes.map((l) => ciMark(l.push)).find(Boolean);
   if (ci) parts.push(ci);
-  return parts.join(' · ');
+  return clean(parts.join(' · '));
 }
 
 // What the toasts remember of each lane between reads: { [phase]: { status, red } }, red the sha of the red CI run
@@ -262,7 +270,7 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
     after[phase] = { status: n.status, red };
   }
   if (!prev.supervisor?.halted && sup?.halted) out.push(t.halted);
-  return { toasts: out, seen: after };
+  return { toasts: out.map(clean), seen: after };
 }
 
 export const toastsFor = (prev, next, seen) => diffViews(prev, next, seen).toasts;

@@ -241,3 +241,25 @@ test('open questions reach the view as S1 writes them, rev included: the pane an
   writeJsonAtomic(path.join(runDirOf(root), 'p32-questions.json'), [q, { ...q, id: '32-09-t3', state: 'answered', rev: 1 }]);
   assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).questions, [q]);
 });
+
+test('escape sequences and bidi overrides in repository data are dropped where the view reads them, so view --json, view and status --watch draw none', () => {
+  // OSC 52 (clipboard), ESC[2J (clear), colors and U+202E, built at run time
+  const E = String.fromCharCode(27);
+  const evil = `${E}]52;c;SGVsbG8=${String.fromCharCode(7)}${E}[2J${E}[31mred${E}[0m‮evil`;
+  const unsafe = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
+  const strings = (x) => (typeof x === 'string' ? [x] : x && typeof x === 'object' ? Object.values(x).flatMap(strings) : []);
+  const { root, dir, sup, env } = laneProject();
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', `fix: ${evil}`], { cwd: root });
+  writeLaneStatus(root, '32', 'needs-owner', { reason: `checkpoint ${evil}`, at: at('10:40') });
+  writeSession(dir, SESSION, [entry.user('run phase 32', at('09:48')), entry.launched('toolu_1', 'a2000000000000001', at('10:00'))]);
+  setMtime(writeAgent(dir, SESSION, 'a2000000000000001', [entry.agentUser('a2000000000000001', `Execute ${evil}`, at('10:00')), entry.assistant({ ts: at('10:58'), tool: { name: 'Bash', input: { command: `echo ${evil}` } }, usage: usage(0, 0, 1000), sidechain: true })], { agentType: `gsd-executor${evil}`, description: `Plan 32-07 ${evil}`, spawnDepth: 1 }), new Date(at('10:58')));
+  writeJsonAtomic(path.join(runDirOf(root), 'p32-questions.json'), [{ id: 'q1', phase: '32', plan: '32-09', task: '3', header: `H ${evil}`, question: `Deploy? ${evil}`, context: evil, options: [{ label: `Yes ${evil}`, description: evil, signal: evil }], state: 'open' }]);
+  const v = buildView({ root, sup, env, now: NOW });
+  for (const s of strings(v)) assert.ok(!unsafe.test(s), JSON.stringify(s));
+  assert.equal(v.commits[0].subject, 'fix: redevil');
+  assert.equal(v.lanes[0].reason, 'checkpoint redevil');
+  assert.equal(v.questions[0].question, 'Deploy? redevil');
+  assert.ok(v.lanes[0].agents[0].action.detail.includes('echo redevil'), JSON.stringify(v.lanes[0].agents[0]));
+  assert.ok(!unsafe.test(formatView({ ...v, commits: [{ sha: 'abc1234', subject: `raw ${evil}` }] })), 'formatView drops them from a view built elsewhere too');
+});

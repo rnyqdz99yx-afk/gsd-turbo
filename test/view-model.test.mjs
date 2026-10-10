@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, cut, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, textWidth, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, clean, cut, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, textWidth, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
 
 const AT = '2026-01-01T11:00:00.000Z';
 const agent = (over) => ({ agentId: 'a1', type: 'gsd-executor', description: '', plan: '32-07', task: '2', model: 'opus', worktreeBranch: null, state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, startedAt: '2026-01-01T10:54:00.000Z', lastAt: '2026-01-01T10:59:50.000Z', elapsedMs: 360000, tokens: 166000, sessionId: 's', transcript: 't', ...over });
@@ -114,6 +114,28 @@ test('textWidth counts terminal cells, so agent columns stay aligned with wide t
   const agents = [agent({ action: { tool: 'Edit', detail: '日本語のファイル名がとても長いです.mjs' } }), agent({ agentId: 'a2', plan: '32-08', action: { tool: 'Bash', detail: '👨‍👩‍👧 npm test 🇺🇸' } }), agent({ agentId: 'a3', type: 'gsd-エグゼキュータ', plan: '32-09' })];
   const rows = render(view({}, { agents })).rows.slice(2, 5).map((r) => r.text);
   assert.deepEqual(rows.map((t) => textWidth(t.slice(0, t.indexOf('6m · ')))), [54, 54, 54], rows.join('\n'));
+});
+
+// Repository data as an attacker would write it (built at run time): OSC 52 (clipboard), ESC[2J (clear), colors, a C1
+// CSI, a carriage return, NUL and bidi overrides and isolates.
+const E = String.fromCharCode(27);
+const EVIL = `${E}]52;c;SGVsbG8=${String.fromCharCode(7)}${E}[2J${E}[31mred${E}[0m‮evil⁦x⁩\r${String.fromCharCode(0x9b)}2J\u0000`;
+const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
+
+test('clean drops terminal escape sequences, control characters and bidi overrides', () => {
+  assert.equal(clean(EVIL), 'redevilx2J');
+  assert.equal(clean(`a${E}[31mb${E}[0mc`), 'abc');
+  assert.equal(clean(`${E}]52;c;SGVsbG8=${E}\\ok`), 'ok', 'OSC ended by ST');
+  assert.equal(clean(`${E}]0;title`), '', 'an unterminated OSC is dropped to its end');
+  assert.equal(clean('a‮b⁧c'), 'abc');
+  assert.equal(clean('tab\tand\nnewline stay; Ж 👍 日本'), 'tab\tand\nnewline stay; Ж 👍 日本');
+});
+
+test('no drawn string carries an escape or a bidi override: rows, buttons, band and toasts (OSC 52 would rewrite the clipboard every read)', () => {
+  const v = view({ range: { from: `32${EVIL}`, to: '34' }, questions: [{ id: 'q1', phase: `32${EVIL}`, plan: `32-09${EVIL}`, task: `3${EVIL}`, header: `H${EVIL}`, question: `Deploy?${EVIL}`, options: [{ label: `Yes${EVIL}` }], state: 'open' }], commits: [{ sha: `a1b2c3d${EVIL}`, subject: `fix: ${EVIL}` }] }, { phase: `32${EVIL}`, step: `execute${EVIL}`, status: `needs-owner${EVIL}`, reason: `checkpoint${EVIL}`, push: { outcome: 'pushed', sha: `b2c3d4e${EVIL}`, ci: 'red' }, agents: [agent({ type: `gsd${EVIL}`, plan: `32-07${EVIL}`, task: `2${EVIL}`, action: { tool: `Bash${EVIL}`, detail: `rm${EVIL}` } }), agent({ agentId: 'a9', type: `v${EVIL}`, state: `odd${EVIL}` })] });
+  const drawn = render(v).rows.flatMap((r) => (r.kind === 'text' ? [r.text] : [r.text, ...(r.choices ?? []), ...r.options.map((o) => o.label)]));
+  for (const s of [...drawn, bandLine(v), ...toastsFor(view({ questions: [] }, { status: 'running', push: null }), v)]) assert.ok(!UNSAFE.test(s), JSON.stringify(s));
+  assert.ok(drawn.some((s) => s.includes('fix: redevilx2J')));
 });
 
 test('bandLine is the spec §7 line, names a stopped supervisor or lane, and is absent where turbo never ran (Review Focus 1)', () => {

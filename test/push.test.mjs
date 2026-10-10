@@ -47,6 +47,8 @@ test('createGit: argument array, no shell, never a credential prompt, a time lim
   assert.equal(c.cmd, 'git');
   assert.equal(c.args.at(-1), 'status');
   assert.ok(c.args.includes('core.quotepath=false'));
+  // a signature check never prints into what turbo parses
+  assert.ok(c.args.includes('log.showSignature=false'));
   assert.deepEqual([c.opts.cwd, c.opts.shell, c.opts.timeout, c.opts.env.KEEP, c.opts.env.GIT_TERMINAL_PROMPT, c.opts.env.GCM_INTERACTIVE], ['/proj', undefined, 1234, '1', '0', 'never']);
   assert.equal((createGit('/proj', { exec: (cmd, args, opts) => opts.timeout })(['status'])), 60000, 'a default time limit');
   // fetch and push run under lib/tree-timeout.mjs, which ends git's hooks, ssh and remote helpers at the time limit
@@ -159,6 +161,27 @@ test('scanRange scans every commit message of the range and names the commit, ne
   const findings = scanRange(r.git, base, sha);
   assert.deepEqual(findings, [{ file: `(commit message ${bad.slice(0, 7)})`, kind: 'github token' }]);
   assert.ok(!JSON.stringify(findings).includes(GH));
+});
+
+test('a signed commit is scanned like any other when log.showSignature is on: its files and its message', (t) => {
+  const r = pushRepo();
+  const key = path.join(tmpDir('sig'), 'key');
+  try {
+    execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'turbo-test', '-f', key], { stdio: 'ignore', windowsHide: true });
+  } catch {
+    t.skip('ssh-keygen is not available');
+    return;
+  }
+  for (const [k, v] of [['gpg.format', 'ssh'], ['user.signingkey', key], ['commit.gpgsign', 'true'], ['log.showSignature', 'true']]) r.sh('config', k, v);
+  const base = r.sh('rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(r.root, '.env'), 'X=1\n');
+  r.sh('add', '-A');
+  r.sh('commit', '-q', '-m', 'config', '-m', `deploy with ${GH}`);
+  const sha = r.sh('rev-parse', 'HEAD');
+  assert.deepEqual(scanRange(r.git, base, sha), [
+    { file: `(commit message ${sha.slice(0, 7)})`, kind: 'github token' },
+    { file: '.env', kind: 'forbidden name .env*' },
+  ]);
 });
 
 test('scanRange shows merges separately whatever log.diffMerges says, and a header of any diff form starts a new file', () => {

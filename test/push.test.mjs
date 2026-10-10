@@ -71,6 +71,26 @@ test('scanRange names forbidden files and secret kinds from every commit of the 
   assert.deepEqual(scanRange(r.git, sha, sha), []);
 });
 
+test('scanRange names the real path behind a C-quoted diff header and behind a name with a space', () => {
+  // git quotes a path with ", \ or control characters ("b/…" with octal byte escapes) and ends an unquoted
+  // path that holds a space with a tab
+  const patch = [
+    'diff --git "a/d\\303\\251j\\303\\240 \\"q\\".mjs" "b/d\\303\\251j\\303\\240 \\"q\\".mjs"',
+    'new file mode 100644',
+    '--- /dev/null',
+    '+++ "b/d\\303\\251j\\303\\240 \\"q\\".mjs"',
+    '@@ -0,0 +1 @@',
+    `+export const t = '${GH}';`,
+    'diff --git a/sp ace.mjs b/sp ace.mjs',
+    '--- /dev/null',
+    '+++ b/sp ace.mjs\t',
+    '@@ -0,0 +1 @@',
+    `+export const t = '${GH}';`,
+  ].join('\n');
+  const git = (args) => (args.includes('--name-only') ? Buffer.alloc(0) : patch);
+  assert.deepEqual(scanRange(git, 'b', 'h'), [{ file: 'déjà "q".mjs', kind: 'github token' }, { file: 'sp ace.mjs', kind: 'github token' }]);
+});
+
 test('scanRange refuses a file name it cannot read as UTF-8 instead of skipping it', () => {
   const git = (args) => (args.includes('--name-only') ? Buffer.from([0x61, 0xff, 0x2e, 0x6c, 0x6f, 0x67, 0x00]) : '');
   assert.deepEqual(scanRange(git, 'b', 'h'), [{ file: '(a file name that is not UTF-8)', kind: 'unreadable file name' }]);

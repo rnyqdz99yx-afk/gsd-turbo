@@ -115,3 +115,14 @@ test('turbo-phase skill: each exit-1 line of push-request says whether the owner
   const close = s.slice(s.indexOf('\n### close\n'));
   assert.ok(!close.includes('any other line → the owner was notified'));
 });
+
+test('turbo-phase skill: CI red rounds count once per red commit, and no new commit means no new round (S2)', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const red = s.slice(s.indexOf('**CI red.**'), s.indexOf('**A plan that pushes.**'));
+  assert.match(red, /per red commit/);
+  assert.match(red, /is not counted again/);
+  assert.match(red, /never ask for a push of the same commit again/);
+  // the executor-prompt paragraph of A plan that pushes is one of the named exceptions to "never rebuild a prompt"
+  const conventions = s.slice(s.indexOf('## Conventions'), s.indexOf('## The step loop'));
+  assert.match(conventions, /except where a step below says so \([^)]*\*\*A plan that pushes\*\*/);
+});

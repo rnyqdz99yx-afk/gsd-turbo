@@ -174,3 +174,21 @@ test('fullEntries: an invalid list is a config error naming the file and the ent
     }, JSON.stringify(full));
   }
 });
+
+test('fullEntries review 4/6: a dir that leads outside through a link, or names a listed directory again, is a config error', (t) => {
+  const root = entriesRoot();
+  const outside = tmpDir('outside');
+  try {
+    fs.symlinkSync(outside, path.join(root, 'linked'), 'junction');
+    fs.symlinkSync(path.join(root, 'server'), path.join(root, 'alias'), 'junction');
+  } catch (err) {
+    t.skip(`cannot create a directory link here (${err.code})`);
+    return;
+  }
+  assert.throws(() => fullEntries(['npm test', { dir: 'linked', command: 'npm test' }], root), /test\.full\[1\]\.dir "linked" leads outside the project root \(through a link\)/);
+  assert.throws(() => fullEntries(['npm test', { dir: 'server', command: 'a' }, { dir: 'alias', command: 'b' }], root), /test\.full\[2\]\.dir "alias" is listed twice \(as test\.full\[1\]\)/);
+  // a case-insensitive file system (Windows, macOS): another spelling is the same directory
+  const other = [{ dir: 'server', command: 'a' }, { dir: 'SERVER', command: 'b' }];
+  const insensitive = fs.existsSync(path.join(root, 'SERVER'));
+  assert.throws(() => fullEntries(other, root), insensitive ? /test\.full\[1\]\.dir "SERVER" is listed twice \(as test\.full\[0\]\)/ : /test\.full\[1\]\.dir "SERVER" is not a directory in the project/);
+});

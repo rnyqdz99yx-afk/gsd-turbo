@@ -114,6 +114,8 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
   const model = render(first);
   const q = model.rows.find((r) => r.kind === 'question');
   const buttons = `[${[...q.options.map((o) => o.label), q.otherLabel].join('] [')}]`;
+  const labels = first.questions[0].options.map((o) => o.label);
+  const choices = labels.map((l, i) => `${i + 1}. ${l}`).join('  ');
   return [
     `turbo-view visual check — demo in ${dir}`,
     '',
@@ -123,12 +125,12 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
     'Accept the trust prompt for the demo folder. Then check:',
     `  1. Within 3 s the pane opens by itself on the right: "${model.rows[0].text}", lane p32 execute, two running`,
     '     agents whose time and tokens grow every 3 s, a quiet gsd-verifier row with ⚠, one finished row,',
-    `     one question with the buttons ${buttons}, and three commits.`,
+    `     one question with its options listed in full (${choices}) above the buttons ${buttons}, and three commits.`,
     `  2. The band above the prompt reads "${bandLine(first)}".`,
     '  3. Over the next 40 s, toasts: a new question (read 4), CI red (read 7; the band then shows CI ✗), phase 32',
     '     stopped: needs-owner (read 10), phase 32 done (read 13). The script repeats every 16 reads.',
     `  4. Focus the pane (click it, or Ctrl+X then Tab), Tab to [${q.options[1].label}], press Enter: a toast`,
-    `     "answered q1: ${q.options[1].label}, pane, <time>", and the question leaves the pane within 3 s.`,
+    `     "answered q1: ${labels[1]}, pane, <time>", and the question leaves the pane within 3 s.`,
     `  5. On the second question press [${q.otherLabel}] and type, slowly over a few seconds: проверка 👍 — the text stays`,
     '     while the pane redraws every 3 s. Then Enter: a toast with that text.',
     `     Both answers are in ${path.join(project, '.planning', 'turbo', ANSWERS)}.`,

@@ -29,7 +29,8 @@ function view(over = {}, lane = {}) {
     ...over,
   };
 }
-const texts = (model) => model.rows.map((r) => (r.kind === 'text' ? r.text : `${r.text} [${r.options.map((o) => o.label).join('] [')}]${r.other ? ` [${r.otherLabel}]` : ''}`));
+// A question row as the pane draws it: the question, its options numbered in full, then one short button per option.
+const texts = (model) => model.rows.flatMap((r) => (r.kind === 'text' ? [r.text] : [r.text, ...r.choices, `    [${[...r.options.map((o) => o.label), ...(r.other ? [r.otherLabel] : [])].join('] [')}]`]));
 
 test('render draws the spec §7 tree: supervisor, lane → step → subagents, questions with their buttons, commits', () => {
   assert.deepEqual(texts(render(view())), [
@@ -40,7 +41,10 @@ test('render draws the spec §7 tree: supervisor, lane → step → subagents, q
     '    gsd-verifier  —             quiet 16m             ⚠',
     '    gsd-executor  32-06         completed             45s · 950',
     '? 1 question',
-    '    32-09 Task 3 · Deploy after green CI? [Yes, by the gate] [Stop] [Other…]',
+    '    32-09 Task 3 · Deploy after green CI?',
+    '      1. Yes, by the gate',
+    '      2. Stop',
+    '    [1] [2] [Other…]',
     'commits:',
     '  a1b2c3d fix: lane record keeps the reason',
     '  d4e5f6a test: quiet agents',
@@ -56,15 +60,20 @@ test('render in Russian follows lang: durations, quiet, plurals and the Other bu
   assert.equal(lines[4], '    gsd-verifier  —             тихо 16 мин           ⚠');
   assert.equal(lines[5], '    gsd-executor  32-06         готов                 45 с · 950');
   assert.equal(lines[6], '? 1 вопрос');
-  assert.match(lines[7], /\[Другое…\]$/);
-  assert.equal(lines[8], 'коммиты:');
+  assert.equal(lines[10], '    [1] [2] [Другое…]');
+  assert.equal(lines[11], 'коммиты:');
 });
 
 test('question rows carry the phase, the id, the rev drawn, 1-based option numbers and unique control keys', () => {
   const [q] = render(view()).rows.filter((r) => r.kind === 'question');
   assert.deepEqual([q.phase, q.id, q.rev, q.other], ['32', 'q1', 1, true]);
   assert.equal(render(view({ questions: [{ ...view().questions[0], rev: 3 }] })).rows.find((r) => r.kind === 'question').rev, 3);
-  assert.deepEqual(q.options, [{ key: 'q:q1:1', label: 'Yes, by the gate', option: 1 }, { key: 'q:q1:2', label: 'Stop', option: 2 }]);
+  assert.deepEqual(q.options, [{ key: 'q:q1:1', label: '1', option: 1 }, { key: 'q:q1:2', label: '2', option: 2 }]);
+  assert.deepEqual(q.choices, ['      1. Yes, by the gate', '      2. Stop']);
+  // two long options that share their first 50 characters stay told apart: the owner never clicks blind
+  const same = 'Deploy to production after the green CI run and then ';
+  const long = render(view({ questions: [{ id: 'q5', phase: '32', question: 'Which?', options: [{ label: `${same}notify` }, { label: `${same}wait` }], state: 'open' }] })).rows.find((r) => r.kind === 'question');
+  assert.deepEqual(long.choices, [`      1. ${same}notify`, `      2. ${same}wait`]);
   assert.deepEqual([q.otherKey, q.inputKey, q.inputLabel, q.submitLabel], ['q:q1:other', 'q:q1:text', 'Answer', 'send']);
   const noOther = render(view({ questions: [{ id: 'q9', phase: '7', question: 'Plug in the device', options: [{ label: 'I will when asked' }], allowOther: false, state: 'open' }] })).rows.find((r) => r.kind === 'question');
   assert.equal(noOther.other, false);
@@ -103,8 +112,8 @@ test('long and multi-code-point text is cut by grapheme clusters to a cell width
   assert.equal(cut('é'.repeat(6), 4), 'ééé…', 'a combining mark stays on its letter');
   const long = render(view({ questions: [{ id: 'q1', phase: '32', plan: '32-09', task: '3', question: 'Ж'.repeat(500), options: [{ label: 'x'.repeat(90) }], state: 'open' }], commits: [{ sha: 'a1b2c3d', subject: `fix: ${'😀'.repeat(200)}` }] }));
   const q = long.rows.find((r) => r.kind === 'question');
-  assert.equal(Array.from(q.text).length, '    32-09 Task 3 · '.length + 160);
-  assert.equal(Array.from(q.options[0].label).length, 40);
+  assert.equal(Array.from(q.text).length, '    32-09 Task 3 · '.length + 300, 'the question up to 300 characters (S1 QUESTION_MAX), wrapped by the pane');
+  assert.equal(Array.from(q.choices[0]).length, '      1. '.length + 80, 'an option label up to 80 (S1 LABEL_MAX)');
   const subject = long.rows.at(-1).text;
   assert.ok(Array.from(subject).every((ch) => ch.codePointAt(0) < 0xd800 || ch.codePointAt(0) > 0xdfff), 'no lone surrogate');
 });

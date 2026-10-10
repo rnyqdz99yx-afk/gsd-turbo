@@ -77,6 +77,10 @@ test('in a turbo project the band and the pane show the view, and an option butt
   expect(await band.find({ type: 'Text', text: 'turbo p32 execute · 1 agent · ? 1 question · CI ✓' })).toBeDefined()
   const pane = await $.ui.mount(PANE)
   expect(await pane.find({ type: 'Text', text: /gsd-executor +32-07 Task 2 +Edit lib\/x\.mjs +6m · 166k/ })).toBeDefined()
+  // the question in full, its options numbered, one short numbered button per option
+  expect((await pane.find({ type: 'Text', text: '    32-09 Task 3 · Deploy after green CI?' })).props.wrap).toBe('wrap')
+  expect(await pane.find({ type: 'Text', text: '      2. Stop' })).toBeDefined()
+  expect((await pane.find({ key: 'q:q1:2' })).props.label).toBe('2')
   await pane.press({ key: 'q:q1:1' })
   await clock.settle()
   expect(calls.find((c) => c[2] === 'answer')).toEqual([NODE, BIN, 'answer', '32', 'q1', '--option', '1', '--by', 'pane', '--rev', '1'])

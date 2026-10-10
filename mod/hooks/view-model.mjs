@@ -9,6 +9,9 @@ export const PANE_TITLE = 'turbo';
 export const BACKGROUND_MS = 15000;
 export const DEFAULT_REFRESH_SECONDS = 3;
 const FINISHED_SHOWN = 3;
+// S1's limits on what a question holds: the question text and each option label
+const QUESTION_MAX = 300;
+const LABEL_MAX = 80;
 const ACTIVE = new Set(['running', 'quiet']);
 const STOPPED = new Set(['needs-owner', 'failed']);
 const CI_MARK = { green: 'CI ✓', red: 'CI ✗', pending: 'CI …', timeout: 'CI ?' };
@@ -164,9 +167,12 @@ function questionRow(t, q) {
     phase: String(q.phase ?? ''),
     // the revision drawn (S1: every question starts at rev 1); turbo-run answer gets it as --rev
     rev: Number.isInteger(q.rev) && q.rev > 0 ? q.rev : 1,
-    text: `    ${clean(planLabel(q))} · ${cut(q.question || q.header || '', 160)}`,
-    // option is the 1-based number turbo-run answer --option takes
-    options: list(q.options).map((o, i) => ({ key: `q:${id}:${i + 1}`, label: cut(o?.label || String(i + 1), 40), option: i + 1 })),
+    // the whole question (S1 keeps it to QUESTION_MAX), drawn wrapped
+    text: `    ${clean(planLabel(q))} · ${cut(q.question || q.header || '', QUESTION_MAX)}`,
+    // every option in full (S1: LABEL_MAX), numbered as the buttons under them, so two long options never look alike
+    choices: list(q.options).map((o, i) => `      ${i + 1}. ${cut(o?.label || '', LABEL_MAX)}`),
+    // one short button per option; option is the 1-based number turbo-run answer --option takes
+    options: list(q.options).map((o, i) => ({ key: `q:${id}:${i + 1}`, label: String(i + 1), option: i + 1 })),
     other: q.allowOther !== false,
     otherKey: `q:${id}:other`,
     inputKey: `q:${id}:text`,

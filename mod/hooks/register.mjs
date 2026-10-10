@@ -248,7 +248,9 @@ export function register(on) {
           }),
         );
       }
-      return Box({ flexDirection: 'column', children: [Text({ children: [row.text], wrap: 'truncate-end' }), Box({ flexDirection: 'row', columnGap: 1, flexWrap: 'wrap', children: controls })] });
+      // the question and its numbered options wrap, so all of them is read before a numbered button is pressed
+      const lines = [row.text, ...row.choices].map((text) => Text({ children: [text], wrap: 'wrap' }));
+      return Box({ flexDirection: 'column', children: [...lines, Box({ flexDirection: 'row', columnGap: 1, flexWrap: 'wrap', children: controls })] });
     });
     return Box({ flexDirection: 'column', children });
   });

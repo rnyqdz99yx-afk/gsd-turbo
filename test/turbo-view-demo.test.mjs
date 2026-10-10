@@ -20,7 +20,7 @@ test('the demo builds a project with .planning/turbo/ and a test-free copy of th
   assert.ok(text.includes(`cd "${project}" && TURBO_VIEW_BIN="${DEMO}" claude --plugin-dir "${mod}"`), text);
   assert.ok(text.includes('$env:TURBO_VIEW_BIN'));
   assert.ok(text.includes('"turbo · фазы 32–34 · супервизор работает"'), text);
-  assert.ok(text.includes('[Да, по гейту] [Стоп] [Другое…]'), text);
+  assert.ok(text.includes('1. Да, по гейту  2. Стоп') && text.includes('[1] [2] [Другое…]'), text);
   assert.ok(text.includes('"turbo p32 execute · 3 агента · ? 1 вопрос · CI ✓"'), text);
 });
 

@@ -103,3 +103,14 @@ test('turbo-phase skill: push and CI (S2) — the lane asks, the supervisor push
   assert.ok(execute.includes('turbo-run push-request N --at wave') && execute.includes('turbo-run inbox N'));
   assert.ok(!/^\s*(\d+\.\s*)?`?git push/m.test(s), 'no step runs git push');
 });
+
+test('turbo-phase skill: each exit-1 line of push-request says whether the owner was notified (S2)', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const push = s.slice(s.indexOf('\n### Push and CI\n'), s.indexOf('**CI red.**'));
+  assert.ok(!s.includes('ends this request and the owner was notified'));
+  assert.match(push, /`refused: …`[^\n]*: the owner was notified/);
+  assert.match(push, /`failed: no supervisor is running …`[^\n]*: nobody was notified/);
+  assert.match(push, /`superseded: …`[^\n]*: [^\n]*nobody was notified/);
+  const close = s.slice(s.indexOf('\n### close\n'));
+  assert.ok(!close.includes('any other line → the owner was notified'));
+});

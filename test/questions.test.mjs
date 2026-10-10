@@ -6,9 +6,11 @@ import { tmpDir } from './helpers/tmp.mjs';
 import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
 import { parseCheckpoints } from '../lib/checkpoints.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
+import { completeStep, readProgress } from '../lib/phase-progress.mjs';
+import { answerQuestion } from '../lib/answers.mjs';
 import {
-  CLASSES, answersRel, buildQuestion, classifyQuestions, dynamicQuestion, liveAnswer, lockFile, questionId, questionsFile,
-  readAnswers, readQuestions, refreshQuestions, withPhaseLock, writeAnswers,
+  CLASSES, answersRel, buildQuestion, classifyQuestions, deliveryState, dynamicQuestion, liveAnswer, lockFile, markDelivered,
+  questionId, questionsFile, readAnswers, readQuestions, refreshQuestions, stopQuestion, withPhaseLock, writeAnswers,
 } from '../lib/questions.mjs';
 
 const cpOf = (text) => parseCheckpoints(text)[0];
@@ -158,4 +160,63 @@ test('the phase lock: a second writer waits and gives up with a clear error; a l
   assert.equal(fs.existsSync(file), false);
   assert.throws(() => withPhaseLock(root, '32', () => { throw new Error('boom'); }), /boom/);
   assert.equal(fs.existsSync(file), false, 'released after an error');
+});
+
+const AG = 'a0123456789abcdef';
+const owner = (root, id, more) => answerQuestion({ root, phase: '32', id, by: 'session', laneRunning: true, ...more });
+
+test('a stop at an unanswered checkpoint opens it again with the options the waiting agent takes, its agent and a new rev', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  const r = stopQuestion(root, '32', '32-10-t3', { agentId: AG });
+  assert.equal(r.status, 'stopped');
+  assert.deepEqual([r.question.stopped, r.question.agentId, r.question.state, r.question.rev, r.question.condition], [true, AG, 'open', 2, null]);
+  assert.deepEqual(r.question.options.map((o) => o.label), ['Approved']);
+  assert.deepEqual(deliveryState(root, '32').waiting.map((q) => q.id), ['32-10-t3']);
+  assert.equal(refreshQuestions(root, '32').find((q) => q.id === '32-10-t3').options[0].label, 'Approved', 'a refresh keeps the stop');
+});
+
+test('a stop at an answered checkpoint is delivered at once, unless the executor reports its condition unmet', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  owner(root, '32-09-t2', { option: 1 });
+  const r = stopQuestion(root, '32', '32-09-t2', { agentId: AG });
+  assert.equal(r.status, 'answered');
+  assert.deepEqual(deliveryState(root, '32').ready.map((q) => [q.id, q.agentId]), [['32-09-t2', AG]]);
+  const unmet = stopQuestion(root, '32', '32-09-t2', { agentId: AG, unmet: true, now: new Date('2026-01-01T11:00:00Z') });
+  assert.deepEqual([unmet.status, unmet.question.state], ['stopped', 'open']);
+  const recs = readAnswers(root, '32');
+  assert.equal(recs[0].superseded, '2026-01-01T11:00:00.000Z');
+  assert.equal(liveAnswer(recs, '32-09-t2'), null);
+  assert.equal(owner(root, '32-09-t2', { option: 2, by: 'telegram' }).status, 'recorded', 'a new answer stands');
+  assert.equal(deliveryState(root, '32').ready[0].answer.label, 'Supabase Auth');
+});
+
+test('a deferred checkpoint opens at the stop; a checkpoint that is no plan task needs its kind and a line', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  owner(root, '32-11-t2', { option: 1 });
+  const r = stopQuestion(root, '32', '32-11-t2', { agentId: AG });
+  assert.equal(r.status, 'stopped');
+  assert.deepEqual(r.question.options.map((o) => o.signal), ['done']);
+  assert.throws(() => stopQuestion(root, '32', '32-09-t7', { agentId: AG }), /--kind human-verify\|human-action and --question/);
+  const d = stopQuestion(root, '32', '32-09-t7', { agentId: AG, kind: 'human-action', question: 'Log in to the deploy CLI' });
+  assert.deepEqual([d.status, d.question.source, d.question.question], ['stopped', 'stop', 'Action: Log in to the deploy CLI']);
+  assert.ok(refreshQuestions(root, '32').some((q) => q.id === '32-09-t7'), 'kept while its plan is open');
+  assert.throws(() => stopQuestion(root, '32', '32-09-t2', { agentId: '../x' }), /--agent/);
+});
+
+test('markDelivered records the path on the question and as a note of the step in progress', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  for (const s of ['freshness', 'discuss', 'prologue', 'plan', 'gates-off']) completeStep(root, '32', s);
+  stopQuestion(root, '32', '32-10-t3', { agentId: AG });
+  assert.throws(() => markDelivered(root, '32', '32-10-t3', 'same-agent'), /is open, not answered/);
+  owner(root, '32-10-t3', { option: 1 });
+  assert.throws(() => markDelivered(root, '32', '32-10-t3', 'carrier-pigeon'), /same-agent or continuation/);
+  const q = markDelivered(root, '32', '32-10-t3', 'same-agent', { now: new Date('2026-01-01T12:00:00Z') });
+  assert.deepEqual([q.state, q.delivery], ['delivered', { path: 'same-agent', at: '2026-01-01T12:00:00.000Z' }]);
+  assert.equal(readProgress(root, '32').notes.execute, 'owner answer 32-10-t3: same-agent');
+  assert.deepEqual(deliveryState(root, '32').ready, []);
+  assert.equal(refreshQuestions(root, '32').find((x) => x.id === '32-10-t3').state, 'delivered');
 });

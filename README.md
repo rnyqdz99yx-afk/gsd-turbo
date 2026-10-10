@@ -115,10 +115,12 @@ To watch a phase live, run `claude attach <session id>` (the id is in the status
 The same commands work without the skill, in a bash-compatible shell (Git Bash on Windows):
 
 ```sh
-node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor   # also: init, start [--from <N>] [--to <N>], start --only <N>, start --all, status, stop, resume <phase> [--start], context [<phase>] [--json]
+node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor   # also: init, start [--from <N>] [--to <N>], start --only <N>, start --all, status, view [--json], stop, resume <phase> [--start], context [<phase>] [--json]
 ```
 
 Below, `turbo-run` stands for this `node …/turbo-run.mjs` call; the installer does not put it on your PATH. Its other subcommands, such as `phase-step`, `staleness`, `gates`, `jobs`, `uat`, `lane-status`, `state-sync`, `context` and `test-changed`, are the deterministic steps the supervisor and the sessions call. You need them only for recovery: `turbo-run gates restore <N>` ([GSD settings turbo writes](#gsd-settings-turbo-writes)), `turbo-run lane-status <N> done` ([Full and safe mode](#full-and-safe-mode)) and `turbo-run state-sync <N>` ([Context and the resume position](#context-and-the-resume-position)).
+
+To see a run at a glance, run `turbo-run view`. It shows the supervisor and its range; for each lane, its phase, its current `/turbo-phase` step, its status, session id and running time; the lane's subagents with their type, plan, current action, time and context tokens; open owner questions; and the last five commits. A subagent counts as `completed`, `stopped` or `failed` only once Claude Code has reported this to the lane session. Until then it is `running` while its transcript keeps being written, and `quiet` after `stall_minutes` without a write. `quiet` is only a mark: nothing is stopped or restarted because of it. `turbo-run view --json` prints the same information as one JSON object. The command reads Claude Code's transcripts and job state under `${CLAUDE_CONFIG_DIR:-~/.claude}` and turbo's run files, and changes none of them. It keeps a cache in `.planning/turbo/run/view-cache.json` and masks secrets in everything it prints.
 
 To run a single phase without the supervisor, run `/turbo-phase <N>` in Claude Code, in a clean checkout. It needs `turbo-run doctor` to report `mode: full`; otherwise it stops at once.
 
@@ -254,6 +256,7 @@ What is left for you goes into one file per phase, `.planning/turbo/run/p<N>-own
 | `poll_seconds` | `20` | Supervisor check interval in seconds (5–3600). |
 | `max_restarts_without_progress` | `3` | Restarts in a row without a new commit or plan summary before the supervisor halts and notifies you (at least 1). |
 | `blocked_minutes_before_notify` | `10` | Minutes a session may wait for input, or the supervisor may keep failing, before you are notified (at least 1). |
+| `stall_minutes` | `15` | Minutes without a transcript write after which `turbo-run view` shows a subagent or a lane as `quiet` (at least 1). Only a mark: nothing is stopped or restarted because of it. |
 | `notify.desktop` | `true` | Desktop notifications (Windows toast, `osascript` on macOS, `notify-send` on Linux). |
 | `notify.telegram` | `false` | Telegram notifications; see [Telegram](#telegram-optional). |
 | `test.full` | `"npm test"` | The full test command, run through `bash -c` like GSD does. `init` sets it to your previous `workflow.test_command` when there was one; otherwise, unless GSD itself would run `npm test` in your project, set it to your full test command and run `turbo-run init` again. A list runs several packages; see [Several packages in `test.full`](#several-packages-in-testfull). |

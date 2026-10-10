@@ -118,7 +118,7 @@ test('scanRange names the real path behind a C-quoted diff header and behind a n
     '@@ -0,0 +1 @@',
     `+export const t = '${GH}';`,
   ].join('\n');
-  const git = (args) => (args.includes('--name-only') ? Buffer.alloc(0) : patch);
+  const git = (args) => (args.includes('--name-only') ? Buffer.alloc(0) : args.includes('-p') ? patch : '');
   assert.deepEqual(scanRange(git, 'b', 'h'), [{ file: 'déjà "q".mjs', kind: 'github token' }, { file: 'sp ace.mjs', kind: 'github token' }]);
 });
 
@@ -134,6 +134,17 @@ test('scanRange reads files git calls binary as text, and refuses Git LFS pointe
     { file: 'blob.bin', kind: 'github token' },
     { file: 'notes.txt', kind: 'github token' },
   ]);
+});
+
+test('scanRange scans every commit message of the range and names the commit, never the value', () => {
+  const r = pushRepo();
+  const base = r.sh('rev-parse', 'HEAD');
+  r.sh('commit', '-q', '--allow-empty', '-m', 'wip', '-m', `deploy with ${GH}`);
+  const bad = r.sh('rev-parse', 'HEAD');
+  const sha = r.commit('src/ok.mjs', 'export const ok = 1;\n');
+  const findings = scanRange(r.git, base, sha);
+  assert.deepEqual(findings, [{ file: `(commit message ${bad.slice(0, 7)})`, kind: 'github token' }]);
+  assert.ok(!JSON.stringify(findings).includes(GH));
 });
 
 test('scanRange shows merges separately whatever log.diffMerges says, and a header of any diff form starts a new file', () => {
@@ -230,7 +241,7 @@ test('the supervisor pushes the requested head once: fetch, ancestor check, scan
   assert.equal(r.remoteHead(), sha);
   const rec = readJson(recordFile(r.root, '3'));
   assert.deepEqual([rec.outcome, rec.sha, rec.branch, rec.remote, rec.at, rec.ci], ['pushed', sha, 'main', 'origin', NOW.toISOString(), { state: 'none', reason: 'push.ci is none' }]);
-  assert.deepEqual(calls.map((a) => a[0]), ['symbolic-ref', 'rev-parse', 'fetch', 'merge-base', 'log', 'log', 'push']);
+  assert.deepEqual(calls.map((a) => a[0]), ['symbolic-ref', 'rev-parse', 'fetch', 'merge-base', 'log', 'log', 'log', 'push']);
   const push = calls.at(-1);
   assert.deepEqual(push, ['push', '--quiet', 'origin', `${sha}:refs/heads/main`]);
   assert.ok(!push.some((a) => /^(-f|--force.*|--no-verify|--mirror|--delete|-d|--all|--tags)$/.test(a) || a.startsWith('+')));

@@ -4,16 +4,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { claudeHome as defaultHome } from './lib/paths.mjs';
 import { writeJsonAtomic } from './lib/fsx.mjs';
+import { MIN_CLAUDE_MODS, claudeVersionText, supportsMods } from './lib/doctor.mjs';
 
 const REPO = path.dirname(fileURLToPath(import.meta.url));
 const MANIFEST = 'turbo/install-manifest.json';
+// The turbo-view mod (spec §7) goes where Claude Code loads it by itself, as turbo-view@skills-dir.
+const MOD_DIR = path.join('skills', 'turbo-view');
+// Never copied from mod/: its harness tests, and what Claude Code writes into a mod loaded with --plugin-dir.
+const modSkipped = (rel) => /\.test\.[cm]?[jt]sx?$/.test(rel) || /^\.claude-plugin\/types(\/|$)/.test(rel) || rel === 'tsconfig.json';
 
 function walk(dir) {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]);
 }
 
-function plan(repoDir) {
+function plan(repoDir, { mod = false } = {}) {
   const pairs = [];
   for (const sub of ['bin', 'lib']) for (const f of walk(path.join(repoDir, sub))) pairs.push([f, path.join('turbo', path.relative(repoDir, f))]);
   pairs.push([path.join(repoDir, 'package.json'), path.join('turbo', 'package.json')]);
@@ -22,6 +27,12 @@ function plan(repoDir) {
     for (const f of walk(path.join(repoDir, 'skills', d))) pairs.push([f, path.join('skills', path.relative(path.join(repoDir, 'skills'), f))]);
   }
   for (const f of walk(path.join(repoDir, 'agents'))) if (path.basename(f).startsWith('turbo-')) pairs.push([f, path.join('agents', path.basename(f))]);
+  if (mod) {
+    for (const f of walk(path.join(repoDir, 'mod'))) {
+      const rel = path.relative(path.join(repoDir, 'mod'), f).split(path.sep).join('/');
+      if (!modSkipped(rel)) pairs.push([f, path.join(MOD_DIR, rel)]);
+    }
+  }
   return pairs;
 }
 
@@ -42,9 +53,10 @@ function turboOwnedDir(home, dir) {
   return rel === 'turbo' || rel.startsWith('turbo/') || /^skills\/turbo-[^/]+(\/|$)/.test(rel);
 }
 
-export function install({ repoDir = REPO, claudeHome = defaultHome(), dryRun = false } = {}) {
+// claudeVersion: `claude --version` output; the turbo-view mod goes in only when it names 2.1.290 or newer.
+export function install({ repoDir = REPO, claudeHome = defaultHome(), dryRun = false, claudeVersion = null } = {}) {
   const home = path.resolve(claudeHome);
-  const pairs = plan(repoDir);
+  const pairs = plan(repoDir, { mod: supportsMods(claudeVersion) });
   for (const [, rel] of pairs) if (/(^|[\\/])gsd-/.test(rel)) throw new Error(`refusing to write a gsd-* path: ${rel}`);
   const version = JSON.parse(fs.readFileSync(path.join(repoDir, 'package.json'), 'utf8')).version;
   const manifest = { version, installedAt: new Date().toISOString(), files: pairs.map(([, rel]) => rel.replace(/\\/g, '/')) };
@@ -119,6 +131,13 @@ function isMain() {
   }
 }
 
+// What install says when it leaves the mod out; null when the mod goes in.
+export function modNote(claudeVersion) {
+  if (supportsMods(claudeVersion)) return null;
+  const why = claudeVersion ? `Claude Code ${claudeVersion} is older than ${MIN_CLAUDE_MODS}` : 'the Claude Code version is unknown (claude --version failed)';
+  return `turbo-view mod not installed: ${why}; turbo-run status --watch shows the run instead`;
+}
+
 function main(args) {
   const unknown = args.filter((a) => a !== '--uninstall' && a !== '--dry-run');
   if (unknown.length) {
@@ -135,8 +154,11 @@ function main(args) {
     process.stdout.write(`${dryRun ? 'would remove' : 'removed'} ${n} files\n`);
     return 0;
   }
-  const m = install({ dryRun });
+  const claudeVersion = claudeVersionText();
+  const m = install({ dryRun, claudeVersion });
   process.stdout.write(`${dryRun ? 'would install' : 'installed'} gsd-turbo ${m.version}: ${m.files.length} files into ${defaultHome()}\n`);
+  const note = modNote(claudeVersion);
+  if (note) process.stdout.write(`${note}\n`);
   return 0;
 }
 

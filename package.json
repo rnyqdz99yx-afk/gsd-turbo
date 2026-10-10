@@ -7,5 +7,5 @@
   "engines": { "node": ">=20" },
   "bin": { "turbo-run": "bin/turbo-run.mjs" },
   "scripts": { "test": "node --test" },
-  "files": ["bin", "lib", "skills", "agents", "install.mjs", "README.md", "LICENSE"]
+  "files": ["bin", "lib", "mod", "skills", "agents", "install.mjs", "README.md", "LICENSE"]
 }

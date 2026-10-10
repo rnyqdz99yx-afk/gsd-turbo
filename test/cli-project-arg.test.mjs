@@ -5,6 +5,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
+import { readProgress } from '../lib/phase-progress.mjs';
+import { VALUE_FLAGS as PHASE_VALUE_FLAGS } from '../lib/cli-phase.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
 const run = (args, cwd) => execFileSync(process.execPath, [CLI, ...args], { cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: tmpDir('home') }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -25,6 +27,16 @@ test('a flag value is never read as a flag: an answer text that says --project, 
     assert.equal(JSON.parse(run(['view', '--text', text, '--project', named, '--json'], here)).ui.lang, 'ru', text);
   }
   assert.equal(JSON.parse(run(['view', '--text', '--project', '--json'], here)).ui.lang, 'en', 'a --project that is a value names no project: the one the command runs in');
+});
+
+test('every value flag of the phase commands (cli-phase VALUE_FLAGS, read at run time) keeps a --project text as its value', () => {
+  const { named, here } = projects();
+  for (const f of [...PHASE_VALUE_FLAGS].filter((x) => x !== '--project')) {
+    assert.equal(JSON.parse(run(['view', f, '--project', '--project', named, '--json'], here)).ui.lang, 'ru', f);
+  }
+  run(['phase-step', '3', '--done', 'freshness', '--note', '--project', '--project', named], here);
+  const progress = readProgress(named, '3');
+  assert.deepEqual([progress.done, progress.notes.freshness], [['freshness'], '--project']);
 });
 
 test('a lane-status reason that reads --project is the reason, not the project', () => {

@@ -16,7 +16,7 @@ import { runDaemon, resumableLane } from '../lib/supervisor.mjs';
 import { comparePhase, inRange, rangeLabel } from '../lib/scheduler.mjs';
 import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
-import { PHASE_COMMANDS, runPhaseCommand } from '../lib/cli-phase.mjs';
+import { PHASE_COMMANDS, VALUE_FLAGS as PHASE_VALUE_FLAGS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
 import { clearAttempts } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
@@ -53,8 +53,10 @@ function positional(args) {
   }
   return out;
 }
-// Flags of any command whose next argument is their value (the phase commands' and turbo-run answer's included).
-const ARG_VALUE_FLAGS = new Set([...VALUE_FLAGS, '--done', '--note', '--results', '--log', '--attempt', '--text', '--by', '--rev', '--option']);
+// Flags of any command whose next argument is their value: bin's, the phase commands' (cli-phase, so a flag added
+// there is covered here too) and turbo-run answer's.
+const ANSWER_VALUE_FLAGS = ['--text', '--by', '--rev', '--option'];
+const ARG_VALUE_FLAGS = new Set([...VALUE_FLAGS, ...PHASE_VALUE_FLAGS, ...ANSWER_VALUE_FLAGS]);
 // --project read in order: the value of another flag is skipped, so an answer text or a reason that says --project
 // never names the project, and nothing after -- is a flag. --project may still follow the positional arguments.
 function projectArg(args) {

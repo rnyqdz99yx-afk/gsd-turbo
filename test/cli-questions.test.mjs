@@ -136,3 +136,12 @@ test('turbo-run questions N warns about a plan whose name cannot make a question
   assert.match(r.text, /^ERR warn: plan 32-12 draft-PLAN\.md: its name cannot make a question id/m);
   assert.match(r.text, /^phase 32: 3 question\(s\)/m);
 });
+
+test('while a lane runs, an answer to another phase is not committed by turbo-run answer either: the lane commits the whole answers directory', async () => {
+  const root = project(tmpGitRepo());
+  writePhase(root, '33-mail', { '33-01-PLAN.md': DECISION_PLAN });
+  withLane(root);
+  await run(root, ['questions', '33']);
+  const r = await run(root, ['answer', '33', '33-01-t2', '--option', '1', '--by', 'session']);
+  assert.match(r.text, /^answered 33-01-t2: Clerk, session, \S+$/);
+});

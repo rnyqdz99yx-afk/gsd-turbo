@@ -86,7 +86,7 @@ A checkpoint task of a plan (`checkpoint:decision`, `checkpoint:human-verify`, `
 
 **After an interruption.** The prompt says this session was interrupted: run `turbo-run view --json`. For each of this lane's subagents whose state is `running` or `quiet`, send `SendMessage` with the state of the disk and git (`git status --short`, `git log --oneline -5`) and the request to continue from where it stopped and to re-check any partial write. When that fails, its plan takes the continuation path of **Delivery** point 2, without a message from the owner. Then the step loop.
 
-**Commit the answers.** While you run, the owner's answers land in `.planning/turbo/answers/pN.json`. Commit that file with `gsd-tools commit "docs(phase-N): owner answers" --files .planning/turbo/answers/pN.json` before each `turbo-run phase-step N --done` and in **Stopping early**; `nothing_to_commit` is fine.
+**Commit the answers.** While you run, the owner's answers to every phase land in `.planning/turbo/answers/` (one file per phase), and `turbo-run answer` commits none of them while a lane runs. Commit the whole directory with `gsd-tools commit "docs(phase-N): owner answers" --files .planning/turbo/answers/` before each `turbo-run phase-step N --done` and in **Stopping early**; `nothing_to_commit` is fine.
 
 ## Steps
 

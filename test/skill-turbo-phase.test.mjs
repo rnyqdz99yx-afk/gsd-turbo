@@ -135,9 +135,10 @@ test('turbo-phase skill: owner questions (S1) — list and classify, pre-answers
     'turbo-run questions N --stop <plan id>-t<task number> --agent <agent id>', '--unmet', '--kind human-action', 'turbo-run questions N --deliver',
     'SendMessage(to="<agent id>"', 'resumedAgentId', 'No transcript found for agent ID', 'ToolSearch', 'turbo-run agent-tail <agent id>', '<previous_agent_tail>',
     'turbo-run questions N --delivered <id> --path same-agent', 'turbo-run questions N --delivered <id> --path continuation', 'turbo-run view --json',
-    'Never run `turbo-run answer` yourself', '.planning/turbo/answers/pN.json', 'docs(phase-N): owner answers',
+    'Never run `turbo-run answer` yourself', 'every phase', '`gsd-tools commit "docs(phase-N): owner answers" --files .planning/turbo/answers/`',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
+  assert.ok(!s.includes('answers/pN.json'), "the whole answers directory, not only this phase's file");
   const stop = s.slice(s.indexOf('\n### Stopping early\n'), s.indexOf('\n## Steps\n'));
   assert.match(stop, /^0\. Wait until every subagent you started in the background has finished/m);
   const plan = s.slice(s.indexOf('\n### plan\n'), s.indexOf('\n### gates-off\n'));

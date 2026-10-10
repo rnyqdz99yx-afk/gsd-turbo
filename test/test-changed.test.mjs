@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { isTestFile, isRunnableTest, classifyScript, relatedTests, planRun, runTestChanged } from '../lib/test-changed.mjs';
+import { isTestFile, isRunnableTest, classifyScript, relatedTests, planRun, planEntries, runTestChanged } from '../lib/test-changed.mjs';
 const hasBash = () => { try { execFileSync('bash', ['-c', 'exit 0'], { stdio: 'ignore' }); return true; } catch { return false; } };
 
 test('isTestFile', () => {
@@ -809,4 +809,203 @@ test('follow-up 2: braces in a prefix-flag value are never carried (bash expands
   git('commit', '-qam', 'break a');
   assert.notEqual(await r.run(), 0, 'the full command runs the "unit" tests');
   assert.equal(r.logs.at(-1), 'full: unknown test runner in root');
+});
+
+// --- 0.2.2: test.full as a list of packages (each entry planned on its own) ------------------
+
+const ROOT_E = { dir: '', command: 'npm test' };
+const SERVER_E = { dir: 'server', command: 'npm test' };
+const APP_E = { dir: 'app', command: 'npm test' };
+const MULTI = {
+  'package.json': '{}', 'src/core.js': '', 'test/core.test.js': "import '../src/core.js'",
+  'server/package.json': '{}', 'server/src/store.js': '', 'server/test/store.test.js': "import '../src/store.js'",
+  'app/package.json': '{}', 'app/src/view.js': '', 'app/test/view.test.js': "import '../src/view.js'",
+};
+const multiPkgs = (over = {}) => [
+  { dir: '', testScript: 'node --test test/core.test.js', hooks: [] },
+  { dir: 'server', testScript: 'node --test', hooks: [] },
+  { dir: 'app', testScript: 'node --test', hooks: [] },
+].map((p) => ({ ...p, ...(over[p.dir] ?? {}) }));
+// every entry with a marker at X and the same window of changed files, unless given
+function multi(changed, { files = {}, entries = [ROOT_E, SERVER_E, APP_E], packages = multiPkgs(), markers, windows, ...opts } = {}) {
+  const all = { ...MULTI, ...files };
+  return planEntries({
+    entries,
+    markers: markers ?? Object.fromEntries(entries.map((e) => [e.dir, M('X')])),
+    windows: windows ?? Object.fromEntries(entries.map((e) => [e.dir, { changed }])),
+    allFiles: Object.keys(all), packages, readFile: (f) => all[f] ?? '', head: 'H', ...opts,
+  });
+}
+const plansOf = (r) => Object.fromEntries(r.plans.map(({ entry, plan }) => [entry.dir, plan]));
+
+test('multi: each entry is planned on its own, relative to its directory, and runs there', () => {
+  const s = plansOf(multi(['server/src/store.js']));
+  assert.deepEqual([s[''].mode, s.app.mode], ['skip', 'skip']);
+  assert.deepEqual([s.server.mode, s.server.groups], ['targeted', [{ cwd: 'server', cmd: process.execPath, args: ['--test', 'test/store.test.js'], shell: false }]]);
+  const r = plansOf(multi(['src/core.js']));
+  assert.deepEqual(r[''].groups, [{ cwd: '', cmd: process.execPath, args: ['--test', 'test/core.test.js'], shell: false }]);
+  assert.deepEqual([r.server.mode, r.app.mode], ['skip', 'skip']);
+  // an entry's own rules: its package.json test script, its hooks, its runner
+  const hooks = plansOf(multi(['server/src/store.js'], { packages: multiPkgs({ server: { hooks: ['pretest'] } }) }));
+  assert.deepEqual([hooks.server.mode, hooks.server.reason, hooks.server.groups], ['full', 'server/package.json has a pretest script', [{ cwd: 'server', cmd: 'npm test', args: [], shell: true }]]);
+  const unknown = plansOf(multi(['app/src/view.js'], { packages: multiPkgs({ app: { testScript: 'node --test && eslint .' } }) }));
+  assert.deepEqual([unknown.app.mode, unknown.app.reason, unknown[''].mode], ['full', 'unknown test runner in app', 'skip']);
+  const none = plansOf(multi(['server/src/store.js'], { packages: multiPkgs().filter((p) => p.dir !== 'server') }));
+  assert.deepEqual([none.server.mode, none.server.reason], ['full', 'unknown test runner in server'], 'no package.json of its own');
+});
+
+test('multi: a change outside an entry that the entry\'s files mention or import makes that entry run full', () => {
+  const files = { 'server/test/shared.test.js': "import '../../src/core.js'" };
+  const r = plansOf(multi(['src/core.js'], { files }));
+  assert.equal(r[''].mode, 'targeted');
+  assert.deepEqual([r.server.mode, r.server.reason], ['full', 'server/test/shared.test.js mentions src/core.js, changed outside this entry']);
+  assert.deepEqual(r.server.groups, [{ cwd: 'server', cmd: 'npm test', args: [], shell: true }]);
+  assert.equal(r.app.mode, 'skip', 'an entry that does not mention it is not affected');
+  // and the other way round: the root imports a nested package's file
+  const back = plansOf(multi(['app/src/view.js'], { files: { 'test/view-use.test.js': "import '../app/src/view.js'" } }));
+  assert.deepEqual([back[''].mode, back[''].reason], ['full', 'test/view-use.test.js mentions app/src/view.js, changed outside this entry']);
+  assert.equal(back.app.mode, 'targeted');
+  // a workspace import by package name
+  const pk = multiPkgs({ server: { name: '@demo/server' } });
+  const byName = plansOf(multi(['server/src/store.js'], { packages: pk, files: { 'app/src/view.js': "import { store } from '@demo/server/lib'" } }));
+  assert.deepEqual([byName.app.mode, byName.app.reason], ['full', 'app/src/view.js imports @demo/server, where server/src/store.js changed']);
+});
+
+test('multi: a dependency or config file changed outside every nested entry makes every entry run full', () => {
+  for (const f of ['package-lock.json', 'tsconfig.json', '.planning/turbo/config.json', 'tools/vite.config.js']) {
+    const r = plansOf(multi([f]));
+    assert.deepEqual(Object.values(r).map((p) => p.mode), ['full', 'full', 'full'], f);
+    assert.equal(r.server.reason, `dependency or config file changed outside the nested entries: ${f}`, f);
+  }
+  const own = plansOf(multi(['server/package.json']));
+  assert.deepEqual([own[''].mode, own.server.mode, own.server.reason, own.app.mode], ['skip', 'full', 'dependency or config file changed', 'skip'], 'a nested package.json is that entry\'s own');
+});
+
+test('multi: an entry whose test command may also run another entry\'s files runs full when that entry changes', () => {
+  const plan = (rootScript, extra = {}) => plansOf(multi(['server/src/store.js'], { packages: multiPkgs({ '': { testScript: rootScript, ...extra } }) }))[''];
+  for (const s of ['node --test', 'node --test "**/*.test.js"', 'node --test server/', 'node --test ./server/test/x.test.js', 'node --test "*/test/*.test.js"', 'jest', 'vitest run']) {
+    const p = plan(s);
+    assert.deepEqual([p.mode, p.reason], ['full', 'server/src/store.js changed in server, whose tests this command may also run'], s);
+  }
+  for (const s of ['node --test test/core.test.js', 'node --test "test/**/*.test.js"', 'node --test "scripts/*.test.js" test/']) assert.equal(plan(s).mode, 'skip', s);
+  assert.equal(plansOf(multi(['server/src/store.js'], { entries: [{ dir: '', command: 'make test' }, SERVER_E, APP_E] }))[''].mode, 'full', 'a command that is not the package script may run anything');
+  assert.equal(plan('node --test test/core.test.js', { hooks: ['posttest'] }).mode, 'full', 'a hook may run anything');
+  // a nested entry whose script reaches outside its directory
+  const out = plansOf(multi(['src/core.js'], { packages: multiPkgs({ server: { testScript: 'node --test ../test/core.test.js' } }) }));
+  assert.deepEqual([out.server.mode, out.server.reason], ['full', 'src/core.js changed outside server, where this command may also run tests']);
+  // the root's selection then includes the reached entry's tests, which its runner would run as a nested package
+  const reached = plansOf(multi(['src/core.js'], { files: { 'server/test/core-use.test.js': "import '../../src/core.js'" }, packages: multiPkgs({ '': { testScript: 'node --test' } }) }));
+  assert.deepEqual([reached[''].mode, reached[''].reason], ['full', 'server/test/core-use.test.js is in a nested package']);
+});
+
+test('multi: a change in a nested package no entry covers warns and runs as today', () => {
+  const r = multi(['app/src/view.js'], { entries: [ROOT_E, SERVER_E] });
+  assert.deepEqual(r.warnings, ['changes in nested package app, which has its own test script that test.full does not run']);
+  assert.deepEqual([plansOf(r)[''].mode, plansOf(r)[''].reason, plansOf(r).server.mode], ['full', 'changes in a nested package', 'skip']);
+  assert.deepEqual(multi(['app/src/view.js']).warnings, [], 'covered');
+  const stub = multi(['app/src/view.js'], { entries: [ROOT_E, SERVER_E], packages: multiPkgs({ app: { testScript: 'echo "Error: no test specified" && exit 1' } }) });
+  assert.deepEqual(stub.warnings, [], "npm's default stub is no test script");
+});
+
+test('multi: per-entry markers, windows and max_targeted; the phase end runs every changed entry full', () => {
+  const r = plansOf(multi([], {
+    markers: { '': M('X', 1), server: null, app: M('Y', 3) },
+    windows: { '': { changed: ['src/core.js'] }, app: { changed: ['app/src/view.js'] } },
+  }));
+  assert.deepEqual([r[''].mode, r.server.mode, r.server.reason, r.app.mode], ['targeted', 'full', 'no previous full green run', 'full']);
+  assert.match(r.app.reason, /^3 targeted run\(s\) since the last full run/);
+  const outside = plansOf(multi([], { windows: { '': { changed: [] }, server: { changed: ['server/src/store.js'], outside: true }, app: { changed: [] } } }));
+  assert.deepEqual([outside[''].reason, outside.server.reason], ['no file changes since the last full green run', 'changes outside the project root']);
+  const end = plansOf(multi(['server/src/store.js'], { phaseEnd: { phase: '3' } }));
+  assert.deepEqual(Object.values(end).map((p) => [p.mode, p.reason]), Array(3).fill(['full', 'phase 3 end: every plan has a summary']));
+  assert.deepEqual(Object.values(plansOf(multi(['.planning/STATE.md'], { phaseEnd: { phase: '3' } }))).map((p) => p.mode), ['targeted', 'skip', 'skip'], 'docs only');
+});
+
+function multiRepo({ config, broken = '' } = {}) {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = (f, s) => { fs.mkdirSync(path.dirname(path.join(repo, f)), { recursive: true }); fs.writeFileSync(path.join(repo, f), s); };
+  // each test also checks that it runs in its own package directory
+  const T = (mod) => `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport fs from 'node:fs';\nimport { v } from '../src/${mod}.mjs';\ntest('${mod}', () => { assert.ok(fs.existsSync('src/${mod}.mjs'), process.cwd()); assert.equal(v, 1); });\n`;
+  w('package.json', JSON.stringify({ name: 'demo-root', type: 'module', scripts: { test: 'node --test test/core.test.mjs' } }));
+  w('src/core.mjs', 'export const v = 1;\n');
+  w('test/core.test.mjs', T('core'));
+  for (const [dir, mod] of [['server', 'store'], ['app', 'view']]) {
+    w(`${dir}/package.json`, JSON.stringify({ name: `demo-${dir}`, type: 'module', scripts: { test: 'node --test' } }));
+    w(`${dir}/src/${mod}.mjs`, `export const v = ${broken === dir ? 2 : 1};\n`);
+    w(`${dir}/test/${mod}.test.mjs`, T(mod));
+  }
+  w('.planning/turbo/config.json', JSON.stringify({ test: { full: config ?? ['node --test test/core.test.mjs', { dir: 'server', command: 'node --test' }, { dir: 'app', command: 'node --test' }] } }));
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  return { repo, git, w };
+}
+
+test('multi e2e: a full run runs every entry in order in its own directory; the marker holds one record per entry', async () => {
+  const { repo, git, w } = multiRepo();
+  const c1 = git('rev-parse', 'HEAD');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  assert.deepEqual(r.logs, ['(root): full: no previous full green run', 'server: full: no previous full green run', 'app: full: no previous full green run']);
+  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 0, entries: { server: { fullSha: c1, targetedSince: 0 }, app: { fullSha: c1, targetedSince: 0 } } });
+  r.logs.length = 0;
+  assert.equal(await r.run(), 0);
+  assert.deepEqual(r.logs, ['(root): skip: already fully green at HEAD', 'server: skip: already fully green at HEAD', 'app: skip: already fully green at HEAD']);
+
+  w('server/src/store.mjs', 'export const v = 2;\n');
+  git('commit', '-qam', 'break the server');
+  r.logs.length = 0;
+  assert.notEqual(await r.run(), 0, 'the nested package\'s targeted run catches it');
+  assert.deepEqual(r.logs, ['(root): skip: no changes that concern this entry since its last full green run', 'server: targeted: 1 related test file(s)', 'app: skip: no changes that concern this entry since its last full green run', 'server: failed (exit code 1)']);
+  assert.equal(readMarker(repo).entries.server.targetedSince, 0, 'a red run writes no marker');
+
+  w('server/src/store.mjs', 'export const v = 1; // fixed\n');
+  git('commit', '-qam', 'fix the server');
+  assert.equal(await r.run(), 0);
+  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 0, entries: { server: { fullSha: c1, targetedSince: 1 }, app: { fullSha: c1, targetedSince: 0 } } });
+
+  const t = runner(repo, { TURBO_FULL: '1' });
+  assert.equal(await t.run(), 0);
+  assert.deepEqual(t.logs, ['(root): full: TURBO_FULL=1', 'server: full: TURBO_FULL=1', 'app: full: TURBO_FULL=1']);
+  const head = git('rev-parse', 'HEAD');
+  assert.deepEqual(readMarker(repo), { fullSha: head, targetedSince: 0, entries: { server: { fullSha: head, targetedSince: 0 }, app: { fullSha: head, targetedSince: 0 } } });
+});
+
+test('multi e2e: a red nested package fails the full run, names the entry and writes no marker', async () => {
+  const { repo } = multiRepo({ broken: 'server' });
+  const r = runner(repo);
+  assert.notEqual(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'server: failed (exit code 1)');
+  assert.equal(readMarker(repo), null);
+});
+
+test('multi e2e: an old single-entry marker is read as the root entry\'s', async () => {
+  const { repo, git, w } = multiRepo();
+  const c1 = git('rev-parse', 'HEAD');
+  fs.writeFileSync(markerOf(repo), JSON.stringify({ fullSha: c1, targetedSince: 1 }));
+  w('src/core.mjs', 'export const v = 1; // touched\n');
+  git('commit', '-qam', 'c2');
+  const c2 = git('rev-parse', 'HEAD');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  assert.deepEqual(r.logs, ['(root): targeted: 1 related test file(s)', 'server: full: no previous full green run', 'app: full: no previous full green run']);
+  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 2, entries: { server: { fullSha: c2, targetedSince: 0 }, app: { fullSha: c2, targetedSince: 0 } } });
+});
+
+test('multi e2e: an invalid test.full list stops test-changed with a config error and runs nothing', async () => {
+  const { repo } = multiRepo({ config: ['node --test test/core.test.mjs', { dir: 'missing', command: 'node --test' }] });
+  const r = runner(repo);
+  await assert.rejects(r.run(), /^Error: invalid turbo config .*test\.full\[1\]\.dir "missing" is not a directory in the project/);
+  assert.deepEqual(r.logs, []);
+  assert.equal(readMarker(repo), null);
+});
+
+test('multi e2e: with a single test.full command, a change in a nested package with its own tests warns and runs full', async () => {
+  const { repo, git, w } = multiRepo({ config: 'node --test test/core.test.mjs' });
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('app/src/view.mjs', 'export const v = 1; // touched\n');
+  git('commit', '-qam', 'c2');
+  r.logs.length = 0;
+  assert.equal(await r.run(), 0);
+  assert.deepEqual(r.logs, ['warn: changes in nested package app, which has its own test script that test.full does not run', 'full: changes in a nested package']);
 });

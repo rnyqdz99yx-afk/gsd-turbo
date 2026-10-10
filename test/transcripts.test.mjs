@@ -446,3 +446,16 @@ test('laneAgents keeps the identity first seen per agent: a meta rewritten to { 
   assert.deepEqual(second.ids, expected);
   assert.deepEqual(view(second.used).ids, expected);
 });
+
+test('with a cold cache an agent of the lane session directory that the lane did not launch counts only with depth 1 and no parent agent', () => {
+  const { root, dir } = setup();
+  const ids = { rewritten: 'a1000000000000011', noMeta: 'a1000000000000012', child: 'a1000000000000013', direct: 'a1000000000000014' };
+  const laneFile = writeSession(dir, SESSION, [entry.launched('toolu_1', AGENT, at('10:00'))]);
+  writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:50'));
+  writeAgent(dir, SESSION, ids.rewritten, agentEntries(ids.rewritten, '10:10', '10:55'), { agentType: 'gsd-code-reviewer', stoppedByUser: true });
+  writeAgent(dir, SESSION, ids.noMeta, agentEntries(ids.noMeta, '10:10', '10:55'), null);
+  writeAgent(dir, SESSION, ids.child, agentEntries(ids.child, '10:10', '10:55'), { agentType: 'gsd-code-reviewer', spawnDepth: 1, parentAgentId: AGENT });
+  writeAgent(dir, SESSION, ids.direct, agentEntries(ids.direct, '10:10', '10:56'), { agentType: 'gsd-verifier', spawnDepth: 1 });
+  const r = laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: SESSION }, root, now: NOW, stallMs: STALL });
+  assert.deepEqual(r.agents.map((a) => a.agentId).sort(), [AGENT, ids.direct].sort());
+});

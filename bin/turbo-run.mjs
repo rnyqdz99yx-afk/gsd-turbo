@@ -25,7 +25,7 @@ import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|state-sync> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
@@ -525,7 +525,8 @@ async function main() {
   const pos = positional(args);
   if (PHASE_COMMANDS.has(cmd)) {
     if (!root) die('no .planning directory found');
-    return runPhaseCommand(cmd, args, { root });
+    // push-request --wait waits only while a supervisor is alive to push and watch CI
+    return runPhaseCommand(cmd, args, { root, deps: { supervisorAlive: () => supAlive(readJson(supPath(root), null), pollOf(root)) } });
   }
   switch (cmd) {
     case 'doctor': {

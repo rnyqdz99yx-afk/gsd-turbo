@@ -934,14 +934,15 @@ test('multi review 1 e2e: a root test that reaches a changed root file through a
   assert.equal(r.logs[0], '(root): targeted: 2 related test file(s)');
 });
 
-test('multi: a dependency or config file changed outside every nested entry makes every entry run full', () => {
-  for (const f of ['package-lock.json', 'tsconfig.json', '.planning/turbo/config.json', 'tools/vite.config.js']) {
+test('multi: a dependency or config file changed anywhere makes every entry run full', () => {
+  // review 2: another entry may load the nested package's code (its "type", its dependencies, a tsconfig it extends)
+  for (const f of ['package-lock.json', 'tsconfig.json', '.planning/turbo/config.json', 'tools/vite.config.js', 'server/package.json', 'server/package-lock.json', 'app/tsconfig.json']) {
     const r = plansOf(multi([f]));
     assert.deepEqual(Object.values(r).map((p) => p.mode), ['full', 'full', 'full'], f);
-    assert.equal(r.server.reason, `dependency or config file changed outside the nested entries: ${f}`, f);
+    const foreign = f.startsWith('server/') ? r.app : r.server;
+    assert.equal(foreign.reason, `dependency or config file changed: ${f}`, f);
   }
-  const own = plansOf(multi(['server/package.json']));
-  assert.deepEqual([own[''].mode, own.server.mode, own.server.reason, own.app.mode], ['skip', 'full', 'dependency or config file changed', 'skip'], 'a nested package.json is that entry\'s own');
+  assert.equal(plansOf(multi(['server/package.json'])).server.reason, 'dependency or config file changed', 'the entry\'s own file');
 });
 
 test('multi: an entry whose test command may also run another entry\'s files runs full when that entry changes', () => {

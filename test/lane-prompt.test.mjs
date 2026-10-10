@@ -33,6 +33,28 @@ test('every stop syncs STATE.md\'s position first: state-sync before the paused-
   }
 });
 
+test('GSD core reference files go to subagents as paths to Read, never pasted; phase files are not affected', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const rule = s.split('\n').find((l) => l.includes('references, templates or workflows'));
+    assert.ok(rule, mode);
+    assert.match(rule, /absolute paths/);
+    assert.match(rule, /Read them before anything else/);
+    assert.match(rule, /node x doctor/);
+    assert.match(rule, /[Nn]ever .*the plan, CONTEXT, RESEARCH or other phase files/);
+    assert.ok(!s.includes('"') && !s.includes('%'), mode);
+  }
+});
+
+test('a sequential gsd-executor dispatch re-persists the dispatch isolation none right before it', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const rule = s.split('\n').find((l) => l.includes('dispatch-isolation'));
+    assert.ok(rule, mode);
+    for (const needle of ['gsd-executor', 'isolation=worktree', 'gsd_run query dispatch-isolation --raw --phase', '--plan', '--force-isolation none', 'right before', 'retry']) assert.ok(rule.includes(needle), needle);
+  }
+});
+
 test('temporary files, stands and data copies go under the lane\'s temp directory, never the system temp directory', () => {
   for (const mode of ['safe', 'full']) {
     const s = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard', mode, tmpDir: 'C:\\p\\.planning\\turbo\\run\\tmp\\p3' });

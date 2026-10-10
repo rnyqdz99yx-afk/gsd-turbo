@@ -5,7 +5,7 @@ import { STEPS } from '../lib/phase-progress.mjs';
 
 test('turbo-phase skill: frontmatter, every step in order, the commands it drives', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
-  assert.match(s, /^---\nname: turbo-phase\ndescription: .+\nargument-hint: .+\nallowed-tools: \[Bash, Read, Write, Edit, Grep, Glob, Agent, Skill\]\n---\n/);
+  assert.match(s, /^---\nname: turbo-phase\ndescription: .+\nargument-hint: .+\nallowed-tools: \[Bash, Read, Write, Edit, Grep, Glob, Agent, Skill, SendMessage\]\n---\n/);
   let at = -1;
   for (const step of STEPS) {
     const i = s.indexOf(`\n### ${step}\n`);
@@ -125,4 +125,25 @@ test('turbo-phase skill: CI red rounds count once per red commit, and no new com
   // the executor-prompt paragraph of A plan that pushes is one of the named exceptions to "never rebuild a prompt"
   const conventions = s.slice(s.indexOf('## Conventions'), s.indexOf('## The step loop'));
   assert.match(conventions, /except where a step below says so \([^)]*\*\*A plan that pushes\*\*/);
+});
+
+test('turbo-phase skill: owner questions (S1) — list and classify, pre-answers, the stop at a checkpoint, delivery to the same agent, the continuation path', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const needles = [
+    '### Owner questions', '**List and classify**', '**Pre-answers**', '**At a checkpoint**', '**Delivery**', '**After an interruption**', '**Commit the answers**',
+    'turbo-run questions N --class <id>=<class>', 'consent:deploy', 'owner-only', 'turbo-run questions N --preanswers <plan id>', '## CHECKPOINT REACHED',
+    'turbo-run questions N --stop <plan id>-t<task number> --agent <agent id>', '--unmet', '--kind human-action', 'turbo-run questions N --deliver',
+    'SendMessage(to="<agent id>"', 'resumedAgentId', 'No transcript found for agent ID', 'ToolSearch', 'turbo-run agent-tail <agent id>', '<previous_agent_tail>',
+    'turbo-run questions N --delivered <id> --path same-agent', 'turbo-run questions N --delivered <id> --path continuation', 'turbo-run view --json',
+    'Never run `turbo-run answer` yourself', '.planning/turbo/answers/pN.json', 'docs(phase-N): owner answers',
+  ];
+  for (const n of needles) assert.ok(s.includes(n), n);
+  const stop = s.slice(s.indexOf('\n### Stopping early\n'), s.indexOf('\n## Steps\n'));
+  assert.match(stop, /^0\. Wait until every subagent you started in the background has finished/m);
+  const plan = s.slice(s.indexOf('\n### plan\n'), s.indexOf('\n### gates-off\n'));
+  assert.ok(plan.indexOf('turbo-run questions N') > plan.indexOf('gsd-plan-phase'), 'questions after planning');
+  const execute = s.slice(s.indexOf('\n### execute\n'), s.indexOf('\n### restore\n'));
+  for (const n of ['turbo-run questions N', '**Pre-answers**', '**At a checkpoint**', 'delivery path']) assert.ok(execute.includes(n), n);
+  const loop = s.slice(s.indexOf('\n## The step loop\n'), s.indexOf('\n### Stopping early\n'));
+  assert.ok(loop.indexOf('**Delivery**') >= 0 && loop.indexOf('**Delivery**') < loop.indexOf('1. `turbo-run phase-step N`'), 'delivery before the step loop');
 });

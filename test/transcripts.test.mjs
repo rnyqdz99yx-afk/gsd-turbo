@@ -296,6 +296,15 @@ test('scanLaneTranscript indexes notifications and launched agents, the newest n
   assert.equal(s.scanned, fs.statSync(file).size);
 });
 
+test('scanLaneTranscript reads a lane file replaced at the same path again from its start, even when it is not shorter', () => {
+  const { dir } = setup();
+  const file = writeSession(dir, SESSION, [entry.launched('toolu_1', AGENT, T0), entry.note(AGENT, 'completed', T0)]);
+  const first = scanLaneTranscript(file);
+  writeSession(dir, SESSION, [entry.user('y'.repeat(first.size), T0), entry.launched('toolu_2', AGENT2, T0)]);
+  const again = scanLaneTranscript(file, first);
+  assert.deepEqual([again.launched, again.notes, again.read], [[AGENT2], {}, fs.statSync(file).size]);
+});
+
 test('scanLaneTranscript counts a completion whose only trace is the enqueue line, at the time of that line', () => {
   const { dir } = setup();
   const file = writeSession(dir, SESSION, [entry.launched('toolu_1', AGENT, T0), entry.queued(AGENT, 'completed', '2026-01-01T10:25:00.000Z')]);

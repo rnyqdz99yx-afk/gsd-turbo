@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
@@ -100,18 +101,35 @@ test('the lane\'s side: --preanswers, --stop, --deliver, --delivered; --open lis
   assert.equal((await run(root, ['questions', '32', '--delivered', '32-09-t2', '--path', 'x'])).code, 1);
 });
 
+// Runs bin/turbo-run.mjs with the given arguments at a moment both racers wait for: turbo-run's modules are loaded
+// first, so the two answers meet at the lock, not at start-up.
+const AT_BARRIER = `
+import { fileURLToPath } from 'node:url';
+const [bin, warm, at, ...args] = process.argv.slice(1);
+await import(warm);
+while (Date.now() < Number(at)) { /* the shared start */ }
+process.argv = [process.execPath, fileURLToPath(bin), ...args];
+await import(bin);
+`;
+
 test('two channels answer the same question at the same moment: one record, the other process reads already answered (Review Focus 1)', async () => {
   const root = project(tmpGitRepo());
   await run(root, ['questions', '32']);
-  const CLI = path.resolve('bin/turbo-run.mjs');
+  const bin = pathToFileURL(path.resolve('bin/turbo-run.mjs')).href;
+  const warm = pathToFileURL(path.resolve('lib/cli-phase.mjs')).href;
+  const at = String(Date.now() + 2500);
   const answer = (k, by) => new Promise((resolve) => {
-    const c = spawn(process.execPath, [CLI, 'answer', '32', '32-09-t2', '--option', String(k), '--by', by, '--project', root], { cwd: root, env: { ...process.env, TURBO_LANE: '' }, windowsHide: true });
+    const args = ['--input-type=module', '-e', AT_BARRIER, bin, warm, at, 'answer', '32', '32-09-t2', '--option', String(k), '--by', by, '--project', root];
+    const c = spawn(process.execPath, args, { cwd: root, env: { ...process.env, TURBO_LANE: '' }, windowsHide: true, timeout: 30000, killSignal: 'SIGKILL' });
     let out = '';
     c.stdout.on('data', (d) => { out += d; });
+    c.stderr.on('data', (d) => { out += d; });
     c.on('close', (code) => resolve({ code, out }));
   });
   const both = await Promise.all([answer(1, 'session'), answer(2, 'telegram')]);
   assert.deepEqual(both.map((x) => x.code).sort(), [0, 3], JSON.stringify(both));
+  assert.match(both.find((x) => x.code === 0).out, /^answered 32-09-t2: /);
+  assert.match(both.find((x) => x.code === 3).out, /^already answered: /);
   assert.equal(readAnswers(root, '32').length, 1);
 });
 

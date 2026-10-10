@@ -178,6 +178,36 @@ test('a lane resumed onto another transcript: the job state wins over the stale 
   assert.equal(jobState(home, JOB), null);
 });
 
+test('a network or device path in a job state or CLAUDE_JOB_DIR is refused before anything touches the disk', () => {
+  const { root, home, dir } = setup();
+  const current = writeSession(dir, CURRENT, [entry.user('resumed', T0)]);
+  // every read of a path naming the test host is recorded and fails at once: the test itself never reaches a network
+  const touched = [];
+  const names = ['statSync', 'lstatSync', 'readFileSync', 'existsSync', 'openSync', 'readdirSync', 'accessSync'];
+  const saved = Object.fromEntries(names.map((n) => [n, fs[n]]));
+  const savedNative = fs.realpathSync.native;
+  const spy = (orig) => function (p, ...rest) {
+    if (String(p).includes('turbo-test.invalid')) {
+      touched.push(String(p));
+      throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+    }
+    return orig.call(this, p, ...rest);
+  };
+  for (const n of names) fs[n] = spy(saved[n]);
+  fs.realpathSync.native = spy(savedNative);
+  try {
+    for (const linkScanPath of ['//turbo-test.invalid/share/projects/x.jsonl', '\\\\turbo-test.invalid\\share\\x.jsonl', '\\\\?\\UNC\\turbo-test.invalid\\share\\x.jsonl']) {
+      writeJob(home, JOB, { sessionId: STALE, resumeSessionId: CURRENT, linkScanPath });
+      assert.deepEqual(laneTranscript({ home, root, jobId: JOB }), { file: current, sessionId: CURRENT, via: 'job-session' }, linkScanPath);
+    }
+    assert.equal(findTranscript({ home, root, env: { CLAUDE_JOB_DIR: '//turbo-test.invalid/share/jobs/x' }, lane: JOB }).via, 'lane');
+  } finally {
+    for (const n of names) fs[n] = saved[n];
+    fs.realpathSync.native = savedNative;
+  }
+  assert.deepEqual(touched, []);
+});
+
 test('a root spelled differently from the path the lane started in: the lane transcript is still found (Review Focus 1)', () => {
   const base = tmpDir('trj');
   const real = path.join(base, 'real');

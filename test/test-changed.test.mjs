@@ -159,13 +159,13 @@ test('a failing full or targeted run never writes the green marker', async () =>
   git('commit', '-qam', 'green');
   const green = git('rev-parse', 'HEAD');
   assert.equal(await r.run(), 0);
-  assert.deepEqual(readMarker(repo), { fullSha: green, targetedSince: 0 });
+  assert.deepEqual(readMarker(repo), { fullSha: green, targetedSince: 0, command: 'node --test' });
 
   w('src/a.js', 'export const a = 3;\n');
   git('commit', '-qam', 'break');
   assert.notEqual(await r.run(), 0);
   assert.match(r.logs.at(-1), /^targeted: /);
-  assert.deepEqual(readMarker(repo), { fullSha: green, targetedSince: 0 }, 'a failing targeted run leaves the marker alone');
+  assert.deepEqual(readMarker(repo), { fullSha: green, targetedSince: 0, command: 'node --test' }, 'a failing targeted run leaves the marker alone');
   assert.equal(r.logs.length, 3, 'exactly one log line per run');
 });
 
@@ -349,17 +349,17 @@ test('max_targeted: targeted greens keep the full sha and count up; at the limit
   const r = runner(repo);
   assert.equal(await r.run(), 0);
   const c1 = git('rev-parse', 'HEAD');
-  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 0 });
+  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 0, command: 'node --test' });
   w('src/a.js', 'export const a = 1; // c2\n');
   git('commit', '-qam', 'c2');
   assert.equal(await r.run(), 0);
   assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
-  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 1 }, 'a targeted green never moves fullSha');
+  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 1, command: 'node --test' }, 'a targeted green never moves fullSha');
   w('src/a.js', 'export const a = 1; // c3\n');
   git('commit', '-qam', 'c3');
   assert.equal(await r.run(), 0);
   assert.match(r.logs.at(-1), /^full: 1 targeted run\(s\) since the last full run/);
-  assert.deepEqual(readMarker(repo), { fullSha: git('rev-parse', 'HEAD'), targetedSince: 0 });
+  assert.deepEqual(readMarker(repo), { fullSha: git('rev-parse', 'HEAD'), targetedSince: 0, command: 'node --test' });
 });
 
 test('untracked files: the full command runs but the marker is not updated', async () => {
@@ -1004,13 +1004,17 @@ function multiRepo({ config, broken = [] } = {}) {
   return { repo, git, w };
 }
 
+// a marker record: the entry's last full green run, the targeted runs since, and the command that ran full
+const ROOT_CMD = 'node --test test/core.test.mjs';
+const rec = (fullSha, targetedSince, command = 'node --test') => ({ fullSha, targetedSince, command });
+
 test('multi e2e: a full run runs every entry in order in its own directory; the marker holds one record per entry', async () => {
   const { repo, git, w } = multiRepo();
   const c1 = git('rev-parse', 'HEAD');
   const r = runner(repo);
   assert.equal(await r.run(), 0);
   assert.deepEqual(r.logs, ['(root): full: no previous full green run', 'server: full: no previous full green run', 'app: full: no previous full green run']);
-  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 0, entries: { server: { fullSha: c1, targetedSince: 0 }, app: { fullSha: c1, targetedSince: 0 } } });
+  assert.deepEqual(readMarker(repo), { ...rec(c1, 0, ROOT_CMD), entries: { server: rec(c1, 0), app: rec(c1, 0) } });
   r.logs.length = 0;
   assert.equal(await r.run(), 0);
   assert.deepEqual(r.logs, ['(root): skip: already fully green at HEAD', 'server: skip: already fully green at HEAD', 'app: skip: already fully green at HEAD']);
@@ -1025,13 +1029,32 @@ test('multi e2e: a full run runs every entry in order in its own directory; the 
   w('server/src/store.mjs', 'export const v = 1; // fixed\n');
   git('commit', '-qam', 'fix the server');
   assert.equal(await r.run(), 0);
-  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 0, entries: { server: { fullSha: c1, targetedSince: 1 }, app: { fullSha: c1, targetedSince: 0 } } });
+  assert.deepEqual(readMarker(repo), { ...rec(c1, 0, ROOT_CMD), entries: { server: rec(c1, 1), app: rec(c1, 0) } });
 
   const t = runner(repo, { TURBO_FULL: '1' });
   assert.equal(await t.run(), 0);
   assert.deepEqual(t.logs, ['(root): full: TURBO_FULL=1', 'server: full: TURBO_FULL=1', 'app: full: TURBO_FULL=1']);
   const head = git('rev-parse', 'HEAD');
-  assert.deepEqual(readMarker(repo), { fullSha: head, targetedSince: 0, entries: { server: { fullSha: head, targetedSince: 0 }, app: { fullSha: head, targetedSince: 0 } } });
+  assert.deepEqual(readMarker(repo), { ...rec(head, 0, ROOT_CMD), entries: { server: rec(head, 0), app: rec(head, 0) } });
+});
+
+test('multi review 7c: an entry whose command changed since its last full green run runs full', () => {
+  const r = plansOf(multi(['src/core.js'], { markers: { '': { ...M('X'), command: 'npm test' }, server: { ...M('X'), command: 'npm run test:unit' }, app: M('X') } }));
+  assert.deepEqual([r[''].mode, r.server.mode, r.server.reason, r.app.mode], ['targeted', 'full', 'test.full command changed since its last full green run', 'skip'], 'a record without a command (older marker) still counts');
+});
+
+test('multi e2e review 7c: a command changed in a config git does not track runs that entry full', async () => {
+  const { repo, git, w } = multiRepo();
+  w('.gitignore', '.planning/turbo/config.json\n');
+  git('rm', '-q', '--cached', '.planning/turbo/config.json');
+  git('add', '-A'); git('commit', '-q', '-m', 'the turbo config is not tracked');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('.planning/turbo/config.json', JSON.stringify({ test: { full: [ROOT_CMD, { dir: 'server', command: 'node --test test/store.test.mjs' }, { dir: 'app', command: 'node --test' }] } }));
+  r.logs.length = 0;
+  assert.equal(await r.run(), 0);
+  assert.deepEqual(r.logs, ['(root): skip: already fully green at HEAD', 'server: full: test.full command changed since its last full green run', 'app: skip: already fully green at HEAD']);
+  assert.equal(readMarker(repo).entries.server.command, 'node --test test/store.test.mjs');
 });
 
 test('multi e2e: a red nested package fails the full run, which goes on, names every red entry and writes no marker', async () => {
@@ -1064,7 +1087,8 @@ test('multi e2e: an old single-entry marker is read as the root entry\'s', async
   const r = runner(repo);
   assert.equal(await r.run(), 0);
   assert.deepEqual(r.logs, ['(root): targeted: 1 related test file(s)', 'server: full: no previous full green run', 'app: full: no previous full green run']);
-  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 2, entries: { server: { fullSha: c2, targetedSince: 0 }, app: { fullSha: c2, targetedSince: 0 } } });
+  // the root record stays an older one (no command) until its next full run
+  assert.deepEqual(readMarker(repo), { fullSha: c1, targetedSince: 2, entries: { server: rec(c2, 0), app: rec(c2, 0) } });
 });
 
 test('multi e2e: an invalid test.full list stops test-changed with a config error and runs nothing', async () => {

@@ -46,7 +46,11 @@ function fakeGsd(root, { found = true } = {}) {
       const plans = files.filter((f) => f.endsWith('-PLAN.md')).sort().map((f) => ({ id: f.slice(0, -8), has_summary: files.includes(f.replace('-PLAN.md', '-SUMMARY.md')) }));
       return { phase: sub, plans, incomplete: plans.filter((p) => !p.has_summary).map((p) => p.id) };
     }
-    if (cmd === 'state') return sub === 'patch' ? { updated: ['Plan'], failed: [] } : { recorded: true };
+    if (cmd === 'state' && sub === 'patch') {
+      fs.appendFileSync(path.join(root, '.planning', 'STATE.md'), '<!-- patched -->\n'); // what a real patch would change
+      return { updated: ['Plan'], failed: [] };
+    }
+    if (cmd === 'state') return { recorded: true };
     if (cmd === 'commit') return { committed: true, hash: 'abc1234', reason: 'committed' };
     throw new Error(`unexpected gsd-tools ${args.join(' ')}`);
   };
@@ -127,13 +131,29 @@ test('state-sync does nothing before execution started (no SUMMARY, step gates-o
   assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-01 (1 of 4); committed']);
 });
 
-test('state-sync fails with GSD\'s error line when a state command fails', async () => {
+// A stop must never turn into a failure, nor leave a dirty tree that blocks the next /turbo-autonomous.
+test('state-sync is best effort: a failing GSD command or commit is a warning with exit 0, and STATE.md gets its bytes back', async () => {
+  const cases = [
+    ['a failed commit', (args, gsd) => (args[0] === 'commit' ? { committed: false, hash: null, reason: 'staging_failed' } : gsd(args)), /^warn: state-sync: gsd-tools commit: staging_failed; STATE\.md was put back as it was$/],
+    ['a throwing record-session', (args, gsd) => { if (args[1] === 'record-session') throw new Error('gsd-tools state record-session failed: boom'); return gsd(args); }, /^warn: state-sync: gsd-tools state record-session failed: boom; STATE\.md was put back as it was$/],
+    ['a patch error', (args, gsd) => (args[1] === 'patch' ? { error: 'STATE.md not found' } : gsd(args)), /^warn: state-sync: gsd-tools state patch: STATE\.md not found; STATE\.md was put back as it was$/],
+    ['a failing init', (args, gsd) => (args[0] === 'init' ? { error: 'no roadmap' } : gsd(args)), /^warn: state-sync: gsd-tools init execute-phase: no roadmap$/],
+  ];
+  for (const [name, wrap, line] of cases) {
+    const root = fixture();
+    const before = fs.readFileSync(path.join(root, '.planning', 'STATE.md'));
+    const { gsd } = fakeGsd(root);
+    const r = await sync(root, { gsd: (args) => wrap(args, gsd) });
+    assert.equal(r.code, 0, name);
+    assert.match(r.lines.at(-1), line, name);
+    assert.ok(fs.readFileSync(path.join(root, '.planning', 'STATE.md')).equals(before), name);
+  }
+  // commit_docs off: GSD skips the commit on purpose; the synced STATE.md stays
   const root = fixture();
   const { gsd } = fakeGsd(root);
-  const broken = (args) => (args[0] === 'state' ? { error: 'STATE.md not found' } : gsd(args));
-  const r = await sync(root, { gsd: broken });
-  assert.equal(r.code, 1);
-  assert.match(r.lines.at(-1), /^turbo-run state-sync: gsd-tools state patch: STATE\.md not found$/);
+  const r = await sync(root, { gsd: (args) => (args[0] === 'commit' ? { committed: false, skipped: true, reason: 'skipped_commit_docs_false' } : gsd(args)) });
+  assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-03 (3 of 4); skipped_commit_docs_false']);
+  assert.match(fs.readFileSync(path.join(root, '.planning', 'STATE.md'), 'utf8'), /<!-- patched -->/);
 });
 
 // Against the installed GSD core when it is the tested version (skipped elsewhere): the position state-sync
@@ -152,6 +172,23 @@ function committedFixture(opts) {
     position: () => /## Current Position\r?\n\r?\n([\s\S]*?)\r?\n\r?\n/.exec(stateOf(root))[1].split(/\r?\n/),
   };
 }
+
+test('state-sync with the installed GSD 1.16 and a held index.lock: a warning, exit 0, STATE.md and the tree as they were', SKIP, async () => {
+  const { root } = committedFixture();
+  const before = fs.readFileSync(path.join(root, '.planning', 'STATE.md'));
+  const lock = path.join(root, '.git', 'index.lock');
+  fs.writeFileSync(lock, '');
+  let r;
+  try {
+    r = await sync(root, {});
+  } finally {
+    fs.rmSync(lock, { force: true });
+  }
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.match(r.lines.at(-1), /^warn: state-sync: .*STATE\.md was put back as it was$/);
+  assert.ok(fs.readFileSync(path.join(root, '.planning', 'STATE.md')).equals(before));
+  assert.equal(execFileSync('git', ['status', '--porcelain', '--', '.planning/STATE.md'], { cwd: root, encoding: 'utf8' }), '');
+});
 
 test('state-sync with the installed GSD 1.16 leaves archive lines outside Current Position alone', SKIP, async () => {
   const { root, position } = committedFixture({ before: ARCHIVE_BEFORE, after: ARCHIVE_AFTER });

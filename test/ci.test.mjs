@@ -38,6 +38,16 @@ test('ciVerdict: pending until every run completed; red only for failure, timed_
   assert.equal(ciVerdict([run('completed', 'cancelled'), run('completed', 'failure')]), 'red');
 });
 
+test('failedLogTail masks every line of a private key block in the log, and parseRuns strips control characters from names', () => {
+  const begin = `-----BEGIN ${'OPENSSH PRIVATE'} KEY-----`;
+  const end = `-----END ${'OPENSSH PRIVATE'} KEY-----`;
+  const at = (i, text) => `test\tRun\t2026-10-10T10:00:0${i}.0000000Z ${text}`;
+  const r = failedLogTail([at(0, 'start'), at(1, begin), at(2, 'b3BlbnNzaC1rZXktdjEAAAAA'), at(3, 'AAAABG5vbmUAAAAEbm9uZQ'), at(4, end), at(5, 'done')].join('\n'));
+  assert.deepEqual(r.tail, ['start', '[secret]', '[secret]', '[secret]', '[secret]', 'done']);
+  const [run] = parseRuns(JSON.stringify([{ databaseId: 1, name: 'CI\x1b[31m\r\nfake line\x07', status: 'completed', conclusion: 'success' }]));
+  assert.equal(run.name, 'CI[31mfake line');
+});
+
 test('failedLogTail keeps the last 200 lines, the failing job and step, and no colour codes or secrets', () => {
   const lines = [];
   for (let i = 1; i <= 250; i++) lines.push(`test\tRun npm test\t2026-10-10T10:00:${String(i % 60).padStart(2, '0')}.1234567Z \x1b[31mline ${i}\x1b[0m`);

@@ -26,3 +26,13 @@ test('forbiddenName matches the spec list by base name, any case; ordinary files
     assert.equal(forbiddenName(file), null, file);
   }
 });
+
+test('maskOutput masks a whole private key block, not only its first line, and a block cut off at the end', () => {
+  // built at run time: no key header literal in this file
+  const begin = `-----BEGIN ${'RSA PRIVATE'} KEY-----`;
+  const end = `-----END ${'RSA PRIVATE'} KEY-----`;
+  const body = ['MIIEowIBAAKCAQEA1b2c3d4e5f6', 'g7h8i9j0k1l2m3n4o5p6q7r8s9t0'];
+  assert.equal(maskOutput(['before', begin, ...body, end, 'after'].join('\n')), ['before', '[secret]', 'after'].join('\n'));
+  assert.equal(maskOutput(['before', begin, ...body].join('\n')), ['before', '[secret]'].join('\n'));
+  for (const line of body) assert.ok(!maskOutput([begin, ...body].join('\n')).includes(line));
+});

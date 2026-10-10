@@ -288,6 +288,29 @@ test('a remote branch that is not an ancestor of HEAD: nothing pushed, pushDiver
   assert.ok(!calls.some((a) => sub(a) === 'push'));
 });
 
+test('a file name or a branch name that carries a secret is masked in the record, the log and the notification', async () => {
+  const r = pushRepo();
+  const { ctx, notes } = supervisorCtx(r);
+  const logs = [];
+  ctx.deps.log = (l) => logs.push(l);
+  r.sh('checkout', '-q', '-b', `feat/${GH}`);
+  const c = r.commit(`logs/${GH}.log`, 'started\n'); // its message names the file too
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.equal(rec.outcome, 'failed', 'the remote has no such branch yet');
+  // a forbidden file found on a branch the remote has: refused, both names masked
+  r.sh('push', '-q', 'origin', `HEAD~1:refs/heads/feat/${GH}`);
+  ask(r, ctx.config.push);
+  await pushTick(ctx, later(1));
+  const refused = readJson(recordFile(r.root, '3'));
+  assert.equal(refused.outcome, 'refused');
+  assert.deepEqual(refused.findings, [{ file: `(commit message ${c.slice(0, 7)})`, kind: 'github token' }, { file: 'logs/[secret].log', kind: 'forbidden name *.log' }]);
+  const all = [JSON.stringify(rec), JSON.stringify(refused), JSON.stringify(notes), logs.join('\n')].join('\n');
+  assert.ok(!all.includes(GH), all);
+  assert.equal(refused.branch, 'feat/[secret]');
+});
+
 test('a secret or forbidden file in the range: nothing pushed, file and kind named, never the value; the same findings notify once', async () => {
   const r = pushRepo();
   const { ctx, calls, notes } = supervisorCtx(r);

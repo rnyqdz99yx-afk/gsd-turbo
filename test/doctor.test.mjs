@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { doctor } from '../lib/doctor.mjs';
+import { doctor, supportsMods } from '../lib/doctor.mjs';
 
 function env() {
   const home = tmpDir('home');
@@ -205,4 +205,24 @@ test('unsupported when gsd-tools init manager fails', () => {
   const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: BIN });
   assert.equal(r.mode, 'unsupported');
   assert.equal(r.checks.find((c) => c.name === 'gsd-init-manager').ok, false);
+});
+
+test('supportsMods reads the version out of claude --version: 2.1.290 and newer load mods', () => {
+  for (const [text, ok] of [['2.1.290 (Claude Code)', true], ['2.1.296', true], ['2.2.0', true], ['3.0.0 (Claude Code)', true], ['2.1.289 (Claude Code)', false], ['', false], [null, false], ['garbage', false]]) assert.equal(supportsMods(text), ok, String(text));
+});
+
+test('turbo-view-mod: the installed mod passes, a missing one says how to install it, an older Claude Code points to status --watch; never part of the mode', () => {
+  const e = env();
+  const check = (version) => {
+    const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk(version), claudeBin: BIN });
+    assert.equal(r.mode, 'full', JSON.stringify(r.checks));
+    const c = r.checks.find((x) => x.name === 'turbo-view-mod');
+    return [c.ok, c.detail];
+  };
+  const hooks = path.join(e.home, 'skills', 'turbo-view', 'hooks', 'hooks.json');
+  assert.deepEqual(check('2.1.291'), [false, `${hooks} missing (run node install.mjs)`]);
+  fs.mkdirSync(path.dirname(hooks), { recursive: true });
+  fs.writeFileSync(hooks, '{ "modules": ["./register.mjs"] }');
+  assert.deepEqual(check('2.1.291'), [true, '']);
+  assert.deepEqual(check('2.1.250'), [true, 'Claude Code 2.1.250 (Claude Code) has no mods (need >=2.1.290): turbo-run status --watch shows the run']);
 });

@@ -202,3 +202,17 @@ test('notify telegram: a hanging fetch is aborted by the timeout and notify reso
   assert.equal(aborted, true, 'the fetch was aborted by the timeout signal');
   assert.ok(Date.now() - t0 < 2000, `resolved in ${Date.now() - t0} ms`);
 });
+
+test('push and CI messages exist in en and ru with the same placeholders (S2)', () => {
+  const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
+  const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
+  for (const key of ['pushDiverged', 'pushRefused', 'pushFailed', 'ciRed', 'ciTimeout']) {
+    const en = msg('en', key, keep);
+    const ru = msg('ru', key, keep);
+    assert.notEqual(en.title, key, key);
+    assert.notEqual(ru.title, en.title, `${key} has a ru text`);
+    assert.deepEqual(holes(ru), holes(en), key);
+  }
+  assert.equal(msg('en', 'pushRefused', { phase: '3', findings: 'logs/a.log (forbidden name *.log)', remote: 'origin', branch: 'main' }).title, 'Phase 3: push refused');
+  assert.match(msg('en', 'ciRed', { phase: '3', sha: 'abc1234', runs: 'CI (failure)', rounds: 2 }).body, /abc1234: CI \(failure\)\. The lane fixes it itself \(at most 2 rounds\)/);
+});

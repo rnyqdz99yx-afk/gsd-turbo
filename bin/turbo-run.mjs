@@ -5,7 +5,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '../lib/paths.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries } from '../lib/config.mjs';
+import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, pushSettings } from '../lib/config.mjs';
 import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
@@ -96,6 +96,8 @@ function runtimeConfig(config) {
     poll_seconds: clampPoll(config.poll_seconds),
     max_restarts_without_progress: clampInt(config.max_restarts_without_progress, 1, DEFAULTS.max_restarts_without_progress),
     blocked_minutes_before_notify: clampInt(config.blocked_minutes_before_notify, 1, DEFAULTS.blocked_minutes_before_notify),
+    // push.* checked where start, status and the daemon load the config: a typo stops them with one line
+    push: pushSettings(config.push),
   };
 }
 // stop/resume must work even when the config is broken.

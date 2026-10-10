@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { createGit, scanRange, requestPush, requestFile, recordFile, pushTick } from '../lib/push.mjs';
+import { createGit, scanRange, requestPush, requestFile, recordFile, pushTick, describeRecord } from '../lib/push.mjs';
 import { DEFAULTS, pushSettings } from '../lib/config.mjs';
 import { readJson, writeJsonAtomic } from '../lib/fsx.mjs';
 import { readInbox, inboxFile } from '../lib/inbox.mjs';
@@ -401,4 +401,29 @@ test('a run name with a secret is masked in the push record, the supervisor log,
   const all = [fs.readFileSync(recordFile(root, '3'), 'utf8'), fs.readFileSync(inboxFile(root, '3'), 'utf8'), JSON.stringify(notes), logs.join('\n')].join('\n');
   assert.ok(!all.includes(GH), all);
   assert.equal(notes[0].vars.runs, 'deploy [secret] (failure)');
+});
+
+test('a git call that times out while the supervisor handles a request fails that request once: recorded, notified, not retried', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes } = supervisorCtx(r);
+  const inner = ctx.deps.git;
+  ctx.deps.git = (args, opts) => {
+    if (args[0] === 'log' && args.includes('-p')) {
+      calls.push(args);
+      throw Object.assign(new Error('timed out after 60 s'), { status: null });
+    }
+    return inner(args, opts);
+  };
+  const sha = r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.deepEqual([rec.outcome, rec.reason, rec.branch, rec.sha], ['failed', 'the secret scan failed: timed out after 60 s', 'main', sha]);
+  assert.deepEqual(notes, [{ key: 'pushFailed', vars: { phase: '3', error: 'the secret scan failed: timed out after 60 s' } }]);
+  // what a waiting push-request --wait prints: the real cause, not "the supervisor has not taken this request"
+  assert.equal(describeRecord(rec).line, 'failed: the secret scan failed: timed out after 60 s');
+  const n = calls.length;
+  await pushTick(ctx, NOW);
+  assert.equal(calls.length, n, 'the failed request is not tried again');
+  assert.equal(notes.length, 1);
 });

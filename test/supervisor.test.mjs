@@ -911,7 +911,9 @@ test('push work runs in every tick but its errors never fail the lane tick (S2)'
   assert.equal(s.lane.phase, '2');
   assert.equal(h.launched.length, 1);
   assert.ok(!('failingSince' in s));
-  assert.ok(h.logs.includes('push p2: git is broken'), h.logs.join('\n'));
+  // the broken git fails this request once (recorded and notified), never the tick
+  assert.ok(h.logs.includes('push p2: failed: reading the branch failed: git is broken'), h.logs.join('\n'));
+  assert.deepEqual(h.notes.map((n) => n.key), ['pushFailed']);
 });
 
 test('a lane launched with push on gets the push rule in its system prompt; with push off it does not (S2)', async () => {

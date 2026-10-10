@@ -322,3 +322,12 @@ test('resume runs claude with the resume args only, without the calling session\
   const timeout = createClaude({ bin: PLAIN_BIN, exec: () => '', spawn: () => ({ status: null, error: Object.assign(new Error('spawnSync claude ETIMEDOUT'), { code: 'ETIMEDOUT' }), stdout: '', stderr: '' }) });
   assert.throws(() => timeout.resume('x', 'P', '/p'), /claude --resume failed: timed out after 120000 ms/);
 });
+
+test('parseResume: a backgrounded id is the session itself only when it is exactly the job id or the session id (or its first segment); any other id, a longer or shorter one included, is a copy', () => {
+  const ids = { jobId: '1a2b3c4d', sessionId: '9f9f9f9f-2222-4333-8444-555555555555' };
+  assert.deepEqual(parseResume('backgrounded · 1a2b3c4d · lane\n', ids), { woke: true, copyId: null });
+  assert.deepEqual(parseResume('backgrounded · 9f9f9f9f-2222-4333-8444-555555555555 · lane\n', ids), { woke: true, copyId: null });
+  assert.deepEqual(parseResume('backgrounded · 1a2b3c4d9 · lane\n', ids), { woke: false, copyId: '1a2b3c4d9' });
+  assert.deepEqual(parseResume('backgrounded · 1a2b3c · lane\n', ids), { woke: false, copyId: '1a2b3c' });
+  assert.deepEqual(parseResume('backgrounded · 9f9f9f · lane\n', ids), { woke: false, copyId: '9f9f9f' });
+});

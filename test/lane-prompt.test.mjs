@@ -22,6 +22,17 @@ test('the context stop goes by turbo-run context only: before each step, unknown
   }
 });
 
+test('every stop syncs STATE.md\'s position first: state-sync before the paused-context record, and before any record in safe mode', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const paused = s.split('\n').find((l) => l.includes('lane-status 3 paused-context'));
+    assert.ok(paused.indexOf('gsd-pause-work') < paused.indexOf('node x state-sync 3'), mode);
+    assert.ok(paused.indexOf('node x state-sync 3') < paused.indexOf('record this status'), mode);
+    const lead = s.split('\n').find((l) => l.startsWith('2. '));
+    assert.match(lead, mode === 'full' ? /Stopping early section, which restores GSD's gates and syncs STATE\.md first/ : /run node x state-sync 3/, mode);
+  }
+});
+
 test('temporary files, stands and data copies go under the lane\'s temp directory, never the system temp directory', () => {
   for (const mode of ['safe', 'full']) {
     const s = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard', mode, tmpDir: 'C:\\p\\.planning\\turbo\\run\\tmp\\p3' });

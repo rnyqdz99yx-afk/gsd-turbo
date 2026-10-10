@@ -50,6 +50,17 @@ test('turbo-phase skill: the context check of the step loop is turbo-run context
   assert.match(point, /context_window/);
 });
 
+test('turbo-phase skill: STATE.md\'s position is synced after every stop and after execute', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const early = s.slice(s.indexOf('### Stopping early'), s.indexOf('## Steps'));
+  assert.ok(early.indexOf('turbo-run state-sync N') > 0 && early.indexOf('turbo-run state-sync N') < early.indexOf('turbo-run lane-status N needs-owner'), 'Stopping early syncs before the lane status');
+  const loop = s.slice(s.indexOf('## The step loop'), s.indexOf('### Stopping early'));
+  const point = loop.split('\n').find((l) => l.startsWith('2. '));
+  assert.ok(point.indexOf('gsd-pause-work') < point.indexOf('turbo-run state-sync N') && point.indexOf('turbo-run state-sync N') < point.indexOf('paused-context'), point);
+  assert.ok(section(s, 'execute').includes('turbo-run state-sync N'), 'execute ends with a sync');
+  assert.ok(!/gsd-tools (query )?state[.\s](begin-phase|planned-phase)/.test(s), 'turbo never calls begin-phase or planned-phase');
+});
+
 // A stop inside execute restores the gates (Stopping early) while gates-off stays done: the resumed
 // execute must turn them off again, or GSD runs its gates serially and the fan-out runs them again.
 test('turbo-phase skill: step execute begins with gates off, handled like step gates-off', () => {

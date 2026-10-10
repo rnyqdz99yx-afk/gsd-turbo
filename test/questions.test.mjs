@@ -243,7 +243,7 @@ test('a plan whose name is no usable question id is skipped with a warning: its 
   const list = refreshQuestions(root, '32', { warn: (l) => warnings.push(l) });
   assert.deepEqual(list.map((q) => q.id), ['32-09-t2', '32-10-t3', '32-11-t2']);
   assert.equal(warnings.length, 2);
-  assert.match(warnings.find((w) => w.includes('draft')), /^plan 32-12 draft%2-PLAN\.md: its name cannot make a question id .*rename it/);
+  assert.match(warnings.find((w) => w.includes('draft')), /^plan 32-12 draft%2-PLAN\.md: its name cannot make a question id .*for the owner: rename the plan file; a lane never renames plan files$/);
   assert.deepEqual(refreshQuestions(root, '32').map((q) => q.id), list.map((q) => q.id), 'no warn callback: skipped all the same');
 });
 

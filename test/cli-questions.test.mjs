@@ -176,3 +176,11 @@ test('turbo-run questions --stop --unmet after the owner answered a deploy conse
   assert.match(r.text, /^stopped: 32-10-t3 waits for the owner/);
   assert.deepEqual(readAnswers(root, '32').map((x) => [x.by, Boolean(x.superseded)]), [['standing-rule', true], ['session', true]]);
 });
+
+test('turbo-run questions --stop at a checkpoint of a plan whose name cannot make a question id: refused with what the lane does, stop for the owner, never rename', async () => {
+  const root = project();
+  writePhase(root, '32-auth', { '32-12 draft-PLAN.md': DECISION_PLAN });
+  const r = await run(root, ['questions', '32', '--stop', '32-12 draft-t2', '--agent', AG]);
+  assert.equal(r.code, 1);
+  assert.match(r.text, /^ERR turbo-run questions: not a question id: 32-12 draft-t2: .*stop for the owner.*never rename the plan file/);
+});

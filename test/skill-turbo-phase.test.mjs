@@ -135,7 +135,7 @@ test('turbo-phase skill: owner questions (S1) — list and classify, pre-answers
     'turbo-run questions N --stop <plan id>-t<task number> --agent <agent id>', '--unmet', '--kind human-action', 'turbo-run questions N --deliver',
     'SendMessage(to="<agent id>"', 'resumedAgentId', 'No transcript found for agent ID', 'ToolSearch', 'turbo-run agent-tail <agent id>', '<previous_agent_tail>',
     'turbo-run questions N --delivered <id> --path same-agent', 'turbo-run questions N --delivered <id> --path continuation', 'turbo-run view --json',
-    'Never run `turbo-run answer` yourself', 'every phase', '`gsd-tools commit "docs(phase-N): owner answers" --files .planning/turbo/answers/`',
+    'Never run `turbo-run answer` yourself', '`not a question id: …`', 'Never rename a plan file', 'every phase', '`gsd-tools commit "docs(phase-N): owner answers" --files .planning/turbo/answers/`',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
   assert.ok(!s.includes('answers/pN.json'), "the whole answers directory, not only this phase's file");

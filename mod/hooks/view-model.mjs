@@ -14,7 +14,8 @@ const QUESTION_MAX = 300;
 const LABEL_MAX = 80;
 const ACTIVE = new Set(['running', 'quiet']);
 const STOPPED = new Set(['needs-owner', 'failed']);
-const CI_MARK = { green: 'CI ✓', red: 'CI ✗', pending: 'CI …', timeout: 'CI ?' };
+// S2's CI states; none and superseded show no mark, cancelled (nothing was tested) shows as unknown
+const CI_MARK = { green: 'CI ✓', red: 'CI ✗', pending: 'CI …', timeout: 'CI ?', cancelled: 'CI ?' };
 
 const ruPlural = (n, one, few, many) => {
   const a = n % 10;
@@ -218,7 +219,12 @@ export function render(view, { error = null } = {}) {
   return { rows };
 }
 
-const ciMark = (push) => (!push ? null : push.outcome !== 'pushed' ? 'push ✗' : CI_MARK[push.ci] ?? null);
+// The push marks of a lane: push ✗ when the latest request did not push, and the CI state of the last push (S2 keeps
+// the two apart, so a refused request beside a red CI run shows both).
+function ciMark(push) {
+  const marks = push ? [push.outcome !== 'pushed' ? 'push ✗' : null, CI_MARK[push.ci] ?? null].filter(Boolean) : [];
+  return marks.length ? marks.join(' · ') : null;
+}
 
 // The one line above the prompt (spec §7: `turbo p32 execute · 3 агента · ? 2 вопроса · CI ✓`), or null when the
 // project has no turbo run and no open question.

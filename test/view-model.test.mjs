@@ -153,6 +153,9 @@ test('bandLine is the spec §7 line, names a stopped supervisor or lane, and is 
   assert.equal(bandLine(view({ supervisor: { running: false, halted: true } }, { status: 'needs-owner', agents: [], push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } })), 'turbo p32 execute (needs-owner) · supervisor halted · ? 1 question · CI ✗');
   assert.equal(bandLine(view({}, { push: { outcome: 'refused', sha: null, ci: null } })), 'turbo p32 execute · 3 agents · ? 1 question · push ✗');
   assert.equal(bandLine(view({}, { push: null })), 'turbo p32 execute · 3 agents · ? 1 question');
+  // S2 keeps the latest request apart from the last push: a refused request beside the last push's red CI shows both
+  assert.equal(bandLine(view({}, { push: { outcome: 'refused', sha: 'a1b2c3d', ci: 'red' } })), 'turbo p32 execute · 3 agents · ? 1 question · push ✗ · CI ✗');
+  assert.equal(bandLine(view({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'cancelled' } })), 'turbo p32 execute · 3 agents · ? 1 question · CI ?');
   assert.equal(bandLine({ v: 1, at: AT, supervisor: null, range: null, lanes: [], questions: [], commits: [] }), null);
   assert.equal(bandLine(null), null);
   assert.equal(bandLine(view(), { error: 'invalid turbo config x: y' }), 'turbo · ⚠ invalid turbo config x: y');

@@ -216,11 +216,17 @@ test('the view carries the live view settings (ui) and each lane its last push a
   const v = buildView({ root, sup, config: { lang: 'ru', view: { refresh_seconds: 5 } }, env, now: NOW, commits: COMMITS });
   assert.deepEqual(v.ui, { lang: 'ru', refreshSeconds: 5 });
   assert.equal(v.lanes[0].push, null);
+  // S2's record (lib/push.mjs): the latest request's outcome and time at the top, the last push and its CI watch in
+  // lastPush, carried over by later requests
   const record = path.join(runDirOf(root), 'p32-push.json');
-  writeJsonAtomic(record, { requestId: 'r1', phase: '32', remote: 'origin', branch: 'main', at: at('10:50'), outcome: 'pushed', sha: 'f'.repeat(40), ci: { state: 'red', since: at('10:50'), runs: [] } });
-  assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes[0].push, { outcome: 'pushed', sha: 'fffffff', at: at('10:50'), ci: 'red' });
-  writeJsonAtomic(record, { outcome: 'refused', findings: [{ file: '.env', kind: 'forbidden name' }] });
-  assert.deepEqual(pushOf(root, '32'), { outcome: 'refused', sha: null, at: null, ci: null });
+  const sha = 'f'.repeat(40);
+  const lastPush = { requestId: 'r1', sha, branch: 'main', remote: 'origin', at: at('10:50'), ci: { state: 'red', since: at('10:50'), runs: [] } };
+  writeJsonAtomic(record, { requestId: 'r1', phase: '32', remote: 'origin', at: at('10:50'), outcome: 'pushed', branch: 'main', sha, lastPush });
+  assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes[0].push, { outcome: 'pushed', at: at('10:50'), sha: 'fffffff', ci: 'red' });
+  writeJsonAtomic(record, { requestId: 'r2', phase: '32', remote: 'origin', at: at('10:55'), outcome: 'refused', findings: [{ file: '.env', kind: 'forbidden name' }], lastPush });
+  assert.deepEqual(pushOf(root, '32'), { outcome: 'refused', at: at('10:55'), sha: 'fffffff', ci: 'red' }, 'a refused request keeps the last push and its CI');
+  writeJsonAtomic(record, { requestId: 'r1', phase: '32', remote: 'origin', at: at('10:50'), outcome: 'refused', findings: [] });
+  assert.deepEqual(pushOf(root, '32'), { outcome: 'refused', at: at('10:50'), sha: null, ci: null }, 'refused before any push');
   fs.writeFileSync(record, '{"outcome":');
   assert.equal(pushOf(root, '32'), null);
   writeJsonAtomic(record, { outcome: 'exploded' });

@@ -176,3 +176,9 @@ test('the standing rule never answers again a question whose standing-rule answe
   assert.equal(ask(root, { id: '32-10-t3', option: 1, by: 'session' }).status, 'recorded');
   assert.deepEqual(readAnswers(root, '32').map((r) => [r.by, Boolean(r.superseded)]), [['standing-rule', true], ['session', false]]);
 });
+
+test('own words lose C1 controls, bidi overrides and isolates and terminal escapes too, as view drops them (D18)', () => {
+  const root = project();
+  const r = ask(root, { id: '32-09-t2', text: 'take \u0085Clerk\u009b \u202Ereversed\u202C \u2066isolated\u2069 \x1b[31mred\x1b[0m', by: 'session' });
+  assert.equal(r.record.answer, 'take Clerk reversed isolated red');
+});

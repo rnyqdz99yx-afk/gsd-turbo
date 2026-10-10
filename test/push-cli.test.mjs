@@ -40,9 +40,11 @@ function lane(root, { alive = () => true, onSleep = () => {} } = {}) {
   const run = (...a) => runPhaseCommand('push-request', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`), deps });
   return { lines, run };
 }
-const answer = (root, fields) => {
+// the supervisor's answer: pushed, with the CI watch in lastPush
+const answer = (root, { ci }) => {
   const req = readJson(requestFile(root, '3'));
-  writeJsonAtomic(recordFile(root, '3'), { requestId: req.id, phase: '3', remote: 'origin', branch: 'main', outcome: 'pushed', sha: req.head, ...fields });
+  const push = { requestId: req.id, remote: 'origin', branch: 'main', sha: req.head };
+  writeJsonAtomic(recordFile(root, '3'), { ...push, phase: '3', outcome: 'pushed', lastPush: { ...push, ci } });
 };
 
 test('bin routes push-request and inbox; with push off nothing is requested; a bad --at is a usage error', () => {
@@ -104,7 +106,7 @@ test('push-request --wait fails at once without a supervisor, and after 10 minut
 });
 
 test('describeRecord: one line and exit code per outcome', () => {
-  const pushed = (ci) => ({ requestId: 'r', phase: '3', remote: 'origin', branch: 'main', outcome: 'pushed', sha: 'f'.repeat(40), ci });
+  const pushed = (ci) => ({ requestId: 'r', phase: '3', remote: 'origin', branch: 'main', outcome: 'pushed', sha: 'f'.repeat(40), lastPush: { requestId: 'r', sha: 'f'.repeat(40), ci } });
   const red = [{ id: 1, name: 'CI', status: 'completed', conclusion: 'failure' }, { id: 2, name: 'Lint', status: 'completed', conclusion: 'success' }];
   const cases = [
     [pushed({ state: 'pending', runs: [] }), 3, 'pushed fffffff to origin/main · CI pending'],

@@ -240,7 +240,7 @@ test('the supervisor pushes the requested head once: fetch, ancestor check, scan
   await pushTick(ctx, NOW);
   assert.equal(r.remoteHead(), sha);
   const rec = readJson(recordFile(r.root, '3'));
-  assert.deepEqual([rec.outcome, rec.sha, rec.branch, rec.remote, rec.at, rec.ci], ['pushed', sha, 'main', 'origin', NOW.toISOString(), { state: 'none', reason: 'push.ci is none' }]);
+  assert.deepEqual([rec.outcome, rec.sha, rec.branch, rec.remote, rec.at, rec.lastPush.ci], ['pushed', sha, 'main', 'origin', NOW.toISOString(), { state: 'none', reason: 'push.ci is none' }]);
   assert.deepEqual(calls.map((a) => a[0]), ['symbolic-ref', 'rev-parse', 'fetch', 'merge-base', 'log', 'log', 'log', 'push']);
   const push = calls.at(-1);
   assert.deepEqual(push, ['push', '--quiet', 'origin', `${sha}:refs/heads/main`]);
@@ -368,7 +368,8 @@ const runRow = (id, name, status, conclusion = '') => ({ databaseId: id, name, s
 const project = () => { const root = tmpDir('ci'); fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true }); return root; };
 // a record as the supervisor writes it after a push, CI still to watch
 const pendingRecord = (root, phase = '3', sha = SHA) => writeJsonAtomic(recordFile(root, phase), {
-  requestId: 'r1', phase, remote: 'origin', branch: 'main', at: NOW.toISOString(), outcome: 'pushed', sha, ci: { state: 'pending', since: NOW.toISOString(), runs: [] },
+  requestId: 'r1', phase, remote: 'origin', branch: 'main', at: NOW.toISOString(), outcome: 'pushed', sha,
+  lastPush: { requestId: 'r1', sha, branch: 'main', remote: 'origin', at: NOW.toISOString(), ci: { state: 'pending', since: NOW.toISOString(), runs: [] } },
 });
 function ghScript(answer) {
   const calls = [];
@@ -397,7 +398,7 @@ test('CI green: every run of the pushed commit completed without a red conclusio
   const { ctx, notes } = ciCtx(root, gh);
   await pushTick(ctx, later(1));
   assert.deepEqual(calls, [['run', 'list', '--commit', SHA, '--json', 'databaseId,name,status,conclusion']]);
-  assert.equal(readJson(recordFile(root, '3')).ci.state, 'green');
+  assert.equal(readJson(recordFile(root, '3')).lastPush.ci.state, 'green');
   assert.deepEqual(notes, []);
   assert.deepEqual(readInbox(root, '3'), []);
   await pushTick(ctx, later(2));
@@ -415,7 +416,7 @@ test('CI red: waits for every run, then puts each red run\'s failed log tail, ma
   });
   const { ctx, notes } = ciCtx(root, gh);
   await pushTick(ctx, later(1));
-  assert.equal(readJson(recordFile(root, '3')).ci.state, 'pending', 'one run still going');
+  assert.equal(readJson(recordFile(root, '3')).lastPush.ci.state, 'pending', 'one run still going');
   done = true;
   await pushTick(ctx, later(2));
   assert.deepEqual(calls.at(-1), ['run', 'view', '7', '--log-failed']);
@@ -423,7 +424,7 @@ test('CI red: waits for every run, then puts each red run\'s failed log tail, ma
   assert.deepEqual([m.kind, m.sha, m.run, m.workflow, m.conclusion, m.job, m.step, m.tail.at(-1)], ['ci-red', SHA, 7, 'CI', 'failure', 'test', 'Run npm test', 'Error: expected 1 to equal 2']);
   assert.ok(!fs.readFileSync(inboxFile(root, '3'), 'utf8').includes(GH));
   assert.deepEqual(notes, [{ key: 'ciRed', vars: { phase: '3', sha: SHA.slice(0, 7), runs: 'CI (failure)', rounds: 2 } }]);
-  assert.equal(readJson(recordFile(root, '3')).ci.state, 'red');
+  assert.equal(readJson(recordFile(root, '3')).lastPush.ci.state, 'red');
   await pushTick(ctx, later(3));
   assert.equal(readInbox(root, '3').length, 1);
   assert.equal(notes.length, 1);
@@ -441,8 +442,8 @@ test('CI timeout: runs still going after push.ci_timeout_minutes notify ciTimeou
   await pushTick(ctx, later(9));
   assert.deepEqual(notes, []);
   await pushTick(ctx, later(10));
-  assert.equal(readJson(recordFile(root, '3')).ci.state, 'timeout');
-  assert.equal(readJson(recordFile(root, '4')).ci.state, 'red');
+  assert.equal(readJson(recordFile(root, '3')).lastPush.ci.state, 'timeout');
+  assert.equal(readJson(recordFile(root, '4')).lastPush.ci.state, 'red');
   assert.deepEqual(notes.map((n) => n.key), ['ciTimeout', 'ciRed']);
   assert.deepEqual(notes[0].vars, { phase: '3', sha: SHA.slice(0, 7), minutes: 10, error: '' });
   assert.equal(readInbox(root, '4').length, 1);
@@ -453,19 +454,19 @@ test('no CI run within 5 minutes counts as no CI; a failing gh keeps waiting and
   pendingRecord(root);
   const { ctx, notes } = ciCtx(root, ghScript(() => []).gh);
   await pushTick(ctx, later(4));
-  assert.equal(readJson(recordFile(root, '3')).ci.state, 'pending');
+  assert.equal(readJson(recordFile(root, '3')).lastPush.ci.state, 'pending');
   await pushTick(ctx, later(5));
   const rec = readJson(recordFile(root, '3'));
-  assert.deepEqual([rec.ci.state, rec.ci.reason], ['none', 'no CI run appeared within 5 min']);
+  assert.deepEqual([rec.lastPush.ci.state, rec.lastPush.ci.reason], ['none', 'no CI run appeared within 5 min']);
   assert.deepEqual(notes, []);
 
   const root2 = project();
   pendingRecord(root2);
   const failing = ciCtx(root2, ghScript(() => new Error('gh run list failed: HTTP 401: Bad credentials')).gh);
   await pushTick(failing.ctx, later(29));
-  assert.equal(readJson(recordFile(root2, '3')).ci.state, 'pending');
+  assert.equal(readJson(recordFile(root2, '3')).lastPush.ci.state, 'pending');
   await pushTick(failing.ctx, later(30));
-  assert.equal(readJson(recordFile(root2, '3')).ci.state, 'timeout');
+  assert.equal(readJson(recordFile(root2, '3')).lastPush.ci.state, 'timeout');
   assert.equal(failing.notes[0].vars.error, '; last gh error: gh run list failed: HTTP 401: Bad credentials');
 });
 
@@ -487,8 +488,8 @@ test('CI is checked before new requests: an older push\'s red result still reach
   assert.equal(readInbox(r.root, '3')[0].sha, old, 'the older push\'s red result reached the inbox');
   assert.equal(r.remoteHead(), sha);
   const rec = readJson(recordFile(r.root, '3'));
-  assert.deepEqual([rec.sha, rec.ci.state], [sha, 'pending']);
-  assert.equal(readJson(recordFile(r.root, '2')).ci.state, 'superseded');
+  assert.deepEqual([rec.sha, rec.lastPush.ci.state], [sha, 'pending']);
+  assert.equal(readJson(recordFile(r.root, '2')).lastPush.ci.state, 'superseded');
 });
 
 test('a run name with a secret is masked in the push record, the supervisor log, the notification and the inbox', async () => {
@@ -549,4 +550,25 @@ test('a tick starts no new push or CI work once its time budget is used; a watch
   assert.ok(logs.some((l) => /budget/.test(l)), logs.join('\n'));
   await pushTick(ctx, later(2));
   assert.deepEqual(calls.map((a) => a[3][0]), ['2', '3', '4', '2'], 'the skipped watch goes first');
+});
+
+test('a refused request keeps the CI watch of the last push, whose red result still reaches the inbox', async () => {
+  const r = pushRepo();
+  const { ctx, notes } = supervisorCtx(r, { ci: 'github' });
+  let red = false;
+  ctx.deps.gh = (args) => (args[1] === 'view' ? 'test\tRun\t2026-10-10T10:00:00Z boom' : JSON.stringify([runRow(5, 'CI', red ? 'completed' : 'in_progress', red ? 'failure' : '')]));
+  const pushed = r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  r.commit('src/conf.mjs', `export const t = '${GH}';\n`);
+  ask(r, ctx.config.push);
+  await pushTick(ctx, later(1));
+  let rec = readJson(recordFile(r.root, '3'));
+  assert.deepEqual([rec.outcome, rec.lastPush?.sha, rec.lastPush?.ci?.state], ['refused', pushed, 'pending']);
+  red = true;
+  await pushTick(ctx, later(2));
+  rec = readJson(recordFile(r.root, '3'));
+  assert.deepEqual([rec.outcome, rec.lastPush.ci.state], ['refused', 'red']);
+  assert.equal(readInbox(r.root, '3')[0].sha, pushed);
+  assert.deepEqual(notes.map((n) => n.key), ['pushRefused', 'ciRed']);
 });

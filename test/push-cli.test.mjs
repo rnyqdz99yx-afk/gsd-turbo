@@ -33,8 +33,8 @@ function laneRepo(push = { mode: 'after-phase' }) {
   return root;
 }
 // a fake clock that the fake sleep moves; onSleep plays the supervisor
-function lane(root, { alive = () => true, onSleep = () => {} } = {}) {
-  let t = Date.parse('2026-01-01T00:00:00Z');
+function lane(root, { alive = () => true, onSleep = () => {}, start = '2026-01-01T00:00:00Z' } = {}) {
+  let t = Date.parse(start);
   const lines = [];
   const deps = { supervisorAlive: alive, now: () => new Date(t), sleep: async (ms) => { t += ms; onSleep(); } };
   const run = (...a) => runPhaseCommand('push-request', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`), deps });
@@ -103,6 +103,17 @@ test('push-request --wait fails at once without a supervisor, and after 10 minut
   assert.equal(await ignored.run('3', '--wait'), 3, 'the first 9-minute slice ends in waiting');
   assert.equal(await ignored.run('3', '--wait'), 1);
   assert.match(ignored.lines.at(-1), /^failed: the supervisor has not taken this request for 10 min/);
+});
+
+test('push-request --wait on a request asked long before counts the 10 minutes from its first wait', async () => {
+  const root = laneRepo();
+  assert.equal(await lane(root, { alive: () => false }).run('3', '--at', 'phase'), 0);
+  // half an hour later a supervisor runs, and the lane waits for the same head
+  const waiting = lane(root, { start: '2026-01-01T00:30:00Z' });
+  assert.equal(await waiting.run('3', '--wait'), 3);
+  assert.match(waiting.lines.at(-1), /^waiting: the supervisor has not pushed yet/);
+  assert.equal(await waiting.run('3', '--wait'), 1);
+  assert.match(waiting.lines.at(-1), /^failed: the supervisor has not taken this request for 10 min/);
 });
 
 test('describeRecord: one line and exit code per outcome', () => {

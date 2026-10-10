@@ -221,3 +221,14 @@ test('push and CI messages exist in en and ru with the same placeholders (S2)', 
     assert.match(msg(lang, 'ciTimeout', { phase: '3', sha: 'fffffff', commit: full, repo: ' -R acme/app', minutes: 30, error: '' }).body, new RegExp(`gh run list -R acme/app --commit ${full}$`), lang);
   }
 });
+
+test('laneStalled exists in en and ru with the same placeholders (S1)', () => {
+  const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
+  const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
+  const en = msg('en', 'laneStalled', keep);
+  const ru = msg('ru', 'laneStalled', keep);
+  assert.notEqual(en.title, 'laneStalled');
+  assert.notEqual(ru.title, en.title);
+  assert.deepEqual(holes(ru), holes(en));
+  assert.match(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, /1a2b3c4d wrote nothing for 16 min, also after 2 wakes/);
+});

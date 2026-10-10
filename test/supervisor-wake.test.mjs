@@ -178,3 +178,69 @@ test('any relaunch of the lane (here after paused-context) carries the owner\'s 
   assert.match(h.launched[1].prompt, /deliver the owner's answers to 02-01-t2: run node x questions 2 --deliver/);
   assert.equal(h.resumed.length, 0);
 });
+
+test('a lane that writes nothing for stall_minutes is woken with the interruption prompt; twice at most, then the owner is told once (spec §5.5.6)', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  h.advance(14);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 0);
+  h.advance(2);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1);
+  assert.match(h.resumed[0].prompt, /^This session was interrupted: nothing was written for 16 minutes\. Run node x view --json/);
+  assert.deepEqual(s.lane.stall, { count: 1, at: h.now().toISOString() });
+  h.advance(10);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1, 'stall_minutes after the wake first');
+  h.advance(6);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 2);
+  h.advance(16);
+  s = await tick(s, h.ctx);
+  h.advance(16);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 2);
+  assert.deepEqual(h.notes.filter((x) => x.key === 'laneStalled').map((x) => [x.vars.phase, x.vars.wakes, x.vars.id]), [['2', 2, '1a2b3c4d']]);
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  s = await tick(s, h.ctx);
+  assert.equal(s.lane.stall, null, 'it wrote again: a new spell');
+});
+
+test('a lane whose turn ended while its subagents work is waiting for them, not blocked: no laneBlocked while they run', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  h.activity = { lastMs: h.now().getTime(), active: 2 };
+  for (let i = 0; i < 4; i++) {
+    h.advance(5);
+    h.activity.lastMs = h.now().getTime();
+    s = await tick(s, h.ctx);
+  }
+  assert.ok(!h.notes.some((x) => x.key === 'laneBlocked'));
+  h.activity.active = 0;
+  for (let i = 0; i < 3; i++) {
+    h.advance(5);
+    h.activity.lastMs = h.now().getTime();
+    s = await tick(s, h.ctx);
+  }
+  assert.ok(h.notes.some((x) => x.key === 'laneBlocked'));
+  assert.equal(h.resumed.length, 0);
+});
+
+test('no lane transcript found is no proof of a stall: never woken; nor is a full lane under a safe-mode supervisor (Review Focus 5)', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.activity = { lastMs: null, active: 0 };
+  for (let i = 0; i < 4; i++) {
+    h.advance(30);
+    s = await tick(s, h.ctx);
+  }
+  assert.equal(h.resumed.length, 0);
+  h.activity = { lastMs: Date.parse('2026-01-01T00:00:00Z'), active: 0 };
+  h.ctx.mode = 'safe';
+  h.advance(30);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 0);
+});

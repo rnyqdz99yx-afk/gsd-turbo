@@ -289,7 +289,17 @@ async function start(root, requested = undefined) {
     return 0;
   }
   const last = readJson(supPath(root), null);
-  if (ended && supAlive(last, config.poll_seconds)) return already(last); // another start won the lock
+  if (ended && supAlive(last, config.poll_seconds)) {
+    // another start won the lock: this start's daemon exited, the winner runs with its own range
+    const label = (x) => (x?.from || x?.to ? `phases ${rangeLabel(x)}` : 'the whole milestone');
+    out(`another start launched supervisor pid ${last.pid} first (${label(last.range)}); this start's supervisor exited`);
+    printStatus(last, true, { rangeLine: false });
+    if (requested !== undefined && label(range) !== label(last.range)) {
+      process.stderr.write(`the running range is ${label(last.range)}, not ${label(range)}: run turbo-run stop first, then start with the new range\n`);
+      return 1;
+    }
+    return 0;
+  }
   if (ended && last && last.pid == null && Date.parse(last.updatedAt) >= spawnedAt && (last.finished || last.halted)) {
     out(`supervisor pid ${child.pid} ran and exited`);
     printStatus(last, false, { rangeLine: !range });

@@ -794,6 +794,48 @@ test('start prints the range line once, also when the daemon finished before sta
   assert.match(r.stdout, /^supervisor: not running · range finished$/m);
 });
 
+// Preloaded into start only: its first TURBO_TEST_HIDE_READS reads of supervisor.json find nothing, so start
+// spawns a daemon although another one already runs (the race of two starts).
+function hideFirstSupervisorReads() {
+  const fs = require('node:fs');
+  const read = fs.readFileSync;
+  let left = Number(process.env.TURBO_TEST_HIDE_READS) || 0;
+  fs.readFileSync = function (file, ...rest) {
+    if (String(file).endsWith('supervisor.json') && left > 0) {
+      left--;
+      throw Object.assign(new Error('ENOENT: hidden'), { code: 'ENOENT' });
+    }
+    return read.call(this, file, ...rest);
+  };
+}
+
+test('start that loses the race to another start reports the winner and its range once; exit 1 only for a different requested range', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }] });
+  const winner = sleeper(t);
+  const preload = path.join(p.root, 'hide-reads.cjs');
+  fs.writeFileSync(preload, `(${hideFirstSupervisorReads})();\n`);
+  const race = async (args, hide) => {
+    writeSup(p.root, { pid: winner.pid, updatedAt: new Date().toISOString(), finished: false, halted: false, lane: null, range: { from: '4', to: '5' } });
+    writeLock(p.root, { pid: winner.pid, at: new Date().toISOString() });
+    return runAsync(['start', ...args], p.root, { ...p.env, TURBO_TEST_HIDE_READS: String(hide) }, ['--require', preload]);
+  };
+  const ranges = (r) => r.stdout.split(/\r?\n/).filter((l) => l.startsWith('range:'));
+  let r = await race(['--from', '4', '--to', '5'], 2);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, new RegExp(`another start launched supervisor pid ${winner.pid} first \\(phases 4–5\\)`));
+  assert.deepEqual(ranges(r), ['range: phases 4–5']);
+  r = await race(['--only', '7'], 2);
+  assert.equal(r.code, 1, r.stdout + r.stderr);
+  assert.deepEqual(ranges(r), ['range: phases 7–7']);
+  assert.match(r.stderr, /the running range is phases 4–5, not phases 7–7: run turbo-run stop first/);
+  assert.doesNotMatch(r.stderr, /nothing was changed/);
+  r = await race([], 3);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.deepEqual(ranges(r), []);
+  assert.match(r.stdout, /another start launched supervisor pid \d+ first \(phases 4–5\)/);
+  assert.ok(pidExists(winner.pid));
+});
+
 test('start refuses an unsupported environment with exit 2 and the failed checks', async () => {
   const p = fakeProject({ claudeVersion: '2.1.100' });
   const r = await runAsync(['start'], p.root, p.env);

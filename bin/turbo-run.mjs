@@ -25,6 +25,7 @@ import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
+import { createLaneProbe } from '../lib/wake.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync|questions|answer|agent-tail> [args]';
@@ -238,6 +239,8 @@ function makeCtx(root, mode = 'safe') {
       // the supervisor's push and CI work (spec §6, S2); unused while push.mode is off
       git: createGit(root),
       gh: createGh(root),
+      // the lane's transcripts, read-only: the session id a wake resumes, and the lane's activity (spec §5.5)
+      lanes: createLaneProbe(root),
       fingerprint: fingerprint(root),
       notify: (key, vars) => notify(config, msg(config.lang, key, vars)),
       now: () => new Date(),

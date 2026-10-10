@@ -242,6 +242,17 @@ test('open questions reach the view as S1 writes them, rev included: the pane an
   assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).questions, [q]);
 });
 
+test('recentCommits never runs a git planted in the project (Windows looks for a bare program in the working directory first)', { skip: process.platform !== 'win32' && 'only Windows looks in the working directory' }, () => {
+  const repo = tmpGitRepo();
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'feat: real'], { cwd: repo });
+  // a small program that is not git and fails on `git log` arguments
+  fs.copyFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'whoami.exe'), path.join(repo, 'git.exe'));
+  // a Node whose environment lacks NoDefaultCurrentDirectoryInExePath: the default, where Windows looks in the cwd
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== 'nodefaultcurrentdirectoryinexepath'));
+  const script = `import { recentCommits } from ${JSON.stringify(new URL('../lib/view.mjs', import.meta.url).href)}; process.stdout.write(String(recentCommits(process.argv[1])[0]?.subject));`;
+  assert.equal(execFileSync(process.execPath, ['--input-type=module', '-e', script, repo], { env, encoding: 'utf8' }), 'feat: real');
+});
+
 test('escape sequences and bidi overrides in repository data are dropped where the view reads them, so view --json, view and status --watch draw none', () => {
   // OSC 52 (clipboard), ESC[2J (clear), colors and U+202E, built at run time
   const E = String.fromCharCode(27);

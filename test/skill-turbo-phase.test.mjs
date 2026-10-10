@@ -61,6 +61,20 @@ test('turbo-phase skill: STATE.md\'s position is synced after every stop and aft
   assert.ok(!/gsd-tools (query )?state[.\s](begin-phase|planned-phase)/.test(s), 'turbo never calls begin-phase or planned-phase');
 });
 
+test('turbo-phase skill: inside execute the context stop finishes the plan or wave and leaves the step undone; state-sync is best effort', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const loop = s.slice(s.indexOf('## The step loop'), s.indexOf('### Stopping early'));
+  const point = loop.split('\n').find((l) => l.startsWith('2. '));
+  assert.match(point, /`turbo-run state-sync N` \(best effort/);
+  assert.match(point, /Inside step \*\*execute\*\*.*before each wave or plan.*finish the current plan or wave.*without marking the step done/);
+});
+
+test('turbo-phase skill: passing GSD core reference files as paths is a listed exception to never rebuilding GSD prompts', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const rule = s.split('\n').find((l) => l.includes('Never rebuild by hand a prompt'));
+  for (const needle of ['`references/`', '`templates/`', '`workflows/`', 'absolute paths', 'Read them before anything else', 'never for the plan, CONTEXT, RESEARCH or other phase files']) assert.ok(rule.includes(needle), needle);
+});
+
 // A stop inside execute restores the gates (Stopping early) while gates-off stays done: the resumed
 // execute must turn them off again, or GSD runs its gates serially and the fan-out runs them again.
 test('turbo-phase skill: step execute begins with gates off, handled like step gates-off', () => {

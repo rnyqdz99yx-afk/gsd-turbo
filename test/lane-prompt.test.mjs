@@ -33,6 +33,16 @@ test('every stop syncs STATE.md\'s position first: state-sync before the paused-
   }
 });
 
+test('inside a long step the context stop finishes the current plan or wave and never marks the step done; state-sync is best effort', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const paused = s.split('\n').find((l) => l.includes('lane-status 3 paused-context'));
+    assert.match(paused, /inside a step, finish the current plan or wave and do not mark the step done/, mode);
+    assert.match(paused, /state-sync 3 \(best effort/, mode);
+    if (mode === 'safe') assert.match(s.split('\n').find((l) => l.startsWith('2. ')), /state-sync 3 \(best effort/);
+  }
+});
+
 test('GSD core reference files go to subagents as paths to Read, never pasted; phase files are not affected', () => {
   for (const mode of ['safe', 'full']) {
     const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
@@ -52,6 +62,8 @@ test('a sequential gsd-executor dispatch re-persists the dispatch isolation none
     const rule = s.split('\n').find((l) => l.includes('dispatch-isolation'));
     assert.ok(rule, mode);
     for (const needle of ['gsd-executor', 'isolation=worktree', 'gsd_run query dispatch-isolation --raw --phase', '--plan', '--force-isolation none', 'right before', 'retry']) assert.ok(rule.includes(needle), needle);
+    assert.match(rule, /Only when GSD's own workflow dispatches a gsd-executor sequentially/);
+    assert.match(rule, /never for an executor of a parallel wave/);
   }
 });
 

@@ -53,6 +53,37 @@ test('createGit: argument array, no shell, never a credential prompt, a time lim
   assert.throws(() => hung(['fetch']), (e) => e.message === 'timed out after 60 s' && e.status === null);
 });
 
+test('createGit makes OpenSSH fail at once instead of asking for a passphrase; other ssh programs stay as configured', () => {
+  // the GIT_SSH_COMMAND of a status, a fetch and a push call; configured is the project's core.sshCommand
+  const run = (env, configured = '') => {
+    let lookups = 0;
+    const seen = [];
+    const git = createGit('/proj', {
+      env,
+      exec: (cmd, args, opts) => {
+        if (args.includes('core.sshCommand')) {
+          lookups += 1;
+          if (configured) return `${configured}\n`;
+          throw Object.assign(new Error('x'), { status: 1 });
+        }
+        seen.push(opts.env.GIT_SSH_COMMAND);
+        return '';
+      },
+    });
+    for (const a of [['status'], ['fetch', 'origin'], ['push', 'origin', 'x']]) git(a);
+    return { seen, lookups };
+  };
+  const batch = (c) => [c, `${c} -o BatchMode=yes`, `${c} -o BatchMode=yes`];
+  assert.deepEqual(run({}).seen, [undefined, 'ssh -o BatchMode=yes', 'ssh -o BatchMode=yes']);
+  assert.equal(run({}).lookups, 1, 'core.sshCommand is read once');
+  assert.deepEqual(run({ GIT_SSH_COMMAND: 'ssh -i /k/id' }), { seen: batch('ssh -i /k/id'), lookups: 0 });
+  assert.deepEqual(run({}, '"/opt/open ssh/ssh.exe" -i /k/id').seen.slice(1), batch('"/opt/open ssh/ssh.exe" -i /k/id').slice(1));
+  // GIT_SSH (a program without arguments), another program or another ssh variant: left as configured
+  assert.deepEqual(run({ GIT_SSH: 'plink' }).seen, [undefined, undefined, undefined]);
+  assert.deepEqual(run({ GIT_SSH_COMMAND: 'plink -i k' }).seen, ['plink -i k', 'plink -i k', 'plink -i k']);
+  assert.deepEqual(run({ GIT_SSH_COMMAND: 'ssh', GIT_SSH_VARIANT: 'plink' }).seen, ['ssh', 'ssh', 'ssh']);
+});
+
 test('scanRange names forbidden files and secret kinds from every commit of the range, never the value', () => {
   const r = pushRepo();
   r.commit('old/app.db', 'x');

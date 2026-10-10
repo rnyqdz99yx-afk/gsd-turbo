@@ -52,3 +52,19 @@ test('quotedSignal reads the word a resume signal asks for, else the fallback', 
   assert.equal(quotedSignal('Select: a or b', 'approved'), 'approved');
   assert.equal(quotedSignal(undefined, 'done'), 'done');
 });
+
+test('attributes in single quotes count as well', () => {
+  const single = DECISION_PLAN.replace('<task type="checkpoint:decision" gate="blocking" auto_select="clerk">', "<task type='checkpoint:decision' gate='blocking-human' auto_select='clerk'>");
+  assert.deepEqual(parseCheckpoints(single).map((c) => [c.task, c.kind, c.gate, c.autoSelect]), [[2, 'decision', 'blocking-human', 'clerk']]);
+  assert.equal(parseCheckpoints(single.replace('<option id="clerk">', "<option id='clerk'>"))[0].options[1].id, 'clerk');
+});
+
+test('a fence closes only with a bare fence of its own character, at least as long: a line with an info string inside it is content (CommonMark)', () => {
+  const info = VERIFY_PLAN.replace('<action>Sidebar, header and content area.</action>', `<action>Sidebar:\n${FENCE}\n${FENCE}js\nx\n${FENCE}\n</action>`);
+  assert.deepEqual(parseCheckpoints(info).map((c) => [c.task, c.kind]), [[3, 'human-verify']]);
+  const long = VERIFY_PLAN.replace('<action>Sidebar, header and content area.</action>', `<action>Example:\n${FENCE}\`\n${FENCE}\n~~~\n<task type="checkpoint:decision"><decision>not real</decision></task>\n${FENCE}\`\n</action>`);
+  assert.deepEqual(parseCheckpoints(long).map((c) => [c.task, c.kind]), [[3, 'human-verify']]);
+  // the plan's closing tag on the fence's closing line still closes it
+  const tilde = DECISION_PLAN.replace('<action>Create the sessions table.</action>', '<action>Create:\n~~~sql\ncreate table s();\n~~~</action>');
+  assert.deepEqual(parseCheckpoints(tilde).map((c) => [c.task, c.kind]), [[2, 'decision']]);
+});

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { AGENT, AGENT2, FORK, SESSION, entry, jsonl, projectDirFor, setMtime, usage, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
-import { TAIL_MAX, actionOf, agentIndex, contextTokens, cwdInside, findAgentTranscript, findTranscript, headEntry, jobState, laneTranscript, normalCwd, planOf, projectDirs, projectKey, sessionTranscripts, tailEntries } from '../lib/transcripts.mjs';
+import { AGENT, AGENT2, FORK, SESSION, entry, jsonl, notification, projectDirFor, setMtime, usage, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
+import { TAIL_MAX, actionOf, agentIndex, contextTokens, cwdInside, findAgentTranscript, findTranscript, harnessNotificationText, headEntry, jobState, laneTranscript, launchedAgentId, normalCwd, parseNotifications, planOf, projectDirs, projectKey, scanLaneTranscript, sessionTranscripts, tailEntries } from '../lib/transcripts.mjs';
 
 const T0 = '2026-01-01T10:00:00.000Z';
 
@@ -220,4 +220,81 @@ test('the newest-transcript fallback reads past a last line longer than the tail
   const { root, home, dir } = setup();
   const file = writeSession(dir, CURRENT, [{ ...entry.user('hi', T0), cwd: root }, { ...entry.user('z'.repeat(600 * 1024), T0), cwd: undefined }]);
   assert.deepEqual(findTranscript({ home, root, env: {} }), { file, sessionId: CURRENT, via: 'newest' });
+});
+
+test('parseNotifications keeps final statuses (killed reads as stopped) and skips progress events', () => {
+  const text = [notification(AGENT, 'completed'), notification(AGENT2, 'killed'), notification('b1x2y3z4w', 'failed'),
+    '<task-notification>\n<task-id>b9q8r7s6t</task-id>\n<summary>shell printed a line</summary>\n<event>output</event>\n</task-notification>'].join('\n');
+  assert.deepEqual(parseNotifications(text), [
+    { taskId: AGENT, status: 'completed' }, { taskId: AGENT2, status: 'stopped' }, { taskId: 'b1x2y3z4w', status: 'failed' },
+  ]);
+});
+
+test('only entries the harness wrote carry a notification: never a quote in a dispatch prompt, a tool result or assistant text', () => {
+  assert.ok(harnessNotificationText(entry.note(AGENT, 'completed', T0)));
+  assert.ok(harnessNotificationText(entry.attachedNote(AGENT, 'completed', T0)));
+  const quote = notification(AGENT, 'completed');
+  assert.equal(harnessNotificationText(entry.dispatch('toolu_q', 'gsd-executor', 'Execute plan 07 of phase 32', `wait for ${quote}`, T0)), null);
+  assert.equal(harnessNotificationText(entry.toolResult('toolu_g', `log.jsonl:12: ${quote}`, T0)), null);
+  assert.equal(harnessNotificationText(entry.assistant({ ts: T0, text: quote })), null);
+  assert.equal(harnessNotificationText(entry.user(`the owner pasted: ${quote}`, T0)), null);
+  assert.equal(harnessNotificationText(entry.queued(AGENT, 'completed', T0)), null);
+  assert.equal(harnessNotificationText({ ...entry.note(AGENT, 'completed', T0), isSidechain: true }), null);
+  assert.equal(launchedAgentId(entry.launched('toolu_l', AGENT, T0)), AGENT);
+  assert.equal(launchedAgentId(entry.toolResult('toolu_g', AGENT, T0)), null);
+});
+
+test('scanLaneTranscript indexes notifications and launched agents, the newest notification per agent winning', () => {
+  const { dir } = setup();
+  const quote = notification(AGENT2, 'completed');
+  const file = writeSession(dir, SESSION, [
+    entry.user('run phase 32', T0),
+    entry.dispatch('toolu_1', 'gsd-executor', 'Execute plan 07 of phase 32', 'do it', T0),
+    entry.launched('toolu_1', AGENT, T0),
+    entry.dispatch('toolu_2', 'gsd-executor', 'Execute plan 08 of phase 32', `report ${quote} when done`, T0),
+    entry.launched('toolu_2', AGENT2, T0),
+    entry.attachedNote(AGENT, 'stopped', '2026-01-01T10:10:00.000Z'),
+    entry.note(AGENT, 'completed', '2026-01-01T10:20:00.000Z'),
+  ]);
+  const s = scanLaneTranscript(file);
+  assert.deepEqual(s.launched, [AGENT, AGENT2]);
+  assert.deepEqual(s.notes, { [AGENT]: { status: 'completed', at: '2026-01-01T10:20:00.000Z' } });
+  assert.equal(s.scanned, fs.statSync(file).size);
+});
+
+test('scanLaneTranscript reads a transcript larger than one chunk whose chunk boundary splits a multibyte character (Review Focus 2)', () => {
+  const { dir } = setup();
+  for (const pad of ['', 'x']) {
+    const file = writeSession(dir, SESSION, [
+      entry.user(`${pad}${'я'.repeat(600000)}`, T0),
+      entry.launched('toolu_1', AGENT, T0),
+      entry.note(AGENT, 'completed', '2026-01-01T10:40:00.000Z'),
+    ]);
+    const s = scanLaneTranscript(file);
+    assert.ok(fs.statSync(file).size > 1024 * 1024);
+    assert.equal(s.scanned, fs.statSync(file).size, `pad "${pad}"`);
+    assert.deepEqual(s.launched, [AGENT]);
+    assert.deepEqual(s.notes[AGENT], { status: 'completed', at: '2026-01-01T10:40:00.000Z' });
+  }
+});
+
+test('scanLaneTranscript reads only what was appended, keeps a line without its newline for later, and rereads a file that shrank', () => {
+  const { dir } = setup();
+  const file = writeSession(dir, SESSION, [entry.user('x'.repeat(5000), T0), entry.launched('toolu_1', AGENT, T0)]);
+  const first = scanLaneTranscript(file);
+  assert.equal(first.read, fs.statSync(file).size);
+  assert.equal(scanLaneTranscript(file, first).read, 0);
+  const half = JSON.stringify(entry.note(AGENT, 'completed', '2026-01-01T10:30:00.000Z'));
+  fs.appendFileSync(file, half.slice(0, 40));
+  const partial = scanLaneTranscript(file, first);
+  assert.equal(partial.read, 40);
+  assert.equal(partial.scanned, first.scanned);
+  assert.deepEqual(partial.notes, {});
+  fs.appendFileSync(file, `${half.slice(40)}\n`);
+  const done = scanLaneTranscript(file, partial);
+  assert.equal(done.read, half.length + 1);
+  assert.deepEqual(done.notes[AGENT], { status: 'completed', at: '2026-01-01T10:30:00.000Z' });
+  writeSession(dir, SESSION, [entry.launched('toolu_9', AGENT2, T0)]);
+  assert.deepEqual(scanLaneTranscript(file, done).launched, [AGENT2]);
+  assert.deepEqual(scanLaneTranscript(file, { scanned: 'bad' }).launched, [AGENT2]);
 });

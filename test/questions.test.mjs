@@ -1,9 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN } from './helpers/plans.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { tmpDir } from './helpers/tmp.mjs';
+import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
 import { parseCheckpoints } from '../lib/checkpoints.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
-import { buildQuestion, dynamicQuestion, questionId } from '../lib/questions.mjs';
+import {
+  CLASSES, answersRel, buildQuestion, classifyQuestions, dynamicQuestion, liveAnswer, lockFile, questionId, questionsFile,
+  readAnswers, readQuestions, refreshQuestions, withPhaseLock, writeAnswers,
+} from '../lib/questions.mjs';
 
 const cpOf = (text) => parseCheckpoints(text)[0];
 
@@ -76,4 +82,80 @@ test('a checkpoint the lane names at a stop: plan and task from its id, the opti
   const v = dynamicQuestion({ phase: '32', id: '32-09-t5', kind: 'human-verify', question: 'Check the package before install' });
   assert.deepEqual([v.question, v.options.map((o) => o.signal)], ['Verify: Check the package before install', ['approved']]);
   assert.throws(() => dynamicQuestion({ phase: '32', id: 'nope', kind: 'human-action', question: 'x' }), /<plan>-t<task>/);
+});
+
+// A phase with plans 08 (done), 09 (decision), 10 (human-verify) and 11 (human-action).
+function project() {
+  const root = tmpDir('q');
+  const dir = writePhase(root, '32-auth', {
+    '32-08-PLAN.md': DECISION_PLAN, '32-08-SUMMARY.md': '# done\n',
+    '32-09-PLAN.md': DECISION_PLAN, '32-10-PLAN.md': VERIFY_PLAN, '32-11-PLAN.md': ACTION_PLAN,
+  });
+  return { root, dir };
+}
+const record = (over) => ({ plan: '32-10', task: '3', option: 1, label: 'Accept if the checks pass', answer: 'approved', by: 'session', at: '2026-01-01T00:00:00.000Z', conditional: true, condition: 'c', defer: false, ...over });
+
+test('refreshQuestions: one question per checkpoint of every plan without a SUMMARY, in run/p<N>-questions.json', () => {
+  const { root } = project();
+  const list = refreshQuestions(root, '32');
+  assert.deepEqual(list.map((q) => q.id), ['32-09-t2', '32-10-t3', '32-11-t2']);
+  assert.deepEqual(readQuestions(root, '32'), list);
+  assert.equal(path.basename(questionsFile(root, '32')), 'p32-questions.json');
+  assert.equal(answersRel('32'), '.planning/turbo/answers/p32.json');
+  assert.deepEqual(refreshQuestions(tmpDir('none'), '7'), []);
+});
+
+test('a refresh keeps the class, the agent and the stop; state and answer come from the answers file; rev counts option changes', () => {
+  const { root, dir } = project();
+  refreshQuestions(root, '32');
+  classifyQuestions(root, '32', '32-09-t2=consent:deploy');
+  writeAnswers(root, '32', [record({ id: '32-10-t3' })]);
+  let list = refreshQuestions(root, '32');
+  const d = list.find((q) => q.id === '32-09-t2');
+  assert.deepEqual([d.class, d.topic, d.classified, d.rev], ['consent', 'deploy', true, 1]);
+  const v = list.find((q) => q.id === '32-10-t3');
+  assert.equal(v.state, 'answered');
+  assert.deepEqual(v.answer, { option: 1, label: 'Accept if the checks pass', answer: 'approved', by: 'session', at: '2026-01-01T00:00:00.000Z', conditional: true });
+  fs.writeFileSync(path.join(dir, '32-09-PLAN.md'), DECISION_PLAN.replace('<name>Clerk</name>', '<name>Clerk (hosted)</name>'));
+  list = refreshQuestions(root, '32');
+  assert.deepEqual([list[0].rev, list[0].class, list[0].options[0].label], [2, 'consent', 'Clerk (hosted)']);
+  fs.writeFileSync(path.join(dir, '32-10-SUMMARY.md'), '# done\n');
+  assert.deepEqual(refreshQuestions(root, '32').map((q) => q.id), ['32-09-t2', '32-11-t2']);
+  assert.equal(readAnswers(root, '32').length, 1, 'answers stay');
+});
+
+test('liveAnswer skips superseded records; a preference reads as deferred', () => {
+  const recs = [{ id: 'a', answer: 'x' }, { id: 'a', answer: 'y', superseded: 'z' }, { id: 'b', answer: 'q' }];
+  assert.equal(liveAnswer(recs, 'a').answer, 'x');
+  assert.equal(liveAnswer(recs, 'c'), null);
+  const { root } = project();
+  refreshQuestions(root, '32');
+  writeAnswers(root, '32', [record({ id: '32-11-t2', plan: '32-11', task: '2', label: 'I will do it when the lane asks', answer: null, conditional: false, condition: null, defer: true })]);
+  assert.equal(refreshQuestions(root, '32').find((q) => q.id === '32-11-t2').state, 'deferred');
+});
+
+test('classifyQuestions sets owner-only, consent, consent:deploy, decision or verify by id; anything else is refused and nothing changes', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  assert.deepEqual(CLASSES, ['owner-only', 'consent', 'consent:deploy', 'decision', 'verify']);
+  const list = classifyQuestions(root, '32', '32-10-t3=verify, 32-11-t2=owner-only');
+  assert.deepEqual(list.map((q) => [q.id, q.class, q.classified]), [['32-09-t2', 'decision', false], ['32-10-t3', 'verify', true], ['32-11-t2', 'owner-only', true]]);
+  assert.throws(() => classifyQuestions(root, '32', '32-09-t2=urgent'), /unknown class urgent for 32-09-t2/);
+  assert.throws(() => classifyQuestions(root, '32', '32-99-t1=verify'), /no question 32-99-t1 in phase 32/);
+  assert.throws(() => classifyQuestions(root, '32', ''), /--class needs <id>=<class>/);
+  assert.equal(readQuestions(root, '32').find((q) => q.id === '32-09-t2').classified, false);
+});
+
+test('the phase lock: a second writer waits and gives up with a clear error; a lock left by a crash is taken over (Review Focus 1)', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  const file = lockFile(root, '32');
+  fs.writeFileSync(file, '');
+  assert.throws(() => withPhaseLock(root, '32', () => 1, { waitMs: 100 }), /the questions of phase 32 are locked by another turbo-run/);
+  const old = new Date(Date.now() - 60000);
+  fs.utimesSync(file, old, old);
+  assert.equal(withPhaseLock(root, '32', () => 42), 42);
+  assert.equal(fs.existsSync(file), false);
+  assert.throws(() => withPhaseLock(root, '32', () => { throw new Error('boom'); }), /boom/);
+  assert.equal(fs.existsSync(file), false, 'released after an error');
 });

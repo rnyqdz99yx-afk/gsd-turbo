@@ -47,6 +47,8 @@ function fakeClaude() {
   const path = require('path');
   const args = process.argv.slice(2);
   fs.appendFileSync(path.join(__dirname, 'claude-argv.jsonl'), JSON.stringify(args) + '\n');
+  // the calling session's ids a launched lane sees (none expected)
+  if (args[0] === '--bg') fs.appendFileSync(path.join(__dirname, 'claude-env.jsonl'), JSON.stringify({ sid: process.env.CLAUDE_CODE_SESSION_ID ?? null, job: process.env.CLAUDE_JOB_DIR ?? null }) + '\n');
   const b = JSON.parse(fs.readFileSync(path.join(__dirname, 'behavior.json'), 'utf8'));
   const [cmd, id = ''] = args;
   if (cmd === '--version') console.log(`${b.version} (Claude Code)`);
@@ -633,11 +635,13 @@ test('resume --start launches a daemon that relaunches the lane; stop ends it', 
 test('start passes doctor\'s full mode to the daemon: the lane runs the turbo-phase skill', async (t) => {
   const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
   t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
-  const r = await runAsync(['start'], p.root, p.env);
+  // started from the owner's own session: the lane never gets that session's ids
+  const r = await runAsync(['start'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: 'owner-session', CLAUDE_JOB_DIR: path.join(p.root, 'owner-job') });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /started supervisor pid \d+ \(mode full\)/);
   const bg = await waitFor(() => p.claudeCalls().find((a) => a[0] === '--bg'), 15000);
   assert.ok(bg, logOf(p.root));
+  assert.deepEqual(readLines(path.join(p.root, 'fake-bin', 'claude-env.jsonl')), [{ sid: null, job: null }]);
   assert.equal(bg.at(-1), 'Run the turbo-phase skill with arguments: 4');
   assert.match(bg[bg.indexOf('--append-system-prompt') + 1], /lane-status 4 done .*close step/);
   // the settings JSON crosses a real process boundary intact (on win32 too: the shim resolves to node, no cmd.exe)

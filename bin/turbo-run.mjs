@@ -8,7 +8,7 @@ import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '
 import { DEFAULTS, loadConfig, initConfig, deepMerge } from '../lib/config.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
-import { createClaude, resolveBin, laneSessionName } from '../lib/claude.mjs';
+import { createClaude, resolveBin, laneSessionName, sessionFreeEnv } from '../lib/claude.mjs';
 import { loadPhases, normalizePhaseId } from '../lib/gsd.mjs';
 import { doctor } from '../lib/doctor.mjs';
 import { runDaemon, resumableLane } from '../lib/supervisor.mjs';
@@ -275,7 +275,7 @@ async function start(root, requested = undefined) {
   ensureDir(logsDir(root));
   const fd = fs.openSync(path.join(logsDir(root), 'supervisor.log'), 'a');
   const spawnedAt = Date.now();
-  const child = spawn(process.execPath, [SELF, 'daemon', '--project', root, '--mode', r.mode === 'full' ? 'full' : 'safe', ...rangeArgs], { cwd: root, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
+  const child = spawn(process.execPath, [SELF, 'daemon', '--project', root, '--mode', r.mode === 'full' ? 'full' : 'safe', ...rangeArgs], { cwd: root, env: sessionFreeEnv(), detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
   let ended = null;
   child.once('exit', (code, signal) => { ended = signal ? `signal ${signal}` : `exit code ${code}`; });
   child.once('error', (e) => { ended = e.code || e.message; });

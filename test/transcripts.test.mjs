@@ -238,7 +238,11 @@ test('only entries the harness wrote carry a notification: never a quote in a di
   assert.equal(harnessNotificationText(entry.toolResult('toolu_g', `log.jsonl:12: ${quote}`, T0)), null);
   assert.equal(harnessNotificationText(entry.assistant({ ts: T0, text: quote })), null);
   assert.equal(harnessNotificationText(entry.user(`the owner pasted: ${quote}`, T0)), null);
-  assert.equal(harnessNotificationText(entry.queued(AGENT, 'completed', T0)), null);
+  // the harness's enqueue line counts (sometimes the only trace of a completion); a removal or any other content does not
+  assert.equal(harnessNotificationText(entry.queued(AGENT, 'completed', T0)), quote);
+  assert.equal(harnessNotificationText({ ...entry.queued(AGENT, 'completed', T0), operation: 'remove' }), null);
+  assert.equal(harnessNotificationText({ ...entry.queued(AGENT, 'completed', T0), content: [{ type: 'text', text: quote }] }), null);
+  assert.equal(harnessNotificationText({ ...entry.queued(AGENT, 'completed', T0), content: `run this: ${quote}` }), null);
   assert.equal(harnessNotificationText({ ...entry.note(AGENT, 'completed', T0), isSidechain: true }), null);
   assert.equal(launchedAgentId(entry.launched('toolu_l', AGENT, T0)), AGENT);
   assert.equal(launchedAgentId(entry.toolResult('toolu_g', AGENT, T0)), null);
@@ -260,6 +264,12 @@ test('scanLaneTranscript indexes notifications and launched agents, the newest n
   assert.deepEqual(s.launched, [AGENT, AGENT2]);
   assert.deepEqual(s.notes, { [AGENT]: { status: 'completed', at: '2026-01-01T10:20:00.000Z' } });
   assert.equal(s.scanned, fs.statSync(file).size);
+});
+
+test('scanLaneTranscript counts a completion whose only trace is the enqueue line, at the time of that line', () => {
+  const { dir } = setup();
+  const file = writeSession(dir, SESSION, [entry.launched('toolu_1', AGENT, T0), entry.queued(AGENT, 'completed', '2026-01-01T10:25:00.000Z')]);
+  assert.deepEqual(scanLaneTranscript(file).notes, { [AGENT]: { status: 'completed', at: '2026-01-01T10:25:00.000Z' } });
 });
 
 test('scanLaneTranscript reads a transcript larger than one chunk whose chunk boundary splits a multibyte character (Review Focus 2)', () => {

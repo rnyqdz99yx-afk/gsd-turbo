@@ -49,3 +49,8 @@ test('failedLogTail keeps the last 200 lines, the failing job and step, and no c
   assert.equal(r.tail.at(-1).length, 400);
   assert.deepEqual(failedLogTail(''), { job: '', step: '', tail: [] });
 });
+
+test('parseRuns masks every text gh prints for a run (S2: all gh output is masked)', () => {
+  const text = JSON.stringify([{ databaseId: 1, name: `deploy ${GH}`, status: 'completed', conclusion: 'failure' }]);
+  assert.deepEqual(parseRuns(text), [{ id: 1, name: 'deploy [secret]', status: 'completed', conclusion: 'failure' }]);
+});

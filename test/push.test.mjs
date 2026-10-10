@@ -389,3 +389,16 @@ test('CI is checked before new requests: an older push\'s red result still reach
   assert.deepEqual([rec.sha, rec.ci.state], [sha, 'pending']);
   assert.equal(readJson(recordFile(r.root, '2')).ci.state, 'superseded');
 });
+
+test('a run name with a secret is masked in the push record, the supervisor log, the notification and the inbox', async () => {
+  const root = project();
+  pendingRecord(root);
+  const { gh } = ghScript((args) => (args[1] === 'view' ? '' : [runRow(9, `deploy ${GH}`, 'completed', 'failure')]));
+  const { ctx, notes } = ciCtx(root, gh);
+  const logs = [];
+  ctx.deps.log = (l) => logs.push(l);
+  await pushTick(ctx, later(1));
+  const all = [fs.readFileSync(recordFile(root, '3'), 'utf8'), fs.readFileSync(inboxFile(root, '3'), 'utf8'), JSON.stringify(notes), logs.join('\n')].join('\n');
+  assert.ok(!all.includes(GH), all);
+  assert.equal(notes[0].vars.runs, 'deploy [secret] (failure)');
+});

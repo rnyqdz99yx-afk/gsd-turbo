@@ -44,8 +44,14 @@ test('failedLogTail masks every line of a private key block in the log, and pars
   const at = (i, text) => `test\tRun\t2026-10-10T10:00:0${i}.0000000Z ${text}`;
   const r = failedLogTail([at(0, 'start'), at(1, begin), at(2, 'b3BlbnNzaC1rZXktdjEAAAAA'), at(3, 'AAAABG5vbmUAAAAEbm9uZQ'), at(4, end), at(5, 'done')].join('\n'));
   assert.deepEqual(r.tail, ['start', '[secret]', '[secret]', '[secret]', '[secret]', 'done']);
-  const [run] = parseRuns(JSON.stringify([{ databaseId: 1, name: 'CI\x1b[31m\r\nfake line\x07', status: 'completed', conclusion: 'success' }]));
-  assert.equal(run.name, 'CI[31mfake line');
+  // whole CSI and OSC sequences go (a colour, a terminal hyperlink), then every other control character
+  const [run, link] = parseRuns(JSON.stringify([
+    { databaseId: 1, name: 'CI\x1b[31m\r\nfake line\x07', status: 'completed', conclusion: 'success' },
+    { databaseId: 2, name: '\x1b]8;;https://example.com\x07Lint\x1b]8;;\x1b\\', status: 'completed', conclusion: 'success' },
+  ]));
+  assert.deepEqual([run.name, link.name], ['CIfake line', 'Lint']);
+  const tail = failedLogTail('test\tRun\t2026-10-10T10:00:00Z \x1b]8;;https://example.com\x07see\x1b]8;;\x07 docs').tail;
+  assert.deepEqual(tail, ['see docs']);
 });
 
 test('failedLogTail keeps the last 200 lines, the failing job and step, and no colour codes or secrets', () => {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { AGENT, AGENT2, FORK, SESSION, entry, jsonl, notification, projectDirFor, setMtime, usage, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
+import { AGENT, AGENT2, DEFAULT_META, FORK, SESSION, entry, jsonl, notification, projectDirFor, setMtime, usage, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
 import { TAIL_MAX, actionOf, agentIndex, agentSnapshot, agentState, contextTokens, cwdInside, findAgentTranscript, findTranscript, harnessNotificationText, headEntry, jobState, laneAgents, laneTranscript, launchedAgentId, normalCwd, parseNotifications, planOf, projectDirs, projectKey, scanLaneTranscript, sessionTranscripts, tailEntries } from '../lib/transcripts.mjs';
 
 const T0 = '2026-01-01T10:00:00.000Z';
@@ -528,6 +528,18 @@ test('laneAgents keeps the identity first seen per agent: a meta rewritten to { 
   const second = view(first.used);
   assert.deepEqual(second.ids, expected);
   assert.deepEqual(view(second.used).ids, expected);
+});
+
+test('the identity laneAgents keeps for the cache holds the description masked, as view shows it', () => {
+  const { root, dir } = setup();
+  const secret = `ghp_${'d'.repeat(36)}`;
+  const laneFile = writeSession(dir, SESSION, [entry.launched('toolu_1', AGENT, at('10:00'))]);
+  writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:50'), { ...DEFAULT_META, description: `Execute plan 07 of phase 32 with ${secret}` });
+  const used = {};
+  const r = laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: SESSION }, root, now: NOW, stallMs: STALL, used });
+  assert.equal(r.agents[0].plan, '32-07');
+  assert.equal(JSON.stringify(used).includes(secret), false);
+  assert.equal(JSON.stringify(r).includes(secret), false);
 });
 
 test('with a cold cache an agent of the lane session directory that the lane did not launch counts only with depth 1 and no parent agent', () => {

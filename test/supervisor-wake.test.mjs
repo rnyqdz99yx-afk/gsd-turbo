@@ -21,7 +21,7 @@ function harness() {
   let clock = Date.parse('2026-01-01T00:00:00Z');
   const h = {
     root, phases: [{ number: '2', deps: [], complete: false, verification: null }], agents: [], launched: [], removed: [], stopped: [], resumed: [],
-    notes: [], logs: [], resumeOut: [], activity: null,
+    notes: [], logs: [], resumeOut: [], activity: null, replies: [],
     advance(min) { clock += min * 60000; },
     now: () => new Date(clock),
   };
@@ -58,7 +58,8 @@ function harness() {
           return out ?? WOKE(lane?.id ?? target);
         },
       },
-      lanes: { session: (jobId) => `${jobId}-2222-4333-8444-555555555555`, activity: () => h.activity },
+      // replies: the times of the lane session's own assistant entries (the model answered after a wake)
+      lanes: { session: (jobId) => `${jobId}-2222-4333-8444-555555555555`, activity: () => h.activity, replied: (jobId, sinceMs) => h.replies.some((ms) => ms > sinceMs) },
       fingerprint: () => 'A',
       notify: async (key, vars) => { h.notes.push({ key, vars }); },
       now: () => new Date(clock),
@@ -204,8 +205,9 @@ test('a lane that writes nothing for stall_minutes is woken with the interruptio
   assert.equal(h.resumed.length, 2);
   assert.deepEqual(h.notes.filter((x) => x.key === 'laneStalled').map((x) => [x.vars.phase, x.vars.wakes, x.vars.id]), [['2', 2, '1a2b3c4d']]);
   h.activity = { lastMs: h.now().getTime(), active: 0 };
+  h.replies.push(h.now().getTime());
   s = await tick(s, h.ctx);
-  assert.equal(s.lane.stall, null, 'it wrote again: a new spell');
+  assert.equal(s.lane.stall, null, 'it answered and wrote again: a new spell');
 });
 
 test('a lane whose turn ended while its subagents work is waiting for them, not blocked: no laneBlocked while they run', async () => {
@@ -243,4 +245,24 @@ test('no lane transcript found is no proof of a stall: never woken; nor is a ful
   h.advance(30);
   s = await tick(s, h.ctx);
   assert.equal(h.resumed.length, 0);
+});
+
+test('the wake prompt the woken session only records is no progress: a session that answers nothing after it is woken twice, then the owner is told (D13)', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  // a resumed session writes the wake prompt into its transcript at once, then hangs
+  const resume = h.ctx.deps.claude.resume;
+  h.ctx.deps.claude.resume = (...a) => {
+    const out = resume(...a);
+    h.activity = { lastMs: h.now().getTime() + 2000, active: 0 };
+    return out;
+  };
+  for (let i = 0; i < 8; i++) {
+    h.advance(16);
+    s = await tick(s, h.ctx);
+  }
+  assert.equal(h.resumed.length, 2);
+  assert.equal(h.notes.filter((x) => x.key === 'laneStalled').length, 1);
+  assert.equal(s.lane.stall.count, 2);
 });

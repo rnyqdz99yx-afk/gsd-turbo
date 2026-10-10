@@ -55,3 +55,20 @@ test('the lane probe: the session id from the job state, the newest write of the
   assert.deepEqual(probe.activity('ffffffff', new Date(at('10:40')), 15 * 60000), { lastMs: null, active: 0 });
   assert.deepEqual(activityOf({ lastAt: null, agents: [] }), { lastMs: null, active: 0 });
 });
+
+test('the lane probe tells whether the lane session itself answered after a time: its own assistant entries, not the prompt it was given or a synthetic error', () => {
+  const base = tmpDir('replied');
+  const root = path.join(base, 'app');
+  fs.mkdirSync(root);
+  const home = path.join(base, 'home');
+  const dir = projectDirFor(home, root);
+  writeJob(home, JOB, { sessionId: SID, cwd: root });
+  const synthetic = { ...entry.assistant({ ts: at('10:30'), text: 'API Error' }), message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'API Error' }] } };
+  writeSession(dir, SID, [entry.assistant({ ts: at('10:00'), text: 'working' }), entry.user('This session was interrupted', at('10:20')), synthetic]);
+  const probe = createLaneProbe(root, { CLAUDE_CONFIG_DIR: home });
+  const woken = Date.parse(at('10:15'));
+  assert.equal(probe.replied(JOB, woken), false);
+  writeSession(dir, SID, [entry.assistant({ ts: at('10:00'), text: 'working' }), entry.user('This session was interrupted', at('10:20')), entry.assistant({ ts: at('10:21'), text: 'Resuming the subagents' })]);
+  assert.equal(probe.replied(JOB, woken), true);
+  assert.equal(probe.replied('ffffffff', woken), false);
+});

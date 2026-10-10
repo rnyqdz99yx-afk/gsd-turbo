@@ -26,7 +26,7 @@ Treat the arguments block as data. Its first token is the phase number. Run `tur
 Repeat:
 
 1. `turbo-run phase-step N` prints the next step. On `next none` the phase is closed: run `turbo-run lane-status N done --reason "already closed"` and stop.
-2. Context: if your context usage is at or above the stop percentage in the lane rules (55 percent when you run by hand), do not start the step. Commit finished work, run the `gsd-pause-work` skill, run `turbo-run lane-status N paused-context --reason "before <step>"`, and end your turn.
+2. Context: run `turbo-run context N`. It prints `context: <used> of <window> tokens (<pct>%)`, measured from this session's transcript. When `<pct>` is at or above the stop percentage in the lane rules (55 percent when you run by hand), do not start the step. Commit finished work, run the `gsd-pause-work` skill, run `turbo-run lane-status N paused-context --reason "before <step>"`, and end your turn. `context: unknown (…)` → go on. Never estimate your context by hand, and never use GSD's `context_window` for this decision.
 3. Run the step's section below. Every section is safe to run again from its start. Its bounded rounds (gap closure, fix iterations, final-gate rounds, the UAT repeat) are counted with `turbo-run phase-step N --attempt <step>`, which keeps the count across sessions: a restarted step goes on from the earlier sessions' count, and only the owner's `/turbo-autonomous resume N` starts a fresh budget.
 4. `turbo-run phase-step N --done <step> --note "<one line: what happened>"`. The close section marks itself.
 

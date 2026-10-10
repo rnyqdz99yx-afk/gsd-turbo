@@ -8,6 +8,20 @@ test('system prompt carries rules, no double quotes or percent signs', () => {
   assert.ok(!s.includes('"') && !s.includes('%'));
 });
 
+test('the context stop goes by turbo-run context only: before each step, unknown goes on, never a hand estimate or GSD\'s context_window', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node /t/turbo-run.mjs', contextPct: 60, autonomy: 'standard', mode });
+    const rule = s.split('\n').find((l) => l.includes('lane-status 3 paused-context'));
+    assert.ok(rule.includes('node /t/turbo-run.mjs context 3'), mode);
+    assert.match(rule, /60 percent or more/);
+    assert.match(rule, /before each step/);
+    assert.match(rule, /context: unknown .*go on/);
+    assert.match(rule, /[Nn]ever estimate/);
+    assert.match(rule, /context_window/);
+    assert.ok(!s.includes('"') && !s.includes('%'), mode);
+  }
+});
+
 test('temporary files, stands and data copies go under the lane\'s temp directory, never the system temp directory', () => {
   for (const mode of ['safe', 'full']) {
     const s = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard', mode, tmpDir: 'C:\\p\\.planning\\turbo\\run\\tmp\\p3' });

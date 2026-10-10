@@ -40,6 +40,16 @@ const section = (s, name) => {
   return s.slice(at, end < 0 ? undefined : end);
 };
 
+test('turbo-phase skill: the context check of the step loop is turbo-run context, never a hand estimate', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const loop = s.slice(s.indexOf('## The step loop'), s.indexOf('### Stopping early'));
+  const point = loop.split('\n').find((l) => l.startsWith('2. '));
+  assert.ok(point.includes('`turbo-run context N`'), point);
+  assert.match(point, /context: unknown/);
+  assert.match(point, /[Nn]ever estimate/);
+  assert.match(point, /context_window/);
+});
+
 // A stop inside execute restores the gates (Stopping early) while gates-off stays done: the resumed
 // execute must turn them off again, or GSD runs its gates serially and the fan-out runs them again.
 test('turbo-phase skill: step execute begins with gates off, handled like step gates-off', () => {

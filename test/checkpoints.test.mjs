@@ -68,3 +68,15 @@ test('a fence closes only with a bare fence of its own character, at least as lo
   const tilde = DECISION_PLAN.replace('<action>Create the sessions table.</action>', '<action>Create:\n~~~sql\ncreate table s();\n~~~</action>');
   assert.deepEqual(parseCheckpoints(tilde).map((c) => [c.task, c.kind]), [[2, 'decision']]);
 });
+
+test('the plan tag on a fence\'s closing line stays: the field the fence ends keeps its text and never runs into the next one', () => {
+  const a = ACTION_PLAN.replace('<action>Complete the email verification for the mail service account</action>', `<action>Complete the email verification:\n${FENCE}bash\nmail-cli verify\n${FENCE}</action>`);
+  assert.equal(parseCheckpoints(a)[0].action, 'Complete the email verification:');
+  const v = VERIFY_PLAN.replace('<how-to-verify>', `<how-to-verify>\n${FENCE}bash\ncurl localhost:3000\n${FENCE}</how-to-verify>\n<x>`);
+  assert.equal(parseCheckpoints(v)[0].howToVerify, '');
+});
+
+test('a line that starts with inline code in three backticks is no fence: a backtick fence\'s info string never holds a backtick', () => {
+  const plan = VERIFY_PLAN.replace('Sidebar, header and content area.', `Sidebar, header and content area.\n${FENCE}npm run build${FENCE} must pass.`);
+  assert.deepEqual(parseCheckpoints(plan).map((c) => [c.task, c.kind]), [[3, 'human-verify']]);
+});

@@ -8,8 +8,9 @@ import { lastUsage, measureContext } from '../lib/context.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
+// The calling session's own ids are cleared: these tests may run inside a Claude Code session.
 const runAsync = (args, cwd, env) => new Promise((resolve) => {
-  execFile(process.execPath, [CLI, ...args], { cwd, env: { ...process.env, ...env }, encoding: 'utf8', windowsHide: true }, (err, stdout, stderr) => {
+  execFile(process.execPath, [CLI, ...args], { cwd, env: { ...process.env, CLAUDE_CODE_SESSION_ID: '', CLAUDE_JOB_DIR: '', ...env }, encoding: 'utf8', windowsHide: true }, (err, stdout, stderr) => {
     resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr });
   });
 });
@@ -73,16 +74,61 @@ test('without a lane: the newest transcript whose cwd is the project root, where
   assert.ok(r.transcript.endsWith(`mine.jsonl`), r.transcript);
 });
 
-test('with a phase whose lane supervisor.json records: that lane session\'s transcript, even when another one is newer', () => {
-  const f = setup();
+const laneRecord = (f, sessionId) => {
   fs.mkdirSync(path.join(f.root, '.planning', 'turbo', 'run'), { recursive: true });
-  fs.writeFileSync(path.join(f.root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lane: { phase: '3', sessionId: 'abcd1234' } }));
-  f.transcript(keyOf(f.root), 'abcd1234-5678-90ab', [assistant(f.root, usage(0, 0, 610000))]);
-  f.transcript(keyOf(f.root), 'ffff0000-1111', [assistant(f.root, usage(0, 0, 50000))]); // the owner's own session, newer
-  assert.equal(measureContext({ root: f.root, phase: '3', window: 1000000, env: f.env }).pct, 61);
-  assert.equal(measureContext({ root: f.root, phase: '4', window: 1000000, env: f.env }).pct, 5, 'no lane for phase 4: the newest transcript');
-  fs.rmSync(path.join(f.home, 'projects', keyOf(f.root), 'abcd1234-5678-90ab.jsonl'));
-  assert.match(measureContext({ root: f.root, phase: '3', window: 1000000, env: f.env }).unknown, /no transcript of lane session abcd1234/);
+  fs.writeFileSync(path.join(f.root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lane: { phase: '3', sessionId } }));
+};
+const jobState = (f, jobId, state) => {
+  const dir = path.join(f.home, 'jobs', jobId);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(state));
+  return dir;
+};
+const measure = (f, extra = {}, phase = '3') => measureContext({ root: f.root, phase, window: 1000000, env: { ...f.env, ...extra } });
+
+test('the calling session comes first: CLAUDE_CODE_SESSION_ID names its transcript, over a recorded lane and a newer transcript, whatever its cwd', () => {
+  const f = setup();
+  laneRecord(f, 'abcd1234'); // a lane that stopped (needs-owner): its record stays
+  f.transcript(keyOf(f.root), 'abcd1234-5678-90ab', [assistant(f.root, usage(0, 0, 190000))]);
+  f.transcript(keyOf(f.root), 'ffff0000-1111', [assistant(path.join(f.root, 'backend'), usage(0, 0, 280000))]); // the caller, in a subfolder
+  f.transcript(keyOf(f.root), 'eeee0000-2222', [assistant(f.root, usage(0, 0, 50000))]); // another session, newer
+  const r = measure(f, { CLAUDE_CODE_SESSION_ID: 'ffff0000-1111' });
+  assert.deepEqual([r.pct, r.source], [28, 'session']);
+  assert.equal(measure(f, { CLAUDE_CODE_SESSION_ID: 'ffff0000-1111' }, null).pct, 28, 'without a phase too');
+  assert.equal(measure(f, { CLAUDE_CODE_SESSION_ID: '9999' }).pct, 19, 'an id without a transcript: the next way, here the lane');
+  assert.equal(measure(f, { CLAUDE_CODE_SESSION_ID: '../x' }).pct, 19, 'never a path');
+});
+
+test('a woken background job: its state.json names the transcript it writes now (linkScanPath, else resumeSessionId), never the old <jobId>-… one', () => {
+  const f = setup();
+  const old = f.transcript(keyOf(f.root), 'abcd1234-5678-90ab', [assistant(f.root, usage(0, 0, 527873))]);
+  const now = f.transcript(keyOf(f.root), 'bbbb2222-0000', [assistant(f.root, usage(0, 0, 278097))]);
+  fs.utimesSync(old, new Date(), new Date()); // the old one even looks newer
+  const job = jobState(f, 'abcd1234', { sessionId: 'abcd1234-5678-90ab', resumeSessionId: 'bbbb2222-0000', linkScanPath: now });
+  assert.deepEqual([measure(f, { CLAUDE_JOB_DIR: job }).used, measure(f, { CLAUDE_JOB_DIR: job }).source], [278097, 'job']);
+  jobState(f, 'abcd1234', { sessionId: 'abcd1234-5678-90ab', resumeSessionId: 'bbbb2222-0000', linkScanPath: path.join(path.dirname(f.home), 'elsewhere.jsonl') });
+  assert.equal(measure(f, { CLAUDE_JOB_DIR: job }).used, 278097, 'a linkScanPath outside projects/ is not read');
+  // the lane record of phase 3 names the same job: its state comes before the prefix of its id
+  laneRecord(f, 'abcd1234');
+  assert.deepEqual([measure(f).used, measure(f).source], [278097, 'lane']);
+  fs.rmSync(path.join(f.home, 'jobs'), { recursive: true });
+  assert.equal(measure(f).used, 527873, 'without a job state: the transcript named after the lane id');
+});
+
+test('the newest-transcript fallback takes a cwd inside the root (subfolders; on win32 the Git Bash /c/… form and any case), never a sibling folder', () => {
+  const f = setup();
+  const sibling = `${f.root}-other`;
+  f.transcript(keyOf(f.root), 'a', [assistant(path.join(f.root, 'backend'), usage(0, 0, 100000))]);
+  f.transcript(keyOf(sibling), 'b', [assistant(sibling, usage(0, 0, 900000))]);
+  assert.equal(measure(f, {}, null).used, 100000);
+  if (process.platform === 'win32') {
+    const gitBash = `/${f.root[0].toLowerCase()}${f.root.slice(2).replace(/\\/g, '/')}`;
+    f.transcript(keyOf(f.root), 'c', [assistant(gitBash, usage(0, 0, 200000))]);
+    assert.equal(measure(f, {}, null).used, 200000);
+    f.transcript(keyOf(f.root), 'd', [assistant(f.root.toUpperCase(), usage(0, 0, 300000))]);
+    assert.equal(measure(f, {}, null).used, 300000);
+  }
+  assert.equal(measure(f, {}, '7').source, 'newest');
 });
 
 test('only the tail of a large transcript is read; the window grows past a long last line', () => {

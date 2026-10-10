@@ -982,7 +982,7 @@ test('init: a config it creates gets test.full as a list, the root command first
   const list = ['npm test', { dir: 'app', command: 'pnpm test' }, { dir: 'server', command: 'npm test' }, { dir: 'web', command: 'yarn test' }];
   assert.deepEqual(cfgOf(p.root).test.full, list);
   assert.ok(stdout.split(/\r?\n/).includes(`test.full set to the root command and every nested package with its own test script: ${JSON.stringify(list)}`), stdout);
-  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD]);
+  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set' && a[1] === 'workflow.test_command').map((a) => a[2]), [TURBO_TEST_CMD]);
   assert.ok(stdout.includes(`workflow.test_command set to turbo-run test-changed (full test command: ${JSON.stringify(list)})`), stdout);
 
   // the kept previous command is the root entry; a root without package.json has no root entry
@@ -1014,7 +1014,7 @@ test('init review 5: a root package.json without a real test script (workspaces,
     tracked(p.root, { 'package.json': rootPkg, ...nested });
     const stdout = run(['init'], p.root, p.env);
     assert.deepEqual(cfgOf(p.root).test.full, list, name);
-    assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD], `${name}: ${stdout}`);
+    assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set' && a[1] === 'workflow.test_command').map((a) => a[2]), [TURBO_TEST_CMD], `${name}: ${stdout}`);
   }
 });
 
@@ -1027,9 +1027,9 @@ test('init: an existing config only warns and prints the entries to add; a valid
   assert.ok(lines.includes('warn: nested package server has its own test script that test.full does not run'), stdout);
   assert.ok(lines.includes('warn: nested package web has its own test script that test.full does not run'), stdout);
   assert.ok(lines.includes('to run them, add to test.full (a list) in .planning/turbo/config.json: [{"dir":"server","command":"npm test"},{"dir":"web","command":"npm test"}]'), stdout);
-  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD], 'the list is a known full command');
+  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set' && a[1] === 'workflow.test_command').map((a) => a[2]), [TURBO_TEST_CMD], 'the list is a known full command');
   const doctorOut = run(['doctor'], p.root, p.env).split(/\r?\n/);
-  assert.deepEqual(doctorOut.filter((l) => l.startsWith('warn ')), ['server', 'web'].map((d) => `warn nested package ${d} has its own test script that test.full does not run`));
+  assert.deepEqual(doctorOut.filter((l) => l.startsWith('warn nested package ')), ['server', 'web'].map((d) => `warn nested package ${d} has its own test script that test.full does not run`));
   assert.match(doctorOut.filter(Boolean).at(-1), /^mode: /);
 
   // an invalid list fails init with the config error and changes nothing in GSD

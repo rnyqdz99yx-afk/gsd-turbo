@@ -321,10 +321,17 @@ export function answerArgv({ node, turboRun, root, question, option = null, text
 export const viewArgv = ({ node, turboRun, root }) => [node, turboRun, 'view', '--project', root, '--json'];
 
 // The directory turbo-run runs in: its install directory (<dir>/bin/turbo-run.mjs → <dir>), never the project, where
-// a node version manager (Volta, asdf, mise) would follow the project's pin. null for a bare file name.
+// a node version manager (Volta, asdf, mise) would follow the project's pin. A network share keeps its //server/share
+// prefix and an extended-length path (\\?\C:\…, \\?\UNC\server\share\…) is read as the plain one, as ancestorDirs
+// does. null for a bare file name or a server without a share.
 export function turboDir(bin) {
-  const parts = String(bin).split(/[\\/]+/);
-  return parts.length > 2 ? parts.slice(0, -2).join('/') || '/' : null;
+  const p = String(bin).replace(/\\/g, '/').replace(/^\/\/\?\/UNC\//i, '//').replace(/^\/\/\?\//, '');
+  const unc = /^\/\/[^/]/.test(p);
+  const parts = (unc ? p.slice(2) : p).split(/\/+/);
+  if (parts.length <= 2) return null;
+  const dir = parts.slice(0, -2);
+  if (unc) return dir.length >= 2 ? `//${dir.join('/')}` : null;
+  return dir.join('/') || '/';
 }
 
 // A Windows path: a drive (C:\, c:/) or a network share (\\server\share).

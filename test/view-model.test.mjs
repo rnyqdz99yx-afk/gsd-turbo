@@ -244,6 +244,13 @@ test('turbo-run runs in its install directory, never in the project: a version m
   assert.equal(turboDir('C:\\dev\\gsd-turbo\\scripts\\turbo-view-demo.mjs'), 'C:/dev/gsd-turbo');
   assert.equal(turboDir('/bin/x.mjs'), '/');
   assert.equal(turboDir('x.mjs'), null);
+  // a config directory on a network share keeps its \\server\share prefix (as ancestorDirs does)
+  assert.equal(turboDir('\\\\srv\\share\\cfg\\turbo\\bin\\turbo-run.mjs'), '//srv/share/cfg/turbo');
+  assert.equal(turboDir('\\\\srv\\share\\cfg/turbo/bin/turbo-run.mjs'), '//srv/share/cfg/turbo');
+  assert.equal(turboDir('\\\\srv\\share\\bin\\turbo-run.mjs'), '//srv/share');
+  assert.equal(turboDir('\\\\?\\UNC\\srv\\share\\cfg\\turbo\\bin\\turbo-run.mjs'), '//srv/share/cfg/turbo');
+  assert.equal(turboDir('\\\\?\\C:\\cfg\\turbo\\bin\\turbo-run.mjs'), 'C:/cfg/turbo');
+  assert.equal(turboDir('\\\\srv\\bin\\turbo-run.mjs'), null, 'a server without a share is no directory');
 });
 
 test('node is looked for in absolute PATH directories only: a node.exe in the project (the child cwd) or under a relative entry never runs', () => {

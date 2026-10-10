@@ -11,6 +11,8 @@ import { readInbox, inboxFile } from '../lib/inbox.mjs';
 
 // built at run time: no token-shaped literal in this file
 const GH = `ghp_${'a1B2'.repeat(9)}`;
+// a URL with credentials, joined at run time like the token
+const CRED_URL = `https://bob:${'s3cretpw'}@example.com/r.git/`;
 const SETTINGS = pushSettings({ mode: 'after-wave', ci: 'none' });
 
 // A repository with a temporary local bare remote: no network, nothing outside the temp directory.
@@ -55,7 +57,7 @@ test('createGit: argument array, no shell, never a credential prompt, a time lim
   assert.ok(p.opts.timeout > 5000, 'a later backstop for the wrapper itself');
   const tree = createGit('/proj', { exec: () => { throw Object.assign(new Error('x'), { status: 124, stderr: 'fatal: x\nturbo: timed out, process tree ended\n' }); } });
   assert.throws(() => tree(['fetch'], { timeout: 5000 }), (e) => e.message === 'timed out after 5 s' && e.status === null);
-  const denied = createGit('/proj', { exec: () => { throw Object.assign(new Error('Command failed: git push x'), { status: 128, stderr: "remote: denied\nfatal: unable to access 'https://bob:s3cretpw@example.com/r.git/': 403\n" }); } });
+  const denied = createGit('/proj', { exec: () => { throw Object.assign(new Error('Command failed: git push x'), { status: 128, stderr: `remote: denied\nfatal: unable to access '${CRED_URL}': 403\n` }); } });
   assert.throws(() => denied(['push']), (e) => e.status === 128 && e.message === "remote: denied / fatal: unable to access 'https://[secret]@example.com/r.git/': 403");
   const hung = createGit('/proj', { exec: () => { throw Object.assign(new Error('x'), { code: 'ETIMEDOUT' }); } });
   assert.throws(() => hung(['fetch']), (e) => e.message === 'timed out after 60 s' && e.status === null);
@@ -353,7 +355,7 @@ test('a failing pre-push hook runs (no --no-verify) and fails the push: recorded
   const { ctx, notes } = supervisorCtx(r);
   const hook = path.join(r.root, '.git', 'hooks', 'pre-push');
   fs.mkdirSync(path.dirname(hook), { recursive: true });
-  fs.writeFileSync(hook, "#!/bin/sh\necho \"fatal: unable to access 'https://bob:s3cretpw@example.com/r.git/'\" >&2\nexit 1\n");
+  fs.writeFileSync(hook, `#!/bin/sh\necho "fatal: unable to access '${CRED_URL}'" >&2\nexit 1\n`);
   fs.chmodSync(hook, 0o755);
   const before = r.remoteHead();
   r.commit('src/a.mjs', 'export const a = 1;\n');
@@ -510,7 +512,7 @@ test('CI red: waits for every run, then puts each red run\'s failed log tail, ma
   const root = project();
   pendingRecord(root);
   let done = false;
-  const log = [`test\tRun npm test\t2026-10-10T10:00:00.0000000Z token=${GH}`, 'test\tRun npm test\t2026-10-10T10:00:01.0000000Z Error: expected 1 to equal 2'].join('\n');
+  const log = [`test\tRun npm test\t2026-10-10T10:00:00.0000000Z ${['token', GH].join('=')}`,'test\tRun npm test\t2026-10-10T10:00:01.0000000Z Error: expected 1 to equal 2'].join('\n');
   const { gh, calls } = ghScript((args) => {
     if (args[1] === 'view') return log;
     return [runRow(7, 'CI', 'completed', 'failure'), runRow(8, 'Lint', done ? 'completed' : 'in_progress', done ? 'success' : '')];

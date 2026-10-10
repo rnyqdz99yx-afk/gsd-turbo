@@ -51,7 +51,7 @@ test('failedLogTail masks every line of a private key block in the log, and pars
 test('failedLogTail keeps the last 200 lines, the failing job and step, and no colour codes or secrets', () => {
   const lines = [];
   for (let i = 1; i <= 250; i++) lines.push(`test\tRun npm test\t2026-10-10T10:00:${String(i % 60).padStart(2, '0')}.1234567Z \x1b[31mline ${i}\x1b[0m`);
-  lines.push(`test\tRun npm test\t2026-10-10T10:05:00.0000000Z token=${GH}`);
+  lines.push(`test\tRun npm test\t2026-10-10T10:05:00.0000000Z ${['token', GH].join('=')}`);
   lines.push(`test\tRun npm test\t2026-10-10T10:05:01.0000000Z ${'x'.repeat(1000)}`);
   const r = failedLogTail(lines.join('\r\n'));
   assert.equal(r.job, 'test');

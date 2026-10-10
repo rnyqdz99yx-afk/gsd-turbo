@@ -985,7 +985,7 @@ test('multi: per-entry markers, windows and max_targeted; the phase end runs eve
   assert.deepEqual(Object.values(plansOf(multi(['.planning/STATE.md'], { phaseEnd: { phase: '3' } }))).map((p) => p.mode), ['targeted', 'skip', 'skip'], 'docs only');
 });
 
-function multiRepo({ config, broken = '' } = {}) {
+function multiRepo({ config, broken = [] } = {}) {
   const repo = tmpGitRepo();
   const git = gitIn(repo);
   const w = (f, s) => { fs.mkdirSync(path.dirname(path.join(repo, f)), { recursive: true }); fs.writeFileSync(path.join(repo, f), s); };
@@ -996,7 +996,7 @@ function multiRepo({ config, broken = '' } = {}) {
   w('test/core.test.mjs', T('core'));
   for (const [dir, mod] of [['server', 'store'], ['app', 'view']]) {
     w(`${dir}/package.json`, JSON.stringify({ name: `demo-${dir}`, type: 'module', scripts: { test: 'node --test' } }));
-    w(`${dir}/src/${mod}.mjs`, `export const v = ${broken === dir ? 2 : 1};\n`);
+    w(`${dir}/src/${mod}.mjs`, `export const v = ${broken.includes(dir) ? 2 : 1};\n`);
     w(`${dir}/test/${mod}.test.mjs`, T(mod));
   }
   w('.planning/turbo/config.json', JSON.stringify({ test: { full: config ?? ['node --test test/core.test.mjs', { dir: 'server', command: 'node --test' }, { dir: 'app', command: 'node --test' }] } }));
@@ -1034,12 +1034,24 @@ test('multi e2e: a full run runs every entry in order in its own directory; the 
   assert.deepEqual(readMarker(repo), { fullSha: head, targetedSince: 0, entries: { server: { fullSha: head, targetedSince: 0 }, app: { fullSha: head, targetedSince: 0 } } });
 });
 
-test('multi e2e: a red nested package fails the full run, names the entry and writes no marker', async () => {
-  const { repo } = multiRepo({ broken: 'server' });
+test('multi e2e: a red nested package fails the full run, which goes on, names every red entry and writes no marker', async () => {
+  const { repo } = multiRepo({ broken: ['server', 'app'] });
   const r = runner(repo);
   assert.notEqual(await r.run(), 0);
-  assert.equal(r.logs.at(-1), 'server: failed (exit code 1)');
+  assert.deepEqual(r.logs.slice(3), ['server: failed (exit code 1)', 'app: failed (exit code 1)']);
   assert.equal(readMarker(repo), null);
+  // the exit code is the first red entry's
+  const codes = multiRepo({ config: ['node --test test/core.test.mjs', { dir: 'server', command: 'node -e "process.exit(3)"' }, { dir: 'app', command: 'node -e "process.exit(4)"' }] });
+  const c = runner(codes.repo);
+  assert.equal(await c.run(), 3);
+  assert.deepEqual(c.logs.slice(3), ['server: failed (exit code 3)', 'app: failed (exit code 4)']);
+});
+
+test('multi e2e review 7a: an entry directory that disappeared during the run is reported as missing', async () => {
+  const { repo } = multiRepo({ config: ['node -e "require(\'fs\').rmSync(\'app\', { recursive: true })"', { dir: 'server', command: 'node --test' }, { dir: 'app', command: 'node --test' }] });
+  const r = runner(repo);
+  assert.equal(await r.run(), 1);
+  assert.deepEqual(r.logs.slice(3), ['app: failed (its directory app is missing)']);
 });
 
 test('multi e2e: an old single-entry marker is read as the root entry\'s', async () => {

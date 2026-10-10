@@ -8,6 +8,79 @@ test('system prompt carries rules, no double quotes or percent signs', () => {
   assert.ok(!s.includes('"') && !s.includes('%'));
 });
 
+test('the context stop goes by turbo-run context only: before each step, unknown goes on, never a hand estimate or GSD\'s context_window', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node /t/turbo-run.mjs', contextPct: 60, autonomy: 'standard', mode });
+    const rule = s.split('\n').find((l) => l.includes('lane-status 3 paused-context'));
+    assert.ok(rule.includes('node /t/turbo-run.mjs context 3'), mode);
+    assert.match(rule, /60 percent or more/);
+    assert.match(rule, /before each step/);
+    assert.match(rule, /context: unknown .*go on/);
+    assert.match(rule, /[Nn]ever estimate/);
+    assert.match(rule, /context_window/);
+    assert.ok(!s.includes('"') && !s.includes('%'), mode);
+  }
+});
+
+test('every stop syncs STATE.md\'s position first: state-sync before the paused-context record, and before any record in safe mode', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const paused = s.split('\n').find((l) => l.includes('lane-status 3 paused-context'));
+    assert.ok(paused.indexOf('gsd-pause-work') < paused.indexOf('node x state-sync 3'), mode);
+    assert.ok(paused.indexOf('node x state-sync 3') < paused.indexOf('record this status'), mode);
+    const lead = s.split('\n').find((l) => l.startsWith('2. '));
+    assert.match(lead, mode === 'full' ? /Stopping early section, which restores GSD's gates and syncs STATE\.md first/ : /run node x state-sync 3/, mode);
+  }
+});
+
+test('inside a long step the context stop finishes the current plan or wave and never marks the step done; state-sync is best effort', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const paused = s.split('\n').find((l) => l.includes('lane-status 3 paused-context'));
+    assert.match(paused, /inside a step, finish the current plan or wave and do not mark the step done/, mode);
+    assert.match(paused, /wherever GSD's execute-phase runs inside a step/, mode);
+    assert.match(paused, /state-sync 3 \(best effort/, mode);
+    if (mode === 'safe') assert.match(s.split('\n').find((l) => l.startsWith('2. ')), /state-sync 3 \(best effort/);
+  }
+});
+
+test('GSD core reference files go to subagents as paths to Read, never pasted; phase files are not affected', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const rule = s.split('\n').find((l) => l.includes('references, templates or workflows'));
+    assert.ok(rule, mode);
+    assert.match(rule, /absolute paths/);
+    assert.match(rule, /Read them before anything else/);
+    assert.match(rule, /node x doctor/);
+    assert.match(rule, /[Nn]ever .*the plan, CONTEXT, RESEARCH or other phase files/);
+    assert.ok(!s.includes('"') && !s.includes('%'), mode);
+  }
+});
+
+test('a sequential gsd-executor dispatch re-persists the dispatch isolation none right before it', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const rule = s.split('\n').find((l) => l.includes('dispatch-isolation'));
+    assert.ok(rule, mode);
+    for (const needle of ['gsd-executor', 'isolation=worktree', 'gsd_run query dispatch-isolation --raw --phase', '--plan', '--force-isolation none', 'right before', 'retry']) assert.ok(rule.includes(needle), needle);
+    assert.match(rule, /Only when GSD's own workflow dispatches a gsd-executor sequentially/);
+    assert.match(rule, /never for an executor of a parallel wave/);
+  }
+});
+
+test('temporary files, stands and data copies go under the lane\'s temp directory, never the system temp directory', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard', mode, tmpDir: 'C:\\p\\.planning\\turbo\\run\\tmp\\p3' });
+    const rule = s.split('\n').find((l) => l.includes('C:/p/.planning/turbo/run/tmp/p3'));
+    assert.ok(rule, mode);
+    assert.match(rule, /stands/);
+    assert.match(rule, /never \/tmp or the system temp directory/);
+    assert.match(rule, /the supervisor removes it once this session is gone/);
+    assert.ok(!rule.includes('lane-status 3 done removes'), 'the session may still use it after its done record');
+    assert.ok(!s.includes('"') && !s.includes('%'), mode);
+  }
+});
+
 // spec 6.2: with autonomy standard, deploying is the owner's (class D); max deploys itself
 test('standard reserves deploying for the owner; max deploys with safeguards', () => {
   const OWNER_DEPLOY = 'deploying to any server or environment outside this machine';

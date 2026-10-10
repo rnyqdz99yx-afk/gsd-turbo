@@ -47,6 +47,8 @@ function fakeClaude() {
   const path = require('path');
   const args = process.argv.slice(2);
   fs.appendFileSync(path.join(__dirname, 'claude-argv.jsonl'), JSON.stringify(args) + '\n');
+  // the calling session's ids a launched lane sees (none expected)
+  if (args[0] === '--bg') fs.appendFileSync(path.join(__dirname, 'claude-env.jsonl'), JSON.stringify({ sid: process.env.CLAUDE_CODE_SESSION_ID ?? null, job: process.env.CLAUDE_JOB_DIR ?? null }) + '\n');
   const b = JSON.parse(fs.readFileSync(path.join(__dirname, 'behavior.json'), 'utf8'));
   const [cmd, id = ''] = args;
   if (cmd === '--version') console.log(`${b.version} (Claude Code)`);
@@ -90,7 +92,11 @@ function fakeGsd() {
   const args = process.argv.slice(2);
   fs.appendFileSync(path.join(__dirname, 'gsd-argv.jsonl'), JSON.stringify(args) + '\n');
   const b = JSON.parse(fs.readFileSync(path.join(__dirname, 'behavior.json'), 'utf8'));
-  if (args[0] === 'config-get') {
+  if (args[0] === 'config-get' && args[1] === 'context_window') {
+    // absent unless set: the --default value, else GSD's schema default
+    const d = args.indexOf('--default');
+    process.stdout.write(b.contextWindow ?? (d >= 0 ? args[d + 1] : '200000'));
+  } else if (args[0] === 'config-get') {
     process.stdout.write(b.configGet.out);
     if (b.configGet.exit) { console.error('config-get broke'); process.exitCode = b.configGet.exit; }
   } else if (args[0] === 'init' && args[1] === 'manager') process.stdout.write(JSON.stringify({ milestone_version: 'v1', phases: b.phases }));
@@ -103,6 +109,7 @@ function fakeGsd() {
 function fakeProject({
   phases = [{ number: '1', name: 'one', phase_complete: true }],
   configGet = { out: '', exit: 0 },
+  contextWindow, // GSD's context_window in .planning/config.json (a string), absent by default
   claudeVersion = '2.1.291',
   config = { notify: { desktop: false, telegram: false } },
   agents = [],
@@ -116,7 +123,7 @@ function fakeProject({
   if (config) fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify(config));
   fs.writeFileSync(path.join(core, 'VERSION'), '1.16.0');
   fs.writeFileSync(path.join(core, 'bin', 'gsd-tools.cjs'), `(${fakeGsd})();\n`);
-  fs.writeFileSync(path.join(core, 'bin', 'behavior.json'), JSON.stringify({ configGet, phases }));
+  fs.writeFileSync(path.join(core, 'bin', 'behavior.json'), JSON.stringify({ configGet, contextWindow, phases }));
   const setClaude = (patch) => fs.writeFileSync(path.join(bin, 'behavior.json'), JSON.stringify({ version: claudeVersion, agents, ...patch }));
   setClaude({});
   fs.writeFileSync(path.join(bin, 'claude-fake.cjs'), `(${fakeClaude})();\n`);
@@ -171,6 +178,18 @@ test('lane-status writes the run file from inside the project', () => {
   const rec = JSON.parse(fs.readFileSync(path.join(root, '.planning', 'turbo', 'run', 'p4.json'), 'utf8'));
   assert.equal(rec.status, 'needs-owner');
   assert.equal(rec.reason, 'owner sign-off');
+});
+
+// The session may still run when it records done (Claude Code scratch files, GSD hook files): only the
+// supervisor removes the temp directory, once it has removed the session.
+test('lane-status N done records done and removes nothing', () => {
+  const root = plainProject();
+  const tmp = path.join(runDirOf(root), 'tmp', 'p3');
+  fs.mkdirSync(tmp, { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'scratch.txt'), 'x');
+  assert.match(run(['lane-status', '03', 'done', '--reason', 'closed'], root), /^lane 3: done\r?\n$/);
+  assert.ok(fs.existsSync(path.join(tmp, 'scratch.txt')));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(runDirOf(root), 'p3.json'), 'utf8')).status, 'done');
 });
 
 test('lane-status rejects an unknown status with a non-zero exit', () => {
@@ -616,15 +635,19 @@ test('resume --start launches a daemon that relaunches the lane; stop ends it', 
 test('start passes doctor\'s full mode to the daemon: the lane runs the turbo-phase skill', async (t) => {
   const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
   t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
-  const r = await runAsync(['start'], p.root, p.env);
+  // started from the owner's own session: the lane never gets that session's ids
+  const r = await runAsync(['start'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: 'owner-session', CLAUDE_JOB_DIR: path.join(p.root, 'owner-job') });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /started supervisor pid \d+ \(mode full\)/);
   const bg = await waitFor(() => p.claudeCalls().find((a) => a[0] === '--bg'), 15000);
   assert.ok(bg, logOf(p.root));
+  assert.deepEqual(readLines(path.join(p.root, 'fake-bin', 'claude-env.jsonl')), [{ sid: null, job: null }]);
   assert.equal(bg.at(-1), 'Run the turbo-phase skill with arguments: 4');
   assert.match(bg[bg.indexOf('--append-system-prompt') + 1], /lane-status 4 done .*close step/);
   // the settings JSON crosses a real process boundary intact (on win32 too: the shim resolves to node, no cmd.exe)
-  assert.deepEqual(JSON.parse(bg[bg.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' } });
+  const tmp = path.join(p.root, '.planning', 'turbo', 'run', 'tmp', 'p4');
+  assert.deepEqual(JSON.parse(bg[bg.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' }, env: { TMP: tmp, TEMP: tmp, TMPDIR: tmp } });
+  assert.ok(fs.statSync(tmp).isDirectory(), 'created before the launch');
   const sup = await waitFor(() => { const s = readSup(p.root); return s?.lane?.mode ? s : null; }, 15000);
   assert.equal(sup?.lane?.mode, 'full', logOf(p.root));
   const stop = await runAsync(['stop'], p.root, p.env);
@@ -677,9 +700,9 @@ test('start --only/--from/--all set, keep, drop and clear the range; a lane outs
     assert.ok(sup, `${args.join(' ')}: ${logOf(p.root)}`);
     return { stdout: r.stdout, sup };
   };
-  // start prints its own range line before spawning; a daemon that already finished (a fast tick under
-  // load) makes start print the status too, with a second, plain range line: only the first is start's
-  const rangeLines = (stdout) => stdout.split(/\r?\n/).filter((l) => l.startsWith('range:')).slice(0, 1);
+  // start prints its own range line before spawning, and only that one: a daemon that already finished
+  // (a fast tick under load) makes start print the status too, without a second range line
+  const rangeLines = (stdout) => stdout.split(/\r?\n/).filter((l) => l.startsWith('range:'));
 
   writeSup(p.root, { pid: null, finished: false, halted: true, lane: { phase: '3', sessionId: 'old333', restarts: 0, launchedAt: ago(5) } });
   let r = await startRun(['--only', '04']);
@@ -706,6 +729,117 @@ test('start --only/--from/--all set, keep, drop and clear the range; a lane outs
   assert.equal(p.claudeCalls().filter((a) => a[0] === '--bg').length, 0, 'the closed phase 3 is never started');
 });
 
+test('start with range flags while a run is going exits 1 naming the running range and changes nothing; without flags it reports the run', async (t) => {
+  const root = plainProject();
+  const child = sleeper(t);
+  for (const [range, label] of [[{ from: '4', to: '5' }, 'phases 4–5'], [undefined, 'the whole milestone']]) {
+    const sup = { pid: child.pid, updatedAt: ago(0), finished: false, halted: false, lane: null, ...(range ? { range } : {}) };
+    writeSup(root, sup);
+    for (const args of [['--only', '7'], ['--from', '2'], ['--to', '9'], ['--all']]) {
+      const r = await runAsync(['start', ...args], root);
+      assert.equal(r.code, 1, args.join(' '));
+      assert.ok(r.stderr.includes(`a run of ${label} is going (supervisor pid ${child.pid})`), r.stderr);
+      assert.match(r.stderr, /run turbo-run stop first/);
+    }
+    assert.deepEqual(readSup(root), sup);
+  }
+  assert.ok(pidExists(child.pid));
+  assert.equal(fs.existsSync(path.join(root, '.planning', 'turbo', 'logs')), false, 'no daemon was spawned');
+  const r = await runAsync(['start'], root);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`^already running \\(pid ${child.pid}\\)`));
+});
+
+test('resume <N> --start with N outside the kept range exits 1 naming the range; nothing is stopped, removed or started', async (t) => {
+  const root = plainProject();
+  const child = sleeper(t);
+  const progress = { phase: '7', done: ['freshness'], notes: {}, attempts: { fix: 2 }, updatedAt: ago(1) };
+  for (const [pid, stopFirst] of [[null, false], [child.pid, true]]) {
+    const sup = { pid, updatedAt: ago(0), finished: false, halted: pid === null, lane: { phase: '7', sessionId: 'abc', restarts: 2 }, range: { from: '4', to: '5' } };
+    writeSup(root, sup);
+    fs.writeFileSync(path.join(runDirOf(root), 'p7.json'), JSON.stringify({ phase: '7', status: 'failed' }));
+    fs.writeFileSync(path.join(runDirOf(root), 'phase-p7.json'), JSON.stringify(progress));
+    const r = await runAsync(['resume', '07', '--start'], root);
+    assert.equal(r.code, 1, r.stdout);
+    assert.ok(r.stderr.includes('phase 7 is outside the range 4–5'), r.stderr);
+    for (const way of ['turbo-run start --only 7', '--from', '--all']) assert.ok(r.stderr.includes(way), way);
+    assert.equal(r.stderr.includes('turbo-run stop, then'), stopFirst, r.stderr);
+    assert.deepEqual(readSup(root), sup);
+    assert.ok(fs.existsSync(path.join(runDirOf(root), 'p7.json')), 'the lane record stays');
+    assert.deepEqual(readJsonFile(path.join(runDirOf(root), 'phase-p7.json')), progress, 'the attempts stay');
+  }
+  assert.ok(pidExists(child.pid), 'the running daemon was not stopped');
+  assert.equal(fs.existsSync(path.join(root, '.planning', 'turbo', 'logs')), false, 'no daemon was spawned');
+});
+
+// Preloaded into start only: supervisor.json reads see no pid, so start never sees its daemon report and
+// takes the path of a daemon that ran and exited before start confirmed it.
+function hideSupervisorPid() {
+  const fs = require('node:fs');
+  const read = fs.readFileSync;
+  fs.readFileSync = function (file, ...rest) {
+    const out = read.call(this, file, ...rest);
+    if (!String(file).endsWith('supervisor.json')) return out;
+    try {
+      const text = JSON.stringify({ ...JSON.parse(String(out)), pid: null });
+      return typeof out === 'string' ? text : Buffer.from(text);
+    } catch { return out; }
+  };
+}
+
+test('start prints the range line once, also when the daemon finished before start confirmed it', async () => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: true }] });
+  const preload = path.join(p.root, 'hide-pid.cjs');
+  fs.writeFileSync(preload, `(${hideSupervisorPid})();\n`);
+  const r = await runAsync(['start', '--only', '4'], p.root, p.env, ['--require', preload]);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /ran and exited/);
+  assert.deepEqual(r.stdout.split(/\r?\n/).filter((l) => l.startsWith('range:')), ['range: phases 4–4']);
+  assert.match(r.stdout, /^supervisor: not running · range finished$/m);
+});
+
+// Preloaded into start only: its first TURBO_TEST_HIDE_READS reads of supervisor.json find nothing, so start
+// spawns a daemon although another one already runs (the race of two starts).
+function hideFirstSupervisorReads() {
+  const fs = require('node:fs');
+  const read = fs.readFileSync;
+  let left = Number(process.env.TURBO_TEST_HIDE_READS) || 0;
+  fs.readFileSync = function (file, ...rest) {
+    if (String(file).endsWith('supervisor.json') && left > 0) {
+      left--;
+      throw Object.assign(new Error('ENOENT: hidden'), { code: 'ENOENT' });
+    }
+    return read.call(this, file, ...rest);
+  };
+}
+
+test('start that loses the race to another start reports the winner and its range once; exit 1 only for a different requested range', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }] });
+  const winner = sleeper(t);
+  const preload = path.join(p.root, 'hide-reads.cjs');
+  fs.writeFileSync(preload, `(${hideFirstSupervisorReads})();\n`);
+  const race = async (args, hide) => {
+    writeSup(p.root, { pid: winner.pid, updatedAt: new Date().toISOString(), finished: false, halted: false, lane: null, range: { from: '4', to: '5' } });
+    writeLock(p.root, { pid: winner.pid, at: new Date().toISOString() });
+    return runAsync(['start', ...args], p.root, { ...p.env, TURBO_TEST_HIDE_READS: String(hide) }, ['--require', preload]);
+  };
+  const ranges = (r) => r.stdout.split(/\r?\n/).filter((l) => l.startsWith('range:'));
+  let r = await race(['--from', '4', '--to', '5'], 2);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, new RegExp(`another start launched supervisor pid ${winner.pid} first \\(phases 4–5\\)`));
+  assert.deepEqual(ranges(r), ['range: phases 4–5']);
+  r = await race(['--only', '7'], 2);
+  assert.equal(r.code, 1, r.stdout + r.stderr);
+  assert.deepEqual(ranges(r), ['range: phases 7–7']);
+  assert.match(r.stderr, /the running range is phases 4–5, not phases 7–7: run turbo-run stop first/);
+  assert.doesNotMatch(r.stderr, /nothing was changed/);
+  r = await race([], 3);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.deepEqual(ranges(r), []);
+  assert.match(r.stdout, /another start launched supervisor pid \d+ first \(phases 4–5\)/);
+  assert.ok(pidExists(winner.pid));
+});
+
 test('start refuses an unsupported environment with exit 2 and the failed checks', async () => {
   const p = fakeProject({ claudeVersion: '2.1.100' });
   const r = await runAsync(['start'], p.root, p.env);
@@ -726,7 +860,7 @@ test('init keeps the previous test command verbatim as test.full and sets the tu
   assert.deepEqual(calls[0], ['config-get', 'workflow.test_command', '--default', '', '--raw', '--cwd', p.root]);
   assert.deepEqual(calls[1], ['config-set', 'workflow.test_command', TURBO_TEST_CMD, '--cwd', p.root]);
   const gsd = spy.calls().filter((c) => /gsd-tools\.cjs$/.test(c.args[0] || ''));
-  assert.deepEqual(gsd.map((c) => [c.args[1], c.timeout]), [['config-get', 30000], ['config-set', 30000]]);
+  assert.deepEqual(gsd.map((c) => [c.args[1], c.args[2], c.timeout]), [['config-get', 'workflow.test_command', 30000], ['config-set', 'workflow.test_command', 30000], ['config-get', 'context_window', 30000], ['config-set', 'context_window', 30000]]);
 });
 
 test('init sets workflow.test_command only where GSD itself would run npm test, or a full command is known', () => {
@@ -752,7 +886,7 @@ test('init sets workflow.test_command only where GSD itself would run npm test, 
       fs.writeFileSync(path.join(p.root, rel), text);
     }
     const stdout = run(['init'], p.root, p.env);
-    assert.equal(p.gsdCalls().some((a) => a[0] === 'config-set'), set, `${name}: ${stdout}`);
+    assert.equal(p.gsdCalls().some((a) => a[0] === 'config-set' && a[1] === 'workflow.test_command'), set, `${name}: ${stdout}`);
     if (set) assert.match(stdout, /workflow\.test_command set/, name);
     else assert.match(stdout, /^targeted tests not enabled: set test\.full in \.planning\/turbo\/config\.json, then run init again$/m, name);
   }
@@ -763,12 +897,37 @@ test('init run again keeps test.full and re-sets the command when it is known, w
   let stdout = run(['init'], p.root, p.env);
   assert.doesNotMatch(stdout, /kept previous/);
   assert.equal(readJsonFile(path.join(p.root, '.planning', 'turbo', 'config.json')).test.full, 'pytest -q');
-  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD]);
+  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set' && a[1] === 'workflow.test_command').map((a) => a[2]), [TURBO_TEST_CMD]);
 
   const q = fakeProject({ config: { lang: 'en' }, configGet: { out: TURBO_TEST_CMD, exit: 0 } });
   stdout = run(['init'], q.root, q.env);
-  assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set'), stdout);
+  assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set' && a[1] === 'workflow.test_command'), stdout);
   assert.match(stdout, /^warn: workflow\.test_command already runs turbo-run/m);
+});
+
+test('init gives GSD turbo\'s context_window when .planning/config.json sets none, and says so; a set one stays', () => {
+  const p = fakeProject({ config: { context_window: 400000 } });
+  let stdout = run(['init'], p.root, p.env);
+  assert.deepEqual(p.gsdCalls().filter((a) => a[1] === 'context_window'), [
+    ['config-get', 'context_window', '--default', '__turbo_absent__', '--raw', '--cwd', p.root],
+    ['config-set', 'context_window', '400000', '--cwd', p.root],
+  ]);
+  assert.match(stdout, /^context_window set to 400000 in \.planning\/config\.json \(GSD had none; its default is 200000\)$/m);
+
+  const q = fakeProject({ contextWindow: '200000' });
+  stdout = run(['init'], q.root, q.env);
+  assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set' && a[1] === 'context_window'), stdout);
+  assert.doesNotMatch(stdout, /context_window set/);
+});
+
+test('doctor warns when GSD\'s effective context_window differs from turbo\'s; the mode stays', () => {
+  const p = fakeProject();
+  let stdout = run(['doctor'], p.root, p.env);
+  assert.match(stdout, /^warn context-window GSD's context_window is 200000, turbo's is 1000000/m);
+  assert.match(stdout, /^mode: full$/m);
+  const q = fakeProject({ contextWindow: '1000000' });
+  stdout = run(['doctor'], q.root, q.env);
+  assert.match(stdout, /^ok {3}context-window 1000000$/m);
 });
 
 test('init aborts before config-set when config-get fails, and on a corrupt turbo config', () => {

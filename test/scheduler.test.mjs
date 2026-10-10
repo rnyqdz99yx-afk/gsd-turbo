@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { comparePhase, nextPhase, relaunchDecision, isFinished, inRange, rangeLabel } from '../lib/scheduler.mjs';
+import { comparePhase, nextPhase, relaunchDecision, isFinished, inRange, rangeBlocker, rangeLabel } from '../lib/scheduler.mjs';
 
 const P = (number, deps = [], complete = false) => ({ number, deps, complete });
 // checked off in the ROADMAP and fully implemented, but GSD reports it unfinished (verification stale)
@@ -37,14 +37,27 @@ test('a closed phase is never started again and satisfies the deps on it', () =>
   assert.deepEqual([P('1', [], true), C('2'), P('3'), { number: '4', deps: [] }].map(isFinished), [true, true, false, false]);
 });
 
-test('a range starts only the phases inside it (comparePhase, inclusive); deps outside it count as satisfied', () => {
+test('a range starts only the phases inside it (comparePhase, inclusive); an unfinished dep outside it is not met', () => {
   const phases = [P('1'), P('2', ['1']), P('2.1', ['2']), P('2A'), P('3', ['2'])];
-  assert.equal(nextPhase(phases, { range: { from: '2', to: '2' } }).number, '2');
-  assert.equal(nextPhase(phases, { range: { from: '2.1', to: null } }).number, '2.1');
+  assert.equal(nextPhase(phases, { range: { from: '2', to: '2' } }), null, 'its dep 1 is unfinished');
+  assert.equal(nextPhase(phases, { range: { from: '2.1', to: null } }).number, '2A', '2.1 and 3 wait on 2');
   assert.equal(nextPhase(phases, { range: { from: null, to: '1' } }).number, '1');
-  assert.equal(nextPhase(phases, { range: { from: '3', to: '3' } }).number, '3');
+  assert.equal(nextPhase(phases, { range: { from: '3', to: '3' } }), null);
   assert.equal(nextPhase(phases, { range: { from: '2B', to: '2C' } }), null);
   assert.equal(nextPhase(phases, { range: null }).number, '1');
+  const finished = [P('1', [], true), C('2', ['1']), P('3', ['2']), P('4', ['9'])];
+  assert.equal(nextPhase(finished, { range: { from: '3', to: '3' } }).number, '3', 'a complete or closed dep outside the range is met');
+  assert.equal(nextPhase(finished, { range: { from: '4', to: '4' } }).number, '4', 'a dep outside the milestone is met');
+});
+
+test('rangeBlocker names the first phase of the range held by an unfinished dep outside it', () => {
+  const phases = [P('1'), P('2', ['1']), P('3', ['2']), P('4', ['3', '1']), P('5', ['9'])];
+  assert.deepEqual(rangeBlocker(phases, { from: '3', to: '4' }), { phase: '3', dep: '2' });
+  assert.deepEqual(rangeBlocker(phases, { from: '4', to: '4' }), { phase: '4', dep: '1' }, 'the lowest unfinished dep');
+  assert.equal(rangeBlocker(phases, { from: '5', to: '5' }), null, 'a dep outside the milestone never blocks');
+  assert.equal(rangeBlocker(phases, { from: '1', to: '4' }), null);
+  assert.equal(rangeBlocker(phases, null), null);
+  assert.equal(rangeBlocker([P('1'), P('2', ['1'], true)], { from: '2', to: '2' }), null, 'a finished phase waits on nothing');
 });
 
 test('inRange and rangeLabel: either end may be open; no range is the whole milestone', () => {

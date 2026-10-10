@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveBin, parseAgents, laneSessionName, buildBgArgs, parseBgLaunch, createClaude } from '../lib/claude.mjs';
+import { resolveBin, parseAgents, laneSessionName, buildBgArgs, parseBgLaunch, createClaude, sessionFreeEnv } from '../lib/claude.mjs';
 
 const BG_OPTS = { name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto' };
 const PLAIN_BIN = { cmd: 'claude', prefix: [], shell: false };
@@ -178,6 +178,13 @@ test('buildBgArgs puts flags before the prompt, disables AskUserQuestion and tur
   assert.equal(withModel.at(-1), 'P');
 });
 
+test('buildBgArgs points the lane session\'s TMP, TEMP and TMPDIR at its own temp directory, bg isolation still off', () => {
+  const tmpDir = path.resolve('/p/.planning/turbo/run/tmp/p3');
+  const args = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: '', tmpDir });
+  assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' }, env: { TMP: tmpDir, TEMP: tmpDir, TMPDIR: tmpDir } });
+  assert.equal(args.at(-1), 'P');
+});
+
 test('parseBgLaunch extracts the id', () => {
   assert.equal(parseBgLaunch('Starting background service…\nbackgrounded · 749a6844 · turbo-perm\n'), '749a6844');
   assert.equal(parseBgLaunch('backgrounded: 0A1B2C3D (turbo-x)'), '0A1B2C3D');
@@ -199,6 +206,27 @@ test('createClaude wires exec calls', () => {
   c.stop('abc123');
   c.rm('abc123');
   assert.deepEqual(calls.map((a) => a[0]), ['--bg', 'agents', 'stop', 'rm']);
+});
+
+// The supervisor may be started from the owner's own session: a lane must never carry that session's ids,
+// or turbo-run context inside the lane could measure the owner's transcript.
+test('launchBg runs claude without the calling session\'s CLAUDE_CODE_SESSION_ID and CLAUDE_JOB_DIR; the rest of the env stays', (t) => {
+  const saved = { sid: process.env.CLAUDE_CODE_SESSION_ID, job: process.env.CLAUDE_JOB_DIR };
+  t.after(() => {
+    for (const [k, v] of [['CLAUDE_CODE_SESSION_ID', saved.sid], ['CLAUDE_JOB_DIR', saved.job]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+  process.env.CLAUDE_CODE_SESSION_ID = 'owner-session';
+  process.env.CLAUDE_JOB_DIR = '/owner/job';
+  const opts = [];
+  const exec = (cmd, args, o) => { opts.push(o); return 'backgrounded · abc123 · n\n'; };
+  createClaude({ bin: PLAIN_BIN, exec }).launchBg(BG_OPTS, '/p');
+  const keys = Object.keys(opts[0].env).map((k) => k.toUpperCase());
+  assert.ok(!keys.includes('CLAUDE_CODE_SESSION_ID') && !keys.includes('CLAUDE_JOB_DIR'), keys.join(' '));
+  assert.ok(keys.includes('PATH'));
+  assert.deepEqual(Object.keys(sessionFreeEnv({ Path: 'p', claude_job_dir: 'x', CLAUDE_CODE_SESSION_ID: 'y', OTHER: '1' })), ['Path', 'OTHER']);
 });
 
 test('createClaude prepends the bin prefix and passes per-call timeouts with SIGKILL', () => {

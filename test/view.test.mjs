@@ -1,0 +1,160 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
+import { SESSION, entry, jsonl, projectDirFor, setMtime, usage, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
+import { completeStep } from '../lib/phase-progress.mjs';
+import { writeLaneStatus } from '../lib/run-status.mjs';
+import { writeJsonAtomic } from '../lib/fsx.mjs';
+import { maskSecrets } from '../lib/secrets.mjs';
+import { buildView, openQuestions, recentCommits, stallMs } from '../lib/view.mjs';
+
+const NOW = new Date('2026-01-01T11:00:00.000Z');
+const at = (hhmm) => `2026-01-01T${hhmm}:00.000Z`;
+const COMMITS = () => [{ sha: 'abc1234', subject: 'feat: something' }];
+const runDirOf = (root) => path.join(root, '.planning', 'turbo', 'run');
+const SECRET = `ghp_${'s'.repeat(36)}`;
+
+// A project with a supervisor lane for phase 32 and its transcripts in a separate Claude home.
+function laneProject({ run = true } = {}) {
+  const root = tmpDir('view');
+  fs.mkdirSync(path.join(root, '.planning'));
+  if (run) fs.mkdirSync(runDirOf(root), { recursive: true });
+  const home = tmpDir('home');
+  const dir = projectDirFor(home, root);
+  const sup = { pid: 4242, updatedAt: at('10:59'), finished: false, halted: false, range: { from: '32', to: '34' }, lane: { phase: '32', sessionId: SESSION.slice(0, 8), launchedAt: at('09:48'), mode: 'full', restarts: 0 } };
+  return { root, home, dir, sup, env: { CLAUDE_CONFIG_DIR: home } };
+}
+
+const agentEntries = (id, from, to, tokens = 166000) => [
+  entry.agentUser(id, 'Execute the plan', at(from)),
+  entry.assistant({ ts: at(to), tool: { name: 'Bash', input: { command: 'node --test test/x.test.mjs' } }, usage: usage(0, 0, tokens), sidechain: true }),
+];
+
+test('without supervisor.json the view has no supervisor and no lanes, and still lists questions and commits', () => {
+  const { root, env } = laneProject();
+  const v = buildView({ root, sup: null, env, now: NOW, commits: COMMITS });
+  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], questions: [], commits: COMMITS() });
+});
+
+test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
+  const { root, dir, sup, env } = laneProject();
+  for (const s of ['freshness', 'discuss', 'prologue', 'plan', 'gates-off']) completeStep(root, '32', s, { note: s === 'plan' ? `path same-agent ${SECRET}` : '' });
+  writeLaneStatus(root, '32', 'needs-owner', { reason: `checkpoint 32-09 (${SECRET})`, at: at('10:40') });
+  writeSession(dir, SESSION, [entry.user('run phase 32', at('09:48')), entry.launched('toolu_1', 'a2000000000000001', at('10:00')), entry.launched('toolu_2', 'a2000000000000002', at('10:20')), entry.note('a2000000000000001', 'completed', at('10:30'))]);
+  setMtime(writeAgent(dir, SESSION, 'a2000000000000001', agentEntries('a2000000000000001', '10:00', '10:30')), new Date(at('10:30')));
+  setMtime(writeAgent(dir, SESSION, 'a2000000000000002', agentEntries('a2000000000000002', '10:20', '10:58', 41000), { agentType: 'gsd-executor', description: 'Continue plan 32-08 from Task 2', spawnDepth: 1 }), new Date(at('10:58')));
+  writeJsonAtomic(path.join(runDirOf(root), 'p32-questions.json'), [
+    { id: 'q1', phase: '32', plan: '32-09', task: '3', kind: 'decision', header: 'Deploy', question: 'Deploy after green CI?', options: [], state: 'open' },
+    { id: 'q2', phase: '32', plan: '32-10', task: '1', kind: 'verify', header: 'Check', question: 'Looks right?', options: [], state: 'answered' },
+  ]);
+  const v = buildView({ root, sup, running: true, config: { stall_minutes: 15 }, env, now: NOW, commits: COMMITS });
+  assert.deepEqual(v.supervisor, { running: true, pid: 4242, finished: false, halted: false, failingSince: null, updatedAt: at('10:59') });
+  assert.deepEqual(v.range, { from: '32', to: '34' });
+  const [lane] = v.lanes;
+  assert.deepEqual([lane.phase, lane.step, lane.status, lane.mode, lane.sessionId, lane.elapsedMs], ['32', 'execute', 'needs-owner', 'full', SESSION.slice(0, 8), 72 * 60000]);
+  assert.equal(lane.reason, `checkpoint 32-09 (${maskSecrets(SECRET)})`);
+  assert.equal(lane.notes.plan, `path same-agent ${maskSecrets(SECRET)}`);
+  assert.deepEqual(lane.agents.map((a) => [a.agentId, a.state, a.plan, a.task, a.tokens]), [['a2000000000000002', 'running', '32-08', '2', 41000], ['a2000000000000001', 'completed', '32-07', null, 166000]]);
+  assert.deepEqual(v.questions.map((q) => q.id), ['q1']);
+  assert.deepEqual(v.commits, COMMITS());
+  assert.equal(JSON.stringify(v).includes(SECRET), false);
+});
+
+test('a lane record from before the lane launched does not count; a lane without its transcript has no agents', () => {
+  const { root, sup, env } = laneProject();
+  writeLaneStatus(root, '32', 'failed', { at: at('09:00') });
+  const [lane] = buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes;
+  assert.deepEqual([lane.status, lane.reason, lane.transcript, lane.agents, lane.quiet], ['running', '', null, [], false]);
+});
+
+test('a woken or resumed lane: the view follows the job state to the transcript the job runs on, not the stale file its id prefixes', () => {
+  const { root, home, dir, sup, env } = laneProject();
+  const current = '99999999-8888-4777-8666-555555555555';
+  setMtime(writeSession(dir, SESSION, [entry.launched('toolu_1', 'a2000000000000001', at('10:00'))]), new Date(at('10:59')));
+  const file = writeSession(dir, current, [entry.launched('toolu_2', 'a2000000000000002', at('10:40'))]);
+  setMtime(file, new Date(at('10:50')));
+  writeAgent(dir, SESSION, 'a2000000000000001', agentEntries('a2000000000000001', '10:00', '10:30'));
+  writeAgent(dir, current, 'a2000000000000002', agentEntries('a2000000000000002', '10:40', '10:50'));
+  writeJob(home, SESSION.slice(0, 8), { sessionId: SESSION, resumeSessionId: current, linkScanPath: file });
+  const [lane] = buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes;
+  assert.equal(lane.transcript, file);
+  assert.deepEqual(lane.agents.map((a) => a.agentId), ['a2000000000000002']);
+});
+
+test('the cache lets the next view read only what was appended; it is written only into an existing run directory and a corrupt one is ignored', () => {
+  const { root, dir, sup, env } = laneProject();
+  const laneFile = writeSession(dir, SESSION, [entry.launched('toolu_1', 'a2000000000000001', at('10:00'))]);
+  writeAgent(dir, SESSION, 'a2000000000000001', agentEntries('a2000000000000001', '10:00', '10:30'));
+  const cacheFile = path.join(runDirOf(root), 'view-cache.json');
+  buildView({ root, sup, env, now: NOW, commits: COMMITS });
+  const first = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  assert.equal(first.files[laneFile].read, fs.statSync(laneFile).size);
+  fs.appendFileSync(laneFile, jsonl([entry.note('a2000000000000001', 'completed', at('10:31'))]));
+  const v = buildView({ root, sup, env, now: NOW, commits: COMMITS });
+  assert.equal(v.lanes[0].agents[0].state, 'completed');
+  const second = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  assert.equal(second.files[laneFile].read, fs.statSync(laneFile).size - first.files[laneFile].size);
+  fs.writeFileSync(cacheFile, '{"v":1,"files":{"x":');
+  assert.equal(buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes[0].agents[0].state, 'completed');
+  const bare = laneProject({ run: false });
+  writeSession(bare.dir, SESSION, [entry.user('go', at('10:00'))]);
+  buildView({ root: bare.root, sup: bare.sup, env: bare.env, now: NOW, commits: COMMITS });
+  assert.equal(fs.existsSync(path.join(bare.root, '.planning', 'turbo')), false);
+});
+
+test('stall_minutes sets the quiet threshold; a value below 1 or not a number takes the default 15', () => {
+  assert.equal(stallMs({ stall_minutes: 1 }), 60000);
+  assert.equal(stallMs({ stall_minutes: 0 }), 15 * 60000);
+  assert.equal(stallMs({ stall_minutes: 'x' }), 15 * 60000);
+  assert.equal(stallMs({}), 15 * 60000);
+  const { root, dir, sup, env } = laneProject();
+  writeSession(dir, SESSION, [entry.launched('toolu_1', 'a2000000000000001', at('10:00'))]);
+  setMtime(writeAgent(dir, SESSION, 'a2000000000000001', agentEntries('a2000000000000001', '10:00', '10:55')), new Date(at('10:55')));
+  assert.equal(buildView({ root, sup, config: { stall_minutes: 15 }, env, now: NOW, commits: COMMITS }).lanes[0].agents[0].state, 'running');
+  assert.equal(buildView({ root, sup, config: { stall_minutes: 2 }, env, now: NOW, commits: COMMITS }).lanes[0].agents[0].state, 'quiet');
+});
+
+test('openQuestions reads every phase file in phase order and skips files that are not a list', () => {
+  const root = tmpDir('q');
+  const run = runDirOf(root);
+  fs.mkdirSync(run, { recursive: true });
+  writeJsonAtomic(path.join(run, 'p10-questions.json'), [{ id: 'b', state: 'open' }]);
+  writeJsonAtomic(path.join(run, 'p9-questions.json'), [{ id: 'a', state: 'open' }, { id: 'n', state: 'answered' }, null, { state: 'open' }]);
+  writeJsonAtomic(path.join(run, 'p11-questions.json'), { questions: [] });
+  assert.deepEqual(openQuestions(root).map((q) => q.id), ['a', 'b']);
+  assert.deepEqual(openQuestions(tmpDir('none')), []);
+});
+
+test('recentCommits lists the last five subjects with secrets masked; none outside a repository', () => {
+  const repo = tmpGitRepo();
+  const git = (...a) => execFileSync('git', a, { cwd: repo, stdio: 'pipe' });
+  for (let i = 1; i <= 6; i++) git('commit', '-q', '--allow-empty', '-m', i === 6 ? `fix: rotate ${SECRET}` : `feat: step ${i}`);
+  const c = recentCommits(repo);
+  assert.equal(c.length, 5);
+  assert.equal(c[0].subject, `fix: rotate ${maskSecrets(SECRET)}`);
+  assert.equal(c[4].subject, 'feat: step 2');
+  assert.match(c[0].sha, /^[0-9a-f]{7,}$/);
+  assert.deepEqual(recentCommits(tmpDir('nogit')), []);
+});
+
+test('a warm view of a lane with 20 subagents and large transcripts, in a project with 300 older sessions, answers within 300 ms (Review Focus 3)', () => {
+  const { root, dir, sup, env } = laneProject();
+  const pad = entry.user('p'.repeat(4000), at('10:00'));
+  const ids = Array.from({ length: 20 }, (_, i) => `a3${String(i).padStart(15, '0')}`);
+  writeSession(dir, SESSION, [...Array(1200).fill(pad), ...ids.map((id, i) => entry.launched(`toolu_${i}`, id, at('10:00')))]);
+  for (const id of ids) writeAgent(dir, SESSION, id, [...Array(250).fill(entry.agentUser(id, 'q'.repeat(4000), at('10:00'))), ...agentEntries(id, '10:00', '10:50')]);
+  for (let i = 0; i < 300; i++) {
+    const old = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+    writeSession(dir, old, [entry.user('old', at('08:00'))]);
+    writeAgent(dir, old, `a5${String(i).padStart(15, '0')}`, agentEntries('a5', '08:00', '08:30'));
+  }
+  buildView({ root, sup, env, now: NOW, commits: COMMITS });
+  const t0 = process.hrtime.bigint();
+  const v = buildView({ root, sup, env, now: NOW, commits: COMMITS });
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.equal(v.lanes[0].agents.length, 20);
+  assert.ok(ms < 300, `warm view took ${ms.toFixed(0)} ms`);
+});

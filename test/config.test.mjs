@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge } from '../lib/config.mjs';
+import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries } from '../lib/config.mjs';
 import { findProjectRoot, turboDir, claudeHome } from '../lib/paths.mjs';
 import { writeJsonAtomic, readJson } from '../lib/fsx.mjs';
 
@@ -116,4 +116,61 @@ test('writeJsonAtomic throws and leaves no tmp file when the rename fails', () =
   fs.mkdirSync(target);
   assert.throws(() => writeJsonAtomic(target, { a: 1 }));
   assert.deepEqual(fs.readdirSync(dir).filter((n) => n.includes('.tmp-')), []);
+});
+
+// --- test.full as a list of packages ------------------------------------------------------------
+
+function entriesRoot() {
+  const root = tmpDir('cfg');
+  fs.mkdirSync(path.join(root, '.planning'));
+  for (const d of ['server', 'app/web']) fs.mkdirSync(path.join(root, d), { recursive: true });
+  fs.writeFileSync(path.join(root, 'notes.txt'), 'a file, not a directory\n');
+  return root;
+}
+
+test('fullEntries: a string is the root command; a list holds root strings and { dir, command } entries', () => {
+  const root = entriesRoot();
+  assert.deepEqual(fullEntries('npm test', root), [{ dir: '', command: 'npm test' }]);
+  assert.deepEqual(fullEntries('  make check ', root), [{ dir: '', command: 'make check' }]);
+  assert.deepEqual(fullEntries('', root), [{ dir: '', command: '' }], 'an empty string stays an error of the full run, as before');
+  assert.deepEqual(fullEntries(undefined, root), [{ dir: '', command: '' }]);
+  assert.deepEqual(fullEntries(['npm test', { dir: 'server', command: 'npm test' }, { dir: './app/web/', command: ' pnpm test ' }], root), [
+    { dir: '', command: 'npm test' }, { dir: 'server', command: 'npm test' }, { dir: 'app/web', command: 'pnpm test' },
+  ]);
+  assert.deepEqual(fullEntries([{ dir: '.', command: 'npm test' }, { dir: 'server', command: 'npm test' }], root).map((e) => e.dir), ['', 'server']);
+  assert.deepEqual(fullEntries([{ dir: 'server', command: 'npm test' }], root), [{ dir: 'server', command: 'npm test' }], 'no root entry is allowed');
+});
+
+test('fullEntries: an invalid list is a config error naming the file and the entry, never a fallback', () => {
+  const root = entriesRoot();
+  const file = path.join(turboDir(root), 'config.json');
+  const cases = [
+    [42, /test\.full must be a command string or a list/],
+    [{ dir: 'server', command: 'npm test' }, /test\.full must be a command string or a list/],
+    [[], /test\.full is an empty list/],
+    [[7], /test\.full\[0\] must be a command string or/],
+    [['npm test', { dir: 'server' }], /test\.full\[1\]\.command must be a string/],
+    [[{ command: 'npm test' }], /test\.full\[0\]\.dir must be a string/],
+    [[{ dir: 'server', command: '  ' }], /test\.full\[0\] has an empty command/],
+    [['  '], /test\.full\[0\] has an empty command/],
+    [[{ dir: 'server', command: 'npm test', cwd: 'x' }], /test\.full\[0\] has an unknown key "cwd"/],
+    [[{ dir: '/srv', command: 'npm test' }], /test\.full\[0\]\.dir "\/srv" must be relative to the project root/],
+    [[{ dir: 'C:/srv', command: 'npm test' }], /must be relative to the project root/],
+    [[{ dir: '../server', command: 'npm test' }], /test\.full\[0\]\.dir "\.\.\/server" must stay inside the project root \(no "\.\."\)/],
+    [[{ dir: 'server/../app', command: 'npm test' }], /must stay inside the project root/],
+    [[{ dir: 'app\\web', command: 'npm test' }], /test\.full\[0\]\.dir "app\\web" must use forward slashes/],
+    [[{ dir: 'missing', command: 'npm test' }], /test\.full\[0\]\.dir "missing" is not a directory in the project/],
+    [[{ dir: 'notes.txt', command: 'npm test' }], /is not a directory in the project/],
+    [['npm test', { dir: 'server', command: 'a' }, { dir: './server/', command: 'b' }], /test\.full\[2\]\.dir "server" is listed twice/],
+    [['npm test', 'npm run lint'], /test\.full\[1\] runs at the project root, which is listed twice/],
+    [['npm test', { dir: '.', command: 'b' }], /test\.full\[1\] runs at the project root, which is listed twice/],
+  ];
+  for (const [full, re] of cases) {
+    assert.throws(() => fullEntries(full, root), (err) => {
+      assert.match(err.message, /^invalid turbo config /, JSON.stringify(full));
+      assert.ok(err.message.includes(file), err.message);
+      assert.match(err.message, re, JSON.stringify(full));
+      return true;
+    }, JSON.stringify(full));
+  }
 });

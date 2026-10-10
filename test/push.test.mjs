@@ -723,6 +723,20 @@ test('CI runs are read from the repository of push.remote; a remote not on GitHu
   assert.equal(readJson(recordFile(r.root, '3')).lastPush.repo, 'acme/app');
 });
 
+test('CI is watched in the repository the push goes to (the push URL), not the one fetched from', async () => {
+  const r = pushRepo();
+  const { ctx } = supervisorCtx(r, { ci: 'github' });
+  const inner = ctx.deps.git;
+  // fetch from upstream, push to a fork (remote.origin.pushurl or pushInsteadOf)
+  ctx.deps.git = (args, opts) => (args[0] === 'remote' && args[1] === 'get-url'
+    ? (args.includes('--push') ? 'git@github.com:acme/app.git\n' : 'https://github.com/upstream/app.git\n')
+    : inner(args, opts));
+  r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(readJson(recordFile(r.root, '3')).lastPush.repo, 'acme/app');
+});
+
 test('gh missing or not logged in: that push counts as having no CI at once, and the owner is told once', async () => {
   const why = 'gh run list failed: the GitHub CLI (gh) is not installed or not on PATH';
   const root = project();

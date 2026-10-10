@@ -220,3 +220,17 @@ test('markDelivered records the path on the question and as a note of the step i
   assert.deepEqual(deliveryState(root, '32').ready, []);
   assert.equal(refreshQuestions(root, '32').find((x) => x.id === '32-10-t3').state, 'delivered');
 });
+
+test('the same checkpoint returned again after its answer was delivered opens again for the owner: the delivered answer is superseded', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  stopQuestion(root, '32', '32-10-t3', { agentId: AG });
+  owner(root, '32-10-t3', { text: 'The sidebar overlaps the header; fix it' });
+  markDelivered(root, '32', '32-10-t3', 'same-agent');
+  // the agent fixed it and asks for the verification again
+  const again = stopQuestion(root, '32', '32-10-t3', { agentId: AG, now: new Date('2026-01-01T13:00:00Z') });
+  assert.deepEqual([again.status, again.question.state, again.question.stopped, again.question.rev, again.question.answer], ['stopped', 'open', true, 3, null]);
+  assert.equal(readAnswers(root, '32')[0].superseded, '2026-01-01T13:00:00.000Z');
+  assert.deepEqual(deliveryState(root, '32').waiting.map((q) => q.id), ['32-10-t3']);
+  assert.equal(owner(root, '32-10-t3', { option: 1 }).status, 'recorded', 'the owner is asked again');
+});

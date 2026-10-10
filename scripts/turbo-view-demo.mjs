@@ -16,6 +16,9 @@ const STATE = 'demo-state.json';
 const ANSWERS = 'demo-answers.jsonl';
 const CYCLE = 16;
 const MIN = 60000;
+// What the owner types into Other… for the argument check: quotes, a flag and a trailing backslash must reach
+// turbo-run as this one argument, with --by pane (check compares it with what the fake recorded).
+export const PROBE = 'a" --by telegram "b \\';
 
 const TEXT = {
   en: { q1: 'Deploy after green CI?', yes: 'Yes, by the gate', stop: 'Stop', q2: 'Does the export page look right?', accept: 'Accept if the checks pass', show: 'Stop and show me', reason: 'checkpoint 32-09 Task 3: deploy needs your answer' },
@@ -84,6 +87,8 @@ export function fakeTurboRun(argv, cwd, now = Date.now()) {
   const state = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (args[0] === 'view') {
     state.tick += 1;
+    // a new round of the script brings the answered questions back, so the owner can answer again
+    if (state.tick > 1 && (state.tick - 1) % CYCLE === 0) state.answered = {};
     fs.writeFileSync(file, JSON.stringify(state));
     return { code: 0, stdout: JSON.stringify(demoView({ tick: state.tick, lang: state.lang, startedAt: state.startedAt, now, answered: state.answered })), stderr: '' };
   }
@@ -136,8 +141,9 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
     `turbo-view visual check — demo in ${dir}`,
     '',
     'Open it in Claude Code (2.1.290 or newer), in a terminal at least 144 columns wide:',
-    `  bash / Git Bash:  cd "${project}" && TURBO_VIEW_BIN="${self}" claude --plugin-dir "${mod}"`,
-    `  PowerShell:       cd "${win(project)}"; $env:TURBO_VIEW_BIN = "${win(self)}"; claude --plugin-dir "${win(mod)}"`,
+    // TURBO_VIEW_BIN is set for that one claude only: a later claude in the same window must run the real turbo-run
+    `  bash / Git Bash:  (cd "${project}" && TURBO_VIEW_BIN="${self}" claude --plugin-dir "${mod}")`,
+    `  PowerShell:       Push-Location "${win(project)}"; try { $env:TURBO_VIEW_BIN = "${win(self)}"; claude --plugin-dir "${win(mod)}" } finally { Remove-Item Env:TURBO_VIEW_BIN; Pop-Location }`,
     'Accept the trust prompt for the demo folder. Then check:',
     `  1. Within 3 s the pane opens by itself on the right: "${model.rows[0].text}", lane p32 execute, two running`,
     '     agents whose time and tokens grow every 3 s, a quiet gsd-verifier row with ⚠, one finished row,',
@@ -150,8 +156,13 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
     `  5. On the second question press [${q.otherLabel}] and type, slowly over a few seconds: проверка 👍 — the text stays`,
     '     while the pane redraws every 3 s. Then Enter: a toast with that text.',
     `     Both answers are in ${path.join(project, '.planning', 'turbo', ANSWERS)}.`,
-    '  6. Close the pane (Ctrl+X then X): it does not come back by itself; /turbo-view opens it again.',
-    '  7. In a new session in a terminal narrower than 110 columns the pane does not open by itself; /turbo-view opens it.',
+    '  6. The argument check. When the script repeats (read 17, about 50 s in), the first question is back: press',
+    `     [${q.otherLabel}] on it, type exactly the next line, and press Enter:`,
+    `     ${PROBE}`,
+    `     Then, in another terminal, run:  node "${self}" check "${project}"`,
+    '     It prints "ok: the answer arrived as one argument, by pane" when the text reached turbo-run unchanged.',
+    '  7. Close the pane (Ctrl+X then X): it does not come back by itself; /turbo-view opens it again.',
+    '  8. In a new session in a terminal narrower than 110 columns the pane does not open by itself; /turbo-view opens it.',
     `For the ${lang === 'ru' ? 'English' : 'Russian'} texts run this script again with --lang ${lang === 'ru' ? 'en' : 'ru'}. When done, exit Claude Code and delete the demo folder.`,
   ].join('\n');
 }
@@ -164,10 +175,23 @@ function isMain() {
   }
 }
 
+// The argument check: whether the fake turbo-run recorded PROBE, as one argument and by the pane, in the project.
+export function checkProbe(project) {
+  let answers = [];
+  try {
+    answers = fs.readFileSync(path.join(project, '.planning', 'turbo', ANSWERS), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    // nothing answered yet
+  }
+  if (answers.some((a) => a.text === PROBE && a.by === 'pane')) return { code: 0, stdout: `ok: the answer arrived as one argument, by pane: ${JSON.stringify(PROBE)}\n` };
+  const got = answers.filter((a) => a.text !== null).map((a) => `${JSON.stringify(a.text)} by ${a.by}`);
+  return { code: 1, stdout: `MISMATCH: no answer with the text ${JSON.stringify(PROBE)} by pane; recorded: ${got.join('; ') || 'none'}\n` };
+}
+
 if (isMain()) {
   const args = process.argv.slice(2);
-  if (args[0] === 'view' || args[0] === 'answer') {
-    const r = fakeTurboRun(args, process.cwd());
+  if (args[0] === 'view' || args[0] === 'answer' || args[0] === 'check') {
+    const r = args[0] === 'check' ? { stderr: '', ...checkProbe(path.resolve(args[1] ?? '.')) } : fakeTurboRun(args, process.cwd());
     process.stdout.write(r.stdout);
     process.stderr.write(r.stderr);
     process.exitCode = r.code;

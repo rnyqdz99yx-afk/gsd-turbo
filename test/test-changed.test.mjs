@@ -876,6 +876,48 @@ test('multi: a change outside an entry that the entry\'s files mention or import
   assert.deepEqual([viaName.app.mode, viaName.app.reason], ['full', 'app/src/view.js imports @demo/server (src/core.js changed)']);
 });
 
+test('multi review 1: an entry\'s own change selects the entry\'s tests that reach it through another entry\'s files', () => {
+  // the root test reaches lib/config.js only through server/app.js; the root's script does not run server/
+  const files = {
+    'lib/config.js': '', 'test/config.test.js': "import '../lib/config.js'",
+    'test/e2e.test.js': "import '../server/app.js'", 'server/app.js': "import '../lib/config.js'",
+  };
+  const r = plansOf(multi(['lib/config.js'], { files, packages: multiPkgs({ '': { testScript: 'node --test "test/*.test.js"' } }) }));
+  assert.deepEqual(r[''].groups.map((g) => g.args), [['--test', 'test/config.test.js', 'test/e2e.test.js']]);
+  assert.equal(r.server.mode, 'full', 'server/app.js reaches it');
+  // the mirror: a nested test reaches the nested file through a root helper
+  const mirror = {
+    'server/src/a.js': '', 'server/test/a.test.js': "import '../src/a.js'",
+    'server/test/x.test.js': "import '../../lib/helper.js'", 'lib/helper.js': "import '../server/src/a.js'",
+  };
+  const s = plansOf(multi(['server/src/a.js'], { files: mirror }));
+  assert.deepEqual(s.server.groups.map((g) => [g.cwd, g.args]), [['server', ['--test', 'test/a.test.js', 'test/x.test.js']]]);
+});
+
+test('multi review 1 e2e: a root test that reaches a changed root file through a nested entry runs and fails', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = (f, s) => { fs.mkdirSync(path.dirname(path.join(repo, f)), { recursive: true }); fs.writeFileSync(path.join(repo, f), s); };
+  const script = 'node --test test/config.test.mjs test/e2e.test.mjs';
+  const T = (from, name, check) => `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { ${name} } from '${from}';\ntest('${name}', () => assert.ok(${check}));\n`;
+  w('package.json', JSON.stringify({ name: 'demo-root', type: 'module', scripts: { test: script } }));
+  w('lib/config.mjs', 'export const v = 1;\n');
+  w('test/config.test.mjs', T('../lib/config.mjs', 'v', "typeof v === 'number'"));
+  w('test/e2e.test.mjs', T('../server/app.mjs', 'app', 'app === 2'));
+  w('server/package.json', JSON.stringify({ name: 'demo-server', type: 'module', scripts: { test: 'node --test' } }));
+  w('server/app.mjs', "import { v } from '../lib/config.mjs';\nexport const app = v + 1;\n");
+  w('server/test/app.test.mjs', T('../app.mjs', 'app', "typeof app === 'number'"));
+  w('.planning/turbo/config.json', JSON.stringify({ test: { full: [script, { dir: 'server', command: 'node --test' }] } }));
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  w('lib/config.mjs', 'export const v = 5;\n');
+  git('commit', '-qam', 'break the e2e test through server/app.mjs');
+  r.logs.length = 0;
+  assert.notEqual(await r.run(), 0, 'test/e2e.test.mjs runs and fails');
+  assert.equal(r.logs[0], '(root): targeted: 2 related test file(s)');
+});
+
 test('multi: a dependency or config file changed outside every nested entry makes every entry run full', () => {
   for (const f of ['package-lock.json', 'tsconfig.json', '.planning/turbo/config.json', 'tools/vite.config.js']) {
     const r = plansOf(multi([f]));

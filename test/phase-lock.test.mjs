@@ -117,3 +117,73 @@ test('a release removes only its own lock: one a stealer put in its place stays'
   });
   assert.equal(fs.readFileSync(file, 'utf8'), 'stealer');
 });
+
+// A stale lock that was swapped for another process's fresh one the moment this process looked at it.
+function swappedStaleLock(root) {
+  const file = lockFile(root, '32');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, 'crashed');
+  const old = new Date(Date.now() - 60000);
+  fs.utimesSync(file, old, old);
+  return file;
+}
+
+test('a stale lock that cannot be moved aside is waited on like any lock: give up after waitMs, sleeping between tries', () => {
+  const root = tmpDir('spin');
+  const file = swappedStaleLock(root);
+  const realRename = fs.renameSync;
+  const realOpen = fs.openSync;
+  let renames = 0;
+  let opens = 0;
+  fs.renameSync = function (from, ...rest) {
+    if (from === file) {
+      renames += 1;
+      throw Object.assign(new Error('operation not permitted, rename'), { code: 'EPERM' });
+    }
+    return realRename.call(this, from, ...rest);
+  };
+  // a spinning loop ends here with an error of its own instead of hanging the test
+  fs.openSync = function (p, ...rest) {
+    if (p === file && ++opens > 500) throw Object.assign(new Error(`still spinning after ${opens} tries`), { code: 'ESPIN' });
+    return realOpen.call(this, p, ...rest);
+  };
+  const t0 = Date.now();
+  try {
+    assert.throws(() => withPhaseLock(root, '32', () => {}, { waitMs: 300 }), /locked by another turbo-run/);
+  } finally {
+    fs.renameSync = realRename;
+    fs.openSync = realOpen;
+  }
+  assert.ok(Date.now() - t0 < 5000);
+  assert.ok(renames <= 30, `${renames} renames in ${Date.now() - t0} ms`);
+});
+
+test('without hard links a lock moved aside by mistake goes back only where no lock exists: a lock a third process took is never replaced', () => {
+  const root = tmpDir('nolink');
+  const file = swappedStaleLock(root);
+  const realStat = fs.statSync;
+  const realLink = fs.linkSync;
+  let swapped = false;
+  fs.statSync = function (p, ...rest) {
+    const st = realStat.call(this, p, ...rest);
+    if (!swapped && p === file) {
+      swapped = true;
+      fs.rmSync(file, { force: true });
+      fs.writeFileSync(file, 'other-process', { flag: 'wx' });
+    }
+    return st;
+  };
+  // no hard links here, and a third process takes the free lock right before the moved one would go back
+  fs.linkSync = () => {
+    fs.writeFileSync(file, 'third-process', { flag: 'wx' });
+    throw Object.assign(new Error('operation not supported, link'), { code: 'ENOTSUP' });
+  };
+  try {
+    assert.throws(() => withPhaseLock(root, '32', () => {}, { waitMs: 200 }), /locked by another turbo-run/);
+  } finally {
+    fs.statSync = realStat;
+    fs.linkSync = realLink;
+  }
+  assert.equal(fs.readFileSync(file, 'utf8'), 'third-process');
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n !== path.basename(file)), []);
+});

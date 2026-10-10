@@ -6,7 +6,7 @@ import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { tick, runDaemon, resumableLane } from '../lib/supervisor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus, readLaneStatus } from '../lib/run-status.mjs';
-import { laneSessionName, parseAgents } from '../lib/claude.mjs';
+import { laneSessionName, parseAgents, projectHash } from '../lib/claude.mjs';
 
 function harness({ phases, agents = [], git = false }) {
   const root = git ? tmpGitRepo() : tmpDir('sup');
@@ -56,7 +56,7 @@ test('launches the next ready phase', async () => {
 
 test('a launch creates the lane\'s own temp directory in the git directory, empties a stale one, and hands it to the session and its rules', async () => {
   const h = harness({ phases: [P('2')], git: true });
-  const dir = path.join(h.root, '.git', 'turbo', 'tmp', 'p2');
+  const dir = path.join(h.root, '.git', 'turbo', 'tmp', projectHash(h.root), 'p2');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'stale.json'), '{}'); // left by an earlier session of the phase
   await tick(fresh(), h.ctx);
@@ -69,7 +69,7 @@ test('a launch creates the lane\'s own temp directory in the git directory, empt
 test('the lane\'s temp directory stays while its session lives or waits, and goes once the supervisor finished the lane and removed the session', async () => {
   const h = harness({ phases: [P('2'), P('3', ['2'])], git: true });
   let s = await tick(fresh(), h.ctx);
-  const dir = path.join(h.root, '.git', 'turbo', 'tmp', 'p2');
+  const dir = path.join(h.root, '.git', 'turbo', 'tmp', projectHash(h.root), 'p2');
   fs.writeFileSync(path.join(dir, 'scratch.txt'), 'x');
   writeLaneStatus(h.root, '2', 'done', { reason: 'closed', at: '2026-01-01T00:00:00.000Z' }); // lane-status 2 done: the session still runs
   s = await tick(s, h.ctx);

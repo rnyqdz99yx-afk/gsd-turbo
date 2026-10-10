@@ -178,6 +178,13 @@ test('buildBgArgs puts flags before the prompt, disables AskUserQuestion and tur
   assert.equal(withModel.at(-1), 'P');
 });
 
+test('buildBgArgs points the lane session\'s TMP, TEMP and TMPDIR at its own temp directory, bg isolation still off', () => {
+  const tmpDir = path.resolve('/p/.planning/turbo/run/tmp/p3');
+  const args = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: '', tmpDir });
+  assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' }, env: { TMP: tmpDir, TEMP: tmpDir, TMPDIR: tmpDir } });
+  assert.equal(args.at(-1), 'P');
+});
+
 test('parseBgLaunch extracts the id', () => {
   assert.equal(parseBgLaunch('Starting background service…\nbackgrounded · 749a6844 · turbo-perm\n'), '749a6844');
   assert.equal(parseBgLaunch('backgrounded: 0A1B2C3D (turbo-x)'), '0A1B2C3D');

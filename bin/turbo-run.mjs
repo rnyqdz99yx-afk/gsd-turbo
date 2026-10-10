@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '../lib/paths.mjs';
+import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, removeLaneTmp } from '../lib/paths.mjs';
 import { DEFAULTS, loadConfig, initConfig, deepMerge } from '../lib/config.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
@@ -572,6 +572,15 @@ async function main() {
       const id = normalizePhaseId(phase);
       writeLaneStatus(root, id, status, { reason: flag(args, '--reason') });
       out(`lane ${id}: ${status}`);
+      if (status === 'done') {
+        // the lane's temp directory (stands, data copies) goes with the phase; the done record stands either way
+        try {
+          const removed = removeLaneTmp(root, id);
+          if (removed) out(`removed ${path.relative(root, removed).split(path.sep).join('/')}`);
+        } catch (e) {
+          process.stderr.write(`warn: ${e.message}\n`);
+        }
+      }
       return 0;
     }
     case 'notify': {

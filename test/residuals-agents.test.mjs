@@ -53,8 +53,9 @@ const fresh = () => ({ lane: null, finished: false, halted: false });
 
 test('a launch whose lane record cannot be written counts toward the launch-failure cap', async () => {
   const h = harness({ phases: [P('2')], launch: (id) => id }); // the session never shows up in the list
-  fs.mkdirSync(path.join(h.root, '.planning', 'turbo'), { recursive: true });
-  fs.writeFileSync(path.join(h.root, '.planning', 'turbo', 'run'), 'not a directory'); // writeLaneStatus fails
+  // writeLaneStatus fails (its temp file name is taken by a directory); the lane's temp directory, created
+  // before the launch, still can be
+  fs.mkdirSync(path.join(h.root, '.planning', 'turbo', 'run', `p2.json.tmp-${process.pid}`), { recursive: true });
   let s = fresh();
   for (let i = 0; i < 12 && !s.halted; i++) s = await tick(s, h.ctx);
   assert.equal(s.halted, true);

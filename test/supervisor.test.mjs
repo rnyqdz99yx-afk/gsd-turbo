@@ -54,6 +54,15 @@ test('launches the next ready phase', async () => {
   assert.equal(h.launched[0].cwd, h.root);
 });
 
+test('a launch creates the lane\'s own temp directory first and hands it to the session and its rules', async () => {
+  const h = harness({ phases: [P('2')] });
+  await tick(fresh(), h.ctx);
+  const dir = path.join(h.root, '.planning', 'turbo', 'run', 'tmp', 'p2');
+  assert.equal(h.launched[0].tmpDir, dir);
+  assert.ok(fs.statSync(dir).isDirectory());
+  assert.ok(h.launched[0].systemPrompt.includes(dir.replace(/\\/g, '/')), h.launched[0].systemPrompt);
+});
+
 test('adopts an already running session with the lane name instead of launching', async () => {
   const h = harness({ phases: [P('2')], agents: [] });
   // same directory written differently: forward slashes / trailing slash, upper case on win32

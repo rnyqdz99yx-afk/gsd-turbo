@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries } from '../lib/config.mjs';
+import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, pushSettings } from '../lib/config.mjs';
 import { findProjectRoot, turboDir, claudeHome } from '../lib/paths.mjs';
 import { writeJsonAtomic, readJson } from '../lib/fsx.mjs';
 
@@ -191,4 +191,33 @@ test('fullEntries review 4/6: a dir that leads outside through a link, or names 
   const other = [{ dir: 'server', command: 'a' }, { dir: 'SERVER', command: 'b' }];
   const insensitive = fs.existsSync(path.join(root, 'SERVER'));
   assert.throws(() => fullEntries(other, root), insensitive ? /test\.full\[1\]\.dir "SERVER" is listed twice \(as test\.full\[0\]\)/ : /test\.full\[1\]\.dir "SERVER" is not a directory in the project/);
+});
+
+test('pushSettings: off by default; every key validated; a bad value is a one-line config error (S2)', () => {
+  assert.deepEqual(pushSettings(), { mode: 'off', remote: 'origin', ci: 'github', ci_timeout_minutes: 30, ci_fix_rounds: 2 });
+  assert.deepEqual(DEFAULTS.push, pushSettings());
+  const all = { mode: 'after-wave', remote: 'up-stream_2', ci: 'none', ci_timeout_minutes: 5, ci_fix_rounds: 0 };
+  assert.deepEqual(pushSettings(all), all);
+  const cases = [
+    [{ mode: 'after_wave' }, /^invalid turbo config push\.mode: must be one of off, after-wave, after-phase$/],
+    [{ mode: true }, /push\.mode/],
+    [{ remote: '--upload-pack=x' }, /push\.remote/],
+    [{ remote: 'https://example.com/r.git' }, /push\.remote/],
+    [{ remote: '' }, /push\.remote/],
+    [{ remote: 'a..b' }, /push\.remote/],
+    [{ ci: 'gitlab' }, /push\.ci: must be github or none/],
+    [{ ci_timeout_minutes: 0 }, /push\.ci_timeout_minutes/],
+    [{ ci_timeout_minutes: '30' }, /push\.ci_timeout_minutes/],
+    [{ ci_fix_rounds: -1 }, /push\.ci_fix_rounds/],
+    [{ ci_fix_rounds: 1.5 }, /push\.ci_fix_rounds/],
+  ];
+  for (const [raw, re] of cases) {
+    assert.throws(() => pushSettings(raw), (e) => re.test(e.message) && /^invalid turbo config /.test(e.message), JSON.stringify(raw));
+  }
+  assert.throws(() => pushSettings(null), { message: /^invalid turbo config push: must be an object$/ });
+  // a partial push object in the config file keeps the other defaults
+  const root = tmpDir('cfg');
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ push: { mode: 'after-phase' } }));
+  assert.deepEqual(pushSettings(loadConfig(root).push), { ...DEFAULTS.push, mode: 'after-phase' });
 });

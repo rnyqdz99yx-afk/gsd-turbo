@@ -898,3 +898,63 @@ test('runDaemon survives a tick error, persists state every tick, stops when fin
   assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).finished, true);
   assert.ok(h.logs.some((l) => /tick error: gsd-tools failed/.test(l)));
 });
+
+test('push work runs in every tick but its errors never fail the lane tick (S2)', async () => {
+  const h = harness({ phases: [P('2')] });
+  h.ctx.config.push = { ...DEFAULTS.push, mode: 'after-wave' };
+  h.ctx.deps.git = () => { throw new Error('git is broken'); };
+  h.ctx.deps.gh = () => { throw new Error('gh is broken'); };
+  const run = path.join(h.root, '.planning', 'turbo', 'run');
+  fs.mkdirSync(run, { recursive: true });
+  fs.writeFileSync(path.join(run, 'p2-push-request.json'), JSON.stringify({ id: 'r1', phase: '2', branch: 'main', head: 'a'.repeat(40), at: '2026-01-01T00:00:00.000Z' }));
+  const s = await tick(fresh(), h.ctx);
+  assert.equal(s.lane.phase, '2');
+  assert.equal(h.launched.length, 1);
+  assert.ok(!('failingSince' in s));
+  // the broken git fails this request once (recorded and notified), never the tick
+  assert.ok(h.logs.includes('push p2: failed aaaaaaa: reading the branch failed: git is broken'), h.logs.join('\n'));
+  assert.deepEqual(h.notes.map((n) => n.key), ['pushFailed']);
+});
+
+test('a lane launched with push on gets the push rule in its system prompt; with push off it does not (S2)', async () => {
+  const on = harness({ phases: [P('2')] });
+  on.ctx.config.push = { ...DEFAULTS.push, mode: 'after-phase' };
+  on.ctx.deps.git = () => { throw new Error('no push request exists'); };
+  await tick(fresh(), on.ctx);
+  assert.match(on.launched[0].systemPrompt, /push-request 2 --at phase --wait/);
+  const off = harness({ phases: [P('2')] });
+  await tick(fresh(), off.ctx);
+  assert.ok(!off.launched[0].systemPrompt.includes('push-request'));
+});
+
+test('the daemon lends its ticks its heartbeat writer, so long push work keeps the supervisor alive (S2)', async () => {
+  const h = harness({ phases: [P('2', [], true)] });
+  const statePath = path.join(h.root, '.planning', 'supervisor.json');
+  let mid = null;
+  h.ctx.deps.loadPhases = () => {
+    h.advance(7); // a tick that has worked for 7 minutes
+    h.ctx.deps.heartbeat();
+    mid = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    return h.phases;
+  };
+  let sleeps = 0;
+  await runDaemon({ ctx: h.ctx, statePath, intervalMs: 1, sleep: async () => { if (++sleeps > 3) throw new Error('runaway daemon'); } });
+  assert.deepEqual([mid?.pid, mid?.updatedAt], [process.pid, '2026-01-01T00:07:00.000Z']);
+});
+
+test('the lent heartbeat writes nothing once the daemon lost its lease, and answers false (S2)', async () => {
+  const h = harness({ phases: [P('2', [], true)] });
+  const statePath = path.join(h.root, '.planning', 'supervisor.json');
+  let answer = null;
+  let written = null;
+  h.ctx.deps.loadPhases = () => {
+    h.ctx.deps.leaseHeld = () => false; // another daemon took over mid-tick
+    answer = h.ctx.deps.heartbeat();
+    written = fs.existsSync(statePath);
+    h.ctx.deps.leaseHeld = () => true;
+    return h.phases;
+  };
+  let sleeps = 0;
+  await runDaemon({ ctx: h.ctx, statePath, intervalMs: 1, sleep: async () => { if (++sleeps > 3) throw new Error('runaway daemon'); } });
+  assert.deepEqual([answer, written], [false, false]);
+});

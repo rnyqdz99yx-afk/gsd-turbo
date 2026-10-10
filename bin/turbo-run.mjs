@@ -5,9 +5,11 @@ import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '../lib/paths.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries } from '../lib/config.mjs';
+import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, pushSettings } from '../lib/config.mjs';
 import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
+import { createGit } from '../lib/push.mjs';
+import { createGh } from '../lib/ci.mjs';
 import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
 import { createClaude, resolveBin, laneSessionName, sessionFreeEnv } from '../lib/claude.mjs';
 import { loadPhases, normalizePhaseId } from '../lib/gsd.mjs';
@@ -25,7 +27,7 @@ import { buildView, formatView } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|state-sync> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
@@ -114,6 +116,8 @@ function runtimeConfig(config) {
     poll_seconds: clampPoll(config.poll_seconds),
     max_restarts_without_progress: clampInt(config.max_restarts_without_progress, 1, DEFAULTS.max_restarts_without_progress),
     blocked_minutes_before_notify: clampInt(config.blocked_minutes_before_notify, 1, DEFAULTS.blocked_minutes_before_notify),
+    // push.* checked where start, status and the daemon load the config: a typo stops them with one line
+    push: pushSettings(config.push),
   };
 }
 // stop/resume must work even when the config is broken.
@@ -232,6 +236,9 @@ function makeCtx(root, mode = 'safe') {
         return loadPhases(root, core).phases;
       },
       claude,
+      // the supervisor's push and CI work (spec §6, S2); unused while push.mode is off
+      git: createGit(root),
+      gh: createGh(root),
       fingerprint: fingerprint(root),
       notify: (key, vars) => notify(config, msg(config.lang, key, vars)),
       now: () => new Date(),
@@ -543,7 +550,8 @@ async function main() {
   const pos = positional(args);
   if (PHASE_COMMANDS.has(cmd)) {
     if (!root) die('no .planning directory found');
-    return runPhaseCommand(cmd, args, { root });
+    // push-request --wait waits only while a supervisor is alive to push and watch CI
+    return runPhaseCommand(cmd, args, { root, deps: { supervisorAlive: () => supAlive(readJson(supPath(root), null), pollOf(root)) } });
   }
   switch (cmd) {
     case 'doctor': {

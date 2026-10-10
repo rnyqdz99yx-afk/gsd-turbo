@@ -99,3 +99,16 @@ test('bin/turbo-run.mjs routes phase-step to the stage-2 CLI', () => {
   const out = execFileSync(process.execPath, [path.resolve('bin/turbo-run.mjs'), 'phase-step', '3', '--project', root], { encoding: 'utf8' });
   assert.match(out, /phase 3: next freshness/);
 });
+
+test('the ci attempt counter (push.ci_fix_rounds) counts like a step, is no step, and clears with the others (S2)', async () => {
+  const root = project();
+  assert.equal(countAttempt(root, '3', 'ci'), 1);
+  assert.equal(countAttempt(root, '3', 'ci'), 2);
+  assert.deepEqual(readProgress(root, '3').attempts, { ci: 2 });
+  assert.throws(() => completeStep(root, '3', 'ci'), /unknown step: ci/);
+  const lines = [];
+  assert.equal(await runPhaseCommand('phase-step', ['3', '--attempt', 'ci'], { root, out: (l) => lines.push(l), err: () => {} }), 0);
+  assert.equal(lines.at(-1), 'attempt ci 3');
+  clearAttempts(root, '3');
+  assert.deepEqual(readProgress(root, '3').attempts, {});
+});

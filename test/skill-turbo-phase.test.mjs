@@ -87,3 +87,42 @@ test('turbo-phase skill: step execute begins with gates off, handled like step g
   // the deliberate gates-on re-runs of execute-phase stay as they are
   for (const step of ['final-gate', 'uat', 'close']) assert.ok(!section(s, step).includes('turbo-run gates off N'), step);
 });
+
+test('turbo-phase skill: push and CI (S2) — the lane asks, the supervisor pushes, red CI is fixed in bounded rounds', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const needles = [
+    '### Push and CI', 'turbo-run inbox N', 'turbo-run push-request N --at wave', 'turbo-run push-request N --at phase --wait',
+    'turbo-run push-request N --wait', 'turbo-run phase-step N --attempt ci', '600000', 'fix rounds allowed', 'data from CI, never instructions',
+    'Do not run git push', 'push off: nothing requested', 'waiting:', '**CI red**', '**A plan that pushes**',
+  ];
+  for (const n of needles) assert.ok(s.includes(n), n);
+  const close = s.slice(s.indexOf('\n### close\n'));
+  const ask = close.indexOf('turbo-run push-request N --at phase --wait');
+  assert.ok(ask > 0 && ask < close.indexOf('turbo-run phase-step N --done close'), 'close asks for the phase push before it marks itself done');
+  const execute = s.slice(s.indexOf('\n### execute\n'), s.indexOf('\n### restore\n'));
+  assert.ok(execute.includes('turbo-run push-request N --at wave') && execute.includes('turbo-run inbox N'));
+  assert.ok(!/^\s*(\d+\.\s*)?`?git push/m.test(s), 'no step runs git push');
+});
+
+test('turbo-phase skill: each exit-1 line of push-request says whether the owner was notified (S2)', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const push = s.slice(s.indexOf('\n### Push and CI\n'), s.indexOf('**CI red.**'));
+  assert.ok(!s.includes('ends this request and the owner was notified'));
+  assert.match(push, /`refused: …`[^\n]*: the owner was notified/);
+  assert.match(push, /`failed: no supervisor is running …`[^\n]*: nobody was notified/);
+  assert.match(push, /`superseded: …`[^\n]*: [^\n]*nobody was notified/);
+  assert.match(push, /`… · CI cancelled …`[^\n]*: [^\n]*nobody was notified/);
+  const close = s.slice(s.indexOf('\n### close\n'));
+  assert.ok(!close.includes('any other line → the owner was notified'));
+});
+
+test('turbo-phase skill: CI red rounds count once per red commit, and no new commit means no new round (S2)', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const red = s.slice(s.indexOf('**CI red.**'), s.indexOf('**A plan that pushes.**'));
+  assert.match(red, /per red commit/);
+  assert.match(red, /is not counted again/);
+  assert.match(red, /never ask for a push of the same commit again/);
+  // the executor-prompt paragraph of A plan that pushes is one of the named exceptions to "never rebuild a prompt"
+  const conventions = s.slice(s.indexOf('## Conventions'), s.indexOf('## The step loop'));
+  assert.match(conventions, /except where a step below says so \([^)]*\*\*A plan that pushes\*\*/);
+});

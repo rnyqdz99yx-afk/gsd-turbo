@@ -199,3 +199,23 @@ test('the standing rule never answers over the owner: after its answer was repor
   stopQuestion(other, '32', '32-09-t2', { agentId: AG, unmet: true, now: NOW });
   assert.deepEqual(applyStandingRule({ root: other, phase: '32', config: MAX(), now: NOW, laneRunning: true }), []);
 });
+
+test('the answers directory keeps out everything but p<N>.json: a temporary file of an atomic write never reaches git, whoever commits the directory', () => {
+  const root = project({ git: true });
+  const git = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8' });
+  // what turbo-run init writes
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', '.gitignore'), 'run/\nlogs/\nlocks/\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'plans');
+  const dir = path.join(root, '.planning', 'turbo', 'answers');
+  // turbo-run answer without a lane commits the answers and the rule
+  assert.equal(answerQuestion({ root, phase: '32', id: '32-09-t2', option: 1, by: 'session', now: NOW, laneRunning: false }).commit, 'committed');
+  assert.equal(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8'), '*\n!p*.json\n!.gitignore\n');
+  // a leftover of a crashed atomic write, and an answer a lane commits by adding the whole directory
+  fs.writeFileSync(path.join(dir, 'p32.json.tmp-999'), '[');
+  answerQuestion({ root, phase: '32', id: '32-10-t3', option: 1, by: 'session', now: NOW, laneRunning: true });
+  git('add', '--', '.planning/turbo/answers/');
+  git('commit', '-q', '-m', 'docs(phase-32): owner answers', '--', '.planning/turbo/answers/');
+  assert.deepEqual(git('ls-files', '--', '.planning/turbo/answers').trim().split('\n'), ['.planning/turbo/answers/.gitignore', '.planning/turbo/answers/p32.json']);
+  assert.equal(git('status', '--porcelain', '--untracked-files=all'), '');
+});

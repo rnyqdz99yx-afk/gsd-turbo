@@ -10,8 +10,9 @@ const REPO = path.dirname(fileURLToPath(import.meta.url));
 const MANIFEST = 'turbo/install-manifest.json';
 // The turbo-view mod (spec §7) goes where Claude Code loads it by itself, as turbo-view@skills-dir.
 const MOD_DIR = path.join('skills', 'turbo-view');
-// Never copied from mod/: its harness tests, and what Claude Code writes into a mod loaded with --plugin-dir.
-const modSkipped = (rel) => /\.test\.[cm]?[jt]sx?$/.test(rel) || /^\.claude-plugin\/types(\/|$)/.test(rel) || rel === 'tsconfig.json';
+// The mod's runtime files, the only ones copied from mod/: never its tests, the files Claude Code writes into a mod
+// loaded with --plugin-dir, or anything else that lands in mod/.
+const MOD_FILES = ['.claude-plugin/plugin.json', 'hooks/hooks.json', 'hooks/register.mjs', 'hooks/view-model.mjs'];
 
 function walk(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -27,10 +28,12 @@ function plan(repoDir, { mod = false } = {}) {
     for (const f of walk(path.join(repoDir, 'skills', d))) pairs.push([f, path.join('skills', path.relative(path.join(repoDir, 'skills'), f))]);
   }
   for (const f of walk(path.join(repoDir, 'agents'))) if (path.basename(f).startsWith('turbo-')) pairs.push([f, path.join('agents', path.basename(f))]);
-  if (mod) {
-    for (const f of walk(path.join(repoDir, 'mod'))) {
-      const rel = path.relative(path.join(repoDir, 'mod'), f).split(path.sep).join('/');
-      if (!modSkipped(rel)) pairs.push([f, path.join(MOD_DIR, rel)]);
+  // a checkout without mod/ has no mod to install; a mod/ that lacks a runtime file is a broken checkout
+  if (mod && fs.existsSync(path.join(repoDir, 'mod'))) {
+    for (const rel of MOD_FILES) {
+      const src = path.join(repoDir, 'mod', ...rel.split('/'));
+      if (!fs.existsSync(src)) throw new Error(`turbo-view mod file missing: mod/${rel}`);
+      pairs.push([src, path.join(MOD_DIR, ...rel.split('/'))]);
     }
   }
   return pairs;
@@ -85,6 +88,21 @@ function readManifest(mf) {
   return data;
 }
 
+// skills/turbo-view goes as a whole: Claude Code may have written type files or a tsconfig.json into it, which no
+// manifest lists. Only that directory, and only when its real path is skills/turbo-view itself (a link to anywhere
+// else is left alone).
+function removeModDir(home) {
+  const skills = path.join(home, 'skills');
+  const dir = path.join(home, MOD_DIR);
+  if (!fs.existsSync(dir)) return;
+  const real = fs.realpathSync(dir);
+  if (path.dirname(real) !== fs.realpathSync(skills) || path.basename(real) !== 'turbo-view') {
+    process.stderr.write(`turbo uninstall: skipped ${dir}: it resolves to ${real}, outside ${skills}\n`);
+    return;
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 // Returns the number of files removed (or, with dryRun, that would be removed), or null when
 // claudeHome holds no install manifest.
 export function uninstall({ claudeHome = defaultHome(), dryRun = false } = {}) {
@@ -110,6 +128,7 @@ export function uninstall({ claudeHome = defaultHome(), dryRun = false } = {}) {
   }
   if (dryRun) return n;
   fs.rmSync(mf, { force: true });
+  removeModDir(home);
   const dirs = [...new Set(targets.map((p) => path.dirname(p)))].sort((a, b) => b.length - a.length);
   for (const d of dirs) {
     let cur = d;

@@ -52,7 +52,7 @@ Then run, from the gsd-turbo clone (the installer itself is not copied into your
 node install.mjs --uninstall
 ```
 
-`node install.mjs --uninstall --dry-run` shows how many files would be removed. Only files listed in the install manifest are removed, the turbo-view mod included. Without a manifest in the config directory, the uninstaller prints `no gsd-turbo install manifest in <directory>` and exits with code 1 (check `CLAUDE_CONFIG_DIR`).
+`node install.mjs --uninstall --dry-run` shows how many files would be removed. Only files listed in the install manifest are removed, plus the whole `skills/turbo-view/` directory of the mod (with any files Claude Code wrote into it; a link there is left alone). Without a manifest in the config directory, the uninstaller prints `no gsd-turbo install manifest in <directory>` and exits with code 1 (check `CLAUDE_CONFIG_DIR`).
 
 Projects keep their turbo files: `.planning/turbo/`, the last-green marker of the targeted tests (`turbo-last-green` in the git directory, usually `.git/turbo-last-green`; you can delete it) and, where `init` set it, the GSD setting `workflow.test_command`. In each project, from the project root, in a bash-compatible shell (Git Bash on Windows), check the setting:
 

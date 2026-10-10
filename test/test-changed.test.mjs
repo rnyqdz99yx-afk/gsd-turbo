@@ -894,6 +894,22 @@ test('multi review 1: an entry\'s own change selects the entry\'s tests that rea
   assert.deepEqual(s.server.groups.map((g) => [g.cwd, g.args]), [['server', ['--test', 'test/a.test.js', 'test/x.test.js']]]);
 });
 
+test('multi review 3: a relative import of a package directory reaches every file of that package', () => {
+  // '../server' resolves through server/package.json "main", which an index.* rule never sees
+  const main = plansOf(multi(['server/src/main.js'], {
+    files: { 'server/src/main.js': '', 'server/test/main.test.js': "import '../src/main.js'", 'test/e2e.test.js': "import '../server'" },
+    packages: multiPkgs({ server: { main: 'src/main.js' } }),
+  }));
+  assert.deepEqual([main[''].mode, main[''].reason], ['full', 'test/e2e.test.js reaches server/src/main.js, changed outside this entry']);
+  // a package that is no entry, built to dist/: its sources reach whoever imports its directory
+  const shared = plansOf(multi(['shared/src/x.js'], {
+    files: { 'shared/package.json': '{}', 'shared/src/x.js': '', 'server/app.js': "const s = require('../shared');" },
+    packages: [...multiPkgs(), { dir: 'shared', testScript: '', hooks: [], main: 'dist/lib.js' }],
+  }));
+  assert.deepEqual([shared.server.mode, shared.server.reason], ['full', 'server/app.js reaches shared/src/x.js, changed outside this entry']);
+  assert.equal(shared.app.mode, 'skip');
+});
+
 test('multi review 1 e2e: a root test that reaches a changed root file through a nested entry runs and fails', async () => {
   const repo = tmpGitRepo();
   const git = gitIn(repo);

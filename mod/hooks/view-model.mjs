@@ -308,10 +308,23 @@ export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || lis
 
 // The argv of S1's single answer arbiter (spec §5.3) for a press in the pane: option is the 1-based option number,
 // text a free answer, passed as one argument (no shell); --rev is always the revision the pane drew, so an answer to
-// a question that changed since records nothing (exit 4). node is the absolute node the mod found (nodeCandidates).
-export function answerArgv({ node, turboRun, question, option = null, text = null }) {
-  const pick = text !== null ? ['--text', String(text)] : ['--option', String(option)];
-  return [node, turboRun, 'answer', String(question.phase), String(question.id), ...pick, '--by', 'pane', '--rev', String(question.rev)];
+// a question that changed since records nothing (exit 4). node is the absolute node the mod found (nodeCandidates);
+// root is the project, named with --project before anything else; a free text comes last, after every real flag, so
+// a text that reads like a flag (--project, --by, --rev) is never taken for one.
+export function answerArgv({ node, turboRun, root, question, option = null, text = null }) {
+  const head = [node, turboRun, 'answer', '--project', root, String(question.phase), String(question.id)];
+  const tail = ['--by', 'pane', '--rev', String(question.rev)];
+  return text !== null ? [...head, ...tail, '--text', String(text)] : [...head, '--option', String(option), ...tail];
+}
+
+// The argv of the view read: the project is named, never taken from the working directory.
+export const viewArgv = ({ node, turboRun, root }) => [node, turboRun, 'view', '--project', root, '--json'];
+
+// The directory turbo-run runs in: its install directory (<dir>/bin/turbo-run.mjs → <dir>), never the project, where
+// a node version manager (Volta, asdf, mise) would follow the project's pin. null for a bare file name.
+export function turboDir(bin) {
+  const parts = String(bin).split(/[\\/]+/);
+  return parts.length > 2 ? parts.slice(0, -2).join('/') || '/' : null;
 }
 
 // A Windows path: a drive (C:\, c:/) or a network share (\\server\share).

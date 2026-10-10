@@ -62,8 +62,24 @@ const flag = (args, name) => {
 };
 
 // The fake turbo-run, called by the mod in the demo project: view --json and answer. Returns { code, stdout, stderr }.
-export function fakeTurboRun(args, cwd, now = Date.now()) {
-  const dir = path.join(cwd, '.planning', 'turbo');
+// Arguments read in order, as turbo-run reads them: a value flag takes the next argument whatever it says, so an
+// answer text that reads --by or --project stays the text. Returns { flags, positional }.
+const VALUE_FLAGS = new Set(['--project', '--option', '--text', '--by', '--rev']);
+function readArgs(args) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    if (VALUE_FLAGS.has(args[i])) flags[args[i]] ??= args[++i];
+    else if (!args[i].startsWith('--')) positional.push(args[i]);
+  }
+  return { flags, positional };
+}
+
+export function fakeTurboRun(argv, cwd, now = Date.now()) {
+  const { flags, positional: args } = readArgs(argv);
+  const flag = (_, name) => flags[name];
+  // the mod names the project with --project and runs this script in the clone
+  const dir = path.join(flags['--project'] ?? cwd, '.planning', 'turbo');
   const file = path.join(dir, STATE);
   const state = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (args[0] === 'view') {

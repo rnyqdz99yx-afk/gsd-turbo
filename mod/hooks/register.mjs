@@ -2,7 +2,7 @@
 // .planning/turbo/, reads `turbo-run view --json` on a clock, draws the pane and the band above the prompt, shows
 // toasts, and sends pane answers to `turbo-run answer … --by pane --rev <n>`. Module state is lost on a reload; the
 // next read rebuilds it.
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, bandLine, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, turboRunPath } from './view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, bandLine, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, turboDir, turboRunPath, viewArgv } from './view-model.mjs';
 
 const VIEW_TIMEOUT_MS = 10000;
 const ANSWER_TIMEOUT_MS = 30000;
@@ -96,7 +96,7 @@ async function read($) {
   node = node || (await findNode($));
   let r;
   try {
-    r = await $.process.run([node, bin, 'view', '--json'], { cwd: root, timeoutMs: VIEW_TIMEOUT_MS });
+    r = await $.process.run(viewArgv({ node, turboRun: bin, root }), { cwd: turboDir(bin) || root, timeoutMs: VIEW_TIMEOUT_MS });
   } catch (err) {
     node = null; // looked up again at the next read: node moved, or a version manager switched it
     throw err;
@@ -147,7 +147,7 @@ async function send($, q, choice) {
   if (sending.has(q.id) || !bin || !node || !root) return;
   sending.add(q.id);
   try {
-    const r = await $.process.run(answerArgv({ node, turboRun: bin, question: q, ...choice }), { cwd: root, timeoutMs: ANSWER_TIMEOUT_MS });
+    const r = await $.process.run(answerArgv({ node, turboRun: bin, root, question: q, ...choice }), { cwd: turboDir(bin) || root, timeoutMs: ANSWER_TIMEOUT_MS });
     $.ui.toast(firstLine(r.stdout) || firstLine(r.stderr) || `turbo-run answer exited with ${r.exitCode}`, { timeoutMs: TOAST_MS });
     field = afterAnswer(field, q.id, r.exitCode);
   } catch (err) {

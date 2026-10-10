@@ -29,6 +29,7 @@ const NODE = '/usr/bin/node'
 // entry and a directory without node before /usr/bin; the project itself has a node that must never run.
 function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCode: 0, stdout: 'answered q1 (pane)\n', stderr: '' } as Run, answerDelayMs = 0, surfaces = ['terminal'], binExists = true, pathVar = '.:relative/bin:/opt/none:/usr/bin', openFails = false, surfacesFail = 0 } = {}) {
   const calls: string[][] = []
+  const inits: { cwd?: string }[] = []
   const toasts: string[] = []
   const probed: string[] = []
   let reads = 0
@@ -56,6 +57,7 @@ function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCo
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
   on('process.run', async (_$, e) => {
     calls.push([...e.argv])
+    inits.push({ ...e.init })
     if (e.argv[2] === 'answer') {
       if (answerDelayMs) await clock.sleep(answerDelayMs)
       return { value: answer }
@@ -63,16 +65,18 @@ function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCo
     const v = views[Math.min(reads++, views.length - 1)]
     return { value: typeof v === 'string' ? { exitCode: 1, stdout: '', stderr: v } : { exitCode: 0, stdout: JSON.stringify(v), stderr: '' } }
   })
-  return { calls, toasts, clock, probed }
+  return { calls, toasts, clock, probed, inits }
 }
 
 const start = ($, isInteractive = true) => $.session.start({ cwd: '/work', surface: isInteractive ? 'terminal' : null, isInteractive })
 
 test('in a turbo project the band and the pane show the view, and an option button answers through turbo-run', async ($, on) => {
-  const { calls, clock } = stub(on)
+  const { calls, clock, inits } = stub(on)
   await start($)
   await clock.settle()
-  expect(calls[0]).toEqual([NODE, BIN, 'view', '--json'])
+  expect(calls[0]).toEqual([NODE, BIN, 'view', '--project', '/work', '--json'])
+  // turbo-run runs in its install directory: a node shim (Volta, asdf, mise) never reads the project's pin
+  expect(inits[0].cwd).toMatch(/[\\/]home[\\/]dev[\\/]\.claude[\\/]turbo$/)
   const band = await $.ui.mount(BAND)
   expect(await band.find({ type: 'Text', text: 'turbo p32 execute · 1 agent · ? 1 question · CI ✓' })).toBeDefined()
   const pane = await $.ui.mount(PANE)
@@ -83,7 +87,7 @@ test('in a turbo project the band and the pane show the view, and an option butt
   expect((await pane.find({ key: 'q:q1:2' })).props.label).toBe('2')
   await pane.press({ key: 'q:q1:1' })
   await clock.settle()
-  expect(calls.find((c) => c[2] === 'answer')).toEqual([NODE, BIN, 'answer', '32', 'q1', '--option', '1', '--by', 'pane', '--rev', '1'])
+  expect(calls.find((c) => c[2] === 'answer')).toEqual([NODE, BIN, 'answer', '--project', '/work', '32', 'q1', '--option', '1', '--by', 'pane', '--rev', '1'])
 })
 
 test('Other… opens a field whose text reaches turbo-run answer as one argument; an empty field sends nothing', async ($, on) => {
@@ -97,7 +101,7 @@ test('Other… opens a field whose text reaches turbo-run answer as one argument
   await pane.press({ key: 'q:q1:other' })
   await pane.input({ key: 'q:q1:text', text: '-x "y"; да 👍' })
   await clock.settle()
-  expect(calls.find((c) => c[2] === 'answer')).toEqual([NODE, BIN, 'answer', '32', 'q1', '--text', '-x "y"; да 👍', '--by', 'pane', '--rev', '1'])
+  expect(calls.find((c) => c[2] === 'answer')).toEqual([NODE, BIN, 'answer', '--project', '/work', '32', 'q1', '--by', 'pane', '--rev', '1', '--text', '-x "y"; да 👍'])
 })
 
 test('a double press sends one answer while the first is on its way', async ($, on) => {

@@ -45,9 +45,10 @@ test('the scripted run, read the way the mod reads it, raises the four toasts in
 
 test('answers from the pane are recorded once; the answered question leaves the next view; the real script speaks the same (Review Focus 3)', () => {
   const { project } = setupDemo({ dir: tmpDir('demo'), now: 0 });
-  const run = (...args) => {
+  // as the mod runs it: in turbo's directory (here the clone), the project named with --project
+  const run = (cmd, ...args) => {
     try {
-      return { code: 0, out: execFileSync(process.execPath, [DEMO, ...args], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
+      return { code: 0, out: execFileSync(process.execPath, [DEMO, cmd, '--project', project, ...args], { cwd: path.dirname(path.dirname(DEMO)), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
     } catch (e) {
       return { code: e.status, out: e.stdout || e.stderr };
     }

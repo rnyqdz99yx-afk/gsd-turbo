@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, clean, cut, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, textWidth, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, clean, cut, turboDir, viewArgv, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, textWidth, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
 
 const AT = '2026-01-01T11:00:00.000Z';
 const agent = (over) => ({ agentId: 'a1', type: 'gsd-executor', description: '', plan: '32-07', task: '2', model: 'opus', worktreeBranch: null, state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, startedAt: '2026-01-01T10:54:00.000Z', lastAt: '2026-01-01T10:59:50.000Z', elapsedMs: 360000, tokens: 166000, sessionId: 's', transcript: 't', ...over });
@@ -226,11 +226,24 @@ test('the pane opens by itself only while the supervisor runs or a question is o
   assert.equal(PANE_ID, 'turbo-view');
 });
 
-test('answerArgv passes the option number or the free text as one argument, whatever it holds, and always the drawn rev (Review Focus 2)', () => {
+test('answerArgv names the project first, then the option number or, last, the free text as one argument whatever it holds, and always the drawn rev (Review Focus 2)', () => {
   const question = { phase: '32', id: 'q1', rev: 2 };
-  assert.deepEqual(answerArgv({ node: '/usr/bin/node', turboRun: '/h/turbo-run.mjs', question, option: 2 }), ['/usr/bin/node', '/h/turbo-run.mjs', 'answer', '32', 'q1', '--option', '2', '--by', 'pane', '--rev', '2']);
-  const text = '--by telegram "x"; $(rm -rf /) да 👍';
-  assert.deepEqual(answerArgv({ node: '/usr/bin/node', turboRun: '/h/turbo-run.mjs', question, text }), ['/usr/bin/node', '/h/turbo-run.mjs', 'answer', '32', 'q1', '--text', text, '--by', 'pane', '--rev', '2']);
+  const run = { node: '/usr/bin/node', turboRun: '/h/turbo/bin/turbo-run.mjs', root: '/work' };
+  const head = ['/usr/bin/node', '/h/turbo/bin/turbo-run.mjs', 'answer', '--project', '/work', '32', 'q1'];
+  assert.deepEqual(answerArgv({ ...run, question, option: 2 }), [...head, '--option', '2', '--by', 'pane', '--rev', '2']);
+  // a text that reads like a flag comes after every real flag, so no parser takes it for --project, --by or --rev
+  for (const text of ['--project', '--by', '--rev', '-x', '--by telegram "x"; $(rm -rf /) да 👍', 'a" --by telegram "b \\']) {
+    assert.deepEqual(answerArgv({ ...run, question, text }), [...head, '--by', 'pane', '--rev', '2', '--text', text], text);
+  }
+  assert.deepEqual(viewArgv(run), ['/usr/bin/node', '/h/turbo/bin/turbo-run.mjs', 'view', '--project', '/work', '--json']);
+});
+
+test('turbo-run runs in its install directory, never in the project: a version manager pins nothing there', () => {
+  assert.equal(turboDir('/home/dev/.claude/turbo/bin/turbo-run.mjs'), '/home/dev/.claude/turbo');
+  assert.equal(turboDir('C:\\Users\\dev\\.claude/turbo/bin/turbo-run.mjs'), 'C:/Users/dev/.claude/turbo');
+  assert.equal(turboDir('C:\\dev\\gsd-turbo\\scripts\\turbo-view-demo.mjs'), 'C:/dev/gsd-turbo');
+  assert.equal(turboDir('/bin/x.mjs'), '/');
+  assert.equal(turboDir('x.mjs'), null);
 });
 
 test('node is looked for in absolute PATH directories only: a node.exe in the project (the child cwd) or under a relative entry never runs', () => {

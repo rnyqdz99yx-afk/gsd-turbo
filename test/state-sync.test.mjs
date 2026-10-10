@@ -11,7 +11,8 @@ import { readVersion, versionInRange } from '../lib/gsd.mjs';
 const PHASE_REL = '.planning/phases/05-demo';
 
 // A project in the middle of phase 5: four plans, the first two with a SUMMARY.
-function fixture({ summaries = 2, plans = 4 } = {}) {
+// before/after: STATE.md lines around the Current Position section (archives, for example).
+function fixture({ summaries = 2, plans = 4, before = [], after = [] } = {}) {
   const root = tmpGitRepo();
   const dir = path.join(root, PHASE_REL);
   fs.mkdirSync(dir, { recursive: true });
@@ -22,9 +23,9 @@ function fixture({ summaries = 2, plans = 4 } = {}) {
     ...Array.from({ length: plans }, (_, i) => `- [ ] 05-0${i + 1}-PLAN.md`), '',
   ].join('\n'));
   fs.writeFileSync(path.join(root, '.planning', 'STATE.md'), [
-    '---', "gsd_state_version: '1.0'", 'status: planning', '---', '', '# Project State', '', '## Current Position', '',
+    '---', "gsd_state_version: '1.0'", 'status: planning', '---', '', '# Project State', '', ...before, '## Current Position', '',
     'Phase: 5 of 5 (Demo Feature)', `Plan: 0 of ${plans} in current phase`, 'Status: Ready to execute', 'Last activity: 2026-01-01 — planned', '',
-    '## Session Continuity', '', 'Last session: 2026-01-01', 'Stopped at: planned', 'Resume file: None', '',
+    ...after, '## Session Continuity', '', 'Last session: 2026-01-01', 'Stopped at: planned', 'Resume file: None', '',
   ].join('\n'));
   for (let i = 1; i <= plans; i++) {
     fs.writeFileSync(path.join(dir, `05-0${i}-PLAN.md`), `---\nphase: 05-demo\nplan: 0${i}\nwave: ${i}\ndepends_on: []\nfiles_modified: [src/f${i}.js]\nautonomous: true\n---\n\n# Plan 0${i}\n`);
@@ -65,11 +66,10 @@ test('state-sync names the real position through GSD\'s own state commands: phas
   assert.equal(r.code, 0, r.lines.join('\n'));
   assert.deepEqual(calls.map((c) => c.slice(0, 2)), [['init', 'execute-phase'], ['phase-plan-index', '05'], ['state', 'patch'], ['state', 'record-session'], ['commit', 'docs(phase-05): record the resume position in STATE.md']]);
   assert.equal(calls[0][2], '5', 'init gets the phase as given; GSD answers with its own token');
+  // only the fields STATE.md has (no Current Plan / Total Plans in Phase lines here)
   assert.deepEqual(JSON.parse(calls[2][2]), {
     Phase: '05 (Demo Feature) — EXECUTING',
     Plan: '3 of 4',
-    'Current Plan': '3',
-    'Total Plans in Phase': '4',
     Status: 'Executing Phase 05',
     'Last activity': '2026-10-10 — Phase 05 stopped; next plan 05-03',
   });
@@ -96,6 +96,20 @@ test('state-sync leaves STATE.md alone without plans, with every plan summarized
     assert.deepEqual(r.lines, [`STATE.md: left as it is (${why})`]);
     assert.ok(!calls.some((c) => c[0] === 'state' || c[0] === 'commit'), why);
   }
+});
+
+// GSD's state patch rewrites the first bold field anywhere, else the first plain `Field:` line, else a two-cell
+// table row: a field whose first match lies outside Current Position is not sent, and the output names it.
+const ARCHIVE_BEFORE = ['## Milestone v1', '', 'Status: shipped', '| Current Plan | 7 |', ''];
+const ARCHIVE_AFTER = ['## Archive', '', '**Phase:** 3 — COMPLETE', '```', 'Last activity: 2025-01-01', '```', ''];
+
+test('state-sync sends only the fields whose first match (bold, then plain, then a table row) lies inside Current Position', async () => {
+  const root = fixture({ before: ARCHIVE_BEFORE, after: ARCHIVE_AFTER });
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd, now: new Date(2026, 9, 10, 12) });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(JSON.parse(calls.find((c) => c[1] === 'patch')[2]), { Plan: '3 of 4', 'Last activity': '2026-10-10 — Phase 05 stopped; next plan 05-03' });
+  assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-03 (3 of 4); committed; not written, their first match lies outside Current Position: Phase, Current Plan, Status']);
 });
 
 // begin-phase must take its first-run branch for a phase whose execution never started
@@ -126,12 +140,30 @@ test('state-sync fails with GSD\'s error line when a state command fails', async
 // writes survives the begin-phase call every execute-phase run starts with, and undoes planned-phase's flip.
 const core = gsdCoreDir(null);
 const realGsd = core && versionInRange(readVersion(core) || '');
-test('state-sync with the installed GSD 1.16: begin-phase keeps the synced plan; planned-phase\'s flip is undone', { skip: !realGsd && 'GSD 1.16 is not installed' }, async () => {
-  const root = fixture();
+const SKIP = { skip: !realGsd && 'GSD 1.16 is not installed' };
+const stateOf = (root) => fs.readFileSync(path.join(root, '.planning', 'STATE.md'), 'utf8');
+function committedFixture(opts) {
+  const root = fixture(opts);
   execFileSync('git', ['add', '-A'], { cwd: root });
   execFileSync('git', ['commit', '-q', '-m', 'fixture'], { cwd: root });
-  const tool = (...args) => execFileSync(process.execPath, [path.join(core, 'bin', 'gsd-tools.cjs'), ...args, '--cwd', root], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const position = () => /## Current Position\r?\n\r?\n([\s\S]*?)\r?\n\r?\n/.exec(fs.readFileSync(path.join(root, '.planning', 'STATE.md'), 'utf8'))[1].split(/\r?\n/);
+  return {
+    root,
+    tool: (...args) => execFileSync(process.execPath, [path.join(core, 'bin', 'gsd-tools.cjs'), ...args, '--cwd', root], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
+    position: () => /## Current Position\r?\n\r?\n([\s\S]*?)\r?\n\r?\n/.exec(stateOf(root))[1].split(/\r?\n/),
+  };
+}
+
+test('state-sync with the installed GSD 1.16 leaves archive lines outside Current Position alone', SKIP, async () => {
+  const { root, position } = committedFixture({ before: ARCHIVE_BEFORE, after: ARCHIVE_AFTER });
+  const r = await sync(root, {});
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  const state = stateOf(root);
+  for (const line of [...ARCHIVE_BEFORE, ...ARCHIVE_AFTER].filter(Boolean)) assert.ok(state.split(/\r?\n/).includes(line), line);
+  assert.deepEqual(position().slice(0, 3), ['Phase: 5 of 5 (Demo Feature)', 'Plan: 3 of 4', 'Status: Ready to execute']);
+});
+
+test('state-sync with the installed GSD 1.16: begin-phase keeps the synced plan; planned-phase\'s flip is undone', SKIP, async () => {
+  const { root, tool, position } = committedFixture();
   tool('state', 'begin-phase', '--phase', '05', '--name', 'Demo Feature', '--plans', '4');
   assert.equal(position()[1], 'Plan: 1 of 4', 'what a first begin-phase leaves mid-phase');
   let r = await sync(root, {});

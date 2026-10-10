@@ -128,11 +128,12 @@ test('openQuestions reads every phase file in phase order and skips files that a
   assert.deepEqual(openQuestions(tmpDir('none')), []);
 });
 
-test('open questions show their text with secrets masked; ids, rev, state, plan, task and agentId stay as written', () => {
+test('open questions show their text and signals with secrets masked; ids, rev, state, plan, task and agentId stay as written', () => {
   const root = tmpDir('qm');
   const run = runDirOf(root);
   fs.mkdirSync(run, { recursive: true });
-  const option = { label: `Use ${SECRET}`, description: `rotate ${SECRET} first`, recommended: true, signal: 'approved' };
+  // view only displays: an answer is given from the questions file, not from what view prints
+  const option = { label: `Use ${SECRET}`, description: `rotate ${SECRET} first`, recommended: true, signal: `approved ${SECRET}` };
   const q = { id: 'q1', rev: 3, phase: '32', plan: '32-09', task: '3', kind: 'decision', header: `H ${SECRET}`, question: `Deploy with ${SECRET}?`, context: `token=${SECRET}`, condition: `CI green for ${SECRET}`, options: [option, 'odd'], allowOther: true, agentId: 'a2000000000000001', state: 'open' };
   writeJsonAtomic(path.join(run, 'p32-questions.json'), [q]);
   const [shown] = openQuestions(root);
@@ -141,7 +142,7 @@ test('open questions show their text with secrets masked; ids, rev, state, plan,
   assert.deepEqual(shown, {
     ...q,
     header: m(q.header), question: m(q.question), context: m(q.context), condition: m(q.condition),
-    options: [{ ...option, label: m(option.label), description: m(option.description) }, 'odd'],
+    options: [{ ...option, label: m(option.label), description: m(option.description), signal: m(option.signal) }, 'odd'],
   });
 });
 

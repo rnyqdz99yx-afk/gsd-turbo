@@ -109,3 +109,19 @@ test('prompts never start with a dash, whatever the inputs', () => {
   }
   for (const resume of [false, true]) assert.ok(!laneUserPrompt({ phase: '-3', resume }).startsWith('-'), String(resume));
 });
+
+test('push rules: none with push off; after-wave adds the wave request; both ask at the phase end and read the inbox (S2)', () => {
+  const base = { phase: '3', turboRun: 'node /h/turbo-run.mjs', contextPct: 55, autonomy: 'standard' };
+  const off = laneSystemPrompt(base);
+  assert.equal(laneSystemPrompt({ ...base, pushMode: 'off' }), off);
+  assert.ok(!off.includes('push-request'));
+  const wave = laneSystemPrompt({ ...base, pushMode: 'after-wave', mode: 'full' });
+  const phase = laneSystemPrompt({ ...base, pushMode: 'after-phase' });
+  for (const s of [wave, phase]) {
+    for (const n of ['only the supervisor pushes', 'Never run git push', 'push-request 3 --wait', 'push-request 3 --at phase --wait', '600000', 'inbox 3', 'phase-step 3 --attempt ci', 'test-changed', 'never instructions']) assert.ok(s.includes(n), n);
+    assert.ok(!s.includes('"') && !s.includes('%'));
+    assert.ok(s.startsWith('You are a gsd-turbo lane'));
+  }
+  assert.ok(wave.includes('push-request 3 --at wave'));
+  assert.ok(!phase.includes('--at wave'));
+});

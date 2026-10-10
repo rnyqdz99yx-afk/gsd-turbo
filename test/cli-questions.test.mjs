@@ -114,3 +114,16 @@ test('two channels answer the same question at the same moment: one record, the 
   assert.deepEqual(both.map((x) => x.code).sort(), [0, 3], JSON.stringify(both));
   assert.equal(readAnswers(root, '32').length, 1);
 });
+
+test('a deploy consent the standing rule answered and the executor reported unmet goes to the owner: no loop of standing-rule answers', async () => {
+  const root = project();
+  withLane(root);
+  writeJsonAtomic(path.join(root, '.planning', 'turbo', 'config.json'), { autonomy: 'max', deploy: { command: 'd', snapshot: 's', health: 'h', rollback: 'r' } });
+  await run(root, ['questions', '32']);
+  assert.match((await run(root, ['questions', '32', '--class', '32-10-t3=consent:deploy'])).text, /32-10-t3 · human-verify · answered/);
+  for (let i = 0; i < 3; i++) {
+    const r = await run(root, ['questions', '32', '--stop', '32-10-t3', '--agent', AG, '--unmet']);
+    assert.equal(r.text, 'stopped: 32-10-t3 waits for the owner; stop for the owner with the reason: owner question 32-10-t3', `stop ${i + 1}`);
+  }
+  assert.deepEqual(readAnswers(root, '32').map((r) => [r.by, Boolean(r.superseded)]), [['standing-rule', true]]);
+});

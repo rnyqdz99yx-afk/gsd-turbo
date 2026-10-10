@@ -165,3 +165,14 @@ test('the standing rule needs autonomy max, all four deploy commands, consent:de
   applyStandingRule({ root: ci, phase: '32', config: MAX({ push: { ...DEFAULTS.push, mode: 'after-phase', ci: 'github' } }), laneRunning: true });
   assert.match(readAnswers(ci, '32')[0].condition, /the build checks are green, CI is green on the pushed commit, and the deploy runs through deploy\.command/);
 });
+
+test('the standing rule never answers again a question whose standing-rule answer the executor reported unmet: the next answer is the owner\'s', () => {
+  const root = project();
+  classifyQuestions(root, '32', '32-10-t3=consent:deploy');
+  assert.deepEqual(applyStandingRule({ root, phase: '32', config: MAX(), now: NOW, laneRunning: true }), ['32-10-t3']);
+  assert.equal(stopQuestion(root, '32', '32-10-t3', { agentId: AG, unmet: true, now: NOW }).status, 'stopped');
+  assert.deepEqual(applyStandingRule({ root, phase: '32', config: MAX(), now: NOW, laneRunning: true }), []);
+  assert.equal(readQuestions(root, '32').find((q) => q.id === '32-10-t3').state, 'open');
+  assert.equal(ask(root, { id: '32-10-t3', option: 1, by: 'session' }).status, 'recorded');
+  assert.deepEqual(readAnswers(root, '32').map((r) => [r.by, Boolean(r.superseded)]), [['standing-rule', true], ['session', false]]);
+});

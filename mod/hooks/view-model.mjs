@@ -306,9 +306,18 @@ export function keepDraft(field, view) {
 // Joins with "/", which Windows accepts too; a trailing separator of dir is dropped (C:\ → C:/x, / → /x).
 export const joinPath = (dir, ...parts) => [String(dir).replace(/[\\/]+$/, ''), ...parts].join('/');
 
-// dir and every directory above it, nearest first, with "/" separators (C:/a/b → C:/a/b, C:/a, C:/).
+// dir and every directory above it, nearest first, with "/" separators (C:/a/b → C:/a/b, C:/a, C:/). A network
+// directory stops at its share (//server/share/a → //server/share/a, //server/share): its root is never the current
+// drive's. Extended-length prefixes (\\?\C:\…, \\?\UNC\server\share\…) are read as the plain path.
 export function ancestorDirs(dir) {
-  const parts = String(dir).replace(/\\/g, '/').replace(/\/+$/, '').split('/');
+  const p = String(dir).replace(/\\/g, '/').replace(/^\/\/\?\/UNC\//i, '//').replace(/^\/\/\?\//, '').replace(/\/+$/, '');
+  if (p.startsWith('//')) {
+    const share = /^\/\/[^/]+\/[^/]+/.exec(p)?.[0];
+    if (!share) return [];
+    const rest = p.slice(share.length).split('/').filter(Boolean);
+    return rest.map((_, i) => [share, ...rest.slice(0, rest.length - i)].join('/')).concat(share);
+  }
+  const parts = p.split('/');
   const out = [];
   for (let i = parts.length; i > 0; i--) {
     const d = parts.slice(0, i).join('/');

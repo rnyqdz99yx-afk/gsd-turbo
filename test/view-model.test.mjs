@@ -192,6 +192,13 @@ test('the Other… field after an answer: 0 and 3 close it and drop the draft, 4
 test('paths: ancestors on Windows and POSIX, the turbo-run location from CLAUDE_CONFIG_DIR or the home directory', () => {
   assert.deepEqual(ancestorDirs('C:\\Users\\dev\\app'), ['C:/Users/dev/app', 'C:/Users/dev', 'C:/Users', 'C:/']);
   assert.deepEqual(ancestorDirs('/home/dev/app/'), ['/home/dev/app', '/home/dev', '/home', '/']);
+  // a network directory climbs to its share, never to the current drive's root
+  assert.deepEqual(ancestorDirs('\\\\server\\share\\dev\\app'), ['//server/share/dev/app', '//server/share/dev', '//server/share']);
+  assert.deepEqual(ancestorDirs('\\\\server\\share\\'), ['//server/share']);
+  assert.deepEqual(ancestorDirs('//server/share/app'), ['//server/share/app', '//server/share']);
+  assert.deepEqual(ancestorDirs('\\\\?\\UNC\\server\\share\\app'), ['//server/share/app', '//server/share']);
+  assert.deepEqual(ancestorDirs('\\\\?\\C:\\dev\\app'), ['C:/dev/app', 'C:/dev', 'C:/']);
+  assert.deepEqual(ancestorDirs('\\\\server'), [], 'a server without a share has nothing to climb');
   assert.equal(joinPath('C:/', '.planning'), 'C:/.planning');
   assert.equal(joinPath('/', '.planning', 'turbo'), '/.planning/turbo');
   assert.equal(turboRunPath({ configDir: 'D:\\cfg\\' }), 'D:\\cfg/turbo/bin/turbo-run.mjs');

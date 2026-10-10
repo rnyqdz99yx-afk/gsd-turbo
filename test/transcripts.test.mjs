@@ -459,3 +459,21 @@ test('with a cold cache an agent of the lane session directory that the lane did
   const r = laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: SESSION }, root, now: NOW, stallMs: STALL });
   assert.deepEqual(r.agents.map((a) => a.agentId).sort(), [AGENT, ids.direct].sort());
 });
+
+test('an agent found in another session reads its newest notification from that session too: a fork gets the completion', () => {
+  const { root, dir } = setup();
+  const laneFile = writeSession(dir, SESSION, [entry.launched('toolu_1', AGENT, at('10:00')), entry.launched('toolu_2', AGENT2, at('10:00')), entry.note(AGENT, 'stopped', at('10:20'))]);
+  const forkFile = writeSession(dir, FORK, [entry.note(AGENT, 'completed', at('10:40'))]);
+  // AGENT was moved to the fork and resumed there after its stop; AGENT2's other session has no transcript at all
+  setMtime(writeAgent(dir, FORK, AGENT, agentEntries(AGENT, '10:00', '10:40')), new Date(at('10:40')));
+  const lone = '22222222-3333-4444-8555-666666666666';
+  setMtime(writeAgent(dir, lone, AGENT2, agentEntries(AGENT2, '10:00', '10:50')), new Date(at('10:50')));
+  const used = {};
+  const r = laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: SESSION }, root, now: NOW, stallMs: STALL, used });
+  assert.deepEqual(r.agents.map((a) => [a.agentId, a.state]).sort(), [[AGENT, 'completed'], [AGENT2, 'running']].sort());
+  assert.ok(used[forkFile], 'the other session transcript is indexed into the cache too');
+  // the newest of the two wins: a later stop in the lane transcript beats the fork's completion
+  fs.appendFileSync(laneFile, jsonl([entry.note(AGENT, 'stopped', at('10:40'))]));
+  fs.writeFileSync(forkFile, jsonl([entry.note(AGENT, 'completed', at('10:30'))]));
+  assert.equal(laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: SESSION }, root, now: NOW, stallMs: STALL }).agents.find((a) => a.agentId === AGENT).state, 'stopped');
+});

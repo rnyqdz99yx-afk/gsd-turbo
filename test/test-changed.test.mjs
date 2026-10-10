@@ -858,17 +858,22 @@ test('multi: a change outside an entry that the entry\'s files mention or import
   const files = { 'server/test/shared.test.js': "import '../../src/core.js'" };
   const r = plansOf(multi(['src/core.js'], { files }));
   assert.equal(r[''].mode, 'targeted');
-  assert.deepEqual([r.server.mode, r.server.reason], ['full', 'server/test/shared.test.js mentions src/core.js, changed outside this entry']);
+  assert.deepEqual([r.server.mode, r.server.reason], ['full', 'server/test/shared.test.js reaches src/core.js, changed outside this entry']);
   assert.deepEqual(r.server.groups, [{ cwd: 'server', cmd: 'npm test', args: [], shell: true }]);
   assert.equal(r.app.mode, 'skip', 'an entry that does not mention it is not affected');
   // and the other way round: the root imports a nested package's file
   const back = plansOf(multi(['app/src/view.js'], { files: { 'test/view-use.test.js': "import '../app/src/view.js'" } }));
-  assert.deepEqual([back[''].mode, back[''].reason], ['full', 'test/view-use.test.js mentions app/src/view.js, changed outside this entry']);
+  assert.deepEqual([back[''].mode, back[''].reason], ['full', 'test/view-use.test.js reaches app/src/view.js, changed outside this entry']);
   assert.equal(back.app.mode, 'targeted');
-  // a workspace import by package name
+  // through a file of another entry: app imports server's barrel, which imports the root file
+  const chain = plansOf(multi(['src/core.js'], { files: { 'server/src/index.js': "export * from '../../src/core.js'", 'app/src/view.js': "import '../../server/src/index.js'" } }));
+  assert.deepEqual([chain.app.mode, chain.app.reason], ['full', 'app/src/view.js reaches src/core.js, changed outside this entry']);
+  // a workspace import by package name, of the changed file's package or of one that reaches it
   const pk = multiPkgs({ server: { name: '@demo/server' } });
   const byName = plansOf(multi(['server/src/store.js'], { packages: pk, files: { 'app/src/view.js': "import { store } from '@demo/server/lib'" } }));
-  assert.deepEqual([byName.app.mode, byName.app.reason], ['full', 'app/src/view.js imports @demo/server, where server/src/store.js changed']);
+  assert.deepEqual([byName.app.mode, byName.app.reason], ['full', 'app/src/view.js imports @demo/server (server/src/store.js changed)']);
+  const viaName = plansOf(multi(['src/core.js'], { packages: pk, files: { 'server/src/index.js': "export * from '../../src/core.js'", 'app/src/view.js': "import '@demo/server'" } }));
+  assert.deepEqual([viaName.app.mode, viaName.app.reason], ['full', 'app/src/view.js imports @demo/server (src/core.js changed)']);
 });
 
 test('multi: a dependency or config file changed outside every nested entry makes every entry run full', () => {

@@ -174,10 +174,11 @@ function clearDaemonPid(root, state) {
   } catch { /* best-effort */ }
 }
 
-function printStatus(sup, running) {
+// rangeLine false: the caller printed the range line already.
+function printStatus(sup, running, { rangeLine = true } = {}) {
   const finished = sup.range ? ' · range finished' : ' · milestone finished';
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
-  if (sup.range) out(`range: phases ${rangeLabel(sup.range)}`);
+  if (sup.range && rangeLine) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
   if (sup.lane) out(`lane: phase ${sup.lane.phase} · session ${sup.lane.sessionId} · restarts ${sup.lane.restarts} · mode ${sup.lane.mode || 'safe'} · since ${sup.lane.launchedAt}\n  watch: claude attach ${sup.lane.sessionId}`);
 }
@@ -281,7 +282,7 @@ async function start(root, requested = undefined) {
   if (ended && supAlive(last, config.poll_seconds)) return already(last); // another start won the lock
   if (ended && last && last.pid == null && Date.parse(last.updatedAt) >= spawnedAt && (last.finished || last.halted)) {
     out(`supervisor pid ${child.pid} ran and exited`);
-    printStatus(last, false);
+    printStatus(last, false, { rangeLine: !range });
     return last.finished ? 0 : 1;
   }
   const what = ended ? `exited at once (${ended})` : `did not report within ${START_CONFIRM_MS / 1000} s; check: turbo-run status`;

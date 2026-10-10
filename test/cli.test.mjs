@@ -677,9 +677,9 @@ test('start --only/--from/--all set, keep, drop and clear the range; a lane outs
     assert.ok(sup, `${args.join(' ')}: ${logOf(p.root)}`);
     return { stdout: r.stdout, sup };
   };
-  // start prints its own range line before spawning; a daemon that already finished (a fast tick under
-  // load) makes start print the status too, with a second, plain range line: only the first is start's
-  const rangeLines = (stdout) => stdout.split(/\r?\n/).filter((l) => l.startsWith('range:')).slice(0, 1);
+  // start prints its own range line before spawning, and only that one: a daemon that already finished
+  // (a fast tick under load) makes start print the status too, without a second range line
+  const rangeLines = (stdout) => stdout.split(/\r?\n/).filter((l) => l.startsWith('range:'));
 
   writeSup(p.root, { pid: null, finished: false, halted: true, lane: { phase: '3', sessionId: 'old333', restarts: 0, launchedAt: ago(5) } });
   let r = await startRun(['--only', '04']);
@@ -704,6 +704,32 @@ test('start --only/--from/--all set, keep, drop and clear the range; a lane outs
   assert.deepEqual(rangeLines(r.stdout), []);
   assert.equal('range' in r.sup, false);
   assert.equal(p.claudeCalls().filter((a) => a[0] === '--bg').length, 0, 'the closed phase 3 is never started');
+});
+
+// Preloaded into start only: supervisor.json reads see no pid, so start never sees its daemon report and
+// takes the path of a daemon that ran and exited before start confirmed it.
+function hideSupervisorPid() {
+  const fs = require('node:fs');
+  const read = fs.readFileSync;
+  fs.readFileSync = function (file, ...rest) {
+    const out = read.call(this, file, ...rest);
+    if (!String(file).endsWith('supervisor.json')) return out;
+    try {
+      const text = JSON.stringify({ ...JSON.parse(String(out)), pid: null });
+      return typeof out === 'string' ? text : Buffer.from(text);
+    } catch { return out; }
+  };
+}
+
+test('start prints the range line once, also when the daemon finished before start confirmed it', async () => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: true }] });
+  const preload = path.join(p.root, 'hide-pid.cjs');
+  fs.writeFileSync(preload, `(${hideSupervisorPid})();\n`);
+  const r = await runAsync(['start', '--only', '4'], p.root, p.env, ['--require', preload]);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /ran and exited/);
+  assert.deepEqual(r.stdout.split(/\r?\n/).filter((l) => l.startsWith('range:')), ['range: phases 4–4']);
+  assert.match(r.stdout, /^supervisor: not running · range finished$/m);
 });
 
 test('start refuses an unsupported environment with exit 2 and the failed checks', async () => {

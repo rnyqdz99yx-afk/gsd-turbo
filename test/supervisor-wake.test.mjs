@@ -289,18 +289,66 @@ test('a new answer to a checkpoint that stopped again wakes the lane again: the 
   }
 });
 
-test('a failed wake never starts a new session while the old one may still run: its removal must succeed first, else the tick fails and is retried', async () => {
+// The lane's own session resists claude stop and claude rm; resuming a session that still runs starts a copy (F4).
+function resistingSession(h) {
+  Object.assign(h, { failStop: true, failRm: true, copies: [] });
+  h.ctx.deps.claude.resume = (target, prompt) => {
+    h.resumed.push({ target, prompt });
+    const id = `c0ffee${String(h.copies.length + 1).padStart(2, '0')}`;
+    h.copies.push(id);
+    h.agents.push({ id, name: laneSessionName(h.root, '2'), cwd: h.root, state: 'working' });
+    return `note: session is already running in the background, so this started a copy as ${id}\nbackgrounded · ${id} · lane\n`;
+  };
+}
+
+test('answers that cannot reach a session claude cannot stop or remove: no resume (it would start copies), no second session, two tries, then the owner is told once', async () => {
+  const h = harness();
+  let s = await stoppedLane(h);
+  owner(h, '02-01-t2', 1);
+  resistingSession(h);
+  const before = h.notes.length;
+  for (let i = 0; i < 30; i++) {
+    h.advance(1);
+    s = await tick(s, h.ctx);
+  }
+  assert.deepEqual([h.resumed.length, h.copies.length, h.launched.length], [0, 0, 1]);
+  assert.equal(s.lane.woken.count, 2);
+  const told = h.notes.slice(before).filter((x) => x.key === 'laneNeedsOwner');
+  assert.equal(told.length, 1);
+  assert.match(told[0].vars.reason, /^the answers to 02-01-t2 did not reach session 1a2b3c4d \(claude stop failed: timed out\)$/);
+  assert.equal(s.halted, false);
+  assert.equal(s.failingSince, undefined);
+});
+
+test('a silent session claude cannot stop or remove: no resume, no second session, two tries, then laneStalled once', async () => {
   const h = harness();
   let s = await tick(fresh(), h.ctx);
   h.activity = { lastMs: h.now().getTime(), active: 0 };
-  Object.assign(h, { failStop: true, failRm: true });
-  h.resumeOut.push(new Error('claude --resume failed: timed out'), new Error('claude --resume failed: timed out'));
-  h.advance(16);
-  s = await tick(s, h.ctx);
-  assert.equal(h.launched.length, 1, 'no second session');
-  assert.deepEqual(h.agents.filter((a) => a.state === 'working').map((a) => a.id), ['1a2b3c4d']);
-  assert.ok(s.failingSince, 'the tick failed: the next one tries again');
-  assert.equal(s.lane.sessionId, '1a2b3c4d');
+  resistingSession(h);
+  for (let i = 0; i < 6; i++) {
+    h.advance(16);
+    s = await tick(s, h.ctx);
+  }
+  assert.deepEqual([h.resumed.length, h.copies.length, h.launched.length], [0, 0, 1]);
+  assert.equal(s.lane.stall.count, 2);
+  assert.equal(h.notes.filter((x) => x.key === 'laneStalled').length, 1);
+});
+
+test('a relaunch that fails after a failed wake fails the tick but keeps the count of tries: the bound still holds', async () => {
+  const h = harness();
+  let s = await stoppedLane(h);
+  owner(h, '02-01-t2', 1);
+  let launches = 0;
+  h.ctx.deps.claude.launchBg = () => { launches += 1; throw new Error('claude --bg failed: boom'); };
+  h.ctx.deps.claude.resume = (target, prompt) => { h.resumed.push({ target, prompt }); return 'Resumed.\n'; };
+  for (let i = 0; i < 10; i++) {
+    h.advance(1);
+    s = await tick(s, h.ctx);
+  }
+  assert.equal(launches, 2);
+  assert.equal(h.resumed.length, 4);
+  assert.equal(s.lane.woken.count, 2);
+  assert.equal(h.notes.filter((x) => x.key === 'laneNeedsOwner' && /did not reach/.test(x.vars.reason)).length, 1);
 });
 
 test('a failed wake of a full lane on a phase GSD completed, under a safe-mode supervisor, waits for full mode instead of a safe relaunch', async () => {

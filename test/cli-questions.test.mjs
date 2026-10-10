@@ -127,3 +127,12 @@ test('a deploy consent the standing rule answered and the executor reported unme
   }
   assert.deepEqual(readAnswers(root, '32').map((r) => [r.by, Boolean(r.superseded)]), [['standing-rule', true]]);
 });
+
+test('turbo-run questions N warns about a plan whose name cannot make a question id, and lists the others', async () => {
+  const root = project();
+  writePhase(root, '32-auth', { '32-12 draft-PLAN.md': DECISION_PLAN });
+  const r = await run(root, ['questions', '32']);
+  assert.equal(r.code, 0);
+  assert.match(r.text, /^ERR warn: plan 32-12 draft-PLAN\.md: its name cannot make a question id/m);
+  assert.match(r.text, /^phase 32: 3 question\(s\)/m);
+});

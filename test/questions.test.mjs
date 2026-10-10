@@ -10,7 +10,7 @@ import { completeStep, readProgress } from '../lib/phase-progress.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 import {
   CLASSES, answersRel, buildQuestion, classifyQuestions, deliveryState, dynamicQuestion, liveAnswer, lockFile, markDelivered,
-  questionId, questionsFile, readAnswers, readQuestions, refreshQuestions, stopQuestion, withPhaseLock, writeAnswers,
+  questionId, questionsFile, readAnswers, readQuestions, refreshQuestions, stopQuestion, withPhaseLock, writeAnswers, writeQuestions,
 } from '../lib/questions.mjs';
 
 const cpOf = (text) => parseCheckpoints(text)[0];
@@ -233,4 +233,24 @@ test('the same checkpoint returned again after its answer was delivered opens ag
   assert.equal(readAnswers(root, '32')[0].superseded, '2026-01-01T13:00:00.000Z');
   assert.deepEqual(deliveryState(root, '32').waiting.map((q) => q.id), ['32-10-t3']);
   assert.equal(owner(root, '32-10-t3', { option: 1 }).status, 'recorded', 'the owner is asked again');
+});
+
+test('a plan whose name is no usable question id is skipped with a warning: its checkpoints never reach a question, a prompt or an argv', () => {
+  const { root, dir } = project();
+  fs.writeFileSync(path.join(dir, '32-12 draft%2-PLAN.md'), DECISION_PLAN);
+  fs.writeFileSync(path.join(dir, `32-${'x'.repeat(60)}-PLAN.md`), VERIFY_PLAN);
+  const warnings = [];
+  const list = refreshQuestions(root, '32', { warn: (l) => warnings.push(l) });
+  assert.deepEqual(list.map((q) => q.id), ['32-09-t2', '32-10-t3', '32-11-t2']);
+  assert.equal(warnings.length, 2);
+  assert.match(warnings.find((w) => w.includes('draft')), /^plan 32-12 draft%2-PLAN\.md: its name cannot make a question id .*rename it/);
+  assert.deepEqual(refreshQuestions(root, '32').map((q) => q.id), list.map((q) => q.id), 'no warn callback: skipped all the same');
+});
+
+test('deliveryState never lists a question whose id is unusable (a hand-edited file): nothing of it reaches a wake prompt', () => {
+  const { root } = project();
+  const q = (id) => ({ id, phase: '32', plan: '32-09', task: '2', kind: 'decision', options: [], state: 'answered', stopped: true, agentId: AG, answer: { option: 1 }, rev: 2 });
+  writeQuestions(root, '32', [q('32-09-t2'), q('32 09"x%-t2'), { ...q('bad id-t3'), state: 'open' }]);
+  const d = deliveryState(root, '32');
+  assert.deepEqual([d.ready.map((x) => x.id), d.waiting.map((x) => x.id)], [['32-09-t2'], []]);
 });

@@ -332,6 +332,8 @@ async function shell(name) {
   };
   const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
   await hooks['session.start']($, { isInteractive: true }, (e) => e);
+  // the first band draw starts the reads (session.start alone spawns nothing)
+  await hooks['ui.render:AbovePrompt']($, { component: 'AbovePrompt' }, async () => null);
   await settle();
   return { hooks, $, timers, runs, settle, live: () => timers.filter((t) => !t.cancelled) };
 }

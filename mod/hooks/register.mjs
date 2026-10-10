@@ -20,7 +20,11 @@ let again = false; // a forced read was asked for while one was running
 let timer = null;
 let period = 0;
 let clockError = null; // why the clock last failed to start, logged once
-let live = false; // an interactive session started: the mod reads (a -p run never does)
+let live = false; // an interactive session started (a -p run never reads)
+// The first band draw or /turbo-view started the reads. session.start may come before the folder is trusted (the
+// docs do not say), so nothing is looked up or spawned until the session draws or runs the command.
+let started = false;
+let attached = true; // a surface is attached: only then the mod opens the pane and shows toasts
 let opened = false; // the pane was opened once in this module's life; the clock never reopens a closed pane
 // The "Other…" field (view-model.mjs): every read redraws the pane, so what is typed is kept here and drawn back.
 let field = NO_FIELD;
@@ -50,16 +54,30 @@ async function findNode($) {
   throw new Error('node not found in PATH');
 }
 
+// Whether a terminal or an app is attached to the session; true when the surfaces cannot be read.
+async function isAttached($) {
+  try {
+    return (await $.session.surfaces()).length > 0;
+  } catch {
+    return true;
+  }
+}
+
+// bin and node as a read or an answer needs them, looked up again when missing: a press after a failed read still
+// answers, or the error says why it cannot.
+async function runner($) {
+  bin = bin || (await findBin($));
+  if (!bin) throw new Error('cannot find turbo-run: neither CLAUDE_CONFIG_DIR nor a home directory is set');
+  // checked every time: node run on a missing script prints only its loader's stack
+  if (!(await $.fs.exists(bin))) throw new Error(`turbo-run not found at ${bin}`);
+  node = node || (await findNode($));
+}
+
 // One clock for every read: view.refresh_seconds while a surface is attached (also when the surfaces cannot be
 // read), 15 s otherwise and outside turbo. A clock that failed to start stays null, so the next call starts it.
-async function arm($) {
-  let foreground = true;
-  try {
-    foreground = (await $.session.surfaces()).length > 0;
-  } catch {
-    // unknown: read as often as an attached session does
-  }
-  const ms = root ? refreshMs(view, foreground) : BACKGROUND_MS;
+async function arm($, known) {
+  attached = known ?? (await isAttached($));
+  const ms = root ? refreshMs(view, attached) : BACKGROUND_MS;
   if (timer && ms === period) return;
   if (timer) timer.cancel();
   timer = null;
@@ -70,9 +88,9 @@ async function arm($) {
 }
 
 // arm, with a failure logged once until the clock runs again: the band retries it on every draw.
-async function keepClock($) {
+async function keepClock($, known) {
   try {
-    await arm($);
+    await arm($, known);
     clockError = null;
   } catch (err) {
     const why = firstLine(err?.message ?? err);
@@ -89,11 +107,7 @@ async function read($) {
     error = null;
     return;
   }
-  bin = bin || (await findBin($));
-  if (!bin) throw new Error('cannot find turbo-run: neither CLAUDE_CONFIG_DIR nor a home directory is set');
-  // checked on every read: node run on a missing script prints only its loader's stack
-  if (!(await $.fs.exists(bin))) throw new Error(`turbo-run not found at ${bin}`);
-  node = node || (await findNode($));
+  await runner($);
   let r;
   try {
     r = await $.process.run(viewArgv({ node, turboRun: bin, root }), { cwd: turboDir(bin) || root, timeoutMs: VIEW_TIMEOUT_MS });
@@ -104,7 +118,8 @@ async function read($) {
   if (r.exitCode !== 0) throw new Error(firstLine(r.stderr) || `turbo-run view exited with ${r.exitCode}`);
   const next = parseView(r.stdout);
   const changes = diffViews(view, next, seen);
-  for (const text of changes.toasts) $.ui.toast(text, { timeoutMs: TOAST_MS });
+  // nobody looks at a session without a surface (a background lane): what changed is kept, not shown
+  if (attached) for (const text of changes.toasts) $.ui.toast(text, { timeoutMs: TOAST_MS });
   seen = changes.seen;
   view = next;
   error = null;
@@ -118,6 +133,8 @@ async function refresh($, force) {
     return;
   }
   busy = true;
+  started = true;
+  attached = await isAttached($);
   try {
     await read($);
   } catch (err) {
@@ -125,7 +142,7 @@ async function refresh($, force) {
   } finally {
     busy = false;
   }
-  if (!opened && shouldAutoOpen(view)) {
+  if (attached && !opened && shouldAutoOpen(view)) {
     opened = true;
     try {
       await $.ui.open({ id: PANE_ID, title: PANE_TITLE });
@@ -133,7 +150,7 @@ async function refresh($, force) {
       $.ui.log(`turbo-view: pane not opened: ${firstLine(err?.message ?? err)}`);
     }
   }
-  await keepClock($);
+  await keepClock($, attached);
   $.ui.invalidate('ui.render');
   if (again) {
     again = false;
@@ -144,8 +161,16 @@ async function refresh($, force) {
 // One answer per question at a time. S1's arbiter prints one line on stdout for every outcome (answered, already
 // answered, changed since it was shown, refused); that line is the toast. The pane reads the run again at once.
 async function send($, q, choice) {
-  if (sending.has(q.id) || !bin || !node || !root) return;
+  if (sending.has(q.id)) return;
   sending.add(q.id);
+  try {
+    if (!root) throw new Error('no .planning/turbo/ in this directory or above it');
+    await runner($);
+  } catch (err) {
+    sending.delete(q.id);
+    $.ui.toast(`turbo-run answer not sent: ${firstLine(err?.message ?? err)}`, { timeoutMs: TOAST_MS });
+    return;
+  }
   try {
     const r = await $.process.run(answerArgv({ node, turboRun: bin, root, question: q, ...choice }), { cwd: turboDir(bin) || root, timeoutMs: ANSWER_TIMEOUT_MS });
     $.ui.toast(firstLine(r.stdout) || firstLine(r.stderr) || `turbo-run answer exited with ${r.exitCode}`, { timeoutMs: TOAST_MS });
@@ -168,7 +193,7 @@ export function register(on) {
     } catch (err) {
       $.ui.log(`turbo-view: /turbo-view not registered: ${firstLine(err?.message ?? err)}`);
     }
-    void refresh($, false);
+    // nothing more here: the first band draw or /turbo-view starts the reads
     return next(e);
   });
 
@@ -188,8 +213,9 @@ export function register(on) {
   });
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    // the clock failed to start: every draw of the band tries again, so the view never stops reading
-    if (live && !timer) void keepClock($);
+    // the first draw starts the reads; after that, a clock that failed to start is tried again on every draw
+    if (live && !started) void refresh($, false);
+    else if (live && !timer) void keepClock($);
     const line = bandLine(view, { error });
     if (!line) return next(e);
     const { Box, Text } = $.ui.resolve(e);

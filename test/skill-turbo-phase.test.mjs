@@ -33,3 +33,22 @@ test('turbo-phase skill: frontmatter, every step in order, the commands it drive
   for (const n of needles) assert.ok(s.includes(n), n);
   assert.ok(!/gsd-turbo-/.test(s));
 });
+
+const section = (s, name) => {
+  const at = s.indexOf(`\n### ${name}\n`);
+  const end = s.indexOf('\n### ', at + 1);
+  return s.slice(at, end < 0 ? undefined : end);
+};
+
+// A stop inside execute restores the gates (Stopping early) while gates-off stays done: the resumed
+// execute must turn them off again, or GSD runs its gates serially and the fan-out runs them again.
+test('turbo-phase skill: step execute begins with gates off, handled like step gates-off', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const exec = section(s, 'execute');
+  const off = exec.indexOf('turbo-run gates off N');
+  assert.ok(off > 0, 'execute runs gates off');
+  assert.ok(off < exec.indexOf('Skill(skill="gsd-execute-phase"'), 'before GSD executes');
+  assert.match(exec, /refuses.*gates-off/s, 'the refusal is handled as in step gates-off');
+  // the deliberate gates-on re-runs of execute-phase stay as they are
+  for (const step of ['final-gate', 'uat', 'close']) assert.ok(!section(s, step).includes('turbo-run gates off N'), step);
+});

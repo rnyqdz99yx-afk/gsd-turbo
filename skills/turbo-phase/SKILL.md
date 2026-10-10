@@ -90,6 +90,7 @@ If it refuses (exit 1) because another phase still has its gates off (`phase M s
 
 Spec §4.3.4; Stage 2 executes through GSD.
 
+0. `turbo-run gates off N`, handled exactly as step **gates-off** (if it refuses because another phase still has its gates off, restore that phase and run it again). A stop inside this step goes through **Stopping early**, which restores the gates while step gates-off stays done; without this point the resumed GSD execute-phase would run its gates one by one and the fan-out would run them again. When the gates are already off it does nothing; after a restore it records the restored values as the originals again.
 1. `Skill(skill="gsd-execute-phase", args="N --no-transition")`. GSD runs the waves, its post-merge test gate after each wave, its regression gate and its verifier. Once every plan has a summary, turbo's test runner switches to a full run by itself, so the regression gate sees the whole suite (spec §4.7); that rule ends when this step is marked done. GSD may mark the phase complete here (G9); that is not the end of this skill.
 2. `gsd-tools verification status <phase dir>`:
    - `passed` or `human_needed`: done.

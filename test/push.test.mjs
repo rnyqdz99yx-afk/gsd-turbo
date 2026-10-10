@@ -446,6 +446,27 @@ test('a request for another branch than the checkout\'s, or whose commit left it
   assert.equal(r.remoteHead(), before);
 });
 
+test('a checkout detached for a moment (a rebase) makes the request wait; detached for 5 checks it fails once', async () => {
+  const r = pushRepo();
+  const { ctx, notes } = supervisorCtx(r);
+  const sha = r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  r.sh('checkout', '-q', '--detach');
+  for (let i = 0; i < 4; i++) await pushTick(ctx, NOW);
+  assert.equal(readJson(recordFile(r.root, '3')).outcome, undefined, 'still waiting');
+  r.sh('checkout', '-q', 'main');
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), sha);
+  // detached for good
+  const next = r.commit('src/b.mjs', 'export const b = 1;\n');
+  ask(r, ctx.config.push);
+  r.sh('checkout', '-q', '--detach');
+  for (let i = 0; i < 6; i++) await pushTick(ctx, NOW);
+  assert.equal(readJson(recordFile(r.root, '3')).reason, 'the checkout stayed on a detached HEAD for 5 checks; nothing was pushed');
+  assert.deepEqual(notes.map((n) => n.key), ['pushFailed']);
+  assert.notEqual(r.remoteHead(), next);
+});
+
 test('a remote configured as a mirror is refused with its reason and never pushed to', async () => {
   const r = pushRepo();
   const { ctx, calls, notes } = supervisorCtx(r);

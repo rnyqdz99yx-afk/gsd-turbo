@@ -77,16 +77,46 @@ const TEXT = {
 const textOf = (view) => TEXT[view?.ui?.lang === 'ru' ? 'ru' : 'en'];
 const list = (v) => (Array.isArray(v) ? v : []);
 
-// One line of at most max characters (code points, so an emoji is never split), whitespace collapsed, … when cut.
-export function cut(text, max) {
-  const chars = Array.from(String(text ?? '').replace(/\s+/g, ' ').trim());
-  return chars.length <= max ? chars.join('') : `${chars.slice(0, max - 1).join('')}…`;
+// Grapheme clusters (what a terminal draws as one character: an emoji with its skin tone or ZWJ sequence, a flag, a
+// letter with its combining marks); code points where the runtime has no Intl.Segmenter.
+const SEGMENTER = typeof Intl === 'object' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('en', { granularity: 'grapheme' }) : null;
+const graphemes = (s) => (SEGMENTER ? Array.from(SEGMENTER.segment(s), (x) => x.segment) : Array.from(s));
+
+// East Asian Wide and Fullwidth code points, drawn two cells wide.
+const WIDE = [[0x1100, 0x115f], [0x2329, 0x232a], [0x2e80, 0x303e], [0x3040, 0x3247], [0x3250, 0x4dbf], [0x4e00, 0xa4c6], [0xa960, 0xa97c], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe10, 0xfe19], [0xfe30, 0xfe6b], [0xff01, 0xff60], [0xffe0, 0xffe6], [0x1b000, 0x1b001], [0x1f200, 0x1f251], [0x20000, 0x3fffd]];
+const EMOJI = /\p{Emoji_Presentation}|\p{Extended_Pictographic}️|\p{Regional_Indicator}|⃣/u;
+const ZERO_WIDTH = /^[\p{Mn}\p{Me}\p{Cf}\p{Cc}]+$/u;
+
+function cellWidth(g) {
+  if (ZERO_WIDTH.test(g)) return 0;
+  if (EMOJI.test(g)) return 2;
+  const cp = g.codePointAt(0);
+  return WIDE.some(([a, b]) => cp >= a && cp <= b) ? 2 : 1;
 }
 
-// A column of width w: the text cut to w - 1 and padded, so the next column starts one space after it at least.
+// The terminal cells a text takes: two for a wide character or an emoji, one for others.
+export const textWidth = (text) => graphemes(String(text ?? '')).reduce((n, g) => n + cellWidth(g), 0);
+
+// One line at most max cells wide, whitespace collapsed, cut between grapheme clusters (an emoji, a flag or a letter
+// with its marks is never split) and ended with … when cut.
+export function cut(text, max) {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (textWidth(s) <= max) return s;
+  let out = '';
+  let w = 0;
+  for (const g of graphemes(s)) {
+    const cw = cellWidth(g);
+    if (w + cw > max - 1) break;
+    out += g;
+    w += cw;
+  }
+  return `${out}…`;
+}
+
+// A column w cells wide: the text cut to w - 1 cells and padded, so the next column starts one space after it at least.
 const col = (text, w) => {
   const c = cut(text, w - 1);
-  return c + ' '.repeat(w - Array.from(c).length);
+  return c + ' '.repeat(Math.max(0, w - textWidth(c)));
 };
 
 export const firstLine = (text) => String(text ?? '').split(/\r?\n/).map((s) => s.trim()).find(Boolean) ?? '';

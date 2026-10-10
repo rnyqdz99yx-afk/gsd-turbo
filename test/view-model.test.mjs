@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, cut, firstLine, joinPath, keepDraft, openField, parseView, refreshMs, render, shouldAutoOpen, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, cut, firstLine, joinPath, keepDraft, openField, parseView, refreshMs, render, shouldAutoOpen, textWidth, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
 
 const AT = '2026-01-01T11:00:00.000Z';
 const agent = (over) => ({ agentId: 'a1', type: 'gsd-executor', description: '', plan: '32-07', task: '2', model: 'opus', worktreeBranch: null, state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, startedAt: '2026-01-01T10:54:00.000Z', lastAt: '2026-01-01T10:59:50.000Z', elapsedMs: 360000, tokens: 166000, sessionId: 's', transcript: 't', ...over });
@@ -90,16 +90,30 @@ test('render without a supervisor, without the S3 keys (an S0-only view), before
   assert.deepEqual(texts(render(null, { error: 'node: not found' })), ['⚠ turbo-run view failed: node: not found']);
 });
 
-test('long and multi-code-point text is cut by code points with an ellipsis, never splitting an emoji (Review Focus 4)', () => {
+test('long and multi-code-point text is cut by grapheme clusters to a cell width with an ellipsis, never splitting an emoji (Review Focus 4)', () => {
   assert.equal(cut('a'.repeat(10), 5), 'aaaa…');
-  assert.equal(cut('👍'.repeat(10), 3), '👍👍…');
+  assert.equal(cut('👍'.repeat(10), 3), '👍…', 'an emoji takes two cells');
   assert.equal(cut('line one\n  line two', 100), 'line one line two');
+  const family = '👨‍👩‍👧';
+  assert.equal(cut(family.repeat(5), 5), `${family}${family}…`, 'a ZWJ sequence is one cluster of two cells');
+  assert.equal(cut('🇺🇸🇩🇪🇫🇷', 4), '🇺🇸…', 'a flag is never cut into regional indicators');
+  assert.equal(cut('👍🏽👍🏽👍🏽', 4), '👍🏽…', 'a skin tone stays on its emoji');
+  assert.equal(cut('日本語テキスト', 6), '日本…', 'East Asian wide characters take two cells');
+  assert.equal(cut('日本', 4), '日本');
+  assert.equal(cut('é'.repeat(6), 4), 'ééé…', 'a combining mark stays on its letter');
   const long = render(view({ questions: [{ id: 'q1', phase: '32', plan: '32-09', task: '3', question: 'Ж'.repeat(500), options: [{ label: 'x'.repeat(90) }], state: 'open' }], commits: [{ sha: 'a1b2c3d', subject: `fix: ${'😀'.repeat(200)}` }] }));
   const q = long.rows.find((r) => r.kind === 'question');
   assert.equal(Array.from(q.text).length, '    32-09 Task 3 · '.length + 160);
   assert.equal(Array.from(q.options[0].label).length, 40);
   const subject = long.rows.at(-1).text;
   assert.ok(Array.from(subject).every((ch) => ch.codePointAt(0) < 0xd800 || ch.codePointAt(0) > 0xdfff), 'no lone surrogate');
+});
+
+test('textWidth counts terminal cells, so agent columns stay aligned with wide text and emoji', () => {
+  for (const [s, w] of [['ab', 2], ['Ж', 1], ['日本', 4], ['ＡＢ', 4], ['한', 2], ['👍', 2], ['👍🏽', 2], ['👨‍👩‍👧', 2], ['🇺🇸', 2], ['❤️', 2], ['⚠', 1], ['é', 1], ['…·▸—', 4]]) assert.equal(textWidth(s), w, s);
+  const agents = [agent({ action: { tool: 'Edit', detail: '日本語のファイル名がとても長いです.mjs' } }), agent({ agentId: 'a2', plan: '32-08', action: { tool: 'Bash', detail: '👨‍👩‍👧 npm test 🇺🇸' } }), agent({ agentId: 'a3', type: 'gsd-エグゼキュータ', plan: '32-09' })];
+  const rows = render(view({}, { agents })).rows.slice(2, 5).map((r) => r.text);
+  assert.deepEqual(rows.map((t) => textWidth(t.slice(0, t.indexOf('6m · ')))), [54, 54, 54], rows.join('\n'));
 });
 
 test('bandLine is the spec §7 line, names a stopped supervisor or lane, and is absent where turbo never ran (Review Focus 1)', () => {

@@ -9,7 +9,8 @@ import { completeStep } from '../lib/phase-progress.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
-import { buildView, formatView, openQuestions, recentCommits, stallMs } from '../lib/view.mjs';
+import { buildView, formatView, openQuestions, pushOf, recentCommits, stallMs } from '../lib/view.mjs';
+import { DEFAULTS, viewRefreshSeconds } from '../lib/config.mjs';
 
 const NOW = new Date('2026-01-01T11:00:00.000Z');
 const at = (hhmm) => `2026-01-01T${hhmm}:00.000Z`;
@@ -36,7 +37,7 @@ const agentEntries = (id, from, to, tokens = 166000) => [
 test('without supervisor.json the view has no supervisor and no lanes, and still lists questions and commits', () => {
   const { root, env } = laneProject();
   const v = buildView({ root, sup: null, env, now: NOW, commits: COMMITS });
-  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], questions: [], commits: COMMITS() });
+  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], questions: [], commits: COMMITS(), ui: { lang: 'en', refreshSeconds: 3 } });
 });
 
 test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
@@ -208,4 +209,35 @@ test('formatView prints one line per lane, subagent, question and commit', () =>
     '  a1b2c3d fix: something',
   ].join('\n'));
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [] }), 'supervisor: not running (never started)');
+});
+
+test('the view carries the live view settings (ui) and each lane its last push as S2 recorded it', () => {
+  const { root, sup, env } = laneProject();
+  const v = buildView({ root, sup, config: { lang: 'ru', view: { refresh_seconds: 5 } }, env, now: NOW, commits: COMMITS });
+  assert.deepEqual(v.ui, { lang: 'ru', refreshSeconds: 5 });
+  assert.equal(v.lanes[0].push, null);
+  const record = path.join(runDirOf(root), 'p32-push.json');
+  writeJsonAtomic(record, { requestId: 'r1', phase: '32', remote: 'origin', branch: 'main', at: at('10:50'), outcome: 'pushed', sha: 'f'.repeat(40), ci: { state: 'red', since: at('10:50'), runs: [] } });
+  assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes[0].push, { outcome: 'pushed', sha: 'fffffff', at: at('10:50'), ci: 'red' });
+  writeJsonAtomic(record, { outcome: 'refused', findings: [{ file: '.env', kind: 'forbidden name' }] });
+  assert.deepEqual(pushOf(root, '32'), { outcome: 'refused', sha: null, at: null, ci: null });
+  fs.writeFileSync(record, '{"outcome":');
+  assert.equal(pushOf(root, '32'), null);
+  writeJsonAtomic(record, { outcome: 'exploded' });
+  assert.equal(pushOf(root, '32'), null);
+});
+
+test('view.refresh_seconds is a whole number of seconds from 1 to 60; anything else counts as 3', () => {
+  assert.equal(DEFAULTS.view.refresh_seconds, 3);
+  assert.equal(viewRefreshSeconds({ view: { refresh_seconds: 1 } }), 1);
+  assert.equal(viewRefreshSeconds({ view: { refresh_seconds: 60 } }), 60);
+  for (const bad of [0, 61, 2.5, null, 'x']) assert.equal(viewRefreshSeconds({ view: { refresh_seconds: bad } }), 3, String(bad));
+  assert.equal(viewRefreshSeconds({}), 3);
+});
+
+test('open questions reach the view as S1 writes them, rev included: the pane answers with that rev', () => {
+  const { root, sup, env } = laneProject();
+  const q = { id: '32-09-t2', phase: '32', plan: '32-09', task: '2', kind: 'decision', header: '32-09 T2', question: 'Select the provider', context: '', options: [{ label: 'Clerk', description: '', recommended: true, signal: 'clerk', defer: false }], allowOther: true, condition: null, class: 'decision', agentId: null, stopped: false, state: 'open', answer: null, delivery: null, rev: 2, source: 'plan' };
+  writeJsonAtomic(path.join(runDirOf(root), 'p32-questions.json'), [q, { ...q, id: '32-09-t3', state: 'answered', rev: 1 }]);
+  assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).questions, [q]);
 });

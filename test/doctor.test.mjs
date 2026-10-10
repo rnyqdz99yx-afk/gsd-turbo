@@ -49,8 +49,11 @@ test('a warning per nested package with its own test script that test.full does 
   w('docs/site/package.json', JSON.stringify({ scripts: { build: 'site' } }));
   w('node_modules/dep/package.json', pkg('mocha'));
   w('untracked/package.json', pkg('node --test'));
+  // review 7d: test data, not packages of the project
+  w('test/fixtures/demo/package.json', pkg('node --test'));
+  w('src/__fixtures__/sample/package.json', pkg('jest'));
   w('.planning/turbo/config.json', JSON.stringify({ test: { full: ['npm test', { dir: 'app', command: 'npm test' }] } }));
-  const tracked = ['package.json', 'server/package.json', 'app/package.json', 'tools/package.json', 'docs/site/package.json', 'node_modules/dep/package.json'];
+  const tracked = ['package.json', 'server/package.json', 'app/package.json', 'tools/package.json', 'docs/site/package.json', 'node_modules/dep/package.json', 'test/fixtures/demo/package.json', 'src/__fixtures__/sample/package.json'];
   const lsCwd = [];
   const exec = (cmd, args, opts) => {
     if (cmd === 'git' && args[0] === 'ls-files') { lsCwd.push(opts.cwd); return `${tracked.join('\0')}\0`; }

@@ -969,6 +969,11 @@ test('multi: a change in a nested package no entry covers warns and runs as toda
   assert.deepEqual(multi(['app/src/view.js']).warnings, [], 'covered');
   const stub = multi(['app/src/view.js'], { entries: [ROOT_E, SERVER_E], packages: multiPkgs({ app: { testScript: 'echo "Error: no test specified" && exit 1' } }) });
   assert.deepEqual(stub.warnings, [], "npm's default stub is no test script");
+  // review 7d: a package under fixtures/ is test data
+  const fixture = multi(['test/fixtures/demo/index.js', 'src/__fixtures__/sample/a.js'], {
+    packages: [...multiPkgs(), { dir: 'test/fixtures/demo', testScript: 'node --test', hooks: [] }, { dir: 'src/__fixtures__/sample', testScript: 'jest', hooks: [] }],
+  });
+  assert.deepEqual(fixture.warnings, []);
 });
 
 test('multi: per-entry markers, windows and max_targeted; the phase end runs every changed entry full', () => {

@@ -21,7 +21,7 @@ function harness() {
   let clock = Date.parse('2026-01-01T00:00:00Z');
   const h = {
     root, phases: [{ number: '2', deps: [], complete: false, verification: null }], agents: [], launched: [], removed: [], stopped: [], resumed: [],
-    notes: [], logs: [], resumeOut: [], activity: null, replies: [],
+    notes: [], logs: [], resumeOut: [], activity: null, replies: [], failStop: false, failRm: false,
     advance(min) { clock += min * 60000; },
     now: () => new Date(clock),
   };
@@ -35,12 +35,14 @@ function harness() {
         list: () => h.agents.map((a) => ({ ...a })),
         stop: (id) => {
           h.stopped.push(id);
+          if (h.failStop) throw new Error('claude stop failed: timed out');
           const a = h.agents.find((x) => x.id === id);
           if (!a) throw new Error(`claude stop failed: no session ${id}`);
           a.state = 'stopped';
         },
         rm: (id) => {
           h.removed.push(id);
+          if (h.failRm) throw new Error('claude rm failed: timed out');
           if (!h.agents.some((a) => a.id === id)) throw new Error(`claude rm failed: no session ${id}`);
           h.agents = h.agents.filter((a) => a.id !== id);
         },
@@ -285,4 +287,33 @@ test('a new answer to a checkpoint that stopped again wakes the lane again: the 
     assert.equal(h.resumed.length, before + 1, `round ${round}: woken`);
     markDelivered(h.root, '2', '02-01-t2', 'same-agent', { now: h.now() });
   }
+});
+
+test('a failed wake never starts a new session while the old one may still run: its removal must succeed first, else the tick fails and is retried', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  Object.assign(h, { failStop: true, failRm: true });
+  h.resumeOut.push(new Error('claude --resume failed: timed out'), new Error('claude --resume failed: timed out'));
+  h.advance(16);
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1, 'no second session');
+  assert.deepEqual(h.agents.filter((a) => a.state === 'working').map((a) => a.id), ['1a2b3c4d']);
+  assert.ok(s.failingSince, 'the tick failed: the next one tries again');
+  assert.equal(s.lane.sessionId, '1a2b3c4d');
+});
+
+test('a failed wake of a full lane on a phase GSD completed, under a safe-mode supervisor, waits for full mode instead of a safe relaunch', async () => {
+  const h = harness();
+  let s = await stoppedLane(h);
+  h.ctx.mode = 'safe';
+  h.phases[0].complete = true;
+  owner(h, '02-01-t2', 1);
+  h.resumeOut.push('Resumed.\n', 'Resumed.\n');
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 2);
+  assert.equal(h.launched.length, 1, 'no gsd-autonomous relaunch');
+  assert.equal(s.lane.sessionId, '1a2b3c4d');
+  assert.deepEqual(h.notes.filter((x) => x.key === 'laneDowngraded').map((x) => x.vars.phase), ['2']);
 });

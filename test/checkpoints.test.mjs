@@ -69,11 +69,21 @@ test('a fence closes only with a bare fence of its own character, at least as lo
   assert.deepEqual(parseCheckpoints(tilde).map((c) => [c.task, c.kind]), [[2, 'decision']]);
 });
 
-test('the plan tag on a fence\'s closing line stays: the field the fence ends keeps its text and never runs into the next one', () => {
+test('the plan tag on a fence\'s closing line stays: the field the fence ends keeps its text and its command, and never runs into the next one', () => {
   const a = ACTION_PLAN.replace('<action>Complete the email verification for the mail service account</action>', `<action>Complete the email verification:\n${FENCE}bash\nmail-cli verify\n${FENCE}</action>`);
-  assert.equal(parseCheckpoints(a)[0].action, 'Complete the email verification:');
+  assert.equal(parseCheckpoints(a)[0].action, 'Complete the email verification: `mail-cli verify`');
   const v = VERIFY_PLAN.replace('<how-to-verify>', `<how-to-verify>\n${FENCE}bash\ncurl localhost:3000\n${FENCE}</how-to-verify>\n<x>`);
-  assert.equal(parseCheckpoints(v)[0].howToVerify, '');
+  assert.equal(parseCheckpoints(v)[0].howToVerify, '`curl localhost:3000`');
+});
+
+test('a command in a fenced block of a field stays in the question, as inline code (spec §5.1: the owner runs or checks it); CRLF plans read the same', () => {
+  const action = ACTION_PLAN.replace(/<instructions>[\s\S]*?<\/instructions>/, `<instructions>\n    Log in to the mail CLI in your terminal:\n    ${FENCE}bash\n    mail-cli login --account welcome\n    ${FENCE}\n    Then click the link in the verification mail.\n  </instructions>`);
+  assert.equal(parseCheckpoints(action)[0].instructions, 'Log in to the mail CLI in your terminal: `mail-cli login --account welcome` Then click the link in the verification mail.');
+  const verify = VERIFY_PLAN.replace(/<how-to-verify>[\s\S]*?<\/how-to-verify>/, `<how-to-verify>\n    1. Start it:\n    ${FENCE}bash\n    npm install\n    npm run dev -- --port 3000\n    ${FENCE}\n    2. Visit http://localhost:3000/dashboard: sidebar left, no horizontal scroll.\n  </how-to-verify>`);
+  const [v] = parseCheckpoints(verify);
+  assert.equal(v.howToVerify, '1. Start it: `npm install; npm run dev -- --port 3000` 2. Visit http://localhost:3000/dashboard: sidebar left, no horizontal scroll.');
+  assert.deepEqual(parseCheckpoints(verify.replace(/\n/g, '\r\n')), parseCheckpoints(verify));
+  assert.deepEqual(parseCheckpoints(action.replace(/\n/g, '\r\n')), parseCheckpoints(action));
 });
 
 test('a line that starts with inline code in three backticks is no fence: a backtick fence\'s info string never holds a backtick', () => {

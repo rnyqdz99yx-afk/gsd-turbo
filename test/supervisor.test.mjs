@@ -941,3 +941,20 @@ test('the daemon lends its ticks its heartbeat writer, so long push work keeps t
   await runDaemon({ ctx: h.ctx, statePath, intervalMs: 1, sleep: async () => { if (++sleeps > 3) throw new Error('runaway daemon'); } });
   assert.deepEqual([mid?.pid, mid?.updatedAt], [process.pid, '2026-01-01T00:07:00.000Z']);
 });
+
+test('the lent heartbeat writes nothing once the daemon lost its lease, and answers false (S2)', async () => {
+  const h = harness({ phases: [P('2', [], true)] });
+  const statePath = path.join(h.root, '.planning', 'supervisor.json');
+  let answer = null;
+  let written = null;
+  h.ctx.deps.loadPhases = () => {
+    h.ctx.deps.leaseHeld = () => false; // another daemon took over mid-tick
+    answer = h.ctx.deps.heartbeat();
+    written = fs.existsSync(statePath);
+    h.ctx.deps.leaseHeld = () => true;
+    return h.phases;
+  };
+  let sleeps = 0;
+  await runDaemon({ ctx: h.ctx, statePath, intervalMs: 1, sleep: async () => { if (++sleeps > 3) throw new Error('runaway daemon'); } });
+  assert.deepEqual([answer, written], [false, false]);
+});

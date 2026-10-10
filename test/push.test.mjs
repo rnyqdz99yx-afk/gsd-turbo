@@ -789,6 +789,17 @@ test('a request whose tick ran out of time waits before its scan, goes on first 
   assert.deepEqual(notes, []);
 });
 
+test('push work stops as soon as the heartbeat reports a lost lease: no fetch, no push, no record', async () => {
+  const r = pushRepo();
+  const { ctx, calls } = supervisorCtx(r);
+  ctx.deps.heartbeat = () => false;
+  r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.ok(!calls.some((a) => ['fetch', 'push'].includes(sub(a))), calls.map(sub).join(' '));
+  assert.ok(!fs.existsSync(recordFile(r.root, '3')));
+});
+
 test('without a fresh heartbeat each git call\'s time limit ends inside the heartbeat window', async () => {
   const r = pushRepo();
   const { ctx } = supervisorCtx(r);

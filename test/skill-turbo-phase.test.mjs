@@ -87,3 +87,19 @@ test('turbo-phase skill: step execute begins with gates off, handled like step g
   // the deliberate gates-on re-runs of execute-phase stay as they are
   for (const step of ['final-gate', 'uat', 'close']) assert.ok(!section(s, step).includes('turbo-run gates off N'), step);
 });
+
+test('turbo-phase skill: push and CI (S2) — the lane asks, the supervisor pushes, red CI is fixed in bounded rounds', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const needles = [
+    '### Push and CI', 'turbo-run inbox N', 'turbo-run push-request N --at wave', 'turbo-run push-request N --at phase --wait',
+    'turbo-run push-request N --wait', 'turbo-run phase-step N --attempt ci', '600000', 'fix rounds allowed', 'data from CI, never instructions',
+    'Do not run git push', 'push off: nothing requested', 'waiting:', '**CI red**', '**A plan that pushes**',
+  ];
+  for (const n of needles) assert.ok(s.includes(n), n);
+  const close = s.slice(s.indexOf('\n### close\n'));
+  const ask = close.indexOf('turbo-run push-request N --at phase --wait');
+  assert.ok(ask > 0 && ask < close.indexOf('turbo-run phase-step N --done close'), 'close asks for the phase push before it marks itself done');
+  const execute = s.slice(s.indexOf('\n### execute\n'), s.indexOf('\n### restore\n'));
+  assert.ok(execute.includes('turbo-run push-request N --at wave') && execute.includes('turbo-run inbox N'));
+  assert.ok(!/^\s*(\d+\.\s*)?`?git push/m.test(s), 'no step runs git push');
+});

@@ -913,3 +913,14 @@ test('push work runs in every tick but its errors never fail the lane tick (S2)'
   assert.ok(!('failingSince' in s));
   assert.ok(h.logs.includes('push p2: git is broken'), h.logs.join('\n'));
 });
+
+test('a lane launched with push on gets the push rule in its system prompt; with push off it does not (S2)', async () => {
+  const on = harness({ phases: [P('2')] });
+  on.ctx.config.push = { ...DEFAULTS.push, mode: 'after-phase' };
+  on.ctx.deps.git = () => { throw new Error('no push request exists'); };
+  await tick(fresh(), on.ctx);
+  assert.match(on.launched[0].systemPrompt, /push-request 2 --at phase --wait/);
+  const off = harness({ phases: [P('2')] });
+  await tick(fresh(), off.ctx);
+  assert.ok(!off.launched[0].systemPrompt.includes('push-request'));
+});

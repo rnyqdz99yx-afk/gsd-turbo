@@ -424,9 +424,9 @@ test('a lane whose phase GSD checks off in the roadmap while it runs keeps runni
 });
 
 test('a range starts only its phases; once they are all finished the run ends with rangeDone', async () => {
-  const h = harness({ phases: [P('3'), P('4', ['3']), C('5'), P('6')] });
+  const h = harness({ phases: [P('3', [], true), P('4', ['3']), C('5'), P('6')] });
   let s = await tick({ ...fresh(), range: { from: '4', to: '5' } }, h.ctx);
-  assert.equal(s.lane.phase, '4', 'its dep 3 lies outside the range');
+  assert.equal(s.lane.phase, '4', 'its dep 3, outside the range, is complete');
   h.phases[1].complete = true;
   h.agents[0].state = 'done';
   s = await tick(s, h.ctx); // phase 4 done
@@ -437,6 +437,21 @@ test('a range starts only its phases; once they are all finished the run ends wi
   assert.ok(h.logs.includes('phases 4–5 done'), h.logs.join('\n'));
   assert.ok(!h.logs.includes('milestone done'));
   assert.deepEqual(s.range, { from: '4', to: '5' });
+});
+
+test('an unfinished dep outside the range holds its phase; nothing else to start halts the run with rangeBlocked', async () => {
+  const h = harness({ phases: [P('3'), P('4', ['3']), P('5'), P('6', ['4'])] });
+  let s = await tick({ ...fresh(), range: { from: '4', to: '6' } }, h.ctx);
+  assert.equal(s.lane.phase, '5', 'a ready phase of the range still starts');
+  h.phases[2].complete = true;
+  h.agents[0].state = 'done';
+  s = await tick(s, h.ctx); // phase 5 done
+  s = await tick(s, h.ctx); // 4 waits on 3, 6 on 4: nothing can start
+  assert.equal(s.halted, true);
+  assert.equal(s.lane, null);
+  assert.equal(h.launched.length, 1);
+  assert.deepEqual(h.notes, [{ key: 'phaseDone', vars: { phase: '5' } }, { key: 'rangeBlocked', vars: { range: '4–6', phase: '4', dep: '3' } }]);
+  assert.deepEqual(h.logs.filter((l) => /outside the range/.test(l)), ['phases 4–6 wait: phase 4 depends on phase 3 outside the range, which is not finished; halted']);
 });
 
 test('the no-ready-phase list and the skipped list keep to the range', async () => {

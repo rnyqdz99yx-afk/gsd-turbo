@@ -790,3 +790,95 @@ test('init aborts before config-set when config-get fails, and on a corrupt turb
   });
   assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set'));
 });
+
+// --- 0.2.2: nested packages and test.full as a list ---------------------------------------------
+
+// Writes the files and tracks them in a new git repository in the project.
+function tracked(root, files) {
+  for (const [rel, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), text);
+  }
+  execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', ['add', '--', ...Object.keys(files)], { cwd: root, stdio: 'ignore' });
+}
+const pkgJson = (test) => JSON.stringify({ scripts: { test } });
+const NESTED = {
+  'package.json': pkgJson('node --test'),
+  'server/package.json': pkgJson('node --test'),
+  'app/package.json': pkgJson('vitest run'),
+  'app/pnpm-lock.yaml': '',
+  'web/package.json': pkgJson('jest'),
+  'package-lock.json': '{}',
+  'tools/package.json': pkgJson('echo "Error: no test specified" && exit 1'),
+  'node_modules/dep/package.json': pkgJson('mocha'),
+};
+const cfgOf = (root) => readJsonFile(path.join(root, '.planning', 'turbo', 'config.json'));
+
+test('init: a config it creates gets test.full as a list, the root command first, when nested packages have their own tests', () => {
+  const p = fakeProject({ config: null });
+  tracked(p.root, { ...NESTED, 'web/yarn.lock': '' });
+  const stdout = run(['init'], p.root, p.env);
+  // the command follows the package's own lockfile, else the nearest one above it
+  const list = ['npm test', { dir: 'app', command: 'pnpm test' }, { dir: 'server', command: 'npm test' }, { dir: 'web', command: 'yarn test' }];
+  assert.deepEqual(cfgOf(p.root).test.full, list);
+  assert.ok(stdout.split(/\r?\n/).includes(`test.full set to the root command and every nested package with its own test script: ${JSON.stringify(list)}`), stdout);
+  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD]);
+  assert.ok(stdout.includes(`workflow.test_command set to turbo-run test-changed (full test command: ${JSON.stringify(list)})`), stdout);
+
+  // the kept previous command is the root entry; a root without package.json has no root entry
+  const q = fakeProject({ config: null, configGet: { out: 'make check', exit: 0 } });
+  tracked(q.root, { 'server/package.json': pkgJson('node --test') });
+  run(['init'], q.root, q.env);
+  assert.deepEqual(cfgOf(q.root).test.full, ['make check', { dir: 'server', command: 'npm test' }]);
+  const r = fakeProject({ config: null });
+  tracked(r.root, { 'server/package.json': pkgJson('node --test'), 'server/package-lock.json': '{}' });
+  const rOut = run(['init'], r.root, r.env);
+  assert.deepEqual(cfgOf(r.root).test.full, [{ dir: 'server', command: 'npm test' }]);
+  assert.match(rOut, /workflow\.test_command set/);
+});
+
+test('start review 7b: an invalid test.full list refuses to start, with the config error', async () => {
+  const p = fakeProject({ config: { notify: { desktop: false, telegram: false }, test: { full: ['npm test', { dir: 'missing', command: 'npm test' }] } } });
+  const r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /^invalid turbo config .*test\.full\[1\]\.dir "missing" is not a directory in the project/);
+  assert.equal(readSup(p.root), null);
+  assert.equal(fs.existsSync(path.join(p.root, '.planning', 'turbo', 'logs')), false, 'no daemon was spawned');
+});
+
+test('init review 5: a root package.json without a real test script (workspaces, npm\'s stub) gets the nested packages only', () => {
+  const nested = { 'server/package.json': pkgJson('node --test'), 'app/package.json': pkgJson('vitest run') };
+  const list = [{ dir: 'app', command: 'npm test' }, { dir: 'server', command: 'npm test' }];
+  for (const [name, rootPkg] of [['workspaces', JSON.stringify({ workspaces: ['server', 'app'], scripts: { build: 'tsc -b' } })], ['stub', pkgJson('echo "Error: no test specified" && exit 1')]]) {
+    const p = fakeProject({ config: null });
+    tracked(p.root, { 'package.json': rootPkg, ...nested });
+    const stdout = run(['init'], p.root, p.env);
+    assert.deepEqual(cfgOf(p.root).test.full, list, name);
+    assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD], `${name}: ${stdout}`);
+  }
+});
+
+test('init: an existing config only warns and prints the entries to add; a valid list counts as a known full command', () => {
+  const p = fakeProject({ config: { test: { full: ['npm test', { dir: 'app', command: 'pnpm test' }] } } });
+  tracked(p.root, NESTED);
+  const stdout = run(['init'], p.root, p.env);
+  assert.deepEqual(cfgOf(p.root).test.full, ['npm test', { dir: 'app', command: 'pnpm test' }], 'not changed');
+  const lines = stdout.split(/\r?\n/);
+  assert.ok(lines.includes('warn: nested package server has its own test script that test.full does not run'), stdout);
+  assert.ok(lines.includes('warn: nested package web has its own test script that test.full does not run'), stdout);
+  assert.ok(lines.includes('to run them, add to test.full (a list) in .planning/turbo/config.json: [{"dir":"server","command":"npm test"},{"dir":"web","command":"npm test"}]'), stdout);
+  assert.deepEqual(p.gsdCalls().filter((a) => a[0] === 'config-set').map((a) => a[2]), [TURBO_TEST_CMD], 'the list is a known full command');
+  const doctorOut = run(['doctor'], p.root, p.env).split(/\r?\n/);
+  assert.deepEqual(doctorOut.filter((l) => l.startsWith('warn ')), ['server', 'web'].map((d) => `warn nested package ${d} has its own test script that test.full does not run`));
+  assert.match(doctorOut.filter(Boolean).at(-1), /^mode: /);
+
+  // an invalid list fails init with the config error and changes nothing in GSD
+  const q = fakeProject({ config: { test: { full: ['npm test', { dir: 'missing', command: 'npm test' }] } } });
+  assert.throws(() => run(['init'], q.root, q.env), (err) => {
+    assert.equal(err.status, 1);
+    assert.match(err.stderr, /^invalid turbo config .*test\.full\[1\]\.dir "missing" is not a directory in the project/);
+    return true;
+  });
+  assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set'));
+});

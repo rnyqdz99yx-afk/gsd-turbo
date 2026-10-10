@@ -5,7 +5,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '../lib/paths.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge } from '../lib/config.mjs';
+import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries } from '../lib/config.mjs';
+import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
 import { createClaude, resolveBin, laneSessionName } from '../lib/claude.mjs';
@@ -243,7 +244,8 @@ function logTail(root, lines = 10) {
 // requested: rangeFlags' result (undefined keeps the range of a run that has not finished).
 async function start(root, requested = undefined) {
   const config = runtimeConfig(loadConfig(root)); // a corrupt config fails here, not inside the detached daemon
-  const running = () => { const sup = readJson(supPath(root), null); return supAlive(sup, config.poll_seconds) ? sup : null; };
+  fullEntries(config.test?.full, root); // an invalid test.full list too, not at every test gate of the lanes
+  const running =() => { const sup = readJson(supPath(root), null); return supAlive(sup, config.poll_seconds) ? sup : null; };
   const already = (sup) => { out(`already running (pid ${sup.pid})`); printStatus(sup, true); return 0; };
   let sup = running();
   if (sup) return already(sup);
@@ -254,6 +256,7 @@ async function start(root, requested = undefined) {
     die('doctor: mode unsupported; not starting', 2);
   }
   for (const c of failed) out(`warn ${c.name} ${c.detail}`);
+  for (const w of r.warnings ?? []) out(`warn ${w}`);
   // doctor takes seconds: another start may have launched a daemon meanwhile
   sup = running();
   if (sup) return already(sup);
@@ -452,13 +455,40 @@ function npmTestBlocker(root) {
   return typeof script === 'string' && script.trim() ? null : 'package.json has no test script';
 }
 
-// The full command test-changed falls back to: an explicitly set test.full, or the default
-// `npm test` where GSD itself would run it. Anything else would let a gate pass on a subset.
+// The full command test-changed falls back to: an explicitly set test.full (a command, or a list of entries,
+// which must be valid), or the default `npm test` where GSD itself would run it. Anything else would let a gate
+// pass on a subset.
 function knownFullCommand(root, config) {
   const full = config.test?.full;
+  if (Array.isArray(full)) { fullEntries(full, root); return { full }; } // an invalid list throws a config error
   if (full !== DEFAULTS.test.full) return typeof full === 'string' && full.trim() ? { full } : { why: 'test.full is empty or not a string' };
   const why = npmTestBlocker(root);
   return why ? { why } : { full };
+}
+const showFull = (full) => (typeof full === 'string' ? full : JSON.stringify(full));
+
+// Nested packages with their own test script that test.full does not run. A config this init created gets
+// test.full as a list: the root command first (none when the root package.json is missing or has no real test
+// script: a workspaces root, npm's stub), then one entry per package. Otherwise init only warns and prints the
+// entries to add. Returns the list it wrote, or null.
+function coverNestedPackages(root, res, known) {
+  const nested = nestedTestPackages(root);
+  if (!nested.length) return null;
+  const entries = fullEntries(loadConfig(root).test?.full, root);
+  const missing = nested.filter((p) => !entries.some((e) => e.dir === p.dir));
+  if (!missing.length) return null;
+  const rootTests = realTestScript(readJson(path.join(root, 'package.json'), null)?.scripts?.test);
+  const noRootTests = ['no package.json', 'package.json has no test script'].includes(known.why) || (known.full === DEFAULTS.test.full && !rootTests);
+  const rootCommand = noRootTests ? '' : typeof known.full === 'string' ? known.full : null;
+  if (res.created && rootCommand !== null) {
+    const list = [...(rootCommand ? [rootCommand] : []), ...missing];
+    writeJsonAtomic(res.file, deepMerge(readJson(res.file, {}), { test: { full: list } }));
+    out(`test.full set to the root command and every nested package with its own test script: ${JSON.stringify(list)}`);
+    return list;
+  }
+  for (const p of missing) out(`warn: nested package ${p.dir} has its own test script that test.full does not run`);
+  out(`to run them, add to test.full (a list) in .planning/turbo/config.json: ${JSON.stringify(missing)}`);
+  return null;
 }
 
 async function main() {
@@ -473,7 +503,11 @@ async function main() {
     case 'doctor': {
       const r = doctor({ root });
       if (args.includes('--json')) out(JSON.stringify(r, null, 2));
-      else { for (const c of r.checks) out(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name} ${c.detail}`); out(`mode: ${r.mode}`); }
+      else {
+        for (const c of r.checks) out(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name} ${c.detail}`);
+        for (const w of r.warnings ?? []) out(`warn ${w}`);
+        out(`mode: ${r.mode}`);
+      }
       return r.mode === 'unsupported' ? 2 : 0;
     }
     case 'init': {
@@ -496,21 +530,23 @@ async function main() {
       }
       const res = initConfig(root, { lang, autonomy });
       const config = loadConfig(root); // an existing corrupt config fails init
+      const prevIsTurbo = prev.includes('turbo-run.mjs');
+      let known;
+      if (prev && !prevIsTurbo) {
+        writeJsonAtomic(res.file, deepMerge(readJson(res.file, {}), { test: { full: prev } }));
+        out(`kept previous workflow.test_command as test.full: ${prev}`);
+        known = { full: prev };
+      } else {
+        known = knownFullCommand(root, config);
+      }
+      const list = coverNestedPackages(root, res, known);
+      if (list) known = { full: list };
       if (tool) {
-        const prevIsTurbo = prev.includes('turbo-run.mjs');
-        let known;
-        if (prev && !prevIsTurbo) {
-          writeJsonAtomic(res.file, deepMerge(readJson(res.file, {}), { test: { full: prev } }));
-          out(`kept previous workflow.test_command as test.full: ${prev}`);
-          known = { full: prev };
-        } else {
-          known = knownFullCommand(root, config);
-        }
         if (known.full !== undefined) {
           try {
             execFileSync(process.execPath, [tool, 'config-set', 'workflow.test_command', TURBO_TEST_CMD, '--cwd', root], { stdio: 'inherit', windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' });
           } catch (e) { die(`gsd-tools config-set workflow.test_command failed (${execWhy(e)})`); }
-          out(`workflow.test_command set to turbo-run test-changed (full test command: ${known.full})`);
+          out(`workflow.test_command set to turbo-run test-changed (full test command: ${showFull(known.full)})`);
         } else {
           // GSD keeps choosing the test runner itself; nothing in the GSD config changes
           out(`no known full test command: ${known.why}`);

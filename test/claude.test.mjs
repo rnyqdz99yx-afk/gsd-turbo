@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveBin, parseAgents, laneSessionName, buildBgArgs, parseBgLaunch, createClaude, sessionFreeEnv } from '../lib/claude.mjs';
+import { resolveBin, parseAgents, laneSessionName, buildBgArgs, buildResumeArgs, parseBgLaunch, parseResume, createClaude, sessionFreeEnv } from '../lib/claude.mjs';
 
 const BG_OPTS = { name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto' };
 const PLAIN_BIN = { cmd: 'claude', prefix: [], shell: false };
@@ -280,4 +280,45 @@ test('createClaude refuses an unsupported bin without spawning', () => {
   const c = createClaude({ bin: { ...PLAIN_BIN, unsupported: 'install the native build' }, exec: () => { spawned = true; return '[]'; } });
   assert.throws(() => c.list(), { message: 'install the native build' });
   assert.equal(spawned, false);
+});
+
+test('the prompt never follows the value of the variadic --disallowedTools (spec §9), whatever the options', () => {
+  for (const opts of [BG_OPTS, { ...BG_OPTS, model: 'opus' }, { ...BG_OPTS, tmpDir: path.resolve('/p/tmp') }]) {
+    const args = buildBgArgs(opts);
+    const at = args.indexOf('--disallowedTools');
+    assert.equal(args[at + 1], 'AskUserQuestion');
+    assert.ok(args[at + 2].startsWith('--'), args[at + 2]);
+    assert.equal(args.at(-1), 'P');
+  }
+});
+
+test('buildResumeArgs passes nothing but --bg, --resume, the session id and the prompt: any other flag starts a copy (spec §5.5.1)', () => {
+  assert.deepEqual(buildResumeArgs('1a2b3c4d-2222-4333-8444-555555555555', 'The owner answered'), ['--bg', '--resume', '1a2b3c4d-2222-4333-8444-555555555555', 'The owner answered']);
+});
+
+test('parseResume: woke, a copy (with its id), or neither', () => {
+  const ids = { jobId: '1a2b3c4d', sessionId: '1a2b3c4d-2222-4333-8444-555555555555' };
+  assert.deepEqual(parseResume('note: woke session 1a2b3c4d with its saved options (--name, --model)\n', ids), { woke: true, copyId: null });
+  assert.deepEqual(parseResume('note: session 1a2b3c4d is already running in the background, so this started a copy as 9f8e7d6c\n', ids), { woke: false, copyId: '9f8e7d6c' });
+  assert.deepEqual(parseResume('note: it keeps its own saved options, so the flags you passed started a copy\nbackgrounded · 9f8e7d6c · lane\n', ids), { woke: false, copyId: '9f8e7d6c' });
+  assert.deepEqual(parseResume('backgrounded · 1a2b3c4d · lane\n', ids), { woke: true, copyId: null });
+  assert.deepEqual(parseResume('backgrounded · 9f8e7d6c · lane\n', ids), { woke: false, copyId: '9f8e7d6c' });
+  assert.deepEqual(parseResume('Error: something else\n', ids), { woke: false, copyId: null });
+  assert.deepEqual(parseResume(undefined), { woke: false, copyId: null });
+});
+
+test('resume runs claude with the resume args only, without the calling session\'s ids, and returns stdout and stderr together; errors never carry the prompt', () => {
+  const calls = [];
+  const spawn = (cmd, args, opts) => { calls.push({ cmd, args, opts }); return { status: 0, stdout: 'backgrounded · 1a2b3c4d · lane\n', stderr: 'note: woke session 1a2b3c4d with its saved options\n' }; };
+  const c = createClaude({ bin: { cmd: '/node', prefix: ['/x/cli.js'], shell: false }, exec: () => '', spawn });
+  const out = c.resume('1a2b3c4d-full', 'SECRET-PROMPT', '/p');
+  assert.match(out, /backgrounded/);
+  assert.match(out, /woke session/);
+  assert.deepEqual(calls[0].args, ['/x/cli.js', '--bg', '--resume', '1a2b3c4d-full', 'SECRET-PROMPT']);
+  assert.deepEqual([calls[0].opts.cwd, calls[0].opts.shell, calls[0].opts.windowsHide, calls[0].opts.killSignal, calls[0].opts.timeout], ['/p', false, true, 'SIGKILL', 120000]);
+  assert.ok(!Object.keys(calls[0].opts.env).some((k) => ['CLAUDE_CODE_SESSION_ID', 'CLAUDE_JOB_DIR'].includes(k.toUpperCase())));
+  const failing = createClaude({ bin: PLAIN_BIN, exec: () => '', spawn: () => ({ status: 1, stdout: '', stderr: 'no such session' }) });
+  assert.throws(() => failing.resume('x', 'SECRET-PROMPT', '/p'), (e) => e.message === 'claude --resume failed: no such session' && !e.message.includes('SECRET'));
+  const timeout = createClaude({ bin: PLAIN_BIN, exec: () => '', spawn: () => ({ status: null, error: Object.assign(new Error('spawnSync claude ETIMEDOUT'), { code: 'ETIMEDOUT' }), stdout: '', stderr: '' }) });
+  assert.throws(() => timeout.resume('x', 'P', '/p'), /claude --resume failed: timed out after 120000 ms/);
 });

@@ -2,7 +2,7 @@
 // .planning/turbo/, reads `turbo-run view --json` on a clock, draws the pane and the band above the prompt, shows
 // toasts, and sends pane answers to `turbo-run answer … --by pane --rev <n>`. Module state is lost on a reload; the
 // next read rebuilds it.
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, bandLine, firstLine, joinPath, keepDraft, openField, parseView, refreshMs, render, shouldAutoOpen, toastsFor, turboRunPath } from './view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, bandLine, diffViews, firstLine, joinPath, keepDraft, openField, parseView, refreshMs, render, shouldAutoOpen, turboRunPath } from './view-model.mjs';
 
 const VIEW_TIMEOUT_MS = 10000;
 const ANSWER_TIMEOUT_MS = 30000;
@@ -12,6 +12,7 @@ const TONES = { title: { bold: true }, normal: {}, dim: { dimColor: true }, warn
 let root = null; // the project directory whose .planning/ holds turbo/, or null
 let bin = null; // turbo-run.mjs
 let view = null; // the last view read
+let seen = {}; // each lane as last seen, for the toasts (view-model.mjs diffViews)
 let error = null; // why the last read failed
 let busy = false; // a read is running
 let again = false; // a forced read was asked for while one was running
@@ -61,7 +62,9 @@ async function read($) {
   const r = await $.process.run(['node', bin, 'view', '--json'], { cwd: root, timeoutMs: VIEW_TIMEOUT_MS });
   if (r.exitCode !== 0) throw new Error(firstLine(r.stderr) || `turbo-run view exited with ${r.exitCode}`);
   const next = parseView(r.stdout);
-  for (const text of toastsFor(view, next)) $.ui.toast(text, { timeoutMs: TOAST_MS });
+  const changes = diffViews(view, next, seen);
+  for (const text of changes.toasts) $.ui.toast(text, { timeoutMs: TOAST_MS });
+  seen = changes.seen;
   view = next;
   error = null;
   field = keepDraft(field, next);

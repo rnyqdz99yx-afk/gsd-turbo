@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, cut, firstLine, joinPath, keepDraft, openField, parseView, refreshMs, render, shouldAutoOpen, textWidth, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, cut, diffViews, firstLine, joinPath, keepDraft, openField, parseView, refreshMs, render, shouldAutoOpen, textWidth, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
 
 const AT = '2026-01-01T11:00:00.000Z';
 const agent = (over) => ({ agentId: 'a1', type: 'gsd-executor', description: '', plan: '32-07', task: '2', model: 'opus', worktreeBranch: null, state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, startedAt: '2026-01-01T10:54:00.000Z', lastAt: '2026-01-01T10:59:50.000Z', elapsedMs: 360000, tokens: 166000, sessionId: 's', transcript: 't', ...over });
@@ -141,6 +141,34 @@ test('toastsFor: nothing on the first view; a new question, phase done, red CI, 
   assert.deepEqual(toastsFor(v1, view({}, { status: 'needs-owner', reason: 'checkpoint 32-09' })), ['phase 32 stopped: needs-owner — checkpoint 32-09']);
   assert.deepEqual(toastsFor(v1, view({ supervisor: { ...v1.supervisor, running: false, halted: true } })), ['supervisor halted']);
   assert.deepEqual(toastsFor(view({ ui: { lang: 'ru', refreshSeconds: 3 } }), view({ ui: { lang: 'ru', refreshSeconds: 3 } }, { status: 'done' })), ['фаза 32 готова']);
+});
+
+test('toasts diff against the last-seen lanes: a lane the same supervisor cleared is done, a lane that arrives stopped or done says so, each once', () => {
+  const v1 = view();
+  // the supervisor clears a lane without halting only when its phase is done (it then takes the next phase or finishes)
+  const moved = view({}, { phase: '33', status: 'running', push: null });
+  assert.deepEqual(toastsFor(v1, moved), ['phase 32 done']);
+  assert.deepEqual(toastsFor(v1, view({ supervisor: { running: false, pid: null, finished: true, halted: false }, lanes: [] })), ['phase 32 done']);
+  assert.deepEqual(toastsFor(v1, view({ supervisor: { ...v1.supervisor, pid: 5151 } }, { phase: '40', push: null })), [], 'a new supervisor (another start): phase 32 did not finish');
+  assert.deepEqual(toastsFor(v1, view({ supervisor: { ...v1.supervisor, running: false, halted: true }, lanes: [] })), ['supervisor halted']);
+  assert.deepEqual(toastsFor(view({}, { status: 'done' }), moved), [], 'a lane seen done had its toast');
+  assert.deepEqual(toastsFor(view({}, { status: 'needs-owner' }), moved), ['phase 32 done'], 'a lane last seen stopped that the supervisor cleared finished meanwhile');
+  assert.deepEqual(toastsFor(v1, view({}, { phase: '33', status: 'needs-owner', reason: 'checkpoint 33-01', push: null })), ['phase 32 done', 'phase 33 stopped: needs-owner — checkpoint 33-01']);
+  assert.deepEqual(toastsFor(v1, view({}, { phase: '33', status: 'done', step: null, push: null })), ['phase 32 done', 'phase 33 done']);
+  assert.deepEqual(toastsFor(v1, view({}, { phase: '33', status: 'failed', push: { outcome: 'pushed', sha: 'c3d4e5f', ci: 'red' } })), ['phase 32 done', 'phase 33 stopped: failed', 'CI red: phase 33, c3d4e5f']);
+  // the memory carries over reads: a cleared lane toasts once, and one that comes back is compared with what was last seen of it
+  let d = diffViews(null, v1, {});
+  assert.deepEqual(d.toasts, []);
+  d = diffViews(v1, moved, d.seen);
+  assert.deepEqual(d.toasts, ['phase 32 done']);
+  d = diffViews(moved, moved, d.seen);
+  assert.deepEqual(d.toasts, []);
+  const red = view({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' } });
+  d = diffViews(null, red, {});
+  d = diffViews(red, view({ supervisor: { ...v1.supervisor, pid: 5151 } }, { phase: '40', push: null }), d.seen);
+  assert.deepEqual(d.toasts, []);
+  d = diffViews(view({ supervisor: { ...v1.supervisor, pid: 5151 } }, { phase: '40', push: null }), view({ supervisor: { ...v1.supervisor, pid: 5151 } }, { status: 'needs-owner', push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' } }), d.seen);
+  assert.deepEqual(d.toasts, ['phase 40 done', 'phase 32 stopped: needs-owner'], 'the red run of phase 32 was toasted before it left');
 });
 
 test('parseView accepts v1 and rejects other output with one line (Review Focus 1)', () => {

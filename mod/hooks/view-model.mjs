@@ -224,26 +224,48 @@ export function bandLine(view, { error = null } = {}) {
   return parts.join(' · ');
 }
 
-// Toasts for what changed between two views: a new question, a phase done, red CI, a lane that stopped (needs-owner,
-// failed) or a halted supervisor. The first view of a session (prev null) shows none.
-export function toastsFor(prev, next) {
-  if (!prev || !next) return [];
+// What the toasts remember of each lane between reads: { [phase]: { status, red } }, red the sha of the red CI run
+// already toasted. A lane that left the view stays, with status 'gone'.
+const redOf = (lane) => (lane.push?.ci === 'red' ? lane.push.sha ?? '' : null);
+const lanesSeen = (view) => Object.fromEntries(list(view?.lanes).map((l) => [String(l.phase), { status: l.status, red: redOf(l) }]));
+
+// Toasts for what changed between two views, against seen (the lanes as last seen, kept by the caller across reads;
+// prev's lanes when not given): a new question, a phase done, red CI, a lane that stopped (needs-owner, failed) or a
+// halted supervisor. A lane the same supervisor cleared without halting is a phase done (the supervisor clears a lane
+// only when its phase is done, then takes the next one or finishes); a lane that arrives already done or stopped says
+// so. The first view of a session (prev null) shows none. Returns { toasts, seen } (seen after next).
+export function diffViews(prev, next, seen = lanesSeen(prev)) {
+  if (!next) return { toasts: [], seen };
+  if (!prev) return { toasts: [], seen: { ...seen, ...lanesSeen(next) } };
   const t = textOf(next);
   const out = [];
-  const seen = new Set(list(prev.questions).map((q) => q.id));
-  const fresh = list(next.questions).filter((q) => !seen.has(q.id));
+  const asked = new Set(list(prev.questions).map((q) => q.id));
+  const fresh = list(next.questions).filter((q) => !asked.has(q.id));
   if (fresh.length === 1) out.push(t.newQuestion(`${planLabel(fresh[0])} — ${cut(fresh[0].question || fresh[0].header || '', 80)}`));
   else if (fresh.length > 1) out.push(t.newQuestions(fresh.length));
-  for (const p of list(prev.lanes)) {
-    const n = list(next.lanes).find((l) => String(l.phase) === String(p.phase));
-    if (!n) continue;
-    if (n.status === 'done' && p.status !== 'done') out.push(t.phaseDone(n.phase));
-    if (STOPPED.has(n.status) && n.status !== p.status) out.push(t.laneStopped(n.phase, n.reason ? `${n.status} — ${cut(n.reason, 80)}` : n.status));
-    if (n.push?.ci === 'red' && !(p.push?.ci === 'red' && p.push?.sha === n.push.sha)) out.push(t.ciRed(n.phase, n.push.sha));
+  const after = { ...seen };
+  const lanes = list(next.lanes);
+  const sup = next.supervisor;
+  const cleared = Boolean(sup && !sup.halted && (sup.finished || (sup.pid != null && sup.pid === prev.supervisor?.pid)));
+  for (const [phase, last] of Object.entries(seen)) {
+    if (last.status === 'gone' || lanes.some((l) => String(l.phase) === phase)) continue;
+    if (cleared && last.status !== 'done') out.push(t.phaseDone(phase));
+    after[phase] = { ...last, status: 'gone' };
   }
-  if (!prev.supervisor?.halted && next.supervisor?.halted) out.push(t.halted);
-  return out;
+  for (const n of lanes) {
+    const phase = String(n.phase);
+    const last = seen[phase] ?? { status: null, red: null };
+    if (n.status === 'done' && last.status !== 'done') out.push(t.phaseDone(phase));
+    if (STOPPED.has(n.status) && n.status !== last.status) out.push(t.laneStopped(phase, n.reason ? `${n.status} — ${cut(n.reason, 80)}` : n.status));
+    const red = redOf(n);
+    if (red !== null && red !== last.red) out.push(t.ciRed(phase, n.push.sha));
+    after[phase] = { status: n.status, red };
+  }
+  if (!prev.supervisor?.halted && sup?.halted) out.push(t.halted);
+  return { toasts: out, seen: after };
 }
+
+export const toastsFor = (prev, next, seen) => diffViews(prev, next, seen).toasts;
 
 // The view object from `turbo-run view --json` output; throws a one-line Error for anything else.
 export function parseView(stdout) {

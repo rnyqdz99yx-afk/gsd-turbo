@@ -119,6 +119,28 @@ test('a new question between two reads raises a toast', async ($, on) => {
   expect(toasts).toEqual(['new question: 32-10 Task 1 — Looks right?'])
 })
 
+test('a lane the supervisor cleared between two reads toasts phase done once, and the next phase that arrives stopped toasts too', async ($, on) => {
+  const next = { ...VIEW, lanes: [{ ...VIEW.lanes[0], phase: '33', status: 'needs-owner', reason: 'checkpoint 33-01', push: null }] }
+  const { toasts, clock } = stub(on, { views: [VIEW, next] })
+  await start($)
+  await clock.settle()
+  await clock.advance(3000)
+  expect(toasts).toEqual(['phase 32 done', 'phase 33 stopped: needs-owner — checkpoint 33-01'])
+  await clock.advance(3000)
+  expect(toasts).toHaveLength(2)
+})
+
+test('toasts remember lanes across reads: a red CI run toasted before its lane left is not toasted again when it comes back', async ($, on) => {
+  const lane = { ...VIEW.lanes[0], push: { outcome: 'pushed', sha: 'b2c3d4e', at: '2026-01-01T10:50:00.000Z', ci: 'red' } }
+  const sup = { ...VIEW.supervisor, pid: 5151 }
+  const views = [{ ...VIEW, lanes: [lane] }, { ...VIEW, supervisor: sup, lanes: [{ ...lane, phase: '40', push: null }] }, { ...VIEW, supervisor: sup, lanes: [lane] }]
+  const { toasts, clock } = stub(on, { views })
+  await start($)
+  await clock.settle()
+  await clock.advance(6000)
+  expect(toasts).toEqual(['phase 40 done'])
+})
+
 test('outside a turbo project nothing runs, and /turbo-view says why', async ($, on) => {
   const { calls, clock } = stub(on, { turbo: false })
   await start($)

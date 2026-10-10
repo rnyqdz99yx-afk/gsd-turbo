@@ -431,16 +431,39 @@ test('agentSnapshot reads first and last time, the last tool call and the last c
   assert.equal(agentSnapshot(file, root, { size: 'x' }).firstAt, at('10:00'));
 });
 
-test('agentSnapshot keeps the action and context it knew when the file grew past a tail without tool calls or usage', () => {
+test('agentSnapshot keeps the action and context it knew when the file grew by less than the tail window and the new tail holds none', () => {
   const root = tmpDir('snap2');
   const { dir } = setup();
-  const file = writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:40', { name: 'Edit', input: { file_path: path.join(root, 'lib', 'x.mjs') } }));
+  // the last tool call sits in a long line that the next tail window starts inside
+  const file = writeAgent(dir, SESSION, AGENT, [
+    entry.agentUser(AGENT, 'Execute the plan', at('10:00')),
+    entry.assistant({ ts: at('10:40'), text: 'n'.repeat(200 * 1024), tool: { name: 'Edit', input: { file_path: path.join(root, 'lib', 'x.mjs') } }, usage: usage(1, 1000, 40000), sidechain: true }),
+  ]);
   const s = agentSnapshot(file, root);
-  fs.appendFileSync(file, jsonl(Array(300).fill(entry.agentUser(AGENT, 'r'.repeat(1000), at('10:45')))));
+  assert.deepEqual([s.action, s.tokens], [{ tool: 'Edit', detail: 'lib/x.mjs' }, 41001]);
+  fs.appendFileSync(file, jsonl(Array(100).fill(entry.agentUser(AGENT, 'r'.repeat(1000), at('10:45')))));
+  assert.ok(fs.statSync(file).size - s.size < TAIL_MAX);
   const grown = agentSnapshot(file, root, s);
   assert.deepEqual([grown.action, grown.tokens, grown.lastAt], [{ tool: 'Edit', detail: 'lib/x.mjs' }, 41001, at('10:45')]);
   const cold = agentSnapshot(file, root);
   assert.deepEqual([cold.action, cold.tokens], [null, null]);
+});
+
+test('agentSnapshot forgets the action and context it knew when more than the tail window was appended', () => {
+  const root = tmpDir('snap3');
+  const { dir } = setup();
+  const file = writeAgent(dir, SESSION, AGENT, [
+    entry.agentUser(AGENT, 'Execute the plan', at('10:00')),
+    entry.assistant({ ts: at('10:40'), tool: { name: 'Edit', input: { file_path: path.join(root, 'old.mjs') } }, usage: usage(1, 1, 1), sidechain: true }),
+  ]);
+  const s = agentSnapshot(file, root);
+  // a newer call whose result alone is larger than the window: the window cannot show it, and the old call is stale
+  fs.appendFileSync(file, jsonl([
+    entry.assistant({ ts: at('10:45'), tool: { name: 'Read', input: { file_path: path.join(root, 'new.mjs') } }, usage: usage(0, 2, 90000), sidechain: true }),
+    entry.toolResult('toolu_r', 'c'.repeat(300 * 1024), at('10:46')),
+  ]));
+  const grown = agentSnapshot(file, root, s);
+  assert.deepEqual([grown.action, grown.tokens], [null, null]);
 });
 
 test('laneAgents: states from the lane transcript, nested agents left out, active ones first', () => {

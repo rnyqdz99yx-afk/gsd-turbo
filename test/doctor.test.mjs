@@ -206,3 +206,23 @@ test('unsupported when gsd-tools init manager fails', () => {
   assert.equal(r.mode, 'unsupported');
   assert.equal(r.checks.find((c) => c.name === 'gsd-init-manager').ok, false);
 });
+
+test('git below 2.31 fails the push check while push.mode is on, and is a warning while it is off (S2)', () => {
+  const run = (git, mode) => {
+    const e = env();
+    if (mode) {
+      fs.mkdirSync(path.join(e.root, '.planning', 'turbo'), { recursive: true });
+      fs.writeFileSync(path.join(e.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ push: { mode } }));
+    }
+    const exec = (cmd, args) => (cmd === 'git' && args[0] === '--version' ? `git version ${git}` : execOk('2.1.291')(cmd, args));
+    return doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: BIN });
+  };
+  const on = run('2.30.2', 'after-wave');
+  assert.deepEqual(on.checks.find((c) => c.name === 'git-push-scan'), { name: 'git-push-scan', ok: false, detail: 'git 2.30.2; push.mode after-wave needs git 2.31 or newer (the push scan uses --diff-merges)' });
+  assert.equal(on.mode, 'full', 'the push check does not change the mode');
+  const off = run('2.30.2', null);
+  assert.equal(off.checks.some((c) => c.name === 'git-push-scan'), false);
+  assert.deepEqual(off.warnings, ['git 2.30.2 is older than 2.31: push.mode other than off would not work (the push scan uses --diff-merges)']);
+  assert.deepEqual(run('2.31.0.windows.1', 'after-phase').checks.find((c) => c.name === 'git-push-scan'), { name: 'git-push-scan', ok: true, detail: 'git 2.31.0' });
+  assert.deepEqual(run('2.45.0', null).warnings, []);
+});

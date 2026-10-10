@@ -209,6 +209,14 @@ test('scanRange shows merges separately whatever log.diffMerges says, and a head
   assert.ok(calls.find((c) => c.includes('-p')).includes('--text'));
 });
 
+test('a git older than 2.31 fails the scan with its version and the version the scan needs', () => {
+  const git = (args) => {
+    if (args[0] === 'version') return 'git version 2.30.2\n';
+    throw Object.assign(new Error('fatal: unrecognized argument: --diff-merges=separate'), { status: 128 });
+  };
+  assert.throws(() => scanRange(git, 'b', 'h'), (e) => e.message === "git version 2.30.2: turbo's push scan needs git 2.31 or newer (--diff-merges); fatal: unrecognized argument: --diff-merges=separate");
+});
+
 test('scanRange refuses a file name it cannot read as UTF-8 instead of skipping it', () => {
   const git = (args) => (args.includes('--name-only') ? Buffer.from([0x61, 0xff, 0x2e, 0x6c, 0x6f, 0x67, 0x00]) : '');
   assert.deepEqual(scanRange(git, 'b', 'h'), [{ file: '(a file name that is not UTF-8)', kind: 'unreadable file name' }]);

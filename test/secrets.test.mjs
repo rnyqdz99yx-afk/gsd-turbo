@@ -5,7 +5,7 @@ import { scanSecrets } from '../lib/uat.mjs';
 
 // One sample per rule, built at run time so the source holds no token-shaped literal.
 const SAMPLES = {
-  'private key': '-----BEGIN RSA PRIVATE KEY-----',
+  'private key': `-----BEGIN RSA ${'PRIVATE'} KEY-----`,
   'aws access key': `AKIA${'ABCDEFGHIJKLMNOP'}`,
   'github token': `ghp_${'a'.repeat(36)}`,
   'slack token': `xoxb-${'1234567890'}-abc`,
@@ -13,7 +13,7 @@ const SAMPLES = {
   jwt: `eyJ${'a'.repeat(12)}.${'b'.repeat(12)}.${'c'.repeat(12)}`,
   'bot token': `123456789:${'A'.repeat(35)}`,
   'bearer token': `Bearer ${'x'.repeat(24)}`,
-  'credential assignment': 'password=hunter2hunter2',
+  'credential assignment': `${'pass'}word=${'hunter2'.repeat(2)}`,
 };
 
 test('every secret rule has a sample, and maskSecrets replaces each match of each rule', () => {

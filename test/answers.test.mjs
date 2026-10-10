@@ -182,3 +182,20 @@ test('own words lose C1 controls, bidi overrides and isolates and terminal escap
   const r = ask(root, { id: '32-09-t2', text: 'take \u0085Clerk\u009b \u202Ereversed\u202C \u2066isolated\u2069 \x1b[31mred\x1b[0m', by: 'session' });
   assert.equal(r.record.answer, 'take Clerk reversed isolated red');
 });
+
+test('the standing rule never answers over the owner: after its answer was reported unmet and the owner answered, a second unmet goes back to the owner (D7)', () => {
+  const root = project();
+  classifyQuestions(root, '32', '32-10-t3=consent:deploy');
+  assert.deepEqual(applyStandingRule({ root, phase: '32', config: MAX(), now: NOW, laneRunning: true }), ['32-10-t3']);
+  stopQuestion(root, '32', '32-10-t3', { agentId: AG, unmet: true, now: NOW });
+  assert.equal(ask(root, { id: '32-10-t3', text: 'deploy only after I check staging myself', by: 'session' }).status, 'recorded');
+  stopQuestion(root, '32', '32-10-t3', { agentId: AG, unmet: true, now: NOW });
+  assert.deepEqual(applyStandingRule({ root, phase: '32', config: MAX(), now: NOW, laneRunning: true }), []);
+  assert.equal(readQuestions(root, '32').find((q) => q.id === '32-10-t3').state, 'open');
+  // an owner's earlier answer alone is enough: the rule never answers a question the owner has answered before
+  const other = project();
+  classifyQuestions(other, '32', '32-09-t2=consent:deploy');
+  ask(other, { id: '32-09-t2', option: 2, by: 'telegram' });
+  stopQuestion(other, '32', '32-09-t2', { agentId: AG, unmet: true, now: NOW });
+  assert.deepEqual(applyStandingRule({ root: other, phase: '32', config: MAX(), now: NOW, laneRunning: true }), []);
+});

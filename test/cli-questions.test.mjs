@@ -163,3 +163,16 @@ test('while a lane runs, an answer to another phase is not committed by turbo-ru
   const r = await run(root, ['answer', '33', '33-01-t2', '--option', '1', '--by', 'session']);
   assert.match(r.text, /^answered 33-01-t2: Clerk, session, \S+$/);
 });
+
+test('turbo-run questions --stop --unmet after the owner answered a deploy consent the rule had answered: the owner is asked again, the rule stays out', async () => {
+  const root = project();
+  withLane(root);
+  writeJsonAtomic(path.join(root, '.planning', 'turbo', 'config.json'), { autonomy: 'max', deploy: { command: 'd', snapshot: 's', health: 'h', rollback: 'r' } });
+  await run(root, ['questions', '32']);
+  await run(root, ['questions', '32', '--class', '32-10-t3=consent:deploy']);
+  await run(root, ['questions', '32', '--stop', '32-10-t3', '--agent', AG, '--unmet']);
+  assert.equal((await run(root, ['answer', '32', '32-10-t3', '--text', 'deploy only after I check staging myself', '--by', 'session'])).code, 0);
+  const r = await run(root, ['questions', '32', '--stop', '32-10-t3', '--agent', AG, '--unmet']);
+  assert.match(r.text, /^stopped: 32-10-t3 waits for the owner/);
+  assert.deepEqual(readAnswers(root, '32').map((x) => [x.by, Boolean(x.superseded)]), [['standing-rule', true], ['session', true]]);
+});

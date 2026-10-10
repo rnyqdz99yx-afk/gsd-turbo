@@ -517,9 +517,9 @@ const later = (min) => new Date(NOW.getTime() + min * 60000);
 const runRow = (id, name, status, conclusion = '') => ({ databaseId: id, name, status, conclusion });
 const project = () => { const root = tmpDir('ci'); fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true }); return root; };
 // a record as the supervisor writes it after a push, CI still to watch
-const pendingRecord = (root, phase = '3', sha = SHA) => writeJsonAtomic(recordFile(root, phase), {
+const pendingRecord = (root, phase = '3', sha = SHA, repo = 'acme/app') => writeJsonAtomic(recordFile(root, phase), {
   requestId: 'r1', phase, remote: 'origin', branch: 'main', at: NOW.toISOString(), outcome: 'pushed', sha,
-  lastPush: { requestId: 'r1', sha, branch: 'main', remote: 'origin', repo: 'acme/app', at: NOW.toISOString(), ci: { state: 'pending', since: NOW.toISOString(), runs: [] } },
+  lastPush: { requestId: 'r1', sha, branch: 'main', remote: 'origin', repo, at: NOW.toISOString(), ci: { state: 'pending', since: NOW.toISOString(), runs: [] } },
 });
 function ghScript(answer) {
   const calls = [];
@@ -849,4 +849,26 @@ test('without a fresh heartbeat each git call\'s time limit ends inside the hear
   // 10 min window - 6 min spent - 30 s margin
   assert.equal(limits.push, 210000);
   assert.equal(limits.fetch, 120000);
+});
+
+test('CI on a host other than github.com is read only once gh is logged in to that host; otherwise no request goes there', async () => {
+  // not logged in: one auth check per host, then no CI for either push, told once, nothing sent to the host
+  const root = project();
+  pendingRecord(root, '3', SHA, 'git.example.test/acme/app');
+  pendingRecord(root, '4', 'd'.repeat(40), 'git.example.test/acme/other');
+  const out = ghScript((args) => (args[0] === 'auth' ? new Error('gh auth status failed: You are not logged into any GitHub hosts') : [runRow(1, 'CI', 'completed', 'success')]));
+  const { ctx, notes } = ciCtx(root, out.gh);
+  await pushTick(ctx, later(1));
+  assert.deepEqual(out.calls, [['auth', 'status', '--hostname', 'git.example.test']]);
+  for (const p of ['3', '4']) assert.equal(readJson(recordFile(root, p)).lastPush.ci.state, 'none', p);
+  assert.deepEqual(notes, [{ key: 'ciUnavailable', vars: { phase: '3', reason: 'CI not watched: gh is not logged in to git.example.test, so turbo sends it no request' } }]);
+  // logged in (GitHub Enterprise): checked once, then watched with -R host/owner/repo
+  const root2 = project();
+  pendingRecord(root2, '3', SHA, 'ghe.example.test/acme/app');
+  const ok = ghScript((args) => (args[0] === 'auth' ? 'Logged in to ghe.example.test' : [runRow(1, 'CI', 'in_progress')]));
+  const c2 = ciCtx(root2, ok.gh);
+  await pushTick(c2.ctx, later(1));
+  await pushTick(c2.ctx, later(2));
+  assert.deepEqual(ok.calls.map((a) => a.slice(0, 2).join(' ')), ['auth status', 'run list', 'run list']);
+  assert.ok(ok.calls[1].includes('ghe.example.test/acme/app'));
 });

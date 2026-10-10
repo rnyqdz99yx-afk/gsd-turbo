@@ -125,3 +125,13 @@ test('createGh marks a missing gh or a missing login as unavailable, other failu
   assert.equal(connect('git.example.test/acme/app'), true);
   assert.equal(connect('acme/app'), undefined);
 });
+
+test('gh auth status for a host carries no enterprise token from the environment unless GH_HOST names that host', () => {
+  const seen = [];
+  const env = { GH_ENTERPRISE_TOKEN: 'e1', GITHUB_ENTERPRISE_TOKEN: 'e2', GH_TOKEN: 'g1' };
+  const gh = (e) => createGh('/p', { env: e, exec: (cmd, args, opts) => { seen.push(opts.env); return ''; } });
+  gh(env)(['auth', 'status', '--hostname', 'git.example.test']);
+  gh({ ...env, GH_HOST: 'git.example.test' })(['auth', 'status', '--hostname', 'git.example.test']);
+  gh(env)(['run', 'list', '-R', 'git.example.test/acme/app']);
+  assert.deepEqual(seen.map((e) => [e.GH_ENTERPRISE_TOKEN, e.GITHUB_ENTERPRISE_TOKEN, e.GH_TOKEN]), [[undefined, undefined, 'g1'], ['e1', 'e2', 'g1'], ['e1', 'e2', 'g1']]);
+});

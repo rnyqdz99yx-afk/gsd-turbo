@@ -386,6 +386,18 @@ test('agentSnapshot reads first and last time, the last tool call and the last c
   assert.equal(agentSnapshot(file, root, { size: 'x' }).firstAt, at('10:00'));
 });
 
+test('agentSnapshot keeps the action and context it knew when the file grew past a tail without tool calls or usage', () => {
+  const root = tmpDir('snap2');
+  const { dir } = setup();
+  const file = writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:40', { name: 'Edit', input: { file_path: path.join(root, 'lib', 'x.mjs') } }));
+  const s = agentSnapshot(file, root);
+  fs.appendFileSync(file, jsonl(Array(300).fill(entry.agentUser(AGENT, 'r'.repeat(1000), at('10:45')))));
+  const grown = agentSnapshot(file, root, s);
+  assert.deepEqual([grown.action, grown.tokens, grown.lastAt], [{ tool: 'Edit', detail: 'lib/x.mjs' }, 41001, at('10:45')]);
+  const cold = agentSnapshot(file, root);
+  assert.deepEqual([cold.action, cold.tokens], [null, null]);
+});
+
 test('laneAgents: states from the lane transcript, nested agents left out, active ones first', () => {
   const root = tmpDir('lane');
   const { dir } = setup();

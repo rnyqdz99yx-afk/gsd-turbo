@@ -32,6 +32,10 @@ test('ciVerdict: pending until every run completed; red only for failure, timed_
   assert.equal(ciVerdict([run('completed', 'success'), run('completed', 'skipped')]), 'green');
   for (const c of ['cancelled', 'neutral', 'action_required', 'stale']) assert.equal(ciVerdict([run('completed', 'success'), run('completed', c)]), 'green', c);
   for (const c of RED_CONCLUSIONS) assert.equal(ciVerdict([run('completed', 'success'), run('completed', c)]), 'red', c);
+  // nothing passed: every run cancelled (a skipped one beside it changes nothing) is neither green nor red
+  assert.equal(ciVerdict([run('completed', 'cancelled')]), 'cancelled');
+  assert.equal(ciVerdict([run('completed', 'cancelled'), run('completed', 'skipped')]), 'cancelled');
+  assert.equal(ciVerdict([run('completed', 'cancelled'), run('completed', 'failure')]), 'red');
 });
 
 test('failedLogTail keeps the last 200 lines, the failing job and step, and no colour codes or secrets', () => {

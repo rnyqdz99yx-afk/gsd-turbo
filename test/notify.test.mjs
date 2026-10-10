@@ -215,4 +215,9 @@ test('push and CI messages exist in en and ru with the same placeholders (S2)', 
   }
   assert.equal(msg('en', 'pushRefused', { phase: '3', findings: 'logs/a.log (forbidden name *.log)', remote: 'origin', branch: 'main' }).title, 'Phase 3: push refused');
   assert.match(msg('en', 'ciRed', { phase: '3', sha: 'abc1234', runs: 'CI (failure)', rounds: 2 }).body, /abc1234: CI \(failure\)\. The lane fixes it itself \(at most 2 rounds\)/);
+  // the suggested command names the full commit and the repository: gh run list --commit needs the full sha
+  const full = 'f'.repeat(40);
+  for (const lang of ['en', 'ru']) {
+    assert.match(msg(lang, 'ciTimeout', { phase: '3', sha: 'fffffff', commit: full, repo: ' -R acme/app', minutes: 30, error: '' }).body, new RegExp(`gh run list -R acme/app --commit ${full}$`), lang);
+  }
 });

@@ -515,7 +515,7 @@ test('CI timeout: runs still going after push.ci_timeout_minutes notify ciTimeou
   assert.equal(readJson(recordFile(root, '3')).lastPush.ci.state, 'timeout');
   assert.equal(readJson(recordFile(root, '4')).lastPush.ci.state, 'red');
   assert.deepEqual(notes.map((n) => n.key), ['ciTimeout', 'ciRed']);
-  assert.deepEqual(notes[0].vars, { phase: '3', sha: SHA.slice(0, 7), minutes: 10, error: '' });
+  assert.deepEqual(notes[0].vars, { phase: '3', sha: SHA.slice(0, 7), commit: SHA, repo: ' -R acme/app', minutes: 10, error: '' });
   assert.equal(readInbox(root, '4').length, 1);
 });
 
@@ -681,4 +681,15 @@ test('gh missing or not logged in: that push counts as having no CI at once, and
     assert.equal(describeRecord(rec).code, 0, 'a waiting push-request returns at once');
   }
   assert.deepEqual(notes, [{ key: 'ciUnavailable', vars: { phase: '3', reason: `CI not watched: ${why}` } }]);
+});
+
+test('every run cancelled is CI cancelled, not green: nothing notified, a waiting push-request ends with exit 1', async () => {
+  const root = project();
+  pendingRecord(root);
+  const { ctx, notes } = ciCtx(root, ghScript(() => [runRow(1, 'CI', 'completed', 'cancelled')]).gh);
+  await pushTick(ctx, later(1));
+  const rec = readJson(recordFile(root, '3'));
+  assert.equal(rec.lastPush.ci.state, 'cancelled');
+  assert.equal(describeRecord(rec).code, 1);
+  assert.deepEqual(notes, []);
 });

@@ -111,6 +111,7 @@ test('turbo-phase skill: each exit-1 line of push-request says whether the owner
   assert.match(push, /`refused: …`[^\n]*: the owner was notified/);
   assert.match(push, /`failed: no supervisor is running …`[^\n]*: nobody was notified/);
   assert.match(push, /`superseded: …`[^\n]*: [^\n]*nobody was notified/);
+  assert.match(push, /`… · CI cancelled …`[^\n]*: [^\n]*nobody was notified/);
   const close = s.slice(s.indexOf('\n### close\n'));
   assert.ok(!close.includes('any other line → the owner was notified'));
 });

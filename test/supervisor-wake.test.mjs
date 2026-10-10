@@ -317,3 +317,18 @@ test('a failed wake of a full lane on a phase GSD completed, under a safe-mode s
   assert.equal(s.lane.sessionId, '1a2b3c4d');
   assert.deepEqual(h.notes.filter((x) => x.key === 'laneDowngraded').map((x) => x.vars.phase), ['2']);
 });
+
+test('a blocked lane under a safe-mode supervisor is the owner\'s, never stall-woken: laneBlocked goes out as before (deviation from D14)', async () => {
+  const h = harness();
+  h.ctx.mode = 'safe';
+  let s = await tick(fresh(), h.ctx);
+  // gsd-autonomous ended its turn with a question in its text: it waits for the owner
+  h.agents[0].state = 'blocked';
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  for (let i = 0; i < 4; i++) {
+    h.advance(5);
+    s = await tick(s, h.ctx);
+  }
+  assert.equal(h.resumed.length, 0);
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneBlocked']);
+});

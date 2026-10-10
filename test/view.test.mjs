@@ -9,7 +9,7 @@ import { completeStep } from '../lib/phase-progress.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
-import { buildView, openQuestions, recentCommits, stallMs } from '../lib/view.mjs';
+import { buildView, formatView, openQuestions, recentCommits, stallMs } from '../lib/view.mjs';
 
 const NOW = new Date('2026-01-01T11:00:00.000Z');
 const at = (hhmm) => `2026-01-01T${hhmm}:00.000Z`;
@@ -157,4 +157,35 @@ test('a warm view of a lane with 20 subagents and large transcripts, in a projec
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.equal(v.lanes[0].agents.length, 20);
   assert.ok(ms < 300, `warm view took ${ms.toFixed(0)} ms`);
+});
+
+test('formatView prints one line per lane, subagent, question and commit', () => {
+  const v = {
+    v: 1, at: NOW.toISOString(),
+    supervisor: { running: true, pid: 4242, finished: false, halted: false, failingSince: null, updatedAt: null },
+    range: { from: '32', to: null },
+    lanes: [{
+      phase: '32', step: 'execute', status: 'running', reason: '', quiet: false, sessionId: '1a2b3c4d', elapsedMs: 72 * 60000,
+      agents: [
+        { type: 'gsd-executor', plan: '32-07', task: '2', state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, elapsedMs: 6 * 60000, tokens: 166000 },
+        { type: 'gsd-verifier', plan: null, task: null, state: 'quiet', action: { tool: 'Bash', detail: 'npm test' }, elapsedMs: 16 * 60000, tokens: null },
+        { type: null, plan: '32-06', task: null, state: 'completed', action: null, elapsedMs: 45000, tokens: 950 },
+      ],
+    }],
+    questions: [{ id: 'q1', plan: '32-09', task: '3', question: 'Deploy after green CI?' }],
+    commits: [{ sha: 'a1b2c3d', subject: 'fix: something' }],
+  };
+  assert.equal(formatView(v), [
+    'supervisor: running pid 4242',
+    'range: phases 32–end',
+    'p32 · execute · lane running · session 1a2b3c4d · 1h 12m',
+    '  gsd-executor · 32-07 Task 2 · Edit lib/x.mjs · 6m · 166k',
+    '  gsd-verifier · - · quiet · 16m · -',
+    '  agent · 32-06 · completed · 45s · 950',
+    'questions: 1 open',
+    '  q1 · 32-09 Task 3 · Deploy after green CI?',
+    'commits:',
+    '  a1b2c3d fix: something',
+  ].join('\n'));
+  assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [] }), 'supervisor: not running (never started)');
 });

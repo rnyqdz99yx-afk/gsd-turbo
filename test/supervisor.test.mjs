@@ -906,13 +906,13 @@ test('push work runs in every tick but its errors never fail the lane tick (S2)'
   h.ctx.deps.gh = () => { throw new Error('gh is broken'); };
   const run = path.join(h.root, '.planning', 'turbo', 'run');
   fs.mkdirSync(run, { recursive: true });
-  fs.writeFileSync(path.join(run, 'p2-push-request.json'), JSON.stringify({ id: 'r1', phase: '2', head: 'a'.repeat(40), at: '2026-01-01T00:00:00.000Z' }));
+  fs.writeFileSync(path.join(run, 'p2-push-request.json'), JSON.stringify({ id: 'r1', phase: '2', branch: 'main', head: 'a'.repeat(40), at: '2026-01-01T00:00:00.000Z' }));
   const s = await tick(fresh(), h.ctx);
   assert.equal(s.lane.phase, '2');
   assert.equal(h.launched.length, 1);
   assert.ok(!('failingSince' in s));
   // the broken git fails this request once (recorded and notified), never the tick
-  assert.ok(h.logs.includes('push p2: failed: reading the branch failed: git is broken'), h.logs.join('\n'));
+  assert.ok(h.logs.includes('push p2: failed aaaaaaa: reading the branch failed: git is broken'), h.logs.join('\n'));
   assert.deepEqual(h.notes.map((n) => n.key), ['pushFailed']);
 });
 

@@ -194,7 +194,7 @@ test('requestPush writes one request per head and reuses it for the same head un
   const ask = (point = null) => requestPush({ root: r.root, phase: '3', point, settings: SETTINGS, git: r.git, newId: () => `id-${++n}`, now: new Date('2026-01-01T00:00:00Z') });
   const head = r.sh('rev-parse', 'HEAD');
   const first = ask('wave');
-  assert.deepEqual(first.request, { id: 'id-1', phase: '3', head, at: '2026-01-01T00:00:00.000Z' });
+  assert.deepEqual(first.request, { id: 'id-1', phase: '3', branch: 'main', head, at: '2026-01-01T00:00:00.000Z' });
   assert.equal(first.line, `push requested: ${head.slice(0, 7)} (the supervisor pushes it at its next check)`);
   assert.deepEqual(readJson(requestFile(r.root, '3')), first.request);
   // a --wait run again after "waiting:" keeps the request
@@ -241,7 +241,7 @@ test('the supervisor pushes the requested head once: fetch, ancestor check, scan
   assert.equal(r.remoteHead(), sha);
   const rec = readJson(recordFile(r.root, '3'));
   assert.deepEqual([rec.outcome, rec.sha, rec.branch, rec.remote, rec.at, rec.lastPush.ci], ['pushed', sha, 'main', 'origin', NOW.toISOString(), { state: 'none', reason: 'push.ci is none' }]);
-  assert.deepEqual(calls.map((a) => a[0]), ['symbolic-ref', 'rev-parse', 'fetch', 'merge-base', 'log', 'log', 'log', 'push']);
+  assert.deepEqual(calls.map((a) => a[0]), ['symbolic-ref', 'merge-base', 'fetch', 'merge-base', 'log', 'log', 'log', 'push']);
   const push = calls.at(-1);
   assert.deepEqual(push, ['push', '--quiet', 'origin', `${sha}:refs/heads/main`]);
   assert.ok(!push.some((a) => /^(-f|--force.*|--no-verify|--mirror|--delete|-d|--all|--tags)$/.test(a) || a.startsWith('+')));
@@ -347,6 +347,50 @@ test('a detached HEAD, or a branch the remote does not have yet: failed with the
   await pushTick(ctx, NOW);
   assert.match(readJson(recordFile(r.root, '3')).reason, /^git fetch origin feature failed: /);
   assert.deepEqual(notes.map((n) => n.key), ['pushFailed', 'pushFailed']);
+});
+
+test('the supervisor pushes exactly the requested commit, not a later HEAD', async () => {
+  const r = pushRepo();
+  const { ctx } = supervisorCtx(r);
+  const asked = r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  r.commit('src/b.mjs', 'export const b = 2;\n'); // the next wave goes on before the supervisor's tick
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), asked);
+  assert.equal(readJson(recordFile(r.root, '3')).sha, asked);
+});
+
+test('a request for another branch than the checkout\'s, or whose commit left its branch, is refused once and nothing is pushed', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes } = supervisorCtx(r);
+  const before = r.remoteHead();
+  r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  r.sh('checkout', '-q', '-b', 'experiment');
+  r.commit('src/x.mjs', 'export const x = 1;\n');
+  await pushTick(ctx, NOW);
+  assert.equal(readJson(recordFile(r.root, '3')).reason, 'the request is for branch main, but the checkout is on experiment now; nothing was pushed');
+  r.sh('checkout', '-q', 'main');
+  const gone = r.commit('src/c.mjs', 'export const c = 1;\n');
+  ask(r, ctx.config.push);
+  r.sh('reset', '-q', '--hard', 'HEAD~1');
+  r.commit('src/d.mjs', 'export const d = 1;\n');
+  await pushTick(ctx, NOW);
+  assert.equal(readJson(recordFile(r.root, '3')).reason, `${gone.slice(0, 7)} is no longer on branch main; nothing was pushed`);
+  await pushTick(ctx, NOW);
+  assert.deepEqual(notes.map((n) => n.key), ['pushFailed', 'pushFailed']);
+  assert.ok(!calls.some((a) => a.includes('push')));
+  assert.equal(r.remoteHead(), before);
+});
+
+test('a tag that shares the branch name does not hide the branch', async () => {
+  const r = pushRepo();
+  const { ctx } = supervisorCtx(r);
+  r.sh('tag', 'main');
+  const sha = r.commit('src/a.mjs', 'export const a = 1;\n');
+  assert.equal(ask(r, ctx.config.push).request.branch, 'main');
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), sha);
 });
 
 test('push off, or a daemon that lost its lease: no git call, no record', async () => {

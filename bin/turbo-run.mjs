@@ -23,7 +23,7 @@ import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|state-sync> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|state-sync> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';

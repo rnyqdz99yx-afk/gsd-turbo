@@ -106,6 +106,28 @@ test('headEntry reads the first entry; null when the first line does not end wit
   assert.equal(headEntry(file).timestamp, T0);
 });
 
+test('headEntry reads a short first line through a small window and grows it only for a long one', () => {
+  const { dir } = setup();
+  const file = path.join(dir, 'head.jsonl');
+  fs.writeFileSync(file, jsonl([entry.user('first', T0), ...Array(400).fill(entry.user('x'.repeat(1000), T0))]));
+  const long = path.join(dir, 'long-head.jsonl');
+  fs.writeFileSync(long, jsonl([entry.user('z'.repeat(100 * 1024), T0), entry.user('second', T0)]));
+  let bytes = 0;
+  const saved = fs.readSync;
+  fs.readSync = function (...a) {
+    const got = saved.apply(this, a);
+    bytes += got;
+    return got;
+  };
+  try {
+    assert.equal(headEntry(file).message.content, 'first');
+    assert.ok(bytes <= 64 * 1024, `read ${bytes} bytes for a short first line`);
+    assert.equal(headEntry(long).message.content.length, 100 * 1024);
+  } finally {
+    fs.readSync = saved;
+  }
+});
+
 test('contextTokens adds input, cache creation and cache read; nothing counted is null', () => {
   assert.equal(contextTokens(usage(2, 245, 165000)), 165247);
   assert.equal(contextTokens({ output_tokens: 500 }), null);

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { BACKGROUND_MS, NO_FIELD, PANE_ID, afterAnswer, ancestorDirs, answerArgv, bandLine, cut, firstLine, joinPath, keepDraft, openField, parseView, refreshMs, render, shouldAutoOpen, toastsFor, turboRunPath } from '../mod/hooks/view-model.mjs';
 
 const AT = '2026-01-01T11:00:00.000Z';
@@ -184,4 +185,18 @@ test('paths: ancestors on Windows and POSIX, the turbo-run location from CLAUDE_
   assert.equal(turboRunPath({ bin: '/tmp/fake.mjs', home: '/home/dev' }), '/tmp/fake.mjs');
   assert.equal(turboRunPath({}), null);
   assert.equal(firstLine('\n  invalid turbo config x\n    at y'), 'invalid turbo config x');
+});
+
+test('the mod is a plugin whose hooks module loads in plain Node and registers its four hooks; its version follows package.json', async () => {
+  const plugin = JSON.parse(fs.readFileSync('mod/.claude-plugin/plugin.json', 'utf8'));
+  const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  assert.deepEqual([plugin.name, plugin.version], ['turbo-view', pkg.version]);
+  assert.deepEqual(JSON.parse(fs.readFileSync('mod/hooks/hooks.json', 'utf8')), { modules: ['./register.mjs'] });
+  const { register } = await import('../mod/hooks/register.mjs');
+  const hooks = [];
+  register((event, matcher) => {
+    hooks.push([event, typeof matcher === 'function' ? null : matcher]);
+    return { catch() {} };
+  });
+  assert.deepEqual(hooks, [['session.start', null], ['command.run', { command: 'turbo-view' }], ['ui.render', { component: 'AbovePrompt' }], ['ui.render', { component: 'Pane', requestId: PANE_ID }]]);
 });

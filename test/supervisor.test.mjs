@@ -454,6 +454,16 @@ test('an unfinished dep outside the range holds its phase; nothing else to start
   assert.deepEqual(h.logs.filter((l) => /outside the range/.test(l)), ['phases 4–6 wait: phase 4 depends on phase 3 outside the range, which is not finished; halted']);
 });
 
+test('a launch failure keeps the logged skipped set: the skipped line is not repeated during a failing spell', async () => {
+  const h = harness({ phases: [C('1'), P('2')] });
+  h.ctx.deps.claude.launchBg = () => { throw new Error('claude --bg failed: exit status 1'); };
+  let s = fresh();
+  for (let i = 0; i < 3; i++) s = await tick(s, h.ctx);
+  assert.equal(s.launchFailures, 3);
+  assert.deepEqual(s.skippedClosed, ['1']);
+  assert.equal(h.logs.filter((l) => SKIPPED.test(l)).length, 1, h.logs.join('\n'));
+});
+
 test('the no-ready-phase list and the skipped list keep to the range', async () => {
   const h = harness({ phases: [C('1'), P('2', ['3']), P('3', ['2']), C('4'), P('5', ['6']), P('6', ['5'])] });
   const s = await tick({ ...fresh(), range: { from: '2', to: '3' } }, h.ctx);

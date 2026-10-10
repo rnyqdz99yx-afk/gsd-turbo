@@ -69,7 +69,7 @@ test('parseRuns masks every text gh prints for a run (S2: all gh output is maske
   assert.deepEqual(parseRuns(text), [{ id: 1, name: 'deploy [secret]', status: 'completed', conclusion: 'failure' }]);
 });
 
-test('githubRepo reads owner/repo from the GitHub URL forms git prints, and nothing else', () => {
+test('githubRepo reads the gh -R repository from the URL forms git prints: owner/repo on github.com, host/owner/repo elsewhere', () => {
   const cases = {
     'https://github.com/acme/app.git': 'acme/app',
     'https://github.com/acme/app': 'acme/app',
@@ -78,9 +78,15 @@ test('githubRepo reads owner/repo from the GitHub URL forms git prints, and noth
     'git@github.com:acme/app.git': 'acme/app',
     'ssh://git@github.com/acme/app.git': 'acme/app',
     'ssh://git@github.com:22/acme/my.app': 'acme/my.app',
+    'ssh://git@ssh.github.com:443/acme/app.git': 'acme/app',
+    'https://github.com/acme_corp/app': 'acme_corp/app',
+    // GitHub Enterprise: gh takes HOST/OWNER/REPO and decides itself whether it knows the host
+    'git@github.example.com:acme/app.git': 'github.example.com/acme/app',
+    'https://acme.ghe.com/team_x/app.git': 'acme.ghe.com/team_x/app',
   };
   for (const [url, repo] of Object.entries(cases)) assert.equal(githubRepo(url), repo, url);
-  for (const url of ['https://gitlab.com/acme/app.git', '/srv/git/app.git', 'https://github.com.evil.test/acme/app', 'https://github.com/acme', 'file:///tmp/x', '']) {
+  // clearly not GitHub: other forges, local paths and anything without owner and repository
+  for (const url of ['https://gitlab.com/acme/app.git', 'git@bitbucket.org:acme/app.git', 'https://codeberg.org/acme/app', '/srv/git/app.git', 'C:/git/app.git', 'https://github.com/acme', 'file:///tmp/x', '']) {
     assert.equal(githubRepo(url), null, url);
   }
 });
@@ -98,4 +104,18 @@ test('createGh marks a missing gh or a missing login as unavailable, other failu
   assert.deepEqual([missing.unavailable, missing.message], [true, 'gh run list failed: the GitHub CLI (gh) is not installed or not on PATH']);
   assert.equal(fail(Object.assign(new Error('x'), { status: 4, stderr: 'To get started with GitHub CLI, please run:  gh auth login\n' })).unavailable, true);
   assert.equal(fail(Object.assign(new Error('x'), { status: 1, stderr: 'HTTP 502: Bad Gateway\n' })).unavailable, undefined);
+  // gh reports no such repository: nothing to wait for
+  assert.equal(fail(Object.assign(new Error('x'), { status: 1, stderr: 'GraphQL: Could not resolve to a Repository with the name \'acme/app\'.\n' })).unavailable, true);
+  assert.equal(fail(Object.assign(new Error('x'), { status: 1, stderr: 'HTTP 404: Not Found\n' })).unavailable, true);
+  // a host gh cannot reach: no GitHub there when -R names another host; a network blip on github.com is waited out
+  const connect = (repo) => {
+    try {
+      createGh('/p', { exec: () => { throw Object.assign(new Error('x'), { status: 1, stderr: 'error connecting to h\ncheck your internet connection\n' }); } })(['run', 'list', '-R', repo]);
+    } catch (e) {
+      return e.unavailable;
+    }
+    return null;
+  };
+  assert.equal(connect('git.example.test/acme/app'), true);
+  assert.equal(connect('acme/app'), undefined);
 });

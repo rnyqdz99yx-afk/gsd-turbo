@@ -22,6 +22,7 @@ import { clearAttempts } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
+import { watch } from '../lib/watch.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|state-sync> [args]';
@@ -513,6 +514,13 @@ function coverNestedPackages(root, res, known) {
   return null;
 }
 
+// The view of the project, read fresh: what view prints and status --watch redraws.
+function readView(root) {
+  const config = runtimeConfig(loadConfig(root));
+  const sup = readJson(supPath(root), null);
+  return buildView({ root, sup, running: supAlive(sup, config.poll_seconds), config });
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   const root = projectArg(args);
@@ -603,6 +611,18 @@ async function main() {
     }
     case 'status': {
       if (!root) die('no .planning directory found');
+      if (args.includes('--watch')) {
+        // the live view without the mod: view's text form, redrawn every view.refresh_seconds until Ctrl+C
+        await watch({
+          frame: () => {
+            const view = readView(root);
+            return { text: formatView(view), seconds: view.ui.refreshSeconds };
+          },
+          write: (s) => process.stdout.write(s),
+          tty: Boolean(process.stdout.isTTY),
+        });
+        return 0;
+      }
       const config = runtimeConfig(loadConfig(root)); // a corrupt config stops the daemon; report it instead of a normal status
       const sup = readJson(supPath(root), null);
       const running = supAlive(sup, config.poll_seconds);
@@ -617,9 +637,7 @@ async function main() {
     }
     case 'view': {
       if (!root) die('no .planning directory found');
-      const config = runtimeConfig(loadConfig(root));
-      const sup = readJson(supPath(root), null);
-      const view = buildView({ root, sup, running: supAlive(sup, config.poll_seconds), config });
+      const view = readView(root);
       out(args.includes('--json') ? JSON.stringify(view) : formatView(view));
       return 0;
     }

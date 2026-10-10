@@ -401,3 +401,25 @@ test('laneAgents after a fork: the current session finds agents launched before 
   assert.deepEqual(r.agents.map((a) => [a.agentId, a.sessionId]).sort(), [[AGENT, SESSION], [AGENT2, FORK]].sort());
   assert.deepEqual(laneAgents({ dirs: [dir], main: null, root, now: NOW, stallMs: STALL }), { transcript: null, sessionId: null, lastAt: null, agents: [] });
 });
+
+test('a Claude home spelled through a link still accepts the linkScanPath its job state names under projects/', () => {
+  const base = tmpDir('trh');
+  const realHome = path.join(base, 'real-home');
+  fs.mkdirSync(realHome);
+  const home = path.join(base, 'home-link');
+  fs.symlinkSync(realHome, home, 'junction'); // CLAUDE_CONFIG_DIR given through a link; the job state names the real path
+  const root = path.join(base, 'app');
+  fs.mkdirSync(root);
+  const current = writeSession(projectDirFor(realHome, root), CURRENT, [entry.user('resumed', T0)]);
+  writeJob(realHome, JOB, { sessionId: STALE, resumeSessionId: CURRENT, linkScanPath: current });
+  assert.deepEqual(laneTranscript({ home, root, jobId: JOB }), { file: current, sessionId: CURRENT, via: 'job-link' });
+  // and the other way round: the home as is, the linkScanPath through the link
+  const viaLink = path.join(home, path.relative(realHome, current));
+  writeJob(realHome, JOB, { sessionId: STALE, resumeSessionId: CURRENT, linkScanPath: viaLink });
+  assert.deepEqual(laneTranscript({ home: realHome, root, jobId: JOB }), { file: viaLink, sessionId: CURRENT, via: 'job-link' });
+  // a path outside projects/ stays refused whatever its spelling
+  const outside = path.join(home, 'elsewhere.jsonl');
+  fs.writeFileSync(outside, '');
+  writeJob(realHome, JOB, { sessionId: STALE, resumeSessionId: CURRENT, linkScanPath: outside });
+  assert.equal(laneTranscript({ home: realHome, root, jobId: JOB }).via, 'job-session');
+});

@@ -27,7 +27,7 @@ const NODE = '/usr/bin/node'
 // A session in /work: .planning/turbo/ exists unless turbo is false; views[i] answers the i-th view read; surfaces
 // is what $.session.surfaces() reports (none: a background session nobody is attached to). PATH holds a relative
 // entry and a directory without node before /usr/bin; the project itself has a node that must never run.
-function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCode: 0, stdout: 'answered q1 (pane)\n', stderr: '' } as Run, answerDelayMs = 0, surfaces = ['terminal'], binExists = true, pathVar = '.:relative/bin:/opt/none:/usr/bin' } = {}) {
+function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCode: 0, stdout: 'answered q1 (pane)\n', stderr: '' } as Run, answerDelayMs = 0, surfaces = ['terminal'], binExists = true, pathVar = '.:relative/bin:/opt/none:/usr/bin', openFails = false, surfacesFail = 0 } = {}) {
   const calls: string[][] = []
   const toasts: string[] = []
   const probed: string[] = []
@@ -36,7 +36,9 @@ function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCo
   mock.env(on, { CLAUDE_CONFIG_DIR: '/home/dev/.claude', PATH: pathVar })
   on('session.start', () => ({ cwd: '/work' }))
   on('session.cwd', () => ({ value: '/work' }))
-  on('session.surfaces', () => ({ value: surfaces }))
+  // a stub answers a failing call with { deny } (the call rejects in the mod)
+  let surfacesLeft = surfacesFail
+  on('session.surfaces', () => (surfacesLeft-- > 0 ? { deny: 'surfaces unavailable' } : { value: surfaces }))
   // the kit hands fs paths over absolute, in the platform's form (C:\work\.planning on Windows)
   on('fs.exists', (_$, e) => {
     probed.push(e.path)
@@ -45,7 +47,7 @@ function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCo
     return { value: turbo && /[\\/]work[\\/]\.planning([\\/]turbo)?$/.test(e.path) }
   })
   on('command.register', () => ({ value: undefined }))
-  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('ui.open', () => (openFails ? { deny: 'no room for a pane' } : { value: { isPlaced: true } }) as never)
   on('ui.log', () => ({ value: undefined }))
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
@@ -174,6 +176,26 @@ test('toasts remember lanes across reads: a red CI run toasted before its lane l
   await clock.settle()
   await clock.advance(6000)
   expect(toasts).toEqual(['phase 40 done'])
+})
+
+test('/turbo-view whose pane cannot open says why in a toast instead of failing', async ($, on) => {
+  const { toasts, clock } = stub(on, { openFails: true })
+  await start($)
+  await clock.settle()
+  const answer = await $.command.run({ command: 'turbo-view', args: '' })
+  await clock.settle()
+  expect(answer).toEqual({})
+  expect(toasts).toEqual(['turbo-view: pane not opened: $.ui.open: no room for a pane'])
+})
+
+const viewReads = (calls: string[][]) => calls.filter((c) => c[2] === 'view').length
+
+test('surfaces that cannot be read still start the clock (as the foreground)', async ($, on) => {
+  const { calls, clock } = stub(on, { surfacesFail: 1 })
+  await start($)
+  await clock.settle()
+  await clock.advance(3000)
+  expect(viewReads(calls)).toBe(2)
 })
 
 test('outside a turbo project nothing runs, and /turbo-view says why', async ($, on) => {

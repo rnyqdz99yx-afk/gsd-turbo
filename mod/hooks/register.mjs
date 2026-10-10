@@ -19,6 +19,8 @@ let busy = false; // a read is running
 let again = false; // a forced read was asked for while one was running
 let timer = null;
 let period = 0;
+let clockError = null; // why the clock last failed to start, logged once
+let live = false; // an interactive session started: the mod reads (a -p run never does)
 let opened = false; // the pane was opened once in this module's life; the clock never reopens a closed pane
 // The "Other…" field (view-model.mjs): every read redraws the pane, so what is typed is kept here and drawn back.
 let field = NO_FIELD;
@@ -48,16 +50,35 @@ async function findNode($) {
   throw new Error('node not found in PATH');
 }
 
-// One clock for every read: view.refresh_seconds while a surface is attached, 15 s otherwise and outside turbo.
+// One clock for every read: view.refresh_seconds while a surface is attached (also when the surfaces cannot be
+// read), 15 s otherwise and outside turbo. A clock that failed to start stays null, so the next call starts it.
 async function arm($) {
-  const surfaces = await $.session.surfaces();
-  const ms = root ? refreshMs(view, surfaces.length > 0) : BACKGROUND_MS;
-  if (ms === period) return;
+  let foreground = true;
+  try {
+    foreground = (await $.session.surfaces()).length > 0;
+  } catch {
+    // unknown: read as often as an attached session does
+  }
+  const ms = root ? refreshMs(view, foreground) : BACKGROUND_MS;
+  if (timer && ms === period) return;
   if (timer) timer.cancel();
-  period = ms;
+  timer = null;
   timer = $.clock.every(ms, () => {
     void refresh($, false);
   });
+  period = ms;
+}
+
+// arm, with a failure logged once until the clock runs again: the band retries it on every draw.
+async function keepClock($) {
+  try {
+    await arm($);
+    clockError = null;
+  } catch (err) {
+    const why = firstLine(err?.message ?? err);
+    if (why !== clockError) $.ui.log(`turbo-view: clock not set: ${why}`);
+    clockError = why;
+  }
 }
 
 // Reads the view once: finds the project first, then runs turbo-run view --json in it.
@@ -112,11 +133,7 @@ async function refresh($, force) {
       $.ui.log(`turbo-view: pane not opened: ${firstLine(err?.message ?? err)}`);
     }
   }
-  try {
-    await arm($);
-  } catch (err) {
-    $.ui.log(`turbo-view: clock not set: ${firstLine(err?.message ?? err)}`);
-  }
+  await keepClock($);
   $.ui.invalidate('ui.render');
   if (again) {
     again = false;
@@ -145,6 +162,7 @@ export function register(on) {
   on('session.start', async ($, e, next) => {
     // a -p run draws nowhere and nobody answers there: the mod stays idle
     if (!e.isInteractive) return next(e);
+    live = true;
     try {
       await $.command.register({ name: 'turbo-view', description: 'Open the gsd-turbo live view: lanes, subagents, questions, commits', immediate: true });
     } catch (err) {
@@ -158,12 +176,20 @@ export function register(on) {
     if (!root) await locate($);
     if (!root) return { text: 'turbo-view: no .planning/turbo/ in this directory or above it' };
     opened = true;
-    await $.ui.open({ id: PANE_ID, title: PANE_TITLE, focus: true });
+    try {
+      await $.ui.open({ id: PANE_ID, title: PANE_TITLE, focus: true });
+    } catch (err) {
+      // Claude Code names the mod in the message already: "turbo-view: $.ui.open: <reason>"
+      $.ui.toast(`turbo-view: pane not opened: ${firstLine(err?.message ?? err).replace(/^turbo-view: /, '')}`, { timeoutMs: TOAST_MS });
+    }
+    // reads at once, and starts the clock again if it failed to start
     void refresh($, true);
     return {};
   });
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    // the clock failed to start: every draw of the band tries again, so the view never stops reading
+    if (live && !timer) void keepClock($);
     const line = bandLine(view, { error });
     if (!line) return next(e);
     const { Box, Text } = $.ui.resolve(e);

@@ -256,3 +256,60 @@ test('the mod is a plugin whose hooks module loads in plain Node and registers i
   });
   assert.deepEqual(hooks, [['session.start', null], ['command.run', { command: 'turbo-view' }], ['ui.render', { component: 'AbovePrompt' }], ['ui.render', { component: 'Pane', requestId: PANE_ID }]]);
 });
+
+// The mod shell driven in plain Node through a fake $, for what the claude plugin test kit cannot stub: a $.clock.every
+// that fails (mock.clock owns clock.every). Each call loads a fresh copy of the module (its state is module-level).
+async function shell(name) {
+  const { register } = await import(`../mod/hooks/register.mjs?${name}`);
+  const hooks = {};
+  register((event, a, b) => {
+    hooks[typeof a === 'function' ? event : `${event}:${Object.values(a).join(':')}`] = typeof a === 'function' ? a : b;
+    return { catch() {} };
+  });
+  const BIN = '/home/dev/.claude/turbo/bin/turbo-run.mjs';
+  const timers = [];
+  const runs = [];
+  let starts = 0;
+  const $ = {
+    session: { cwd: async () => '/work', surfaces: async () => ['terminal'] },
+    fs: { exists: async (p) => ['/work/.planning', '/work/.planning/turbo', BIN, '/usr/bin/node'].includes(p) },
+    env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: '/home/dev/.claude', PATH: '/usr/bin' })[name] },
+    process: { run: async (argv) => (runs.push(argv), { exitCode: 0, stdout: JSON.stringify(view()), stderr: '' }) },
+    clock: {
+      every: (ms, fn) => {
+        if (++starts === 1) throw new Error('clock unavailable');
+        const t = { ms, fn, cancelled: false, cancel: () => { t.cancelled = true; } };
+        timers.push(t);
+        return t;
+      },
+    },
+    ui: { open: async () => ({ isPlaced: true }), toast() {}, log() {}, invalidate() {}, resolve: () => ({ Box: (p) => p, Text: (p) => p }) },
+    command: { register: async () => {} },
+  };
+  const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
+  await hooks['session.start']($, { isInteractive: true }, (e) => e);
+  await settle();
+  return { hooks, $, timers, runs, settle, live: () => timers.filter((t) => !t.cancelled) };
+}
+
+test('a clock that failed to start at the first read is started by the next band draw, and the view keeps reading', async () => {
+  const s = await shell('band');
+  assert.deepEqual([s.runs.length, s.timers.length], [1, 0], 'one read, no clock');
+  await s.hooks['ui.render:AbovePrompt'](s.$, { component: 'AbovePrompt' }, async () => null);
+  await s.settle();
+  assert.deepEqual(s.live().map((t) => t.ms), [3000]);
+  await s.live()[0].fn();
+  await s.settle();
+  assert.equal(s.runs.length, 2);
+  await s.hooks['ui.render:AbovePrompt'](s.$, { component: 'AbovePrompt' }, async () => null);
+  await s.settle();
+  assert.equal(s.live().length, 1, 'never a second clock');
+});
+
+test('a clock that failed to start at the first read is started by /turbo-view', async () => {
+  const s = await shell('command');
+  assert.equal(s.timers.length, 0);
+  assert.deepEqual(await s.hooks['command.run:turbo-view'](s.$, { command: 'turbo-view', args: '' }), {});
+  await s.settle();
+  assert.deepEqual(s.live().map((t) => t.ms), [3000]);
+});

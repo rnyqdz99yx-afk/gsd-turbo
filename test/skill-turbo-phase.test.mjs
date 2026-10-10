@@ -147,4 +147,8 @@ test('turbo-phase skill: owner questions (S1) — list and classify, pre-answers
   for (const n of ['turbo-run questions N', '**Pre-answers**', '**At a checkpoint**', 'delivery path']) assert.ok(execute.includes(n), n);
   const loop = s.slice(s.indexOf('\n## The step loop\n'), s.indexOf('\n### Stopping early\n'));
   assert.ok(loop.indexOf('**Delivery**') >= 0 && loop.indexOf('**Delivery**') < loop.indexOf('1. `turbo-run phase-step N`'), 'delivery before the step loop');
+  // the lane commits the whole answers directory before every step's done mark and in every stop
+  assert.match(loop, /^4\. \*\*Commit the answers\*\* \(section \*\*Owner questions\*\*\), then `turbo-run phase-step N --done/m);
+  assert.match(stop, /^0\. .*Then \*\*Commit the answers\*\*/m);
+  assert.match(s, /\*\*Commit the answers\.\*\* .*Commit the whole directory with `gsd-tools commit "docs\(phase-N\): owner answers" --files \.planning\/turbo\/answers\/` before each `turbo-run phase-step N --done` and in \*\*Stopping early\*\*/);
 });

@@ -66,7 +66,7 @@ test('turbo-phase skill: inside execute the context stop finishes the plan or wa
   const loop = s.slice(s.indexOf('## The step loop'), s.indexOf('### Stopping early'));
   const point = loop.split('\n').find((l) => l.startsWith('2. '));
   assert.match(point, /`turbo-run state-sync N` \(best effort/);
-  assert.match(point, /Inside step \*\*execute\*\*.*before each wave or plan.*finish the current plan or wave.*without marking the step done/);
+  assert.match(point, /[Ww]herever GSD's execute-phase runs inside a step \(execute, the re-runs in final-gate and the uat gap round\).*before each wave or plan.*finish the current plan or wave.*without marking the step done/);
 });
 
 test('turbo-phase skill: passing GSD core reference files as paths is a listed exception to never rebuilding GSD prompts', () => {

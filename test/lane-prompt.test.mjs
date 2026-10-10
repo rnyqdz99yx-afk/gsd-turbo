@@ -38,6 +38,7 @@ test('inside a long step the context stop finishes the current plan or wave and 
     const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
     const paused = s.split('\n').find((l) => l.includes('lane-status 3 paused-context'));
     assert.match(paused, /inside a step, finish the current plan or wave and do not mark the step done/, mode);
+    assert.match(paused, /wherever GSD's execute-phase runs inside a step/, mode);
     assert.match(paused, /state-sync 3 \(best effort/, mode);
     if (mode === 'safe') assert.match(s.split('\n').find((l) => l.startsWith('2. ')), /state-sync 3 \(best effort/);
   }

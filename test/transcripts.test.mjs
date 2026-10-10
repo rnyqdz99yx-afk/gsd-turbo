@@ -157,14 +157,29 @@ test('planOf reads the plan and task GSD dispatch descriptions name', () => {
   assert.deepEqual(planOf('Continue plan 32-07 from Task 2'), { plan: '32-07', task: '2' });
   assert.deepEqual(planOf('Verify phase 32 goal achievement'), { plan: null, task: null });
   assert.deepEqual(planOf(undefined), { plan: null, task: null });
-  // a bare plan id, with or without a task
+  // a bare plan id at the start or right after Execute / Continue, with or without a task
   assert.deepEqual(planOf('Execute 32-07 task 3'), { plan: '32-07', task: '3' });
   assert.deepEqual(planOf('Execute 32-07'), { plan: '32-07', task: null });
   assert.deepEqual(planOf('Execute 4.1-02 Task 1'), { plan: '4.1-02', task: '1' });
-  assert.deepEqual(planOf('Fix 32-07-PLAN.md wording'), { plan: '32-07', task: null });
-  // not a plan id: a CVE number, a date
-  assert.deepEqual(planOf('Fix CVE-2024-1234 in the parser'), { plan: null, task: null });
-  assert.deepEqual(planOf('Release notes for 2026-10-11'), { plan: null, task: null });
+  assert.deepEqual(planOf('Continue 32-07 from task 2'), { plan: '32-07', task: '2' });
+  assert.deepEqual(planOf('32-07 executor'), { plan: '32-07', task: null });
+  assert.deepEqual(planOf('Execute 09.2-10 of phase 9.2'), { plan: '09.2-10', task: null });
+  // a plan with a task range: the plan, never the range
+  assert.deepEqual(planOf('Execute plan 10 tasks 1-2 of phase 09.2'), { plan: '09.2-10', task: null });
+  assert.deepEqual(planOf('Execute plan 4 tasks 2-5 of phase 12'), { plan: '12-4', task: null });
+  // when unsure, none: a wrong plan is worse than none
+  for (const d of [
+    'Re-run tasks 3-7 for phase 20', // a task range
+    'Audit phase 28 plans (01-08, 09-17, 18-25)', // plan ranges of an auditor or checker
+    'Close gap plans 13-14 for phase 38', // a gap range
+    'Execute gap plans 12-13 of phase 41.1',
+    '12-13 of phase 41.1 gap closure', // an id whose phase is not the phase named
+    'Execute 32-07 of phase 31',
+    'Explore phases 40-42 for shared code',
+    'Fix 32-07-PLAN.md wording', // an id elsewhere in the text
+    'Fix CVE-2024-1234 in the parser', // a CVE number
+    'Release notes for 2026-10-11', // a date
+  ]) assert.deepEqual(planOf(d), { plan: null, task: null }, d);
 });
 
 test('normalCwd turns a Git Bash path into a Windows one on win32 only; cwdInside accepts the root and directories below it', () => {

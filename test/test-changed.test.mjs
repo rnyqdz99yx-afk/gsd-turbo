@@ -894,6 +894,16 @@ test('multi review 1: an entry\'s own change selects the entry\'s tests that rea
   assert.deepEqual(s.server.groups.map((g) => [g.cwd, g.args]), [['server', ['--test', 'test/a.test.js', 'test/x.test.js']]]);
 });
 
+test('multi re-review N1: a single nested entry selects its test that reaches its change through a root helper', () => {
+  // what init writes for a workspaces root with one package: no root entry
+  const files = {
+    'server/src/model.js': '', 'server/test/model.test.js': "import '../src/model.js'",
+    'test-utils/factory.js': "import '../server/src/model.js'", 'server/test/factory.test.js': "import '../../test-utils/factory.js'",
+  };
+  const r = plansOf(multi(['server/src/model.js'], { files, entries: [SERVER_E] }));
+  assert.deepEqual(r.server.groups.map((g) => [g.cwd, g.args]), [['server', ['--test', 'test/factory.test.js', 'test/model.test.js']]]);
+});
+
 test('multi review 3: a relative import of a package directory reaches every file of that package', () => {
   // '../server' resolves through server/package.json "main", which an index.* rule never sees
   const main = plansOf(multi(['server/src/main.js'], {

@@ -423,3 +423,26 @@ test('a Claude home spelled through a link still accepts the linkScanPath its jo
   writeJob(realHome, JOB, { sessionId: STALE, resumeSessionId: CURRENT, linkScanPath: outside });
   assert.equal(laneTranscript({ home: realHome, root, jobId: JOB }).via, 'job-session');
 });
+
+test('laneAgents keeps the identity first seen per agent: a meta rewritten to { agentType, stoppedByUser } keeps a nested agent out and a direct one its plan', () => {
+  const { root, dir } = setup();
+  const nested = 'a1000000000000007';
+  const laneFile = writeSession(dir, SESSION, [entry.launched('toolu_1', AGENT, at('10:00'))]);
+  const direct = writeAgent(dir, SESSION, AGENT, agentEntries(AGENT, '10:00', '10:50'));
+  const inner = writeAgent(dir, SESSION, nested, agentEntries(nested, '10:10', '10:55'), { agentType: 'gsd-code-reviewer', description: 'Review', spawnDepth: 2 });
+  // one view: the lane's agents and the cache it leaves, through JSON as view-cache.json keeps it
+  const view = (cache) => {
+    const used = {};
+    const r = laneAgents({ dirs: [dir], main: { file: laneFile, sessionId: SESSION }, root, now: NOW, stallMs: STALL, cache, used });
+    return { ids: r.agents.map((a) => [a.agentId, a.description, a.plan, a.model]), used: JSON.parse(JSON.stringify(used)) };
+  };
+  const first = view({});
+  const expected = [[AGENT, 'Execute plan 07 of phase 32', '32-07', 'opus']];
+  assert.deepEqual(first.ids, expected);
+  for (const [file, agentType] of [[direct, 'gsd-executor'], [inner, 'gsd-code-reviewer']]) {
+    fs.writeFileSync(file.replace(/\.jsonl$/, '.meta.json'), JSON.stringify({ agentType, stoppedByUser: true }));
+  }
+  const second = view(first.used);
+  assert.deepEqual(second.ids, expected);
+  assert.deepEqual(view(second.used).ids, expected);
+});

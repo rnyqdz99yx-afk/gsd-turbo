@@ -164,3 +164,23 @@ test('turbo-phase skill: the release rule and the gap-plan rule (S4), verbatim a
   for (const n of ['continuation agent', '**Pre-answers**', '**At a checkpoint**', '--kind human-action', 'recommended for the project', 'Never kill the process']) assert.ok(rel.includes(n), n);
   for (const n of ['gsd-plan-phase --gaps', 'verify-work', 'gsd-planner', 'revision prompt']) assert.ok(gap.includes(n), n);
 });
+
+test('turbo-phase skill: gap rounds (S4) — execute and uat loop on phase-step --attempt within gap_rounds, each round with new evidence; final-gate keeps one round', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  for (const step of ['execute', 'uat']) {
+    const body = section(s, step);
+    for (const n of [`turbo-run phase-step N --attempt ${step}`, `attempt ${step} <n> of <max>: go`, `attempt ${step} <n> of <max>: stop: <reason>`, '`gap_rounds`', 'new evidence', '**Gap plans**', 'args="N --gaps-only --no-transition"']) {
+      assert.ok(body.includes(n), `${step}: ${n}`);
+    }
+    assert.ok(!body.includes('after one gap-closure round'), step);
+    assert.ok(!body.includes('`n` above 1'), step);
+  }
+  assert.match(section(s, 'execute'), /then run point 2 again/);
+  assert.match(section(s, 'uat'), /this point runs again/);
+  const fg = section(s, 'final-gate');
+  assert.match(fg, /one gap-closure round, outside `gap_rounds`/);
+  assert.match(fg, /no `--attempt execute` here/);
+  assert.ok(!fg.includes('as in point 2 of step **execute**'), 'execute point 2 is a loop now');
+  const loop = s.slice(s.indexOf('## The step loop'), s.indexOf('### Stopping early'));
+  assert.ok(loop.includes('(the gap-closure rounds of execute and uat, fix iterations, final-gate rounds)'));
+});

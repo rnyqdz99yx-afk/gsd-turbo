@@ -132,3 +132,46 @@ test('turbo-run phase-step N --attempt execute|uat prints the round and its verd
   assert.equal(lines.at(-1), 'attempt fix 1');
   assert.ok(fs.existsSync(path.join(p.root, '.planning', 'turbo', 'run', 'p3-gap-rounds.json')));
 });
+
+// F6: a verifier may write a truth as a YAML block scalar (folded or literal, any chomping), with the text on the lines below
+const blockGap = (truth, ind = '>-', status = 'failed') => [`  - truth: ${ind}`, ...truth.map((l) => (l ? `      ${l}` : '')), `    status: ${status}`, '    reason: |', '      # not a comment here', '      the route answers 500'];
+
+test('verificationGaps reads block scalars: folded and literal, every chomping, a blank line inside, CRLF (F6)', () => {
+  for (const ind of ['>', '>-', '>+', '|', '|-', '|+', '>2-', '|2']) {
+    const text = report([...blockGap(['Login: the form', 'signs in'], ind), ...blockGap(['Logout clears', '', 'the session'], ind, 'partial')]);
+    const want = [{ status: 'failed', truth: 'Login: the form signs in' }, { status: 'partial', truth: 'Logout clears the session' }];
+    assert.deepEqual(verificationGaps(text), { score: '3/5 must-haves verified', gaps: want }, ind);
+    assert.deepEqual(verificationGaps(text.replace(/\n/g, '\r\n')), { score: '3/5 must-haves verified', gaps: want }, `${ind} CRLF`);
+  }
+  // a plain truth that goes on over the next lines, keys after more spaces behind the dash, a dash alone on its line
+  assert.deepEqual(verificationGaps(report(['  -   truth: Export writes', '          a CSV file', '      status: failed', '  -', '    truth: Import reads it', '    status: partial'])).gaps,
+    [{ status: 'failed', truth: 'Export writes a CSV file' }, { status: 'partial', truth: 'Import reads it' }]);
+});
+
+test('verificationGaps: a gap it cannot read makes the report unreadable, never the same evidence (F6)', () => {
+  const cases = {
+    'a quoted truth over two lines': ['  - truth: "Login: the form', '      signs in"', '    status: failed'],
+    'a gap without a truth': ['  - status: failed', '    reason: x'],
+    'a flow mapping': ['  - {truth: Login, status: failed}'],
+    'an alias': ['  - truth: *login', '    status: failed'],
+  };
+  for (const [name, gap] of Object.entries(cases)) {
+    const v = verificationGaps(report(gap));
+    assert.ok(v && typeof v.unreadable === 'string' && v.unreadable, name);
+  }
+  assert.equal(verificationGaps(report(LOGIN)).unreadable, undefined);
+});
+
+test('gap rounds: the spec\'s case with block scalars — A fixed, C broke, the same counts — is new evidence; an unreadable report stops a later round (F6)', () => {
+  const p = project();
+  p.verification(report([...blockGap(['Alpha works']), ...blockGap(['Beta works'])]));
+  assert.equal(round(p.root, 'execute', 3).go, true);
+  p.verification(report([...blockGap(['Beta works']), ...blockGap(['Gamma works'])]));
+  let r = round(p.root, 'execute', 3);
+  assert.deepEqual([r.n, r.go, r.failing], [2, true, 2]);
+  p.verification(report(['  - truth: "Gamma works', '      still"', '    status: failed']));
+  assert.equal(gapEvidence(p.root, '3', 'execute').items, null);
+  r = round(p.root, 'execute', 3);
+  assert.equal(r.go, false);
+  assert.match(r.reason, /^no result to compare: 03-VERIFICATION\.md: a gap cannot be read \(.+\)$/);
+});

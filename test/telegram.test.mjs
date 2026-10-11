@@ -407,3 +407,41 @@ test('an answer by Telegram carries the time it was handled, after the long poll
   assert.equal(readAnswers(root, '3')[0].at, later.toISOString());
   assert.equal(readTelegramState(root).offsetAt, later.toISOString());
 });
+
+const stateOn = (root) => path.join(root, '.planning', 'turbo', 'run', 'telegram.json');
+
+test('a state file that cannot be read: nothing is sent and the reason is logged once; readable again, the channel goes on; one that holds no state starts afresh (S1b review F2)', async () => {
+  const { root, ctx, bot, logs } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  fs.mkdirSync(stateOn(root), { recursive: true });
+  for (let i = 0; i < 3; i++) await telegramTick(ctx, NOW);
+  assert.deepEqual(bot.calls, []);
+  const lines = logs.filter((l) => /telegram\.json/.test(l));
+  assert.equal(lines.length, 1, lines.join('\n'));
+  assert.match(lines[0], /^telegram: run\/telegram\.json cannot be read \(\w+\); Telegram waits until it can$/);
+  fs.rmSync(stateOn(root), { recursive: true });
+  await telegramTick(ctx, NOW);
+  assert.equal(bot.sent().length, 1);
+  fs.writeFileSync(stateOn(root), 'not json');
+  await telegramTick(ctx, NOW);
+  assert.equal(bot.sent().length, 2, 'sent again into a fresh state');
+  assert.ok(logs.includes('telegram: run/telegram.json held no turbo state; it starts afresh, and the open questions are sent again'), logs.join('\n'));
+});
+
+test('a state file that cannot be written: the question goes out once, then nothing is sent and no update taken until it can; nothing twice (S1b review F2)', async () => {
+  const { root, ctx, bot, logs } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  const tmp = `${stateOn(root)}.tmp-${process.pid}`;
+  fs.mkdirSync(tmp, { recursive: true });
+  for (let i = 0; i < 4; i++) await telegramTick(ctx, NOW);
+  assert.equal(bot.sent().length, 1);
+  assert.equal(polls(bot).length, 0, 'no update taken that could not be recorded');
+  const lines = logs.filter((l) => /cannot be written/.test(l));
+  assert.equal(lines.length, 1, lines.join('\n'));
+  assert.match(lines[0], /^telegram: run\/telegram\.json cannot be written \(\w+\); nothing new is sent until it can$/);
+  fs.rmSync(tmp, { recursive: true });
+  await telegramTick(ctx, NOW);
+  assert.equal(bot.sent().length, 1, 'not sent again: the state kept in memory is written');
+  assert.equal(polls(bot).length, 1);
+  assert.equal(readTelegramState(root).sent['3:03-01-t2'].messageId, 101);
+});

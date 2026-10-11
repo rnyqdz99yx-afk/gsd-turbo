@@ -52,6 +52,7 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
 
 1. **Already running?** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status`.
    - If it fails, show its output and stop.
+   - If it prints `attended:` lines, a phase is in the user's own sitting and no lane runs until it is handed back: tell the user which phase, that `/turbo-autonomous attend <N>` goes on with the sitting and that `turbo-run attend <N> --done` gives the phase back to its lane. Then go on with the bullets below.
    - If it prints `supervisor: running`, show the output and tell the user a run is already in progress (watch it with `claude attach <session id>` or `/turbo-autonomous status`, stop it with `/turbo-autonomous stop`). Then run **Answer the open questions** (it only says so when there are none) and stop. Commit nothing yourself: a background session is working in this checkout.
 2. **Compatibility.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor`.
    - Exit code 2 (`mode: unsupported`): show the failed checks with what to fix and stop.
@@ -63,7 +64,8 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
    - Then run `git status --porcelain` again. If the output is not empty, show it and stop: the background sessions work in this checkout, so a dirty tree is never handed to them, and the test runner records a green result only on a clean tree.
 5. **Start.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" start <range flags>`, then `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status`.
    - If `start` exits with a non-zero code, show its output (it includes the end of the supervisor log, or the usage for wrong range flags) and stop.
-   - If the status output has a `lane:` line, the first phase is running. If it is not the phase the user expected (for example the `--only` or `--from` phase), run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" stop` at once, show the status output and report it.
+   - If `start` or the status output has `attended:` lines, a phase is in the user's own sitting and no lane runs until it is handed back: tell the user which phase, that `/turbo-autonomous attend <N>` goes on with the sitting and that `turbo-run attend <N> --done` gives the phase back to its lane; say no phase is running, whatever the `lane:` line names.
+   - Otherwise, if the status output has a `lane:` line, the first phase is running. If it is not the phase the user expected (for example the `--only` or `--from` phase), run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" stop` at once, show the status output and report it.
    - If it has no `lane:` line yet, tell the user the first phase starts within `poll_seconds` (20 by default) and suggest `/turbo-autonomous status`.
    - If it prints `supervisor: not running`, show the last lines of `.planning/turbo/logs/supervisor.log` and stop.
 6. **Open questions.** Run **Answer the open questions**: questions from earlier runs, answered now, let their lane go on without a stop.

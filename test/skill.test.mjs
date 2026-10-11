@@ -97,3 +97,13 @@ test('turbo-autonomous attend: GSD\'s gates follow the gates: line of turbo-run 
   assert.ok(five.indexOf('`gates: turn off`') < five.indexOf('gates off <N>') && five.indexOf('gates off <N>') < five.indexOf('`gates: keep on`'), 'gates off only under turn off');
   assert.ok(!a.includes('as a lane does before it executes; the lane runs those gates in parallel after the hand-back'), 'no unconditional claim');
 });
+
+test('turbo-autonomous start flow: an attended: line means no lane runs; the user hears how to hand the phase back (F5)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const start = s.slice(s.indexOf('## Otherwise'), s.indexOf('## Answer the open questions'));
+  const one = start.slice(start.indexOf('1. **Already running?**'), start.indexOf('2. **Compatibility.**'));
+  const five = start.slice(start.indexOf('5. **Start.**'), start.indexOf('6. **Open questions.**'));
+  for (const part of [one, five]) {
+    for (const n of ['`attended:`', '/turbo-autonomous attend <N>', 'turbo-run attend <N> --done']) assert.ok(part.includes(n), n);
+  }
+});

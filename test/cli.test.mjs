@@ -1166,3 +1166,29 @@ test('resume N (and so attend N --done) rebuilds the phase\'s questions before a
   assert.match(run(['resume', '4'], root), /phase 4 cleared; run: turbo-run start/);
   assert.deepEqual(readJsonFile(path.join(runDirOf(root), 'p4-questions.json')), [], 'no questionsReady for a finished plan at the next tick');
 });
+
+test('a forgotten mark is never hidden: status shows the lane held instead of claude attach, start names the mark, attend M --done without a mark on M refuses (F5)', async (t) => {
+  const root = plainProject();
+  writeSup(root, { pid: null, lane: { phase: '4', sessionId: 'abc123', restarts: 0, mode: 'full', launchedAt: ago(60) } });
+  fs.writeFileSync(path.join(runDirOf(root), 'p4-attend.json'), JSON.stringify({ phase: '4', at: ago(30), sessionId: 'abc123' }));
+  const st = run(['status'], root);
+  assert.ok(!st.includes('claude attach abc123'), st);
+  assert.match(st, /^ {2}held: phase 4 attended in the owner's session; no lane runs until turbo-run attend <phase> --done$/m);
+
+  fs.writeFileSync(path.join(runDirOf(root), 'phase-p5.json'), JSON.stringify({ phase: '5', done: [], attempts: { execute: 1 } }));
+  const r = await runAsync(['attend', '5', '--done'], root, { ...process.env, TURBO_LANE: '' });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /phase 5 is not attended: nothing to hand back \(attended: phase 4\)/);
+  assert.equal(readJsonFile(path.join(runDirOf(root), 'phase-p5.json')).attempts.execute, 1, 'no budget reset');
+  assert.ok(fs.existsSync(path.join(runDirOf(root), 'p4-attend.json')));
+  assert.equal(readSup(root).pid, null, 'no supervisor started');
+
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  writeSup(p.root, { pid: null, lane: null });
+  fs.writeFileSync(path.join(runDirOf(p.root), 'p4-attend.json'), JSON.stringify({ phase: '4', at: ago(30), sessionId: null }));
+  const s = await runAsync(['start'], p.root, p.env);
+  assert.equal(s.code, 0, s.stderr);
+  assert.match(s.stdout, /^attended: phase 4 since \S+ in the owner's session \(hand it back: turbo-run attend 4 --done\)$/m);
+  assert.equal((await runAsync(['stop'], p.root, p.env)).code, 0);
+});

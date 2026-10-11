@@ -20,13 +20,13 @@ import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, VALUE_FLAGS as PHASE_VALUE_FLAGS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
-import { clearAttempts } from '../lib/phase-progress.mjs';
+import { clearAttempts, nextStep, readProgress } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
-import { attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
+import { attendGates, attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync|questions|answer|agent-tail> [args]';
@@ -592,12 +592,16 @@ function attend(root, id) {
   const sup = readJson(supPath(root), null);
   const lane = sup?.lane ? String(sup.lane.phase) : null;
   if (lane !== id) die(`phase ${id} is not the supervisor's lane${lane ? ` (that is phase ${lane})` : ''}: attend takes over the lane of the run (turbo-run status names it); nothing was stopped`);
+  // GSD's gates in the sitting, decided here from the lane's mode and next step; the skill follows the gates: line
+  const gates = attendGates({ mode: sup.lane.mode, next: nextStep(readProgress(root, id)) });
+  if (gates.refuse) die(`phase ${id} is not ready to attend: ${gates.refuse}; nothing was stopped`);
   stopDaemon(root, sup);
   writeAttend(root, id, { sessionId: sup.lane.sessionId || null });
   const code = stopLanes(root, sup);
   const released = releaseStops(root, id);
   out(`phase ${id}: attended in this session; no lane starts, relaunches or wakes until turbo-run attend ${id} --done`);
   out(`open plans: ${plans.join(', ')}`);
+  out(`gates: ${gates.gates === 'off' ? 'turn off' : 'keep on'} (${gates.why})`);
   if (released.length) out(`released stops: ${released.join(', ')} (asked ahead again)`);
   if (code !== 0) process.stderr.write('a lane session did not stop (see the warnings above): stop it with claude stop <id> before anything runs in this checkout\n');
   return code;

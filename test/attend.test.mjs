@@ -6,7 +6,8 @@ import { tmpDir } from './helpers/tmp.mjs';
 import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
 import { deliveryState, refreshQuestions, stopQuestion } from '../lib/questions.mjs';
 import { answerQuestion, preAnswerText } from '../lib/answers.mjs';
-import { attendFile, attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
+import { STEPS } from '../lib/phase-progress.mjs';
+import { attendFile, attendGates, attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 
 const AG = 'a0123456789abcdef';
 
@@ -54,4 +55,20 @@ test('releaseStops: the checkpoints a stopped lane waits at are asked ahead agai
   assert.deepEqual([a.stopped, a.state, a.options.map((o) => o.defer)], [false, 'open', [true]], 'a physical action is asked ahead as a preference again');
   assert.deepEqual(releaseStops(root, '32'), []);
   assert.deepEqual(releaseStops(tmpDir('att-none'), '3'), []);
+});
+
+test('attendGates: off only while a full lane\'s restore and fan-out lie ahead; on after them and in safe mode; refused before the plans are checked (F1)', () => {
+  const want = {
+    freshness: 'refuse', discuss: 'refuse', prologue: 'refuse', plan: 'refuse',
+    'gates-off': 'off', execute: 'off', restore: 'off',
+    fanout: 'on', fix: 'on', 'final-gate': 'on', uat: 'on', close: 'on',
+  };
+  for (const next of [...STEPS, null]) {
+    const r = attendGates({ mode: 'full', next });
+    const got = r.refuse ? 'refuse' : r.gates;
+    assert.equal(got, want[next] ?? 'on', String(next));
+    assert.ok(r.refuse ? r.refuse.includes(String(next)) : r.why, String(next));
+    assert.equal(attendGates({ mode: 'safe', next }).gates, 'on', `safe ${next}`);
+  }
+  assert.equal(attendGates({ mode: undefined, next: 'execute' }).gates, 'on', 'no recorded mode is safe');
 });

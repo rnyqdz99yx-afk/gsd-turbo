@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
 import { laneSessionName } from '../lib/claude.mjs';
+import { STEPS } from '../lib/phase-progress.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
 const run = (args, cwd, env = process.env, nodeArgs = []) => execFileSync(process.execPath, [...nodeArgs, CLI, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1042,15 +1043,16 @@ test('init: an existing config only warns and prints the entries to add; a valid
   assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set'));
 });
 
-// spec §8 (S4): phase 4 with plan 04-01 done and 04-02 open, a live supervisor whose lane is lanePhase, and a
-// question the lane stopped at
-function attendProject(t, { lanePhase = '4' } = {}) {
+// spec §8 (S4): phase 4 with plan 04-01 done and 04-02 open, a live supervisor whose lane is lanePhase (mode, and the
+// next turbo-phase step), and a question the lane stopped at
+function attendProject(t, { lanePhase = '4', mode = 'full', next = 'execute' } = {}) {
   const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }] });
   const dir = path.join(p.root, '.planning', 'phases', '04-four');
   fs.mkdirSync(dir, { recursive: true });
   for (const f of ['04-01-PLAN.md', '04-01-SUMMARY.md', '04-02-PLAN.md']) fs.writeFileSync(path.join(dir, f), '# plan\n');
   const child = sleeper(t);
-  writeSup(p.root, { pid: child.pid, updatedAt: ago(0), lane: { phase: lanePhase, sessionId: 'abc123' } });
+  writeSup(p.root, { pid: child.pid, updatedAt: ago(0), lane: { phase: lanePhase, sessionId: 'abc123', mode } });
+  fs.writeFileSync(path.join(runDirOf(p.root), 'phase-p4.json'), JSON.stringify({ phase: '4', done: STEPS.slice(0, STEPS.indexOf(next)), attempts: {} }));
   p.setClaude({ agents: [{ id: 'abc123', name: laneSessionName(p.root, lanePhase), cwd: p.root, state: 'blocked' }] });
   fs.writeFileSync(path.join(runDirOf(p.root), 'p4-questions.json'), JSON.stringify([
     { id: '04-02-t1', phase: '4', plan: '04-02', task: '1', kind: 'human-action', options: [], stopped: true, agentId: 'a0123456789abcdef', state: 'open', rev: 2 },
@@ -1067,6 +1069,7 @@ test('attend N stops the supervisor and the lane session, marks the phase, relea
   assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop' || a[0] === 'rm'), [['stop', 'abc123']], 'claude stop keeps the conversation; nothing is removed');
   assert.match(r.stdout, /^phase 4: attended in this session; no lane starts, relaunches or wakes until turbo-run attend 4 --done$/m);
   assert.match(r.stdout, /^open plans: 04-02$/m);
+  assert.match(r.stdout, /^gates: turn off \(/m, 'a full lane before its fan-out: the lane runs the gates after the hand-back');
   assert.match(r.stdout, /^released stops: 04-02-t1 \(asked ahead again\)$/m);
   const mark = readJsonFile(path.join(runDirOf(p.root), 'p4-attend.json'));
   assert.deepEqual([mark.phase, mark.sessionId, typeof mark.at], ['4', 'abc123', 'string']);
@@ -1127,4 +1130,22 @@ test('attend <N> --done --project <dir>: --done takes no value in attend, so --p
   const r = await runAsync(['attend', '4', '--done', '--project', root], elsewhere, { ...process.env, TURBO_LANE: '1' });
   assert.equal(r.code, 1);
   assert.match(r.stderr, /refused: attend is the owner's: a lane never runs it/, 'the project was found: the lane refusal comes after it');
+});
+
+test('attend decides GSD\'s gates from the lane: on past the fan-out and in safe mode; refused before the plans are checked (F1)', async (t) => {
+  for (const [opts, want] of [[{ next: 'uat' }, /^gates: keep on \(/m], [{ next: 'final-gate' }, /^gates: keep on \(/m], [{ mode: 'safe' }, /^gates: keep on \(/m]]) {
+    const { p, env } = attendProject(t, opts);
+    const r = await runAsync(['attend', '4'], p.root, env);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, want, JSON.stringify(opts));
+  }
+  for (const next of ['discuss', 'plan']) {
+    const { p, child, env } = attendProject(t, { next });
+    const r = await runAsync(['attend', '4'], p.root, env);
+    assert.equal(r.code, 1, next);
+    assert.match(r.stderr, new RegExp(`phase 4 is not ready to attend: its lane's next turbo-phase step is ${next}`));
+    assert.equal(await exited(child, 300), false, 'the supervisor still runs');
+    assert.equal(fs.existsSync(path.join(runDirOf(p.root), 'p4-attend.json')), false);
+    assert.deepEqual(p.claudeCalls(), []);
+  }
 });

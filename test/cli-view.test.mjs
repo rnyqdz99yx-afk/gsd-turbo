@@ -25,10 +25,12 @@ test('turbo-run view prints the lane and its subagents; --json prints the same v
   ]);
   const env = { CLAUDE_CONFIG_DIR: home };
   const text = run(['view'], root, env);
-  assert.match(text, /^supervisor: not running$/m);
-  assert.match(text, /^p32 · freshness · lane running · session 11111111 · 30m$/m);
-  assert.match(text, /^ {2}gsd-executor · 32-07 · Edit lib\/x\.mjs · 20m · 166k$/m);
-  assert.match(text, /^commits:\n {2}[0-9a-f]{7,} init$/m);
+  // the pane's words: verdict first, the helper indented, then the latest changes and the supervisor
+  assert.match(text, /^Phase 32 — freshness check · 30m so far · supervisor not running$/m);
+  assert.match(text, /^ {2}Executor · plan 32-07 · editing lib\/x\.mjs · 20m$/m);
+  assert.match(text, /^Latest changes:\n {2}[0-9a-f]{7,} init$/m);
+  assert.match(text, /\n\nSupervisor not running\n$/);
+  assert.doesNotMatch(text, /11111111|166k/, 'no session id, no bare token count');
   const v = JSON.parse(run(['view', '--json'], root, env));
   assert.equal(v.supervisor.running, false);
   assert.equal(v.lanes[0].agents[0].agentId, 'a4000000000000001');

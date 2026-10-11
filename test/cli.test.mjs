@@ -1056,6 +1056,7 @@ function attendProject(t, { lanePhase = '4', mode = 'full', next = 'execute' } =
   p.setClaude({ agents: [{ id: 'abc123', name: laneSessionName(p.root, lanePhase), cwd: p.root, state: 'blocked' }] });
   fs.writeFileSync(path.join(runDirOf(p.root), 'p4-questions.json'), JSON.stringify([
     { id: '04-02-t1', phase: '4', plan: '04-02', task: '1', kind: 'human-action', options: [], stopped: true, agentId: 'a0123456789abcdef', state: 'open', rev: 2 },
+    { id: '04-02-t3', phase: '4', plan: '04-02', task: '3', kind: 'decision', options: [], stopped: true, agentId: 'a0123456789abcdef', state: 'delivered', rev: 1 },
   ]));
   return { p, child, env: { ...p.env, TURBO_LANE: '' } };
 }
@@ -1071,9 +1072,10 @@ test('attend N stops the supervisor and the lane session, marks the phase, relea
   assert.match(r.stdout, /^open plans: 04-02$/m);
   assert.match(r.stdout, /^gates: turn off \(/m, 'a full lane before its fan-out: the lane runs the gates after the hand-back');
   assert.match(r.stdout, /^released stops: 04-02-t1 \(asked ahead again\)$/m);
+  assert.match(r.stdout, /^already delivered: 04-02-t3 \(the stopped session took these answers; a checkpoint reached again is asked in this session\)$/m, 'a delivered stop is no question asked ahead (F4)');
   const mark = readJsonFile(path.join(runDirOf(p.root), 'p4-attend.json'));
   assert.deepEqual([mark.phase, mark.sessionId, typeof mark.at], ['4', 'abc123', 'string']);
-  assert.deepEqual(readJsonFile(path.join(runDirOf(p.root), 'p4-questions.json')).map((q) => [q.stopped, q.agentId]), [[false, null]]);
+  assert.deepEqual(readJsonFile(path.join(runDirOf(p.root), 'p4-questions.json')).map((q) => [q.stopped, q.agentId]), [[false, null], [true, 'a0123456789abcdef']]);
   assert.match(run(['status'], p.root, env), /^attended: phase 4 since \S+ in the owner's session \(hand it back: turbo-run attend 4 --done\)$/m);
   assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, env)).attended.map((a) => a.phase), ['4']);
 });

@@ -26,6 +26,7 @@ import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
+import { readQuestions } from '../lib/questions.mjs';
 import { attendGates, attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -603,6 +604,8 @@ function attend(root, id) {
   out(`open plans: ${plans.join(', ')}`);
   out(`gates: ${gates.gates === 'off' ? 'turn off' : 'keep on'} (${gates.why})`);
   if (released.length) out(`released stops: ${released.join(', ')} (asked ahead again)`);
+  const delivered = readQuestions(root, id).filter((q) => q.stopped && q.state === 'delivered').map((q) => q.id);
+  if (delivered.length) out(`already delivered: ${delivered.join(', ')} (the stopped session took these answers; a checkpoint reached again is asked in this session)`);
   if (code !== 0) process.stderr.write('a lane session did not stop (see the warnings above): stop it with claude stop <id> before anything runs in this checkout\n');
   return code;
 }

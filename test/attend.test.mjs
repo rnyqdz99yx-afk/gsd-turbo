@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
-import { deliveryState, refreshQuestions, stopQuestion } from '../lib/questions.mjs';
+import { deliveryState, markDelivered, readQuestions, refreshQuestions, stopQuestion } from '../lib/questions.mjs';
 import { answerQuestion, preAnswerText } from '../lib/answers.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 import { attendFile, attendGates, attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
@@ -71,4 +71,18 @@ test('attendGates: off only while a full lane\'s restore and fan-out lie ahead; 
     assert.equal(attendGates({ mode: 'safe', next }).gates, 'on', `safe ${next}`);
   }
   assert.equal(attendGates({ mode: undefined, next: 'execute' }).gates, 'on', 'no recorded mode is safe');
+});
+
+test('releaseStops leaves a stop whose answer the stopped session already took: it is no question asked ahead (F4)', () => {
+  const root = tmpDir('att');
+  writePhase(root, '32-auth', { '32-09-PLAN.md': DECISION_PLAN, '32-10-PLAN.md': VERIFY_PLAN });
+  refreshQuestions(root, '32');
+  stopQuestion(root, '32', '32-09-t2', { agentId: AG });
+  answerQuestion({ root, phase: '32', id: '32-09-t2', option: 1, by: 'session', laneRunning: true });
+  markDelivered(root, '32', '32-09-t2', 'same-agent');
+  stopQuestion(root, '32', '32-10-t3', { agentId: AG });
+  assert.deepEqual(releaseStops(root, '32'), ['32-10-t3']);
+  const d = readQuestions(root, '32').find((q) => q.id === '32-09-t2');
+  assert.deepEqual([d.stopped, d.state], [true, 'delivered']);
+  assert.deepEqual(deliveryState(root, '32'), { waiting: [], ready: [] }, 'nothing to deliver after the hand-back either');
 });

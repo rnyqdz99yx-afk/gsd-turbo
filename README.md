@@ -94,6 +94,7 @@ If a run is already going, the skill shows its status and changes nothing. Other
 /turbo-autonomous status          # supervisor state, current phase, session id, lane mode, range, owner requests
 /turbo-autonomous stop            # stop the supervisor and this project's turbo background sessions
 /turbo-autonomous resume <phase>  # after you handled an owner-only step or a halt: clear the phase and start again
+/turbo-autonomous attend <phase>  # run the rest of a phase's plans in this session with you, then give it back to its lane
 /turbo-autonomous answer          # answer the open owner questions (the plans' checkpoints), up to four at a time
 ```
 
@@ -215,6 +216,17 @@ A plan's checkpoint tasks (`checkpoint:decision`, `checkpoint:human-verify`, `ch
 - **Standing deploy rule.** With `autonomy: "max"` and all four `deploy.*` commands set, a question the lane classified `consent:deploy` is answered by turbo itself (`by: standing-rule`), only through the option the plan recommends, and with a gate: the build checks green, CI green when `push.mode` is on, and the deploy through `deploy.command` with `deploy.snapshot` first, `deploy.health` after and `deploy.rollback` on failure. Everything else is asked.
 - **A silent lane.** A session that writes nothing, neither itself nor its subagents, for `stall_minutes` (for example after Claude Code or the PC restarted and the session came back idle) is woken the same way, with the request to resume its unfinished subagents; after two such wakes without progress you are notified. A session waiting for its own running subagents does not count as waiting for you, and sessions never stop for a context limit while their subagents still run.
 - **Storage.** Answers are kept in git, in `.planning/turbo/answers/p<N>.json`: while a lane runs, it commits the whole directory (every phase's answers) at its next step; when no lane runs, `turbo-run answer` commits it itself. The questions live in `.planning/turbo/run/p<N>-questions.json`. Sessions never answer: `turbo-run answer` refuses to run inside a lane.
+
+## Live sittings
+
+Some plans need you while they run: a device to connect, a login, an app to quit. `/turbo-autonomous attend <N>` runs the rest of phase N's plans in your own session, with you, and then gives the phase back to its lane:
+
+1. `turbo-run attend <N>` takes the lane over. It refuses, changing nothing, unless phase N is the supervisor's lane and still has plans without a summary. It stops the supervisor and the lane's session (`claude stop`: the conversation is kept) and marks the phase attended in `.planning/turbo/run/p<N>-attend.json`. While any phase is attended, no supervisor starts, relaunches or wakes a lane, also one started by hand; `turbo-run status` names the mark. The checkpoints the lane had stopped at become questions asked ahead again: the agents that waited there belonged to the stopped session.
+2. The skill shows the plans left and all their questions and asks you the questions up front (the `/turbo-autonomous answer` flow, phase N only); physical actions are left for when the run reaches them.
+3. It runs GSD's `execute-phase <N>` in your checkout, one plan at a time and without worktrees (`dispatch-isolation --force-isolation none` right before each executor, as GSD's isolation guard needs), with GSD's own gates off as in a lane (`turbo-run gates off <N>`), your answers as conditional pre-answers in the executor prompts, and the release rule (see [Safety](#safety)). A checkpoint without an answer is shown to you there.
+4. `turbo-run attend <N> --done` clears the mark and runs `resume <N> --start`: the lane goes on with verification, the gates, UAT and close. `turbo-run resume <N>` clears the mark too.
+
+`turbo-run attend` refuses to run inside a lane.
 
 ## GSD settings turbo writes
 

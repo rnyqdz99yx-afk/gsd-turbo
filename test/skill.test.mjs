@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { RELEASE_RULE } from '../lib/lane-prompt.mjs';
 
 test('turbo-autonomous skill frontmatter and required steps', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
@@ -49,7 +50,7 @@ test('turbo-autonomous skill never sleeps and covers "no lane yet" and "not runn
 
 test('turbo-autonomous skill answers the open questions (S1): AskUserQuestion in batches of 4, recommended first, turbo-run answer --by session --rev; at start and while a run goes', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
-  assert.match(s, /^allowed-tools: \[Bash, Read, AskUserQuestion\]$/m);
+  assert.match(s, /^allowed-tools: \[Bash, Read, AskUserQuestion, Skill\]$/m);
   assert.match(s, /^argument-hint: ".*\| answer"$/m);
   const needles = [
     '## If the arguments are `answer`', '## Answer the open questions', 'turbo-run.mjs" questions --open --json', 'up to 4 questions per call', ' (Recommended)', 'Not now',
@@ -61,4 +62,29 @@ test('turbo-autonomous skill answers the open questions (S1): AskUserQuestion in
   assert.ok(start.includes('**Answer the open questions**'), 'the start flow asks the open questions');
   const running = start.slice(start.indexOf('supervisor: running'));
   assert.ok(running.indexOf('**Answer the open questions**') < running.indexOf('**Compatibility.**'), 'also while a run goes');
+});
+
+test('turbo-autonomous attend <phase> (S4): take over the lane, questions up front, GSD execute-phase one plan at a time in this checkout, hand back', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  assert.match(s, /^argument-hint: ".*\| resume <phase> \| attend <phase> \| answer"$/m);
+  const at = s.indexOf('## If the arguments are `attend <phase>`');
+  assert.ok(at > s.indexOf('## If the arguments are `answer`') && at < s.indexOf('## Otherwise'), 'its own section before the start flow');
+  const a = s.slice(at, s.indexOf('## Otherwise'));
+  const order = [
+    'turbo-run.mjs" attend <phase>', 'turbo-run.mjs" doctor', 'git worktree list --porcelain', 'turbo-run.mjs" questions <N>',
+    '**Answer the open questions**', 'turbo-run.mjs" gates off <N>', 'Skill(skill="gsd-execute-phase", args="<N> --no-transition")',
+    'turbo-run.mjs" state-sync <N>', 'turbo-run.mjs" attend <N> --done',
+  ];
+  let last = -1;
+  for (const n of order) {
+    const i = a.indexOf(n);
+    assert.ok(i > last, `in order: ${n}`);
+    last = i;
+  }
+  const needles = [
+    'isolation="worktree"', 'query dispatch-isolation --raw --phase', '--plan <the plan id> --force-isolation none', 'before each retry',
+    'questions <N> --preanswers <plan id>', '`human-action`', RELEASE_RULE, 'never kill or stop that process', '`gap_rounds`',
+    'resume <N> --start', 'Commit nothing and remove no worktree on your own',
+  ];
+  for (const n of needles) assert.ok(a.includes(n), n);
 });

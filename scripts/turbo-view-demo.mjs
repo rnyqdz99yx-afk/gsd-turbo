@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bandLine, render } from '../mod/hooks/view-model.mjs';
+import { answerToast, bandLine, paneLines, render, toastsFor } from '../mod/hooks/view-model.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const REPO = path.dirname(path.dirname(SELF));
@@ -20,22 +20,38 @@ const MIN = 60000;
 // turbo-run as this one argument, with --by pane (check compares it with what the fake recorded).
 export const PROBE = 'a" --by telegram "b \\';
 
+// The scripted run's texts, synthetic, in the language the demo runs in.
 const TEXT = {
-  en: { q1: 'Deploy after green CI?', yes: 'Yes, by the gate', stop: 'Stop', q2: 'Does the export page look right?', accept: 'Accept if the checks pass', show: 'Stop and show me', reason: 'checkpoint 32-09 Task 3: deploy needs your answer' },
-  ru: { q1: 'Деплой после зелёного CI?', yes: 'Да, по гейту', stop: 'Стоп', q2: 'Страница экспорта выглядит верно?', accept: 'Принять, если проверки прошли', show: 'Остановиться и показать мне', reason: 'чекпоинт 32-09 Task 3: для деплоя нужен твой ответ' },
+  en: {
+    q1: 'Deploy phase 32 after green CI?', ctx1: 'Users see the change once it is deployed; Stop keeps the phase waiting.', yes: 'Yes, by the gate', stop: 'Stop',
+    q2: 'Does the export page look right?', accept: 'Accept if the checks pass', show: 'Stop and show me',
+    round: (n) => `demo, round ${n}`, again: (n) => `Demo: round ${n} — the questions are open again; the earlier answers were recorded.`,
+    commits: ['feat: export page lists every chat', 'fix: the stop reason is kept', 'test: export of an empty chat'],
+  },
+  ru: {
+    q1: 'Деплой фазы 32 после зелёного CI?', ctx1: 'После деплоя изменения увидят пользователи; «Стоп» оставит фазу ждать.', yes: 'Да, по гейту', stop: 'Стоп',
+    q2: 'Страница экспорта выглядит верно?', accept: 'Принять, если проверки прошли', show: 'Остановиться и показать мне',
+    round: (n) => `демо, круг ${n}`, again: (n) => `Демо: круг ${n} — вопросы снова открыты, прежние ответы записаны.`,
+    commits: ['экспорт: страница показывает все чаты', 'исправлено: причина остановки сохраняется', 'тесты: экспорт пустого чата'],
+  },
 };
 
 // The view a scripted run shows at its tick-th read (1-based, repeating every 16 reads): the second question
-// appears at read 4, CI turns red at 7, the lane stops for the owner at 10 and is done at 13.
+// appears at read 4, CI turns red at 7, the lane stops for the owner at 10 and is done at 13. From the second round on
+// the questions say so (the round in the question, a context line), so a question answered before and back again is
+// never taken for a lost answer.
 export function demoView({ tick, lang = 'en', startedAt, now, answered = {} }) {
   const t = TEXT[lang === 'ru' ? 'ru' : 'en'];
   const s = ((tick - 1) % CYCLE) + 1;
+  const round = Math.floor((tick - 1) / CYCLE) + 1;
+  const ask = (text) => (round > 1 ? `${text} (${t.round(round)})` : text);
+  const context = (text) => (round > 1 ? `${t.again(round)}${text ? ` ${text}` : ''}` : text);
   const iso = (ms) => new Date(ms).toISOString();
   const status = s >= 13 ? 'done' : s >= 10 ? 'needs-owner' : 'running';
   const agent = (id, type, plan, task, state, action, fromMs, tokens) => ({ agentId: id, type, description: '', plan, task, model: 'opus', worktreeBranch: null, state, action, startedAt: iso(fromMs), lastAt: iso(state === 'quiet' ? now - 16 * MIN : now), elapsedMs: (state === 'quiet' ? now - 16 * MIN : now) - fromMs, tokens, sessionId: 'demo', transcript: 'demo' });
   const questions = [
-    { id: 'q1', phase: '32', plan: '32-09', task: '3', kind: 'decision', header: 'Deploy', question: t.q1, options: [{ label: t.yes }, { label: t.stop }], allowOther: true, state: 'open', rev: 1 },
-    ...(s >= 4 ? [{ id: 'q2', phase: '32', plan: '32-10', task: '1', kind: 'human-verify', header: 'Check', question: t.q2, options: [{ label: t.accept }, { label: t.show }], allowOther: true, state: 'open', rev: 1 }] : []),
+    { id: 'q1', phase: '32', plan: '32-09', task: '3', kind: 'decision', header: 'Deploy', question: ask(t.q1), context: context(t.ctx1), options: [{ label: t.yes, recommended: true }, { label: t.stop }], allowOther: true, state: 'open', rev: 1 },
+    ...(s >= 4 ? [{ id: 'q2', phase: '32', plan: '32-10', task: '1', kind: 'human-verify', header: 'Check', question: ask(t.q2), context: context(''), options: [{ label: t.accept }, { label: t.show }], allowOther: true, state: 'open', rev: 1 }] : []),
   ].filter((q) => !answered[q.id]);
   return {
     v: 1,
@@ -43,7 +59,7 @@ export function demoView({ tick, lang = 'en', startedAt, now, answered = {} }) {
     supervisor: { running: true, pid: 4242, finished: false, halted: false, failingSince: null, updatedAt: iso(now) },
     range: { from: '32', to: '34' },
     lanes: [{
-      phase: '32', step: status === 'done' ? null : 'execute', done: [], notes: {}, status, reason: status === 'needs-owner' ? t.reason : '', sessionId: 'demo0001', mode: 'full',
+      phase: '32', step: status === 'done' ? null : 'execute', done: [], notes: {}, status, reason: status === 'needs-owner' ? 'owner question q1' : '', sessionId: 'demo0001', mode: 'full',
       launchedAt: iso(startedAt - 72 * MIN), elapsedMs: now - startedAt + 72 * MIN, transcript: null, lastAt: iso(now), quiet: false,
       agents: status === 'running' ? [
         agent('a1', 'gsd-executor', '32-07', '2', 'running', { tool: 'Edit', detail: 'lib/export.mjs' }, startedAt - 6 * MIN, 120000 + tick * 1500),
@@ -54,7 +70,7 @@ export function demoView({ tick, lang = 'en', startedAt, now, answered = {} }) {
       push: { outcome: 'pushed', sha: s >= 7 ? 'b2c3d4e' : 'a1b2c3d', at: iso(now), ci: s >= 7 ? 'red' : 'green' },
     }],
     questions,
-    commits: [{ sha: 'b2c3d4e', subject: 'feat: export page lists every chat' }, { sha: 'a1b2c3d', subject: 'fix: lane record keeps the reason' }, { sha: '9f8e7d6', subject: 'test: export of an empty chat' }],
+    commits: ['b2c3d4e', 'a1b2c3d', '9f8e7d6'].map((sha, i) => ({ sha, subject: t.commits[i] })),
     ui: { lang: lang === 'ru' ? 'ru' : 'en', refreshSeconds: 3 },
   };
 }
@@ -128,15 +144,18 @@ export function setupDemo({ dir, lang = 'en', repoDir = REPO, now = Date.now() }
   return { project, mod };
 }
 
-// What the owner runs and checks; the expected pane and band texts come from the mod's own view model.
+// What the owner runs and checks; the expected pane, band and toast texts come from the mod's own view model.
 export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
   const win = (p) => p.replace(/\//g, '\\');
   const first = demoView({ tick: 1, lang, startedAt: 0, now: 0 });
-  const model = render(first);
-  const q = model.rows.find((r) => r.kind === 'question');
-  const buttons = `[${[...q.options.map((o) => o.label), q.otherLabel].join('] [')}]`;
+  const pane = paneLines(render(first)).map((l) => (l ? `       ${l}` : ''));
+  const buttons = pane.find((l) => l.includes('[')).trim().replace(/^│\s*/, '');
+  const other = buttons.split('  ').at(-1);
   const labels = first.questions[0].options.map((o) => o.label);
-  const choices = labels.map((l, i) => `${i + 1}. ${l}`).join('  ');
+  // the toasts of the first 13 reads, as the mod raises them (nothing is answered in this run of the script)
+  const reads = Array.from({ length: 13 }, (_, i) => demoView({ tick: i + 1, lang, startedAt: 0, now: (i + 1) * 3000 }));
+  const toasts = reads.flatMap((v, i) => toastsFor(reads[i - 1] ?? null, v).map((x) => `     read ${i + 1}: "${x}"`));
+  const again = demoView({ tick: CYCLE + 1, lang, startedAt: 0, now: 0 }).questions[0].question;
   return [
     `turbo-view visual check — demo in ${dir}`,
     '',
@@ -145,19 +164,23 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
     `  bash / Git Bash:  (cd "${project}" && TURBO_VIEW_BIN="${self}" claude --plugin-dir "${mod}")`,
     `  PowerShell:       Push-Location "${win(project)}"; try { $env:TURBO_VIEW_BIN = "${win(self)}"; claude --plugin-dir "${win(mod)}" } finally { Remove-Item Env:TURBO_VIEW_BIN; Pop-Location }`,
     'Accept the trust prompt for the demo folder. Then check:',
-    `  1. Within 3 s the pane opens by itself on the right: "${model.rows[0].text}", lane p32 execute, two running`,
-    '     agents whose time and tokens grow every 3 s, a quiet gsd-verifier row with ⚠, one finished row,',
-    `     one question with its options listed in full (${choices}) above the buttons ${buttons}, and three commits.`,
-    `  2. The band above the prompt reads "${bandLine(first)}".`,
-    '  3. Over the next 40 s, toasts: a new question (read 4), CI red (read 7; the band then shows CI ✗), phase 32',
-    '     stopped: needs-owner (read 10), phase 32 done (read 13). The script repeats every 16 reads.',
-    `  4. Focus the pane (click it, or Ctrl+X then Tab), Tab to [${q.options[1].label}], press Enter: a toast`,
-    `     "answered q1: ${labels[1]}, pane, <time>", and the question leaves the pane within 3 s.`,
-    `  5. On the second question press [${q.otherLabel}] and type, slowly over a few seconds: проверка 👍 — the text stays`,
-    '     while the pane redraws every 3 s. Then Enter: a toast with that text.',
+    '  1. Within 3 s the pane opens by itself on the right and reads as below (the times grow every 3 s): the verdict',
+    '     line first, its phase in bold and "needs your answer" in amber; the helpers indented under it, the silent one',
+    '     amber with ⚠ and the finished one dim; the question in a rounded amber card, bold, its context dim, the',
+    '     recommended option ★ in the accent colour; then the latest changes and the supervisor, dim:',
+    ...pane,
+    `  2. The band above the prompt reads "${bandLine(first)}", in amber.`,
+    '  3. Over the next 40 s, these toasts (the band turns red with CI red at read 7):',
+    ...toasts,
+    `     The script repeats every 16 reads: from read 17 each question says "${again}"`,
+    '     and its context says the questions are open again, so an answered question that is back is no lost answer.',
+    `  4. Focus the pane (click it, or Ctrl+X then Tab), Tab to [${buttons.split('  ')[1].slice(1, -1)}], press Enter: a toast`,
+    `     "${answerToast(first, { code: 0, sent: labels[1] })} · <local time HH:MM>", and the question leaves the pane within 3 s.`,
+    `  5. On the second question press ${other} and type, slowly over a few seconds: проверка 👍 — the text stays`,
+    `     while the pane redraws every 3 s. Then Enter: "${answerToast(first, { code: 0, sent: 'проверка 👍' })} · <local time>".`,
     `     Both answers are in ${path.join(project, '.planning', 'turbo', ANSWERS)}.`,
     '  6. The argument check. When the script repeats (read 17, about 50 s in), the first question is back: press',
-    `     [${q.otherLabel}] on it, type exactly the next line, and press Enter:`,
+    `     ${other} on it, type exactly the next line, and press Enter:`,
     `     ${PROBE}`,
     `     Then, in another terminal, run:  node "${self}" check "${project}"`,
     '     It prints "ok: the answer arrived as one argument, by pane" when the text reached turbo-run unchanged.',

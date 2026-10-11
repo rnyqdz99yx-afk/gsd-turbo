@@ -93,11 +93,12 @@ test('sweepLateLanes: for the settle time, a live lane session that appears late
   let calls = 0;
   const stops = [];
   const slept = [];
+  let clock = 0;
   const r = await sweepLateLanes({
     list: () => seq[Math.min(calls++, seq.length - 1)],
     stop: (id) => { stops.push(id); if (id === 'stuck1') throw new Error('permission denied'); },
     isLane: (x) => x.name === 'lane',
-    settleMs: 3500, stepMs: 1000, sleep: async (ms) => { slept.push(ms); },
+    settleMs: 3500, stepMs: 1000, now: () => clock, sleep: async (ms) => { slept.push(ms); clock += ms; },
   });
   assert.deepEqual(slept, [1000, 1000, 1000, 500]);
   assert.deepEqual(stops, ['late01', 'stuck1', 'stuck1']);
@@ -107,4 +108,17 @@ test('sweepLateLanes: for the settle time, a live lane session that appears late
   assert.equal(listed, 0, 'no settle time: no sweep');
   const broken = await sweepLateLanes({ list: () => { throw new Error('agents broke'); }, stop: () => {}, isLane: () => true, settleMs: 100, sleep: async () => {} });
   assert.deepEqual(broken, { stopped: [], failed: [{ id: null, error: 'agents broke' }] });
+});
+
+test('sweepLateLanes keeps to its window by the clock: slow session lists eat into it, they never stretch it (N3)', async () => {
+  let clock = 0;
+  const slept = [];
+  let lists = 0;
+  await sweepLateLanes({
+    list: () => { lists++; clock += 2000; return []; }, // a claude agents call that takes 2 s
+    stop: () => {}, isLane: () => true, settleMs: 5000, stepMs: 1000,
+    now: () => clock, sleep: async (ms) => { slept.push(ms); clock += ms; },
+  });
+  assert.deepEqual([lists, slept], [2, [1000, 1000]]);
+  assert.ok(clock <= 5000 + 2000, `ended at ${clock} ms: within the window plus the last list`);
 });

@@ -748,7 +748,7 @@ async function main() {
         await watch({
           frame: () => {
             const view = readView(root);
-            return { text: formatView(view), seconds: view.ui.refreshSeconds };
+            return { text: formatView(view), seconds: view.ui.refreshSeconds, lang: view.ui.lang };
           },
           write: (s) => process.stdout.write(s),
           tty: Boolean(process.stdout.isTTY),

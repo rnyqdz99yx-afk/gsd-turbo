@@ -2,7 +2,7 @@
 // .planning/turbo/, reads `turbo-run view --json` on a clock, draws the pane and the band above the prompt, shows
 // toasts, and sends pane answers to `turbo-run answer … --by pane --rev <n>`. Module state is lost on a reload; the
 // next read rebuilds it.
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, turboDir, turboRunPath, viewArgv, wordsFor } from './view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, notSentToast, openField, parseView, refreshMs, render, shouldAutoOpen, turboDir, turboRunPath, viewArgv, wordsFor } from './view-model.mjs';
 
 const VIEW_TIMEOUT_MS = 10000;
 const ANSWER_TIMEOUT_MS = 30000;
@@ -177,7 +177,7 @@ async function send($, q, choice, sent) {
     await runner($);
   } catch (err) {
     sending.delete(q.id);
-    $.ui.toast(wordsFor(view).notSent(firstLine(err?.message ?? err)), { timeoutMs: TOAST_MS });
+    $.ui.toast(notSentToast(view, firstLine(err?.message ?? err)), { timeoutMs: TOAST_MS });
     return;
   }
   try {
@@ -186,7 +186,7 @@ async function send($, q, choice, sent) {
     $.ui.toast(answerToast(view, { code: r.exitCode, stdout: r.stdout, stderr: r.stderr, sent, nowMs }), { timeoutMs: TOAST_MS });
     field = afterAnswer(field, q.id, r.exitCode);
   } catch (err) {
-    $.ui.toast(wordsFor(view).notSent(firstLine(err?.message ?? err)), { timeoutMs: TOAST_MS });
+    $.ui.toast(notSentToast(view, firstLine(err?.message ?? err)), { timeoutMs: TOAST_MS });
   } finally {
     sending.delete(q.id);
   }
@@ -272,6 +272,7 @@ export function register(on) {
     return theirs ? Box({ flexDirection: 'column', children: [mine, theirs] }) : mine;
   });
 
-  // the pane: view-model.mjs render's tree (sections, question cards, colours), the field drawn with what was typed
-  on('ui.render', { component: 'Pane', requestId: 'turbo-view' }, async ($, e) => draw($, $.ui.resolve(e), render(view, { error, field })));
+  // the pane: view-model.mjs render's tree (sections, question cards, colours), the field drawn with what was typed,
+  // sized to the pane's width so a long action is cut before a helper's time
+  on('ui.render', { component: 'Pane', requestId: 'turbo-view' }, async ($, e) => draw($, $.ui.resolve(e), render(view, { error, field, columns: e.props?.bodyColumns })));
 }

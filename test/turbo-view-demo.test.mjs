@@ -24,9 +24,11 @@ test('the demo builds a project with .planning/turbo/ and a test-free copy of th
   assert.ok(text.includes(`node "${DEMO}" check "${project}"`), text);
   assert.ok(text.includes(PROBE), text);
   // the checklist quotes the pane, the band and the toasts as the mod draws them
-  assert.ok(text.includes('\n       Фаза 32 — выполняются планы · идёт 1 ч 12 мин · нужен ваш ответ (1)\n'), text);
-  assert.ok(text.includes('       │   [1. Да, по гейту ★]  [2. Стоп]  [Свой ответ…]\n'), text);
-  assert.ok(text.includes('"turbo · фаза 32: выполняются планы · ❓ 1 вопрос ждёт вас · CI ✓"'), text);
+  assert.ok(text.includes('\n       Фаза 32 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин · нужен ваш ответ (1)\n         последнее действие 20 с назад\n'), text);
+  assert.ok(text.includes('       │   [1. Да, по гейту ★]  [2. Стоп]\n       │   [Свой ответ…]\n'), text);
+  assert.ok(text.includes('[Свой ответ…] on it'), text);
+  assert.ok(text.includes('"turbo · фаза 32: выполняются планы 5/9 · ❓ 1 вопрос ждёт вас · CI ✓"'), text);
+  assert.ok(text.includes('read 7: "CI красный: фаза 32 — чинит сама (попытка 1 из 2)"'), text);
   assert.ok(text.includes('read 4: "Новый вопрос (фаза 32): «Страница экспорта выглядит верно?»"') && text.includes('read 10: "Фаза 32 остановилась — нужен ваш ответ"'), text);
   assert.ok(text.includes('"Ответ принят: «Стоп» · <local time HH:MM>"') && text.includes('"Демо, круг 2: Деплой фазы 32 после зелёного CI?"'), text);
   assert.doesNotMatch(text, / +\n/, 'no trailing blanks');
@@ -74,11 +76,16 @@ test('the scripted run, read the way the mod reads it, raises the four toasts in
     bands.push(bandLine(v));
     prev = v;
   }
-  assert.deepEqual(toasts, ['4: New question (phase 32): “Does the export page look right?”', '7: CI red: phase 32', '10: Phase 32 stopped — needs your answer', '13: Phase 32 done']);
-  assert.equal(bands[0], 'turbo · phase 32: running plans · ❓ 1 question waits for you · CI ✓');
-  assert.equal(bands[6], 'turbo · phase 32: running plans · CI red · ❓ 2 questions wait for you');
+  assert.deepEqual(toasts, ['4: New question (phase 32): “Does the export page look right?”', '7: CI red: phase 32 — fixing it itself (attempt 1 of 2)', '10: Phase 32 stopped — needs your answer', '13: Phase 32 done']);
+  assert.equal(bands[0], 'turbo · phase 32: running plans 5/9 · ❓ 1 question waits for you · CI ✓');
+  assert.equal(bands[6], 'turbo · phase 32: running plans 7/9 · ❓ 2 questions wait for you · CI ✗');
   assert.equal(bands[9], 'turbo · phase 32 stopped — waits for your answer · ❓ 2 questions wait for you · CI ✗');
-  assert.equal(bands[12], 'turbo · phase 32 done · CI red · ❓ 2 questions wait for you');
+  assert.equal(bands[12], 'turbo · phase 32 done · ❓ 2 questions wait for you · CI ✓');
+  // what the scripted run shows on its way: the fixing CI under the verdict, the question the phase waits for marked
+  const at = (tick) => paneLines(render(demoView({ tick, startedAt: 0, now: tick * 3000 })));
+  assert.ok(at(8).includes('  CI red — the phase fixes it itself (attempt 1 of 2), nothing needed from you'), at(8).join('\n'));
+  assert.equal(at(11).find((l) => l.startsWith('│ ')), '│ The phase waits for this answer');
+  assert.equal(at(14)[0], 'Phase 32 done · 9 of 9 plans done · took 1h 12m · needs your answer (2)');
 });
 
 test('answers from the pane are recorded once; the answered question leaves the next view; the real script speaks the same (Review Focus 3)', () => {

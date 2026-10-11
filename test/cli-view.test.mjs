@@ -26,9 +26,10 @@ test('turbo-run view prints the lane and its subagents; --json prints the same v
   const env = { CLAUDE_CONFIG_DIR: home };
   const text = run(['view'], root, env);
   // the pane's words: verdict first, the helper indented, then the latest changes and the supervisor
-  assert.match(text, /^Phase 32 — freshness check · 30m so far · supervisor not running$/m);
+  // the supervisor is not running: the phase is not "running", its time stops at its last activity
+  assert.match(text, /^Phase 32 stopped at step: freshness check · \d+m · supervisor not running$/m);
   assert.match(text, /^ {2}Executor · plan 32-07 · editing lib\/x\.mjs · 20m$/m);
-  assert.match(text, /^Latest changes:\n {2}[0-9a-f]{7,} init$/m);
+  assert.match(text, /^Latest changes:\n {2}init · just now$/m);
   assert.match(text, /\n\nSupervisor not running\n$/);
   assert.doesNotMatch(text, /11111111|166k/, 'no session id, no bare token count');
   const v = JSON.parse(run(['view', '--json'], root, env));

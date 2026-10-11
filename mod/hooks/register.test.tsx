@@ -94,7 +94,9 @@ test('in a turbo project the band and the pane show the view, and an option butt
   const line = await band.find({ type: 'Text', text: 'turbo · phase 32: running plans · ❓ 1 question waits for you · CI ✓' })
   expect(line.props.color).toBe('warning')
   const pane = await $.ui.mount(PANE)
-  expect(await pane.find({ type: 'Text', text: /^Phase 32 — running plans · 1h 12m so far · needs your answer \(1\)$/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^Phase 32 — running plans · 1h 12m · needs your answer \(1\)$/ })).toBeDefined()
+  // the question cannot hold the phase (none is stopped): it can be answered ahead, said in its card
+  expect(await pane.find({ type: 'Text', text: 'you can answer ahead — the phase is not waiting' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: /^Executor · plan 32-07, task 2 · editing lib\/x\.mjs · 6m$/ })).toBeDefined()
   // the question bold and wrapped in its card, each option's button carrying its number and text
   const ask = await pane.find({ type: 'Text', text: /^Deploy after green CI\? \(plan 32-09, task 3\)$/ })

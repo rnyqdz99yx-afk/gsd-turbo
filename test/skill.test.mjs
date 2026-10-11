@@ -93,7 +93,10 @@ test('turbo-autonomous attend: GSD\'s gates follow the gates: line of turbo-run 
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
   const a = s.slice(s.indexOf('## If the arguments are `attend <phase>`'), s.indexOf('## Otherwise'));
   const five = a.slice(a.indexOf('5. **GSD\'s gates.**'), a.indexOf('6. **Execute.**'));
-  for (const n of ['`gates: turn off`', '`gates: keep on`', 'gates off <N>', 'run no `gates` command', 'never decide this yourself']) assert.ok(five.includes(n), n);
+  for (const n of ['`gates: turn off`', '`gates: keep on`', 'gates off <N>', 'never decide this yourself']) assert.ok(five.includes(n), n);
+  // keep on: the idempotent restore puts back gates an earlier crash left off
+  const keep = five.slice(five.indexOf('`gates: keep on`'));
+  for (const n of ['turbo-run.mjs" gates restore <N>', '`nothing to do`', 'an earlier crash left them off']) assert.ok(keep.includes(n), `keep on: ${n}`);
   assert.ok(five.indexOf('`gates: turn off`') < five.indexOf('gates off <N>') && five.indexOf('gates off <N>') < five.indexOf('`gates: keep on`'), 'gates off only under turn off');
   assert.ok(!a.includes('as a lane does before it executes; the lane runs those gates in parallel after the hand-back'), 'no unconditional claim');
 });

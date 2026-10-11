@@ -246,3 +246,19 @@ test('git below 2.31 fails the push check while push.mode is on, and is a warnin
   assert.deepEqual(run('2.31.0.windows.1', 'after-phase').checks.find((c) => c.name === 'git-push-scan'), { name: 'git-push-scan', ok: true, detail: 'git 2.31.0' });
   assert.deepEqual(run('2.45.0', null).warnings, []);
 });
+
+test('answer.telegram on while Telegram answers cannot work is a warning naming why, never the values (S1b)', () => {
+  const e = env();
+  fs.mkdirSync(path.join(e.root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(e.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ notify: { telegram: true }, answer: { telegram: true } }));
+  const run = (more) => doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home, ...more }, exec: execOk('2.1.291'), claudeBin: BIN });
+  const none = run({});
+  assert.deepEqual(none.warnings, ['answer.telegram is on, but Telegram answers are off: TURBO_TELEGRAM_TOKEN is not set']);
+  assert.equal(none.mode, 'full', 'a warning only');
+  // a bot token's shape, built at run time; the chat ids are made up
+  const token = `${'123456789'}:${'A'.repeat(35)}`;
+  const group = run({ TURBO_TELEGRAM_TOKEN: token, TURBO_TELEGRAM_CHAT: '@owner' });
+  assert.deepEqual(group.warnings, ['answer.telegram is on, but Telegram answers are off: TURBO_TELEGRAM_CHAT is not the id of a private chat (a positive number without a leading zero; a group or an @name cannot answer)']);
+  assert.ok(!JSON.stringify(group).includes(token) && !JSON.stringify(group).includes('@owner'));
+  assert.deepEqual(run({ TURBO_TELEGRAM_TOKEN: token, TURBO_TELEGRAM_CHAT: '4242' }).warnings, []);
+});

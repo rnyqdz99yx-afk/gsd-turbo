@@ -8,7 +8,7 @@ import { PhaseLocked, readAnswers, writeQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 import { ownerTick } from '../lib/owner-tick.mjs';
 import {
-  MAX_BUTTONS, callbackData, createBot, parseCallback, readTelegramState, shortId, telegramSettings, telegramTick, writeTelegramState,
+  MAX_BUTTONS, callbackData, createBot, parseCallback, readTelegramState, shortId, telegramOff, telegramSettings, telegramTick, writeTelegramState,
 } from '../lib/telegram.mjs';
 
 // a bot token's shape, built at run time; the chat id is made up
@@ -179,7 +179,8 @@ test('an edit the network loses keeps the message and its buttons for the next t
   await telegramTick(ctx, NOW);
   writeQuestions(root, '3', [Q('03-01-t5', { task: '5', header: '03-01 T5', rev: 2, options: [OPT('Approved')] })]);
   bot.failEdit = Object.assign(new Error('telegram editMessageText failed: timed out'), { transient: true });
-  await assert.rejects(telegramTick(ctx, NOW), /timed out/);
+  await telegramTick(ctx, NOW);
+  assert.ok(logs.includes('telegram: telegram editMessageText failed: timed out'), logs.join('\n'));
   let state = readTelegramState(root);
   assert.deepEqual(Object.keys(state.sent).sort(), ['3:03-01-t2', '3:03-01-t5'], 'nothing forgotten, nothing new sent');
   assert.equal(Object.keys(state.nonces).length, 6);
@@ -217,7 +218,7 @@ test('ownerTick sends the Telegram questions after its notification; a Telegram 
   await ownerTick(ctx, NOW, { lane: null });
   assert.deepEqual(notes, ['questionsReady']);
   assert.equal(bot.sent().length, 1);
-  ctx.deps.telegram = async () => { throw new Error('telegram sendMessage failed: Bad Gateway'); };
+  ctx.deps.telegram = async () => { throw Object.assign(new Error('telegram sendMessage failed: Bad Gateway'), { transient: true }); };
   writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t6', { task: '6', header: '03-01 T6' })]);
   await ownerTick(ctx, NOW, { lane: null });
   assert.deepEqual(notes, ['questionsReady', 'questionsReady']);
@@ -311,7 +312,7 @@ test('Other asks for own words with force_reply; the reply is recorded; too long
 });
 
 test('no open question: no polling; off: nothing at all; a failing getUpdates keeps what was sent and the next tick goes on (Review Focus 3)', async () => {
-  const { root, ctx, bot } = project();
+  const { root, ctx, bot, logs } = project();
   await telegramTick(ctx, NOW);
   assert.deepEqual(bot.calls, []);
   ctx.config = ON({ answer: { telegram: false } });
@@ -319,8 +320,9 @@ test('no open question: no polling; off: nothing at all; a failing getUpdates ke
   await telegramTick(ctx, NOW);
   assert.deepEqual(bot.calls, []);
   ctx.config = ON();
-  bot.failPoll = new Error('telegram getUpdates failed: timed out');
-  await assert.rejects(telegramTick(ctx, NOW, { laneRunning: true }), /timed out/);
+  bot.failPoll = Object.assign(new Error('telegram getUpdates failed: timed out'), { transient: true });
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.ok(logs.includes('telegram: telegram getUpdates failed: timed out'), logs.join('\n'));
   assert.equal(readTelegramState(root).sent['3:03-01-t2'].messageId, 101);
   bot.failPoll = null;
   await telegramTick(ctx, NOW, { laneRunning: true });
@@ -444,4 +446,60 @@ test('a state file that cannot be written: the question goes out once, then noth
   assert.equal(bot.sent().length, 1, 'not sent again: the state kept in memory is written');
   assert.equal(polls(bot).length, 1);
   assert.equal(readTelegramState(root).sent['3:03-01-t2'].messageId, 101);
+});
+
+const refused = (description, code = 400) => Object.assign(new Error(`telegram sendMessage failed: ${description}`), { code });
+
+test('a question Telegram refuses is logged and skipped until it changes; the other questions go out and updates are still taken (S1b review F3)', async () => {
+  const { root, ctx, bot, logs } = project();
+  writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t5', { task: '5', header: '03-01 T5' })]);
+  ctx.deps.telegram = async (method, body, opts) => {
+    if (method === 'sendMessage' && body.text.startsWith('Phase 3 · 03-01 task 2')) throw refused('Bad Request: BUTTON_DATA_INVALID');
+    return bot.call(method, body, opts);
+  };
+  await telegramTick(ctx, NOW);
+  await telegramTick(ctx, NOW);
+  assert.deepEqual(bot.sent().map((m) => m.body.text.split('\n')[0]), ['Phase 3 · 03-01 task 5']);
+  assert.equal(polls(bot).length, 2, 'presses still taken');
+  assert.deepEqual(logs, ['telegram: question 03-01-t2 of phase 3 not sent: telegram sendMessage failed: Bad Request: BUTTON_DATA_INVALID']);
+  ctx.deps.telegram = bot.call;
+  writeQuestions(root, '3', [Q('03-01-t2', { rev: 2, stopped: true }), Q('03-01-t5', { task: '5', header: '03-01 T5' })]);
+  await telegramTick(ctx, NOW);
+  assert.deepEqual(bot.sent().map((m) => m.body.text.split('\n')[0]), ['Phase 3 · 03-01 task 5', 'Phase 3 · 03-01 task 2'], 'tried again once it changed');
+  assert.equal(bot.calls.filter((c) => c.method === 'editMessageText').length, 0, 'nothing to edit for a message never sent');
+});
+
+test('why the channel is off when answer.telegram is on, never with the values; off by choice says nothing (S1b review F4)', () => {
+  assert.equal(telegramOff(ON({ answer: { telegram: false } }), {}), null);
+  assert.equal(telegramOff(ON(), ENV), null);
+  assert.equal(telegramOff(ON({ notify: { desktop: true, telegram: false } }), ENV), 'answer.telegram needs notify.telegram');
+  assert.equal(telegramOff(ON(), { ...ENV, TURBO_TELEGRAM_TOKEN: ' ' }), 'TURBO_TELEGRAM_TOKEN is not set');
+  assert.equal(telegramOff(ON(), { ...ENV, TURBO_TELEGRAM_CHAT: '' }), 'TURBO_TELEGRAM_CHAT is not set');
+  for (const chat of ['-100123', '@owner', '04242']) {
+    assert.equal(telegramOff(ON(), { ...ENV, TURBO_TELEGRAM_CHAT: chat }), 'TURBO_TELEGRAM_CHAT is not the id of a private chat (a positive number without a leading zero; a group or an @name cannot answer)');
+  }
+});
+
+test('the channel off, or a refusal for the whole chat (bad token, blocked bot, wrong chat): one log line per spell, nothing remembered against the questions (S1b review F4)', async () => {
+  const { root, ctx, bot, logs } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  ctx.deps.env = { ...ENV, TURBO_TELEGRAM_CHAT: '-100123' };
+  for (let i = 0; i < 3; i++) await telegramTick(ctx, NOW);
+  assert.deepEqual(logs, ['telegram: answers are off: TURBO_TELEGRAM_CHAT is not the id of a private chat (a positive number without a leading zero; a group or an @name cannot answer)']);
+  ctx.deps.env = ENV;
+  for (const [description, code] of [['Unauthorized', 401], ['Forbidden: bot was blocked by the user', 403], ['Bad Request: chat not found', 400]]) {
+    logs.length = 0;
+    ctx.deps.telegram = async () => { throw refused(description, code); };
+    for (let i = 0; i < 3; i++) await telegramTick(ctx, NOW);
+    assert.deepEqual(logs, [`telegram: telegram sendMessage failed: ${description}`], description);
+    assert.deepEqual(readTelegramState(root).sent, {}, `${description}: tried again next tick`);
+  }
+  ctx.deps.telegram = bot.call;
+  await telegramTick(ctx, NOW);
+  assert.equal(bot.sent().length, 1, 'sent once the chat works');
+  logs.length = 0;
+  ctx.deps.telegram = async () => { throw refused('Unauthorized', 401); };
+  writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t6', { task: '6', header: '03-01 T6' })]);
+  await telegramTick(ctx, NOW);
+  assert.deepEqual(logs, ['telegram: telegram sendMessage failed: Unauthorized'], 'a new spell after a working tick');
 });

@@ -40,8 +40,8 @@ test('the needs-owner notice gives the reason, never a claim that the rest of th
   const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
   assert.deepEqual(holes(msg('ru', 'laneNeedsOwner', keep)), holes(msg('en', 'laneNeedsOwner', keep)));
   const vars = { phase: '2', reason: '1 item needs your sign-off' };
-  assert.deepEqual(msg('en', 'laneNeedsOwner', vars), { title: 'Phase 2 needs you', body: '1 item needs your sign-off. Run: /turbo-autonomous status' });
-  assert.deepEqual(msg('ru', 'laneNeedsOwner', vars), { title: 'Фаза 2: нужен ты', body: '1 item needs your sign-off. Подробности: /turbo-autonomous status' });
+  assert.deepEqual(msg('en', 'laneNeedsOwner', vars), { title: 'Phase 2 stopped — needs your answer', body: 'Reason: 1 item needs your sign-off. Details: /turbo-autonomous status' });
+  assert.deepEqual(msg('ru', 'laneNeedsOwner', vars), { title: 'Фаза 2 остановилась — нужен ваш ответ', body: 'Причина: 1 item needs your sign-off. Подробности: /turbo-autonomous status' });
 });
 
 test('inferStatus full mode: done needs the fresh done record; human_needed is not needs-owner', () => {
@@ -310,15 +310,15 @@ test('the downgrade notice names the way out and never claims the rest of the ph
   // the commands are runnable as printed: the supervisor's own turbo-run invocation, never a bare turbo-run (not on PATH)
   const vars = { phase: '2', turboRun: "node '/t/turbo-run.mjs'" };
   const en = msg('en', 'laneDowngraded', vars);
-  assert.equal(en.title, 'Phase 2 waits for full mode');
-  assert.match(en.body, /^GSD marked phase 2 complete before turbo-phase ran its gate fan-out and UAT, and doctor now reports safe mode/);
+  assert.equal(en.title, 'Phase 2 waits: its final checks need full mode');
+  assert.match(en.body, /^GSD marked phase 2 complete before turbo ran its quality checks and acceptance, and doctor now reports safe mode/);
   assert.match(en.body, /Fix what node '\/t\/turbo-run\.mjs' doctor reports, then run: \/turbo-autonomous resume 2\./);
   assert.match(en.body, /steps restore, fanout, fix, final-gate and uat yourself, then: node '\/t\/turbo-run\.mjs' lane-status 2 done$/);
   assert.doesNotMatch(en.body, /Everything else/);
   const ru = msg('ru', 'laneDowngraded', vars);
-  assert.equal(ru.title, 'Фаза 2 ждёт полного режима');
-  assert.match(ru.body, /^GSD отметил фазу 2 завершённой раньше, чем turbo-phase прогнал fan-out гейтов и UAT/);
-  assert.match(ru.body, /Исправь то, что показывает node '\/t\/turbo-run\.mjs' doctor, и запусти: \/turbo-autonomous resume 2\./);
+  assert.equal(ru.title, 'Фаза 2 ждёт: для финальных проверок нужен полный режим');
+  assert.match(ru.body, /^GSD отметил фазу 2 завершённой раньше, чем turbo провёл проверки качества и приёмку/);
+  assert.match(ru.body, /Исправьте то, что показывает node '\/t\/turbo-run\.mjs' doctor, и запустите: \/turbo-autonomous resume 2\./);
   assert.match(ru.body, /шаги turbo-phase restore, fanout, fix, final-gate и uat, затем: node '\/t\/turbo-run\.mjs' lane-status 2 done$/);
   assert.doesNotMatch(ru.body, /Остальное в фазе сделано/);
   for (const m of [en, ru]) assert.doesNotMatch(m.body, /(^|[\s(])turbo-run /);

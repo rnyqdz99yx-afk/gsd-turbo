@@ -521,7 +521,7 @@ test('a daemon that dies on a fatal error notifies the owner', async () => {
   const r = await runAsync(['daemon'], p.root, { ...p.env, ...spy.env }, spy.nodeArgs);
   assert.notEqual(r.code, 0);
   const notes = spy.calls().filter((c) => c.execFile);
-  assert.ok(notes.some((c) => JSON.stringify(c).includes('gsd-turbo cannot make progress')), JSON.stringify(notes));
+  assert.ok(notes.some((c) => JSON.stringify(c).includes('The supervisor cannot go on')), JSON.stringify(notes));
   assert.match(logOf(p.root), /fatal/);
 });
 

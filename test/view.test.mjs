@@ -5,11 +5,13 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { SESSION, entry, jsonl, projectDirFor, setMtime, usage, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
-import { completeStep } from '../lib/phase-progress.mjs';
+import { completeStep, countAttempt } from '../lib/phase-progress.mjs';
+import { writeAttend } from '../lib/attend.mjs';
+import { watch } from '../lib/watch.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
-import { buildView, formatView, openQuestions, pushOf, recentCommits, stallMs } from '../lib/view.mjs';
+import { buildView, formatView, openQuestions, plansOf, pushOf, recentCommits, stallMs } from '../lib/view.mjs';
 import { DEFAULTS, viewRefreshSeconds } from '../lib/config.mjs';
 
 const NOW = new Date('2026-01-01T11:00:00.000Z');
@@ -37,7 +39,7 @@ const agentEntries = (id, from, to, tokens = 166000) => [
 test('without supervisor.json the view has no supervisor and no lanes, and still lists questions and commits', () => {
   const { root, env } = laneProject();
   const v = buildView({ root, sup: null, env, now: NOW, commits: COMMITS });
-  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], questions: [], commits: COMMITS(), ui: { lang: 'en', refreshSeconds: 3 } });
+  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], questions: [], commits: COMMITS(), attended: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
 });
 
 test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
@@ -180,41 +182,179 @@ test('a warm view of a lane with 20 subagents and large transcripts, in a projec
   assert.ok(ms < budget, `warm view took ${ms.toFixed(0)} ms (budget ${budget} ms)`);
 });
 
-test('formatView prints one line per lane, subagent, question and commit', () => {
-  const v = {
+// A view as buildView returns it, for the text form: phase 32 executing, a question waiting.
+function textView(over = {}, lane = {}) {
+  return {
     v: 1, at: NOW.toISOString(),
     supervisor: { running: true, pid: 4242, finished: false, halted: false, failingSince: null, updatedAt: null },
     range: { from: '32', to: null },
     lanes: [{
-      phase: '32', step: 'execute', status: 'running', reason: '', quiet: false, sessionId: '1a2b3c4d', elapsedMs: 72 * 60000,
+      phase: '32', step: 'execute', status: 'running', reason: '', quiet: false, sessionId: '1a2b3c4d', elapsedMs: 72 * 60000, launchedAt: at('09:48'), lastAt: at('10:59'),
       agents: [
-        { type: 'gsd-executor', plan: '32-07', task: '2', state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, elapsedMs: 6 * 60000, tokens: 166000 },
-        { type: 'gsd-verifier', plan: null, task: null, state: 'quiet', action: { tool: 'Bash', detail: 'npm test' }, elapsedMs: 16 * 60000, tokens: null },
+        { type: 'gsd-executor', plan: '32-07', task: '2', state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, lastAt: at('10:58'), elapsedMs: 6 * 60000, tokens: 166000 },
+        { type: 'gsd-verifier', plan: null, task: null, state: 'quiet', action: { tool: 'Bash', detail: 'npm test' }, lastAt: at('10:44'), elapsedMs: 16 * 60000, tokens: null },
         { type: null, plan: '32-06', task: null, state: 'completed', action: null, elapsedMs: 45000, tokens: 950 },
       ],
+      plans: { done: 5, total: 9 },
+      ci: { fixes: 0, rounds: 2 },
+      ...lane,
     }],
-    questions: [{ id: 'q1', plan: '32-09', task: '3', question: 'Deploy after green CI?' }],
-    commits: [{ sha: 'a1b2c3d', subject: 'fix: something' }],
+    questions: [{ id: 'q1', phase: '32', plan: '32-09', task: '3', question: 'Deploy after green CI?', context: 'The deploy reaches every user.', options: [{ label: 'Yes, by the gate', recommended: true }, { label: 'Stop', description: 'the phase waits' }] }],
+    commits: [{ sha: 'a1b2c3d', at: at('10:48'), subject: 'fix: something' }],
+    attended: [],
+    ui: { lang: 'en', refreshSeconds: 3 },
+    ...over,
   };
-  assert.equal(formatView(v), [
-    'supervisor: running pid 4242',
-    'range: phases 32–end',
-    'p32 · execute · lane running · session 1a2b3c4d · 1h 12m',
-    '  gsd-executor · 32-07 Task 2 · Edit lib/x.mjs · 6m · 166k',
-    '  gsd-verifier · - · quiet · 16m · -',
-    '  agent · 32-06 · completed · 45s · 950',
-    'questions: 1 open',
-    '  q1 · 32-09 Task 3 · Deploy after green CI?',
-    'commits:',
-    '  a1b2c3d fix: something',
+}
+
+test('formatView, what turbo-run view and status --watch print, is the pane in plain lines: verdict, sign of life, helpers, the questions (the held one first) with their options, latest changes with their age, supervisor', () => {
+  assert.equal(formatView(textView()), [
+    'Phase 32 — running plans · 5 of 9 plans done · 1h 12m · needs your answer (1)',
+    '  last activity 1m ago',
+    '  Executor · plan 32-07, task 2 · editing lib/x.mjs · 6m',
+    '  ⚠️ Verifier silent for 16m — may be stuck',
+    '  1 more helper finished',
+    '',
+    'Needs your answer (1):',
+    '  you can answer ahead — the phase is not waiting',
+    '  Deploy after green CI? (plan 32-09, task 3)',
+    '    The deploy reaches every user.',
+    '    1. Yes, by the gate ★ recommended',
+    '    2. Stop — the phase waits',
+    '',
+    'Latest changes:',
+    '  fix: something · 12m ago',
+    '',
+    'Supervisor running · phases 32–…',
   ].join('\n'));
-  assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [] }), 'supervisor: not running (never started)');
+  const ru = (over, lane) => formatView(textView({ ui: { lang: 'ru', refreshSeconds: 3 }, ...over }, lane));
+  const held = { id: 'q2', phase: '32', plan: '32-10', task: '1', question: 'Страница экспорта выглядит верно?', options: [{ label: 'Принять' }], stopped: true };
+  assert.equal(ru({ questions: [textView().questions[0], held] }, { status: 'needs-owner', reason: 'owner question 32-10-t1' }), [
+    'Фаза 32 остановилась — ждёт вашего ответа · шаг: выполнение планов · 5 из 9 планов готово · 1 ч 11 мин',
+    '  последнее действие 1 мин назад',
+    '  Исполнитель · план 32-07, задача 2 · правит lib/x.mjs · 6 мин',
+    '  ⚠️ Проверяющий молчит 16 мин — возможно, завис',
+    '  ещё 1 помощник закончил',
+    '',
+    'Нужен ваш ответ (2):',
+    '  Фаза ждёт этот ответ',
+    '  Страница экспорта выглядит верно? (план 32-10, задача 1)',
+    '    1. Принять',
+    '  можно ответить заранее',
+    '  Deploy after green CI? (план 32-09, задача 3)',
+    '    The deploy reaches every user.',
+    '    1. Yes, by the gate ★ рекомендуется',
+    '    2. Stop — the phase waits',
+    '',
+    'Последние изменения:',
+    '  fix: something · 12 мин назад',
+    '',
+    'Супервизор работает · фазы 32–…',
+  ].join('\n'));
+  assert.equal(ru({ questions: [] }, { status: 'failed', reason: 'tests fail after 3 fix rounds' }).split('\n').slice(0, 3).join('\n'), 'Фаза 32 остановилась из-за сбоя · шаг: выполнение планов · 5 из 9 планов готово · 1 ч 11 мин\n  последнее действие 1 мин назад\n  Причина: tests fail after 3 fix rounds');
+  // after turbo-run stop: never "running", never "stuck", the time frozen at the last activity
+  assert.equal(ru({ questions: [], at: at('15:00'), supervisor: { running: false, pid: null, finished: false, halted: false } }, { quiet: true }).split('\n')[0], 'Фаза 32 остановлена на шаге: выполнение планов · 5 из 9 планов готово · 1 ч 11 мин · супервизор не работает');
+  assert.equal(ru({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }).split('\n')[0], 'Фаза 32 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин · CI красный — фаза чинит сама (попытка 1 из 2), от вас ничего не нужно');
+  assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [] }), 'Run — supervisor never started');
+  assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [], ui: { lang: 'ru' } }), 'Прогон — супервизор не запускался');
+  assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [{ sha: 'a1b2c3d', subject: 'old view' }] }), 'Run — supervisor never started\n\nLatest changes:\n  a1b2c3d old view', 'a view without commit times shows the hash');
+});
+
+// Every value of a words table, functions called with fixed arguments, as [path, value] pairs.
+function flatWords(o, prefix = '') {
+  const ARGS = [[1, 'a', 2], [3, 'x', 0], [0, null, 7], [12, '', 25], [true, 'b', 1], [false, 'c', 5]];
+  return Object.entries(o).flatMap(([k, v]) => {
+    const p = `${prefix}.${k}`;
+    if (typeof v === 'function') return ARGS.map((a) => [`${p}(${JSON.stringify(a)})`, v(...a)]);
+    return v && typeof v === 'object' ? flatWords(v, p) : [[p, v]];
+  });
+}
+
+test('turbo-run view and status --watch speak the pane\'s words: every phrase equal (functions called alike), and for a view without questions the same lines (review m3)', async () => {
+  const pane = await import('../mod/hooks/view-model.mjs');
+  const { WORDS, TEXT } = await import('../lib/view.mjs');
+  assert.deepEqual(WORDS, pane.WORDS);
+  for (const lang of ['en', 'ru']) {
+    const mine = flatWords(TEXT[lang]);
+    assert.ok(mine.length > 150, `${lang}: ${mine.length} phrases compared`);
+    const theirs = Object.fromEntries(flatWords(pane.TEXT[lang]));
+    for (const [key, value] of mine) assert.deepEqual(value, theirs[key], `${lang}${key}`);
+  }
+  const done = Array.from({ length: 5 }, (_, i) => ({ type: 'gsd-planner', plan: `32-0${i}`, task: null, state: 'completed', action: null, elapsedMs: 60000, tokens: 1 }));
+  const stoppedSup = { running: false, pid: null, finished: false, halted: false };
+  const views = [
+    textView({ questions: [] }),
+    textView({ questions: [] }, { status: 'needs-owner', reason: 'checkpoint 32-09 Task 3', agents: done }),
+    textView({ questions: [] }, { status: 'needs-owner', reason: 'owner question 32-09-t3' }),
+    textView({ questions: [] }, { status: 'failed', reason: 'owner question 32-09-t3: app.exe holds release/app.exe' }),
+    textView({ questions: [] }, { status: 'done', step: null, agents: [] }),
+    textView({ questions: [] }, { status: 'paused-context', plans: null }),
+    textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), agents: [{ type: 'turbo-uat', plan: null, state: 'running', action: { tool: 'Bash', detail: 'git commit -m x' }, elapsedMs: 1000 }] }),
+    textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, step: 'fanout', agents: [{ type: 'gsd-code-reviewer', state: 'running', action: { tool: 'Grep', detail: 'x' }, elapsedMs: 5000 }] }),
+    textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }),
+    textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, status: 'needs-owner' }),
+    textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 2, rounds: 2 } }),
+    textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, status: 'done', step: null }),
+    textView({ questions: [] }, { status: 'paused-context', held: 'fullMode' }),
+    textView({ questions: [], supervisor: { ...textView().supervisor, halted: true, running: false } }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }),
+    textView({ questions: [], supervisor: { running: false, finished: true, halted: false }, lanes: [], commits: [] }),
+    textView({ questions: [], supervisor: { ...stoppedSup, halted: true }, range: null }),
+    textView({ questions: [], supervisor: stoppedSup, at: at('15:00') }, { quiet: true }),
+    textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }),
+    textView({ questions: [], supervisor: { ...textView().supervisor, failingSince: at('10:10') } }),
+    textView({ questions: [], commits: [{ sha: 'a1b2c3d', at: '2025-12-28T10:00:00.000Z', subject: 'old' }, { sha: 'b', at: at('10:59'), subject: 'new' }, { sha: 'c', subject: 'no time' }] }),
+  ];
+  for (const lang of ['en', 'ru']) {
+    for (const v of views) {
+      // the owner's zone for the supervisor's failing time: the pane reads it from the view, turbo-run is in it
+      const view = { ...v, ui: { lang, refreshSeconds: 3, utcOffsetMinutes: -new Date(at('10:10')).getTimezoneOffset() } };
+      assert.equal(formatView(view), pane.paneLines(pane.render(view)).join('\n'), `${lang}: ${JSON.stringify(v.lanes[0]?.status)} ${JSON.stringify(v.supervisor)}`);
+    }
+  }
+});
+
+test('the view carries what the pane needs to judge: plans done, the CI fix rounds left, attended phases, commit times', () => {
+  const { root, sup, env } = laneProject();
+  const phaseDir = path.join(root, '.planning', 'phases', '32-export');
+  fs.mkdirSync(phaseDir, { recursive: true });
+  for (const f of ['32-01-PLAN.md', '32-01-SUMMARY.md', '32-02-PLAN.md', '32-02-SUMMARY.md', '32-03-PLAN.md', '32-CONTEXT.md']) fs.writeFileSync(path.join(phaseDir, f), '# x\n');
+  countAttempt(root, '32', 'ci');
+  writeAttend(root, '33');
+  const v = buildView({ root, sup, config: { push: { ci_fix_rounds: 3 } }, env, now: NOW, commits: COMMITS });
+  assert.deepEqual([v.lanes[0].plans, v.lanes[0].ci, v.attended], [{ done: 2, total: 3 }, { fixes: 1, rounds: 3 }, ['33']]);
+  assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes[0].ci, { fixes: 1, rounds: DEFAULTS.push.ci_fix_rounds }, 'the default rounds without a push config');
+  const bare = laneProject();
+  assert.deepEqual([buildView({ root: bare.root, sup: bare.sup, env: bare.env, now: NOW, commits: COMMITS }).lanes[0].plans], [null], 'no phase directory: no count');
+  // review n3: phases that cannot be read (a file where the directory should be: ENOTDIR) give no count, never a broken view
+  fs.writeFileSync(path.join(bare.root, '.planning', 'phases'), 'not a directory');
+  assert.equal(plansOf(bare.root, '32'), null);
+  assert.equal(buildView({ root: bare.root, sup: bare.sup, env: bare.env, now: NOW, commits: COMMITS }).lanes[0].plans, null);
+  // review n8: a lane the supervisor holds until full mode is back (holdDowngradedLane marks it notified.downgraded)
+  const heldSup = { ...sup, lane: { ...sup.lane, notified: { downgraded: true } } };
+  assert.deepEqual([buildView({ root, sup: heldSup, env, now: NOW, commits: COMMITS }).lanes[0].held, buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes[0].held], ['fullMode', null]);
+  const repo = tmpGitRepo();
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'feat: timed'], { cwd: repo });
+  const [c] = recentCommits(repo);
+  assert.equal(c.subject, 'feat: timed');
+  assert.ok(Math.abs(Date.parse(c.at) - Date.now()) < 120000, c.at);
+});
+
+test('status --watch draws its footer in the config\'s language', async () => {
+  const frames = [];
+  await watch({ frame: () => ({ text: 'x', seconds: 5, lang: 'ru' }), write: (s) => frames.push(s), tty: false, now: () => new Date(2026, 0, 1, 8, 18, 3), rounds: 1 });
+  assert.equal(frames[0], 'x\nобновлено 08:18:03 · каждые 5 с · Ctrl+C — выход\n');
+  let n = 0;
+  await watch({ frame: () => { if (n++) throw new Error('boom'); return { text: 'y', seconds: 1, lang: 'ru' }; }, write: (s) => frames.push(s), tty: false, now: () => new Date(2026, 0, 1, 8, 18, 3), sleep: async () => {}, rounds: 2 });
+  assert.equal(frames.at(-1), '\nошибка: boom\nобновлено 08:18:03 · каждые 1 с · Ctrl+C — выход\n', 'an error keeps the language');
+  await watch({ frame: () => ({ text: 'z', seconds: 3 }), write: (s) => frames.push(s), tty: false, now: () => new Date(2026, 0, 1, 8, 18, 3), rounds: 1 });
+  assert.equal(frames.at(-1), 'z\nupdated 08:18:03 · every 3 s · Ctrl+C stops\n');
 });
 
 test('the view carries the live view settings (ui) and each lane its last push as S2 recorded it', () => {
   const { root, sup, env } = laneProject();
   const v = buildView({ root, sup, config: { lang: 'ru', view: { refresh_seconds: 5 } }, env, now: NOW, commits: COMMITS });
-  assert.deepEqual(v.ui, { lang: 'ru', refreshSeconds: 5 });
+  // the owner's zone: the mod tells the local time by it whatever zone its own runtime keeps
+  assert.deepEqual(v.ui, { lang: 'ru', refreshSeconds: 5, utcOffsetMinutes: -NOW.getTimezoneOffset() });
   assert.equal(v.lanes[0].push, null);
   // S2's record (lib/push.mjs): the latest request's outcome and time at the top, the last push and its CI watch in
   // lastPush, carried over by later requests

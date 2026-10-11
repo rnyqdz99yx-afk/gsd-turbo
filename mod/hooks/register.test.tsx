@@ -14,7 +14,7 @@ const VIEW = {
   }],
   questions: [{ id: 'q1', phase: '32', plan: '32-09', task: '3', kind: 'decision', header: 'Deploy', question: 'Deploy after green CI?', options: [{ label: 'Yes, by the gate' }, { label: 'Stop' }], allowOther: true, state: 'open', rev: 1 }],
   commits: [{ sha: 'a1b2c3d', subject: 'fix: lane record keeps the reason' }],
-  ui: { lang: 'en', refreshSeconds: 3 },
+  ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: 0 },
 }
 const BIN = '/home/dev/.claude/turbo/bin/turbo-run.mjs'
 const BAND = { plugin: 'turbo-view', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 100, scroll: { offset: 0, bodyRows: 3 }, view: {} } } as const
@@ -90,13 +90,19 @@ test('in a turbo project the band and the pane show the view, and an option butt
   // turbo-run runs in its install directory: a node shim (Volta, asdf, mise) never reads the project's pin
   expect(inits[0].cwd).toMatch(/[\\/]home[\\/]dev[\\/]\.claude[\\/]turbo$/)
   const band = await $.ui.mount(BAND)
-  expect(await band.find({ type: 'Text', text: 'turbo p32 execute · 1 agent · ? 1 question · CI ✓' })).toBeDefined()
+  // the band in words, in the verdict's colour (an answer waits: amber)
+  const line = await band.find({ type: 'Text', text: 'turbo · phase 32: running plans · ❓ 1 question waits for you · CI ✓' })
+  expect(line.props.color).toBe('warning')
   const pane = await $.ui.mount(PANE)
-  expect(await pane.find({ type: 'Text', text: /gsd-executor +32-07 Task 2 +Edit lib\/x\.mjs +6m · 166k/ })).toBeDefined()
-  // the question in full, its options numbered, one short numbered button per option
-  expect((await pane.find({ type: 'Text', text: '    32-09 Task 3 · Deploy after green CI?' })).props.wrap).toBe('wrap')
-  expect(await pane.find({ type: 'Text', text: '      2. Stop' })).toBeDefined()
-  expect((await pane.find({ key: 'q:q1:2' })).props.label).toBe('2')
+  expect(await pane.find({ type: 'Text', text: /^Phase 32 — running plans · 1h 12m · needs your answer \(1\)$/ })).toBeDefined()
+  // the question cannot hold the phase (none is stopped): it can be answered ahead, said in its card
+  expect(await pane.find({ type: 'Text', text: 'you can answer ahead — the phase is not waiting' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^Executor · plan 32-07, task 2 · editing lib\/x\.mjs · 6m$/ })).toBeDefined()
+  // the question bold and wrapped in its card, each option's button carrying its number and text
+  const ask = await pane.find({ type: 'Text', text: /^Deploy after green CI\? \(plan 32-09, task 3\)$/ })
+  expect([ask.props.wrap, ask.props.bold]).toEqual(['wrap', true])
+  expect((await pane.find({ key: 'q:q1:2' })).props.label).toBe('2. Stop')
+  expect((await pane.find({ key: 'q:q1:other' })).props.label).toBe('Your own answer…')
   await pane.press({ key: 'q:q1:1' })
   await clock.settle()
   expect(calls.find((c) => c[2] === 'answer')).toEqual([NODE, BIN, 'answer', '--project', '/work', '32', 'q1', '--option', '1', '--by', 'pane', '--rev', '1'])
@@ -137,7 +143,7 @@ test('without node in PATH the band says so and nothing runs', async ($, on) => 
   await begin($, clock)
   expect(calls).toEqual([])
   const band = await $.ui.mount(BAND)
-  expect(await band.find({ type: 'Text', text: 'turbo · ⚠ node not found in PATH' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'turbo · ⚠️ node not found in PATH' })).toBeDefined()
 })
 
 test('a missing turbo-run shows where it was looked for, and nothing is spawned', async ($, on) => {
@@ -145,19 +151,19 @@ test('a missing turbo-run shows where it was looked for, and nothing is spawned'
   await begin($, clock)
   expect(calls).toEqual([])
   const band = await $.ui.mount(BAND)
-  expect(await band.find({ type: 'Text', text: `turbo · ⚠ turbo-run not found at ${BIN}` })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: `turbo · ⚠️ turbo-run not found at ${BIN}` })).toBeDefined()
 })
 
 test('a failing turbo-run view shows one line in the band, keeps reading, and recovers', async ($, on) => {
   const { calls, clock } = stub(on, { views: ['invalid turbo config /work/.planning/turbo/config.json: Unexpected end of JSON input\n    at loadConfig (x.mjs:1:1)\n', VIEW] })
   await begin($, clock)
   const band = await $.ui.mount(BAND)
-  expect(await band.find({ type: 'Text', text: 'turbo · ⚠ invalid turbo config /work/.planning/turbo/config.json: Unexpected end of JSON input' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'turbo · ⚠️ invalid turbo config /work/.planning/turbo/config.json: Unexpected end of JSON input' })).toBeDefined()
   await band.unmount()
   await clock.advance(15000)
   expect(calls.filter((c) => c[2] === 'view').length).toBeGreaterThan(1)
   const again = await $.ui.mount(BAND)
-  expect(await again.find({ type: 'Text', text: /^turbo p32 execute/ })).toBeDefined()
+  expect(await again.find({ type: 'Text', text: /^turbo · phase 32: running plans/ })).toBeDefined()
 })
 
 test('a new question between two reads raises a toast', async ($, on) => {
@@ -166,7 +172,7 @@ test('a new question between two reads raises a toast', async ($, on) => {
   await begin($, clock)
   expect(toasts).toEqual([])
   await clock.advance(3000)
-  expect(toasts).toEqual(['new question: 32-10 Task 1 — Looks right?'])
+  expect(toasts).toEqual(['New question (phase 32): “Looks right?”'])
 })
 
 test('a lane the supervisor cleared between two reads toasts phase done once, and the next phase that arrives stopped toasts too', async ($, on) => {
@@ -174,7 +180,7 @@ test('a lane the supervisor cleared between two reads toasts phase done once, an
   const { toasts, clock } = stub(on, { views: [VIEW, next] })
   await begin($, clock)
   await clock.advance(3000)
-  expect(toasts).toEqual(['phase 32 done', 'phase 33 stopped: needs-owner — checkpoint 33-01'])
+  expect(toasts).toEqual(['Phase 32 done', 'Phase 33 stopped — needs your answer: checkpoint 33-01'])
   await clock.advance(3000)
   expect(toasts).toHaveLength(2)
 })
@@ -186,7 +192,7 @@ test('toasts remember lanes across reads: a red CI run toasted before its lane l
   const { toasts, clock } = stub(on, { views })
   await begin($, clock)
   await clock.advance(6000)
-  expect(toasts).toEqual(['phase 40 done'])
+  expect(toasts).toEqual(['Phase 40 done'])
 })
 
 test('/turbo-view whose pane cannot open says why in a toast instead of failing', async ($, on) => {
@@ -280,7 +286,7 @@ test('a press that cannot reach turbo-run says why in a toast, never silently', 
   await pane.press({ key: 'q:q1:1' })
   await clock.settle()
   expect(calls.some((c) => c[2] === 'answer')).toBe(false)
-  expect(toasts).toEqual([`turbo-run answer not sent: turbo-run not found at ${BIN}`])
+  expect(toasts).toEqual([`Answer not sent: turbo-run not found at ${BIN}`])
 })
 
 test('what is typed into the Other… field survives the next read, which redraws the pane', async ($, on) => {
@@ -293,18 +299,18 @@ test('what is typed into the Other… field survives the next read, which redraw
   expect((await pane.find({ key: 'q:q1:text' })).props.value).toBe('полу')
 })
 
-test('an answer already given elsewhere: the arbiter line from stdout (exit 3) is the toast, and the field closes', async ($, on) => {
+test('an answer already given elsewhere (exit 3): the toast says what, where and when in words, and the field closes', async ($, on) => {
   const { toasts, clock } = stub(on, { answer: { exitCode: 3, stdout: 'already answered: Stop, telegram, 2026-01-01T10:58:00.000Z\n', stderr: '' } })
   await begin($, clock)
   const pane = await $.ui.mount(PANE)
   await pane.press({ key: 'q:q1:other' })
   await pane.input({ key: 'q:q1:text', text: 'go on' })
   await clock.settle()
-  expect(toasts).toEqual(['already answered: Stop, telegram, 2026-01-01T10:58:00.000Z'])
+  expect(toasts).toEqual(['Already answered (in Telegram, 10:58): “Stop”'])
   expect(await pane.find({ key: 'q:q1:text' })).toBeUndefined()
 })
 
-test('a question that changed since it was drawn (exit 4): the line is the toast, the pane reads again at once, the field closes and keeps the text', async ($, on) => {
+test('a question that changed since it was drawn (exit 4): the toast says so, the pane reads again at once, the field closes and keeps the text', async ($, on) => {
   const line = 'changed: question q1 changed since it was shown (now rev 2, shown rev 1); read it again and answer the new version'
   const { calls, toasts, clock } = stub(on, { answer: { exitCode: 4, stdout: `${line}\n`, stderr: '' } })
   await begin($, clock)
@@ -312,14 +318,14 @@ test('a question that changed since it was drawn (exit 4): the line is the toast
   await pane.press({ key: 'q:q1:other' })
   await pane.input({ key: 'q:q1:text', text: 'go on' })
   await clock.settle()
-  expect(toasts).toEqual([line])
+  expect(toasts).toEqual(['The question changed — the pane now shows the new one; answer again'])
   expect(calls.filter((c) => c[2] === 'view')).toHaveLength(2)
   expect(await pane.find({ key: 'q:q1:text' })).toBeUndefined()
   await pane.press({ key: 'q:q1:other' })
   expect((await pane.find({ key: 'q:q1:text' })).props.value).toBe('go on')
 })
 
-test('a refused answer (exit 1): the line is the toast, and the field stays open with the text to rephrase', async ($, on) => {
+test('a refused answer (exit 1): the toast says why in words, and the field stays open with the text to rephrase', async ($, on) => {
   const line = 'refused: the answer matches a secret pattern (GitHub token); say it without the value'
   const { toasts, clock } = stub(on, { answer: { exitCode: 1, stdout: `${line}\n`, stderr: '' } })
   await begin($, clock)
@@ -327,6 +333,35 @@ test('a refused answer (exit 1): the line is the toast, and the field stays open
   await pane.press({ key: 'q:q1:other' })
   await pane.input({ key: 'q:q1:text', text: 'token is abc' })
   await clock.settle()
-  expect(toasts).toEqual([line])
+  expect(toasts).toEqual(['Not recorded: the answer looks like it holds a secret — say it without'])
   expect((await pane.find({ key: 'q:q1:text' })).props.value).toBe('token is abc')
+})
+
+test('a recorded answer (exit 0): the toast names the option or the own words and the local time, never the question id or the channel', async ($, on) => {
+  const { toasts, clock } = stub(on, { answer: { exitCode: 0, stdout: 'answered q1: Yes, by the gate, pane, 2026-01-01T10:58:00.000Z\n', stderr: '' } })
+  await begin($, clock)
+  const pane = await $.ui.mount(PANE)
+  await pane.press({ key: 'q:q1:1' })
+  await clock.settle()
+  await pane.press({ key: 'q:q1:other' })
+  await pane.input({ key: 'q:q1:text', text: 'go on, да 👍' })
+  await clock.settle()
+  expect(toasts).toHaveLength(2)
+  expect(toasts[0]).toMatch(/^Answer recorded: “Yes, by the gate” · \d\d:\d\d$/)
+  expect(toasts[1]).toMatch(/^Answer recorded: “go on, да 👍” · \d\d:\d\d$/)
+})
+
+test('in Russian the pane, the band and the toasts speak Russian', async ($, on) => {
+  const ru = { ...VIEW, ui: { ...VIEW.ui, lang: 'ru' } }
+  const { toasts, clock } = stub(on, { views: [ru], answer: { exitCode: 3, stdout: 'already answered: Стоп, telegram, 2026-01-01T10:58:00.000Z\n', stderr: '' } })
+  await begin($, clock)
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: 'Text', text: 'turbo · фаза 32: выполняются планы · ❓ 1 вопрос ждёт вас · CI ✓' })).toBeDefined()
+  const pane = await $.ui.mount(PANE)
+  expect(await pane.find({ type: 'Text', text: /^Исполнитель · план 32-07, задача 2 · правит lib\/x\.mjs · 6 мин$/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Нужен ваш ответ (1):' })).toBeDefined()
+  expect((await pane.find({ key: 'q:q1:other' })).props.label).toBe('Свой ответ…')
+  await pane.press({ key: 'q:q1:2' })
+  await clock.settle()
+  expect(toasts).toEqual(['Уже отвечено (в Telegram, 10:58): «Стоп»'])
 })

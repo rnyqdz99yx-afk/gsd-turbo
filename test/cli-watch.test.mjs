@@ -7,7 +7,7 @@ import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
 
-// A view change: a supervisor that ran once and is gone ("supervisor: not running").
+// A view change: a supervisor that ran once and is gone ("Run — supervisor not running").
 const stopSupervisor = (root) => fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ pid: 2147483644, updatedAt: new Date(Date.now() - 2 * 3600000).toISOString() }));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -41,8 +41,8 @@ test('turbo-run status --watch reads every view.refresh_seconds until stopped; i
   fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ view: { refresh_seconds: 1 } }));
   const out = await watchFrames(root);
-  assert.equal((out.match(/^supervisor: not running \(never started\)$/gm) || []).length, 1, 'the unchanged reads printed nothing');
-  assert.equal((out.match(/^supervisor: not running$/gm) || []).length, 1);
+  assert.equal((out.match(/^Run — supervisor never started$/gm) || []).length, 1, 'the unchanged reads printed nothing');
+  assert.equal((out.match(/^Run — supervisor not running$/gm) || []).length, 1);
   assert.match(out, /^updated \d\d:\d\d:\d\d · every 1 s · Ctrl\+C stops$/m);
   assert.equal(out.includes('\x1b['), false);
 });

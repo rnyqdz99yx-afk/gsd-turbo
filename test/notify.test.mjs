@@ -15,20 +15,20 @@ test('msg renders en and ru with variables; unknown lang falls back to en', () =
 });
 
 test('msg renders supervisorFailing in en and ru', () => {
-  assert.deepEqual(msg('en', 'supervisorFailing', { error: 'launch phase 2 failed' }), { title: 'gsd-turbo cannot make progress', body: 'launch phase 2 failed. Check: /turbo-autonomous status' });
-  assert.deepEqual(msg('ru', 'supervisorFailing', { error: 'launch phase 2 failed' }), { title: 'gsd-turbo не может продолжить', body: 'launch phase 2 failed. Проверь: /turbo-autonomous status' });
+  assert.deepEqual(msg('en', 'supervisorFailing', { error: 'launch phase 2 failed' }), { title: 'The supervisor cannot go on', body: 'Error: launch phase 2 failed. Check: /turbo-autonomous status' });
+  assert.deepEqual(msg('ru', 'supervisorFailing', { error: 'launch phase 2 failed' }), { title: 'Супервизор не может продолжить', body: 'Ошибка: launch phase 2 failed. Проверьте: /turbo-autonomous status' });
 });
 
 test('msg renders rangeDone in en and ru', () => {
-  assert.deepEqual(msg('en', 'rangeDone', { range: '4–5' }), { title: 'Phases 4–5 done', body: 'The range is complete; the supervisor stopped.' });
-  assert.deepEqual(msg('ru', 'rangeDone', { range: '4–5' }), { title: 'Фазы 4–5 готовы', body: 'Диапазон выполнен; супервизор остановлен.' });
+  assert.deepEqual(msg('en', 'rangeDone', { range: '4–5' }), { title: 'Phases 4–5 done', body: 'Every phase of this run is done; the supervisor finished.' });
+  assert.deepEqual(msg('ru', 'rangeDone', { range: '4–5' }), { title: 'Фазы 4–5 готовы', body: 'Все фазы этого прогона готовы; супервизор закончил работу.' });
 });
 
 test('msg renders rangeBlocked in en and ru: the range, the waiting phase, the unfinished dep outside it', () => {
   const vars = { range: '4–6', phase: '4', dep: '3' };
   assert.equal(msg('en', 'rangeBlocked', vars).title, 'Phases 4–6 are waiting');
   assert.equal(msg('ru', 'rangeBlocked', vars).title, 'Фазы 4–6 ждут');
-  assert.match(msg('ru', 'rangeBlocked', vars).body, /^Фаза 4 зависит от фазы 3 вне диапазона, она не завершена/);
+  assert.match(msg('ru', 'rangeBlocked', vars).body, /^Фаза 4 зависит от фазы 3, которая не входит в этот прогон и не завершена/);
   for (const lang of ['en', 'ru']) {
     const m = msg(lang, 'rangeBlocked', vars);
     assert.ok(m.body.includes('/turbo-autonomous --only 3') && m.body.includes('--all'), lang);
@@ -214,7 +214,9 @@ test('push and CI messages exist in en and ru with the same placeholders (S2)', 
     assert.deepEqual(holes(ru), holes(en), key);
   }
   assert.equal(msg('en', 'pushRefused', { phase: '3', findings: 'logs/a.log (forbidden name *.log)', remote: 'origin', branch: 'main' }).title, 'Phase 3: push refused');
-  assert.match(msg('en', 'ciRed', { phase: '3', sha: 'abc1234', runs: 'CI (failure)', rounds: 2 }).body, /abc1234: CI \(failure\)\. The lane fixes it itself \(at most 2 rounds\)/);
+  assert.match(msg('en', 'ciRed', { phase: '3', sha: 'abc1234', runs: 'CI (failure)', rounds: 2 }).body, /abc1234: CI \(failure\)\. The phase fixes it itself \(at most 2 rounds\)/);
+  assert.deepEqual(['en', 'ru'].map((lang) => msg(lang, 'ciRed', { phase: '3', sha: 'a', runs: 'r', rounds: 2 }).title), ['CI red: phase 3', 'CI красный: фаза 3'], "the pane's words");
+  assert.match(msg('ru', 'ciTimeout', { phase: '3', sha: 'a', commit: 'a', repo: '', minutes: 30, error: '; last gh error: gh: timeout' }).body, /не завершился за 30 мин; последняя ошибка gh: gh: timeout\. /);
   // the suggested command names the full commit and the repository: gh run list --commit needs the full sha
   const full = 'f'.repeat(40);
   for (const lang of ['en', 'ru']) {
@@ -230,7 +232,8 @@ test('laneStalled exists in en and ru with the same placeholders (S1)', () => {
   assert.notEqual(en.title, 'laneStalled');
   assert.notEqual(ru.title, en.title);
   assert.deepEqual(holes(ru), holes(en));
-  assert.match(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, /1a2b3c4d wrote nothing for 16 min, also after 2 wakes/);
+  assert.equal(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Its session has written nothing for 16 min; attempts to wake it: 2. To look inside: claude attach 1a2b3c4d. To restart the phase: /turbo-autonomous resume 3');
+  assert.equal(msg('ru', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Её сессия ничего не пишет уже 16 мин; попыток разбудить: 2. Посмотреть: claude attach 1a2b3c4d. Перезапустить фазу: /turbo-autonomous resume 3');
 });
 
 test('questionsReady exists in en and ru with the same placeholders (S1)', () => {
@@ -241,7 +244,58 @@ test('questionsReady exists in en and ru with the same placeholders (S1)', () =>
   assert.notEqual(en.title, 'questionsReady');
   assert.notEqual(ru.title, en.title);
   assert.deepEqual(holes(ru), holes(en));
-  const m = msg('en', 'questionsReady', { phase: '3', n: 2, list: '03-01 T2: Pick one' });
-  assert.equal(m.title, 'Phase 3: 2 question(s) for you');
-  assert.equal(m.body, '03-01 T2: Pick one. Answer: /turbo-autonomous answer');
+  // owner-tick lists `<header>: <question>` (header `<plan> T<task>`): the plan and task in words
+  const list = '03-01 T2: Pick one; 03-01 T4: Pick another?';
+  assert.deepEqual(msg('en', 'questionsReady', { phase: '3', n: 2, list }), { title: 'Phase 3: needs your answer (2)', body: 'plan 03-01, task 2: Pick one; plan 03-01, task 4: Pick another? To answer: /turbo-autonomous answer' });
+  assert.deepEqual(msg('ru', 'questionsReady', { phase: '3', n: 2, list }), { title: 'Фаза 3: нужен ваш ответ (2)', body: 'план 03-01, задача 2: Pick one; план 03-01, задача 4: Pick another? Ответить: /turbo-autonomous answer' });
+});
+
+test("the notifications speak the turbo-view pane's words: a phase done, stopped for the owner, stopped by a failure", () => {
+  const vars = { phase: '32', reason: '', id: 'abcd1234' };
+  const titles = (lang) => ['phaseDone', 'laneNeedsOwner', 'laneFailed'].map((key) => msg(lang, key, vars).title);
+  assert.deepEqual(titles('en'), ['Phase 32 done', 'Phase 32 stopped — needs your answer', 'Phase 32 stopped by a failure']);
+  assert.deepEqual(titles('ru'), ['Фаза 32 готова', 'Фаза 32 остановилась — нужен ваш ответ', 'Фаза 32 остановилась из-за сбоя']);
+  assert.deepEqual(msg('ru', 'phaseDone', vars), { title: 'Фаза 32 готова', body: 'Перехожу к следующей фазе.' });
+});
+
+test('a needs-owner reason in words: no `owner question <id>`, no question or session id, the supervisor\'s own reasons translated', () => {
+  const says = (lang, reason) => msg(lang, 'laneNeedsOwner', { phase: '32', reason }).body;
+  assert.equal(says('en', 'owner question 32-09-t3'), 'Details: /turbo-autonomous status', 'the title says a question waits');
+  assert.equal(says('ru', 'owner question 32-09-t3'), 'Подробности: /turbo-autonomous status');
+  assert.equal(says('ru', 'owner question 32-09-t3: app.exe locked by app.exe (PID 42): quit the app.'), 'Причина: app.exe locked by app.exe (PID 42): quit the app. Подробности: /turbo-autonomous status');
+  assert.equal(says('en', 'Owner question 32-09-t3 the deploy needs a key'), 'Reason: the deploy needs a key. Details: /turbo-autonomous status');
+  assert.equal(says('en', 'owner question about the deploy'), 'Reason: owner question about the deploy. Details: /turbo-autonomous status', 'no id: kept as written');
+  assert.equal(says('en', 'human verification'), 'Reason: it needs your manual check. Details: /turbo-autonomous status');
+  assert.equal(says('ru', 'human verification'), 'Причина: нужна ваша ручная проверка. Подробности: /turbo-autonomous status');
+  const undelivered = 'the answers to 02-01-t2, 02-01-t4 did not reach session 1a2b3c4d (claude stop failed: timed out)';
+  assert.equal(says('en', undelivered), "Reason: your answers did not reach the phase's session (claude stop failed: timed out). Details: /turbo-autonomous status");
+  assert.equal(says('ru', undelivered), 'Причина: ваши ответы не дошли до сессии фазы (claude stop failed: timed out). Подробности: /turbo-autonomous status');
+  assert.equal(says('en', 'a\u001b[2Jb‮c'), 'Reason: abc. Details: /turbo-autonomous status', 'a repository string is cleaned');
+});
+
+test('a session id shows only inside the command that needs it', () => {
+  const vars = { phase: '2', id: 'abcd1234', minutes: 16, wakes: 2, restarts: 3, log: 'x.log' };
+  for (const lang of ['en', 'ru']) {
+    for (const key of ['laneStalled', 'laneBlocked', 'laneFailed', 'phaseMissing']) {
+      const m = msg(lang, key, vars);
+      const text = `${m.title}\n${m.body}`;
+      assert.equal(text.split('abcd1234').length - 1, text.split('claude attach abcd1234').length - 1, `${lang} ${key}: ${text}`);
+    }
+  }
+});
+
+test('the Russian notifications hold no English but commands, paths, names and the variables', () => {
+  const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
+  const keys = ['laneNeedsOwner', 'laneStalled', 'questionsReady', 'laneDowngraded', 'ownerChecklist', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'workspaceUntrusted', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'rangeBlocked', 'supervisorFailing', 'pushDiverged', 'pushRefused', 'pushFailed', 'ciRed', 'ciTimeout', 'ciUnavailable'];
+  // commands the owner runs, as printed, and the names of tools and files
+  const COMMANDS = [/\/turbo-autonomous [a-z]+(?: \{\w+\})?/g, /\/turbo-autonomous --only \{dep\}/g, /--(?:from|to|all)\b/g, /claude attach \{id\}/g, /\{turboRun\} doctor/g, /\{turboRun\} lane-status \{phase\} done/g, /turbo-phase restore, fanout, fix, final-gate и uat/g, /git push \{remote\} \{branch\}/g, /gh run list\{repo\} --commit \{commit\}/g, /\.planning\/turbo\/logs\/supervisor\.log/g, /ROADMAP\.md/g];
+  const NAMES = new Set(['CI', 'GSD', 'Claude', 'Code', 'claude', 'turbo', 'turbo-phase', 'doctor', 'gh', 'Telegram']);
+  for (const key of keys) {
+    const m = msg('ru', key, keep);
+    let text = `${m.title}\n${m.body}`;
+    for (const re of COMMANDS) text = text.replace(re, ' ');
+    text = text.replace(/\{\w+\}/g, ' ');
+    const english = (text.match(/[A-Za-z][A-Za-z-]*/g) || []).filter((w) => !NAMES.has(w));
+    assert.deepEqual(english, [], `${key}: ${m.title} / ${m.body}`);
+  }
 });

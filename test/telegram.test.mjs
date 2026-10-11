@@ -76,7 +76,9 @@ test('run/telegram.json keeps the bot, the offset with its time, the sent messag
 });
 
 const NOW = new Date('2026-01-01T10:00:00.000Z');
-const OPT = (label, more = {}) => ({ label, description: '', recommended: false, signal: label.toLowerCase(), defer: false, ...more });
+// the owner's clock: the local HH:MM of a time (the supervisor runs on the owner's machine), never an ISO time
+const hhmm = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+const OPT =(label, more = {}) => ({ label, description: '', recommended: false, signal: label.toLowerCase(), defer: false, ...more });
 // an open decision of phase 3 in S1a's question shape
 const Q = (id, over = {}) => ({
   id, phase: '3', plan: '03-01', task: '2', kind: 'decision', gate: 'blocking', header: '03-01 T2', question: 'Pick the store', context: 'Small data.',
@@ -120,17 +122,17 @@ test('each open question goes out once, with a button per option (recommended fi
   const sent = bot.sent();
   assert.equal(sent.length, 2);
   assert.equal(sent[0].body.chat_id, '4242');
-  assert.equal(sent[0].body.text, 'Phase 3 · 03-01 task 2\nPick the store\n\n1. Files — + simple\n2. SQLite\n\nSmall data.');
+  assert.equal(sent[0].body.text, 'Phase 3 · plan 03-01, task 2\nPick the store\nSmall data.\n\n1. Files ★ recommended — + simple\n2. SQLite');
   assert.equal(sent[0].body.parse_mode, undefined, 'plain text: nothing in a question is read as markup');
   const short = shortId('3', '03-01-t2');
   assert.deepEqual(sent[0].body.reply_markup.inline_keyboard, [
-    [{ text: 'Files', callback_data: `t3:${short}:1:00000001` }],
-    [{ text: 'SQLite', callback_data: `t3:${short}:2:00000002` }],
-    [{ text: 'Other…', callback_data: `t3:${short}:o:00000003` }],
+    [{ text: '1. Files ★', callback_data: `t3:${short}:1:00000001` }],
+    [{ text: '2. SQLite', callback_data: `t3:${short}:2:00000002` }],
+    [{ text: 'Your own answer…', callback_data: `t3:${short}:o:00000003` }],
   ]);
-  assert.deepEqual(sent[1].body.reply_markup.inline_keyboard.map((r) => r[0].text), ['I will do it when the lane asks']);
+  assert.deepEqual(sent[1].body.reply_markup.inline_keyboard.map((r) => r[0].text), ['1. I will do it when the lane asks']);
   const state = readTelegramState(root);
-  assert.deepEqual(state.sent['3:03-01-t2'], { rev: 1, messageId: 101, title: 'Phase 3 · 03-01 task 2', nonces: ['00000001', '00000002', '00000003'] });
+  assert.deepEqual(state.sent['3:03-01-t2'], { rev: 1, messageId: 101, title: 'Phase 3 · plan 03-01, task 2', nonces: ['00000001', '00000002', '00000003'] });
   assert.deepEqual(state.nonces['00000002'], { phase: '3', id: '03-01-t2', plan: '03-01', task: '2', rev: 1, k: 2, label: 'SQLite' });
   await telegramTick(ctx, NOW);
   assert.equal(bot.sent().length, 2, 'sent once');
@@ -141,16 +143,20 @@ test('a decision with 5 options: 4 buttons and Other, the fifth named in the tex
   writeQuestions(root, '3', [Q('03-01-t2', { options: ['A', 'B', 'C', 'D', 'E'].map((x) => OPT(x)), context: 'z'.repeat(5000) })]);
   await telegramTick(ctx, NOW);
   const [m] = bot.sent();
-  assert.deepEqual(m.body.reply_markup.inline_keyboard.map((r) => r[0].text), ['A', 'B', 'C', 'D', 'Other…']);
-  assert.match(m.body.text, /\n4\. D\n\(\+1 more: answer with Other… and name it\)\n/);
+  assert.deepEqual(m.body.reply_markup.inline_keyboard.map((r) => r[0].text), ['1. A', '2. B', '3. C', '4. D', 'Your own answer…']);
+  // the context is cut to the room left, so the options and the line about the fifth always come through
+  assert.match(m.body.text, /^Phase 3 · plan 03-01, task 2\nPick the store\nz+…\n\n1\. A\n2\. B\n3\. C\n4\. D\n\(1 more without a button: answer with “Your own answer…” and name it\)$/);
   assert.equal([...m.body.text].length, 4000);
 });
 
-test('an option whose label is empty gets its number as the button text, which Telegram would refuse empty', async () => {
+test('a button reads its number and its option, cut with … to a readable length; an empty label gets its number alone, which Telegram would refuse empty', async () => {
   const { root, ctx, bot } = project();
-  writeQuestions(root, '3', [Q('03-01-t2', { options: [OPT('Files'), OPT(' ')], allowOther: false })]);
+  writeQuestions(root, '3', [Q('03-01-t2', { options: [OPT('x'.repeat(60), { recommended: true }), OPT(' '), OPT('Files')], allowOther: false })]);
   await telegramTick(ctx, NOW);
-  assert.deepEqual(bot.sent()[0].body.reply_markup.inline_keyboard.map((r) => r[0].text), ['Files', '2']);
+  const [m] = bot.sent();
+  assert.deepEqual(m.body.reply_markup.inline_keyboard.map((r) => r[0].text), [`1. ${'x'.repeat(39)}… ★`, '2', '3. Files']);
+  assert.ok(m.body.text.includes(`\n1. ${'x'.repeat(60)} ★ recommended\n`), 'the text lists the option in full');
+  assert.deepEqual(m.body.reply_markup.inline_keyboard.map((r) => parseCallback(r[0].callback_data).k), [1, 2, 3], 'the callback data are as before');
 });
 
 test('a question answered on another channel: its message loses its buttons and shows the answer; a changed question gets a new message', async () => {
@@ -164,8 +170,8 @@ test('a question answered on another channel: its message loses its buttons and 
   await telegramTick(ctx, NOW);
   const edits = bot.calls.filter((c) => c.method === 'editMessageText');
   assert.deepEqual(edits.map((e) => [e.body.message_id, e.body.text]), [
-    [101, `Phase 3 · 03-01 task 2\n✓ Files, session, ${NOW.toISOString()}`],
-    [102, 'Phase 3 · 03-01 task 5\n↻ changed: see the new message'],
+    [101, `Phase 3 · plan 03-01, task 2\n✓ Answer recorded (in a session, ${hhmm(NOW)}): “Files”`],
+    [102, 'Phase 3 · plan 03-01, task 5\n↻ The question changed — answer the new message below'],
   ]);
   assert.equal(edits[0].body.reply_markup, undefined, 'no buttons left');
   const state = readTelegramState(root);
@@ -243,9 +249,9 @@ test('the owner\'s press records the option by telegram, answers the press and t
   bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:2:00000002`, 41));
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(readAnswers(root, '3').map((r) => [r.id, r.option, r.label, r.by]), [['03-01-t2', 2, 'SQLite', 'telegram']]);
-  assert.deepEqual(pressReplies(bot), [['cb41', '✓ SQLite']]);
+  assert.deepEqual(pressReplies(bot), [['cb41', '✓ Answer recorded: “SQLite”']]);
   const edit = bot.calls.find((c) => c.method === 'editMessageText');
-  assert.deepEqual([edit.body.message_id, edit.body.text], [101, 'Phase 3 · 03-01 task 2\n✓ SQLite']);
+  assert.deepEqual([edit.body.message_id, edit.body.text], [101, `Phase 3 · plan 03-01, task 2\n✓ Answer recorded (in Telegram, ${hhmm(NOW)}): “SQLite”`]);
   assert.equal(readTelegramState(root).offset, 42);
   const poll = polls(bot)[0];
   assert.deepEqual([poll.body.offset, poll.body.timeout, poll.body.allowed_updates, poll.opts.timeoutMs], [0, 20, ['callback_query', 'message'], 30000]);
@@ -270,7 +276,7 @@ test('a stranger\'s press, an unknown nonce, a button of an older revision and a
   bot.onPoll = null;
   bot.updates.push(press(`t3:${short}:1:00000001`, 4));
   await telegramTick(ctx, NOW, { laneRunning: true });
-  assert.deepEqual(pressReplies(bot), [['cb2', 'This button no longer works.'], ['cb3', 'This question changed: answer the new message.'], ['cb4', 'This button no longer works.']]);
+  assert.deepEqual(pressReplies(bot), [['cb2', 'This button no longer works.'], ['cb3', 'The question changed — answer the new message.'], ['cb4', 'This button no longer works.']]);
   assert.deepEqual(readAnswers(root, '3'), []);
 });
 
@@ -282,7 +288,7 @@ test('a double press records once: the second finds its button gone (Review Focu
   bot.updates.push(press(`t3:${short}:1:00000001`, 5), press(`t3:${short}:1:00000001`, 6), press(`t3:${short}:2:00000002`, 7));
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(readAnswers(root, '3').map((r) => r.option), [1]);
-  assert.deepEqual(pressReplies(bot), [['cb5', '✓ Files'], ['cb6', 'This button no longer works.'], ['cb7', 'This button no longer works.']]);
+  assert.deepEqual(pressReplies(bot), [['cb5', '✓ Answer recorded: “Files”'], ['cb6', 'This button no longer works.'], ['cb7', 'This button no longer works.']]);
 });
 
 test('Other asks for own words with force_reply; the reply is recorded; too long or a secret is refused and the prompt stays (Review Focus 4)', async () => {
@@ -293,14 +299,14 @@ test('Other asks for own words with force_reply; the reply is recorded; too long
   await telegramTick(ctx, NOW, { laneRunning: true });
   const prompt = bot.sent().at(-1);
   assert.deepEqual(prompt.body.reply_markup, { force_reply: true });
-  assert.equal(prompt.body.text, 'Your answer to 03-01 task 2 in your own words (up to 2000 characters), as a reply to this message:');
+  assert.equal(prompt.body.text, 'Phase 3 · plan 03-01, task 2\nYour own answer: write it as a reply to this message, up to 2000 characters.');
   assert.deepEqual(pressReplies(bot), [['cb1', 'Reply to the message I just sent.']]);
   const token = `ghp_${'a1B2'.repeat(9)}`;
   bot.updates.push(reply('x'.repeat(2001), 2, 102), reply(`use ${token}`, 3, 102), reply('Use files', 4, 102, 999), reply('to my own message', 5, 77, 4242, 4242, false), reply('Use files', 6, 102, 4242, -100123));
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(readAnswers(root, '3'), []);
   const [tooLong, secret] = bot.sent().slice(-2).map((m) => m.body);
-  assert.equal(tooLong.text, 'Not recorded: longer than 2000 characters. Reply again, shorter.');
+  assert.equal(tooLong.text, 'Not recorded: the answer is longer than 2000 characters. Reply again, shorter.');
   assert.deepEqual(tooLong.reply_parameters, { message_id: 502, allow_sending_without_reply: true });
   assert.equal(secret.text, 'Not recorded: the answer looks like it contains a secret (github token). Delete your message from this chat and answer without it.');
   assert.ok(logs.includes('telegram: ignored 2 updates from another user or chat'), `a stranger, and the owner in a group: ${logs.join('\n')}`);
@@ -308,7 +314,7 @@ test('Other asks for own words with force_reply; the reply is recorded; too long
   bot.updates.push(reply('Files, but keep a backup', 7, 102));
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(readAnswers(root, '3').map((r) => [r.answer, r.by, r.option]), [['Files, but keep a backup', 'telegram', null]]);
-  assert.equal(bot.sent().at(-1).body.text, '✓ Files, but keep a backup');
+  assert.equal(bot.sent().at(-1).body.text, '✓ Answer recorded: “Files, but keep a backup”');
   assert.equal(readTelegramState(root).replies['102'], undefined);
 });
 
@@ -354,7 +360,7 @@ test('a press that finds the phase locked records nothing and keeps its button; 
   bot.updates.push(...batch());
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(readAnswers(root, '3').map((r) => r.option), [1]);
-  assert.deepEqual(pressReplies(bot), [['cb7', '✓ Files'], ['cb8', 'This button no longer works.']]);
+  assert.deepEqual(pressReplies(bot), [['cb7', '✓ Answer recorded: “Files”'], ['cb8', 'This button no longer works.']]);
   assert.equal(readTelegramState(root).offset, 9);
 });
 
@@ -380,7 +386,8 @@ test('a network failure while handling an update stops the batch there; the upda
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(readAnswers(root, '3').map((r) => r.id), ['03-01-t2', '03-01-t5']);
   const edits = bot.calls.filter((c) => c.method === 'editMessageText').map((c) => [c.body.message_id, c.body.text.split('\n')[1]]);
-  assert.deepEqual(edits, [[101, `✓ Files, telegram, ${NOW.toISOString()}`], [102, '✓ Files']], 'the first message is closed at the next sync');
+  const line = `✓ Answer recorded (in Telegram, ${hhmm(NOW)}): “Files”`;
+  assert.deepEqual(edits, [[101, line], [102, line]], 'the first message is closed at the next sync');
 });
 
 test('an offset that has not moved for a day is not sent: Telegram may number new updates below it', async () => {
@@ -455,18 +462,18 @@ test('a question Telegram refuses is logged and skipped until it changes; the ot
   const { root, ctx, bot, logs } = project();
   writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t5', { task: '5', header: '03-01 T5' })]);
   ctx.deps.telegram = async (method, body, opts) => {
-    if (method === 'sendMessage' && body.text.startsWith('Phase 3 · 03-01 task 2')) throw refused('Bad Request: BUTTON_DATA_INVALID');
+    if (method === 'sendMessage' && body.text.startsWith('Phase 3 · plan 03-01, task 2\n')) throw refused('Bad Request: BUTTON_DATA_INVALID');
     return bot.call(method, body, opts);
   };
   await telegramTick(ctx, NOW);
   await telegramTick(ctx, NOW);
-  assert.deepEqual(bot.sent().map((m) => m.body.text.split('\n')[0]), ['Phase 3 · 03-01 task 5']);
+  assert.deepEqual(bot.sent().map((m) => m.body.text.split('\n')[0]), ['Phase 3 · plan 03-01, task 5']);
   assert.equal(polls(bot).length, 2, 'presses still taken');
   assert.deepEqual(logs, ['telegram: question 03-01-t2 of phase 3 not sent: telegram sendMessage failed: Bad Request: BUTTON_DATA_INVALID']);
   ctx.deps.telegram = bot.call;
   writeQuestions(root, '3', [Q('03-01-t2', { rev: 2, stopped: true }), Q('03-01-t5', { task: '5', header: '03-01 T5' })]);
   await telegramTick(ctx, NOW);
-  assert.deepEqual(bot.sent().map((m) => m.body.text.split('\n')[0]), ['Phase 3 · 03-01 task 5', 'Phase 3 · 03-01 task 2'], 'tried again once it changed');
+  assert.deepEqual(bot.sent().map((m) => m.body.text.split('\n')[0]), ['Phase 3 · plan 03-01, task 5', 'Phase 3 · plan 03-01, task 2'], 'tried again once it changed');
   assert.equal(bot.calls.filter((c) => c.method === 'editMessageText').length, 0, 'nothing to edit for a message never sent');
 });
 
@@ -515,14 +522,14 @@ test('a reply to a prompt whose question changed, or to any other message of the
   writeQuestions(root, '3', [Q('03-01-t2', { rev: 2, stopped: true })]);
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(bot.calls.filter((c) => c.method === 'editMessageText').map((c) => [c.body.message_id, c.body.text]), [
-    [101, 'Phase 3 · 03-01 task 2\n↻ changed: see the new message'],
-    [102, 'Closed: 03-01 task 2 changed or was answered; answer through its newest message.'],
+    [101, 'Phase 3 · plan 03-01, task 2\n↻ The question changed — answer the new message below'],
+    [102, 'Phase 3 · plan 03-01, task 2\nClosed: the question changed or was answered. If it still waits, answer in its newest message.'],
   ]);
   assert.deepEqual(readTelegramState(root).replies, {});
   const before = bot.sent().length;
   bot.updates.push(reply('Use files', 2, 102), reply('Use files', 3, 103), reply('to my own message', 4, 600, 4242, 4242, false));
   await telegramTick(ctx, NOW, { laneRunning: true });
-  const stale = 'Not recorded: that message takes no answer (any more). Use the buttons of the question\'s newest message, and Other… for your own words.';
+  const stale = 'Not recorded: that message takes no answer (any more). Answer with the buttons of the question\'s newest message; for your own words press “Your own answer…” there.';
   assert.deepEqual(bot.sent().slice(before).map((m) => [m.body.text, m.body.reply_parameters.message_id]), [[stale, 502], [stale, 503]]);
   assert.deepEqual(readAnswers(root, '3'), []);
 });
@@ -660,8 +667,8 @@ test('an Other prompt whose question a button of the same message answered is cl
   const polled = polls(bot).length;
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(bot.calls.filter((c) => c.method === 'editMessageText').map((c) => [c.body.message_id, c.body.text]), [
-    [101, 'Phase 3 · 03-01 task 2\n✓ Files'],
-    [102, 'Closed: 03-01 task 2 changed or was answered; answer through its newest message.'],
+    [101, `Phase 3 · plan 03-01, task 2\n✓ Answer recorded (in Telegram, ${hhmm(NOW)}): “Files”`],
+    [102, 'Phase 3 · plan 03-01, task 2\nClosed: the question changed or was answered. If it still waits, answer in its newest message.'],
   ]);
   assert.deepEqual(readTelegramState(root).replies, {});
   assert.equal(polls(bot).length, polled, 'no question open: no poll');
@@ -683,3 +690,63 @@ test('while a phase is attended the questions still go out, but no Telegram answ
   await ownerTick(ctx, NOW, { lane: { phase: '3' } });
   assert.deepEqual(readAnswers(root, '3').map((r) => [r.id, r.option, r.by]), [['03-01-t2', 2, 'telegram']]);
 });
+
+// What the owner reads in each language: the turbo-view pane's words (mod/hooks/view-model.mjs)
+const SAYS = {
+  en: {
+    title: (task) => `Phase 3 · plan 03-01, task ${task}`,
+    recommended: '★ recommended',
+    other: 'Your own answer…',
+    already: (at) => `Already answered (in the pane, ${at}): “Files”`,
+    closed: (how, at, what) => `✓ Answer recorded (${how}, ${at}): “${what}”`,
+    pane: 'in the pane',
+    telegram: 'in Telegram',
+    reply: 'Reply to the message I just sent.',
+    prompt: 'Your own answer: write it as a reply to this message, up to 2000 characters.',
+    secret: 'Not recorded: the answer looks like it contains a secret (github token). Delete your message from this chat and answer without it.',
+    recorded: '✓ Answer recorded: “Keep a backup”',
+  },
+  ru: {
+    title: (task) => `Фаза 3 · план 03-01, задача ${task}`,
+    recommended: '★ рекомендуется',
+    other: 'Свой ответ…',
+    already: (at) => `Уже отвечено (в панели, ${at}): «Files»`,
+    closed: (how, at, what) => `✓ Ответ принят (${how}, ${at}): «${what}»`,
+    pane: 'в панели',
+    telegram: 'в Telegram',
+    reply: 'Ответьте на сообщение, которое я только что отправил.',
+    prompt: 'Свой ответ: напишите его ответом на это сообщение, до 2000 символов.',
+    secret: 'Не принято: похоже, в ответе секрет (токен GitHub). Удалите своё сообщение из этого чата и ответьте без него.',
+    recorded: '✓ Ответ принят: «Keep a backup»',
+  },
+};
+
+for (const lang of ['en', 'ru']) {
+  test(`${lang}: the question, the buttons and every reply speak the pane's plain words, with the channel in words and the local time; never a question id, a channel code or an ISO time`, async () => {
+    const W = SAYS[lang];
+    const { root, ctx, bot } = project();
+    ctx.config = ON({ lang });
+    writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t5', { task: '5', header: '03-01 T5' })]);
+    await telegramTick(ctx, NOW, { laneRunning: true });
+    const [m] = bot.sent();
+    assert.equal(m.body.text, `${W.title(2)}\nPick the store\nSmall data.\n\n1. Files ${W.recommended} — + simple\n2. SQLite`);
+    assert.deepEqual(m.body.reply_markup.inline_keyboard.map((r) => r[0].text), ['1. Files ★', '2. SQLite', W.other]);
+    // answered in the pane a quarter of an hour later, while the owner presses an option of the same question in Telegram
+    const paneAt = new Date(NOW.getTime() + 15 * 60000);
+    bot.onPoll = () => answerQuestion({ root, phase: '3', id: '03-01-t2', option: 1, by: 'pane', now: paneAt, laneRunning: true });
+    bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:2:00000002`, 1), press(`t3:${shortId('3', '03-01-t5')}:o:00000006`, 2));
+    await telegramTick(ctx, NOW, { laneRunning: true });
+    bot.onPoll = null;
+    assert.deepEqual(pressReplies(bot), [['cb1', W.already(hhmm(paneAt))], ['cb2', W.reply]]);
+    assert.equal(bot.sent().at(-1).body.text, `${W.title(5)}\n${W.prompt}`);
+    bot.updates.push(reply(`use ghp_${'a1B2'.repeat(9)}`, 3, 103), reply('Keep a backup', 4, 103));
+    await telegramTick(ctx, NOW, { laneRunning: true });
+    assert.deepEqual(bot.sent().slice(-2).map((s) => s.body.text), [W.secret, W.recorded]);
+    assert.deepEqual(bot.calls.filter((c) => c.method === 'editMessageText').map((c) => [c.body.message_id, c.body.text]), [
+      [101, `${W.title(2)}\n${W.closed(W.pane, hhmm(paneAt), 'Files')}`],
+      [102, `${W.title(5)}\n${W.closed(W.telegram, hhmm(NOW), 'Keep a backup')}`],
+    ]);
+    const said = bot.calls.filter((c) => c.method !== 'getUpdates').map((c) => [c.body.text, ...(c.body.reply_markup?.inline_keyboard ?? []).map((r) => r[0].text)].join('\n')).join('\n');
+    assert.doesNotMatch(said, /03-01-t\d|\d{4}-\d{2}-\d{2}T|standing-rule|, (session|pane|telegram),/);
+  });
+}

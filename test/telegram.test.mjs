@@ -227,7 +227,8 @@ test('ownerTick sends the Telegram questions after its notification; a Telegram 
 
 // updates as Telegram sends them
 const press = (data, update_id, from = 4242, id = `cb${update_id}`) => ({ update_id, callback_query: { id, from: { id: from }, data, message: { message_id: 101, chat: { id: from } } } });
-const reply = (text, update_id, to, from = 4242, chat = from) => ({ update_id, message: { message_id: 500 + update_id, from: { id: from }, chat: { id: chat }, text, reply_to_message: { message_id: to } } });
+// a reply to one of the bot's messages (toBot) or to the owner's own
+const reply = (text, update_id, to, from = 4242, chat = from, toBot = true) => ({ update_id, message: { message_id: 500 + update_id, from: { id: from }, chat: { id: chat }, text, reply_to_message: { message_id: to, from: toBot ? { id: 1, is_bot: true } : { id: from } } } });
 const pressReplies = (bot) => bot.calls.filter((c) => c.method === 'answerCallbackQuery').map((c) => [c.body.callback_query_id, c.body.text]);
 const polls = (bot) => bot.calls.filter((c) => c.method === 'getUpdates');
 
@@ -294,7 +295,7 @@ test('Other asks for own words with force_reply; the reply is recorded; too long
   assert.equal(prompt.body.text, 'Your answer to 03-01 task 2 in your own words (up to 2000 characters), as a reply to this message:');
   assert.deepEqual(pressReplies(bot), [['cb1', 'Reply to the message I just sent.']]);
   const token = `ghp_${'a1B2'.repeat(9)}`;
-  bot.updates.push(reply('x'.repeat(2001), 2, 102), reply(`use ${token}`, 3, 102), reply('Use files', 4, 102, 999), reply('unrelated chat', 5, 77), reply('Use files', 6, 102, 4242, -100123));
+  bot.updates.push(reply('x'.repeat(2001), 2, 102), reply(`use ${token}`, 3, 102), reply('Use files', 4, 102, 999), reply('to my own message', 5, 77, 4242, 4242, false), reply('Use files', 6, 102, 4242, -100123));
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(readAnswers(root, '3'), []);
   const [tooLong, secret] = bot.sent().slice(-2).map((m) => m.body);
@@ -502,4 +503,25 @@ test('the channel off, or a refusal for the whole chat (bad token, blocked bot, 
   writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t6', { task: '6', header: '03-01 T6' })]);
   await telegramTick(ctx, NOW);
   assert.deepEqual(logs, ['telegram: telegram sendMessage failed: Unauthorized'], 'a new spell after a working tick');
+});
+
+test('a reply to a prompt whose question changed, or to any other message of the bot, is told where to answer; the old prompt is closed (S1b review F5)', async () => {
+  const { root, ctx, bot } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:o:00000003`, 1));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  writeQuestions(root, '3', [Q('03-01-t2', { rev: 2, stopped: true })]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(bot.calls.filter((c) => c.method === 'editMessageText').map((c) => [c.body.message_id, c.body.text]), [
+    [101, 'Phase 3 · 03-01 task 2\n↻ changed: see the new message'],
+    [102, 'Closed: 03-01 task 2 changed or was answered; answer through its newest message.'],
+  ]);
+  assert.deepEqual(readTelegramState(root).replies, {});
+  const before = bot.sent().length;
+  bot.updates.push(reply('Use files', 2, 102), reply('Use files', 3, 103), reply('to my own message', 4, 600, 4242, 4242, false));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  const stale = 'Not recorded: that message takes no answer (any more). Use the buttons of the question\'s newest message, and Other… for your own words.';
+  assert.deepEqual(bot.sent().slice(before).map((m) => [m.body.text, m.body.reply_parameters.message_id]), [[stale, 502], [stale, 503]]);
+  assert.deepEqual(readAnswers(root, '3'), []);
 });

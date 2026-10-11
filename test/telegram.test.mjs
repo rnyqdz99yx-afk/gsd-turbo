@@ -108,7 +108,7 @@ function project() {
   const bot = fakeBot();
   const logs = [];
   let n = 0;
-  const ctx = { root, config: ON(), deps: { env: ENV, telegram: bot.call, nonce: () => `0000000${++n}`.slice(-8), log: (l) => logs.push(l), notify: async () => {} } };
+  const ctx = { root, config: ON(), deps: { env: ENV, telegram: bot.call, nonce: () => `0000000${++n}`.slice(-8), log: (l) => logs.push(l), notify: async () => {}, now: () => NOW } };
   return { root, ctx, bot, logs };
 }
 
@@ -394,4 +394,16 @@ test('an offset that has not moved for a day is not sent: Telegram may number ne
   writeQuestions(root, '3', [Q('03-01-t2', { rev: 2, stopped: true })]);
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.equal(polls(bot).at(-1).body.offset, 13, 'a fresh offset is sent');
+});
+
+test('an answer by Telegram carries the time it was handled, after the long poll, not the time the tick began (S1b review F1)', async () => {
+  const { root, ctx, bot } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  const later = new Date(NOW.getTime() + 45000);
+  bot.onPoll = () => { ctx.deps.now = () => later; };
+  bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:1:00000001`, 1));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.equal(readAnswers(root, '3')[0].at, later.toISOString());
+  assert.equal(readTelegramState(root).offsetAt, later.toISOString());
 });

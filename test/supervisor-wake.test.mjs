@@ -395,3 +395,41 @@ test('a session claude agents lists as ended whose rm fails stays the lane\'s: n
   assert.equal(s.lane.woken.count, 1);
   assert.ok(h.logs.some((l) => /session 1a2b3c4d was not removed/.test(l)), h.logs.join('\n'));
 });
+
+test('the lane stops while the Telegram long poll waits: the wake counts from after the poll, so its old needs-owner record no longer counts (S1b review F1)', async () => {
+  const h = harness();
+  Object.assign(h.ctx.config, { notify: { desktop: false, telegram: true }, answer: { telegram: true } });
+  // a bot token's shape, built at run time; the chat id is made up
+  h.ctx.deps.env = { TURBO_TELEGRAM_TOKEN: `${'123456789'}:${'A'.repeat(35)}`, TURBO_TELEGRAM_CHAT: '4242' };
+  let id = 100;
+  let during = null;
+  h.ctx.deps.telegram = async (method) => {
+    if (method === 'sendMessage') return { message_id: ++id };
+    if (method !== 'getUpdates') return true;
+    during?.();
+    during = null;
+    h.advance(0.5);
+    return [];
+  };
+  let s = await tick(fresh(), h.ctx);
+  writeQuestions(h.root, '2', [STOP_Q({ stopped: false, agentId: null, rev: 1 })]);
+  h.advance(1);
+  // within the poll: the lane stops at the checkpoint (needs-owner) and the owner answers at once
+  during = () => {
+    h.advance(0.25);
+    writeQuestions(h.root, '2', [STOP_Q()]);
+    h.agents.find((a) => a.id === '1a2b3c4d').state = 'blocked';
+    writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'owner question 02-01-t2', at: h.now().toISOString() });
+    owner(h, '02-01-t2', 1);
+  };
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1, 'woken for the answer');
+  assert.equal(s.lane.launchedAt, h.now().toISOString(), 'the time after the poll, later than the lane\'s record');
+  // the woken session delivers the answer and ends without a record of its own: a relaunch, not the old stop again
+  markDelivered(h.root, '2', '02-01-t2', 'same-agent', { now: h.now() });
+  h.agents.find((a) => a.id === '1a2b3c4d').state = 'idle';
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2, 'relaunched');
+  assert.deepEqual(h.notes.filter((x) => x.key === 'laneNeedsOwner'), []);
+});

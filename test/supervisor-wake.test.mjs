@@ -9,6 +9,7 @@ import { writeLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName } from '../lib/claude.mjs';
 import { markDelivered, stopQuestion, writeQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
+import { attendFile, clearAttend, writeAttend } from '../lib/attend.mjs';
 
 const WOKE = (id) => `backgrounded · ${id} · lane\nnote: woke session ${id} with its saved options (--name, --permission-mode, --settings, --append-system-prompt, --disallowedTools, --model)\n`;
 const COPY = (id) => `note: session is already running in the background, so this started a copy as ${id}\nbackgrounded · ${id} · lane\n`;
@@ -394,4 +395,42 @@ test('a session claude agents lists as ended whose rm fails stays the lane\'s: n
   assert.equal(s.lane.sessionId, '1a2b3c4d');
   assert.equal(s.lane.woken.count, 1);
   assert.ok(h.logs.some((l) => /session 1a2b3c4d was not removed/.test(l)), h.logs.join('\n'));
+});
+
+test('while a phase is attended the supervisor wakes, stall-wakes, relaunches and notifies nothing; the mark gone, the forced relaunch goes on (S4)', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx); // lane 1a2b3c4d works
+  writeAttend(h.root, '2', { sessionId: '1a2b3c4d', now: h.now() });
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  h.advance(20); // silent longer than stall_minutes: a stall wake without the mark
+  s = await tick(s, h.ctx);
+  writeQuestions(h.root, '2', [STOP_Q()]);
+  stopForOwner(h);
+  owner(h, '02-01-t2', 1); // the owner answers the question the lane stopped at: an answer wake without the mark
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  s.lane.forceRelaunch = true; // what resume N leaves for a daemon
+  h.advance(30);
+  s = await tick(s, h.ctx);
+  assert.deepEqual([h.resumed.length, h.stopped.length, h.removed.length, h.launched.length], [0, 0, 0, 1]);
+  assert.equal(h.logs.filter((l) => l.startsWith("attended in the owner's session: phase 2;")).length, 1, h.logs.join('\n'));
+  assert.ok(!h.notes.some((n) => ['laneBlocked', 'laneStalled', 'laneNeedsOwner'].includes(n.key)), JSON.stringify(h.notes));
+  assert.equal(s.attendWait, '2');
+  clearAttend(h.root, '2');
+  s = await tick(s, h.ctx);
+  assert.deepEqual([h.removed, h.launched.length], [['1a2b3c4d'], 2]);
+  assert.equal(s.attendWait, undefined);
+});
+
+test('no lane starts while any phase is attended; a broken mark holds too (Review Focus 1, 5)', async () => {
+  const h = harness();
+  fs.mkdirSync(path.dirname(attendFile(h.root, '7')), { recursive: true });
+  fs.writeFileSync(attendFile(h.root, '7'), ''); // another phase, and a broken mark
+  let s = await tick(fresh(), h.ctx);
+  s = await tick(s, h.ctx);
+  assert.deepEqual([h.launched.length, s.lane, s.attendWait], [0, null, '7']);
+  assert.equal(h.logs.filter((l) => l.startsWith("attended in the owner's session: phase 7;")).length, 1);
+  clearAttend(h.root, '7');
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
 });

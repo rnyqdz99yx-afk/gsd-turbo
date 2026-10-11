@@ -586,3 +586,42 @@ test('a response whose body hangs after its headers is a timeout, not "HTTP 200"
   }) });
   await assert.rejects(hanging('getUpdates', {}), (e) => e.message === 'telegram getUpdates failed: timed out' && e.transient === true);
 });
+
+// A fake Bot API behind fetch itself (spec §11): every request recorded, each answered at once (so nothing waits on
+// the event loop), message ids from 101, getUpdates hands out the queued updates.
+function fakeApi() {
+  const api = { requests: [], updates: [] };
+  let id = 100;
+  api.fetch = async (url, init) => {
+    const method = url.slice(url.lastIndexOf('/') + 1);
+    api.requests.push({ url, method, body: JSON.parse(init.body) });
+    const result = method === 'sendMessage' ? { message_id: ++id } : method === 'getUpdates' ? api.updates.splice(0) : true;
+    return { status: 200, json: async () => ({ ok: true, result }) };
+  };
+  return api;
+}
+
+test('end to end through fetch: the question goes out, the owner\'s press is recorded by telegram, the offset moves on; the token is never in a log or the state (S1b review F8)', async () => {
+  const { root, ctx, logs } = project();
+  delete ctx.deps.telegram;
+  const api = fakeApi();
+  ctx.deps.fetch = api.fetch;
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(api.requests.map((r) => r.method), ['sendMessage', 'getUpdates']);
+  assert.ok(api.requests.every((r) => r.url.startsWith(`https://api.telegram.org/bot${TOKEN}/`)));
+  assert.equal(api.requests[0].body.chat_id, '4242');
+  api.updates.push(press(`t3:${shortId('3', '03-01-t2')}:2:00000002`, 41), press(`t3:${shortId('3', '03-01-t2')}:1:00000001`, 42, 999));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(readAnswers(root, '3').map((r) => [r.id, r.option, r.label, r.by]), [['03-01-t2', 2, 'SQLite', 'telegram']]);
+  assert.deepEqual(api.requests.slice(2).map((r) => r.method), ['getUpdates', 'answerCallbackQuery', 'editMessageText']);
+  assert.equal(api.requests[2].body.offset, 0);
+  assert.equal(readTelegramState(root).offset, 43);
+  ctx.deps.fetch = async (url) => { throw new TypeError(`connect failed for ${url}`); };
+  writeQuestions(root, '3', [Q('03-01-t2', { state: 'answered' }), Q('03-01-t5', { task: '5', header: '03-01 T5' })]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.ok(logs.includes(`telegram: telegram sendMessage failed: connect failed for https://api.telegram.org/bot[token]/sendMessage`), logs.join('\n'));
+  const secretPart = TOKEN.split(':')[1];
+  assert.ok(!logs.join('\n').includes(secretPart), 'no log line holds the token');
+  assert.ok(!fs.readFileSync(stateOn(root), 'utf8').includes(secretPart), 'nor the state file');
+});

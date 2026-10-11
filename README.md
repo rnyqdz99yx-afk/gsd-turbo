@@ -381,7 +381,7 @@ The requests, results and inboxes live in `.planning/turbo/run/` (`p<N>-push-req
 
 The messages are the same short texts as the desktop notifications: phase number, status and what to do next.
 
-To answer the owner questions in Telegram too (see [Owner questions](#owner-questions)), also set `"answer": { "telegram": true }`. `TURBO_TELEGRAM_CHAT` must then be your private chat with the bot, whose id is your user id: turbo takes button presses and replies only from you, in that chat, and drops everything else (it logs that, never the content).
+To answer the owner questions in Telegram too (see [Owner questions](#owner-questions)), also set `"answer": { "telegram": true }`. `TURBO_TELEGRAM_CHAT` must then be your private chat with the bot, whose id is your user id: turbo takes button presses only from you, and replies only from you in that chat; it drops everything else (it logs how many, never the content).
 
 - Each open question comes as one plain-text message: the question, its options and a button for each of the first four (the one the plan recommends first), plus "Other…" where your own words count; further options are named in the text and answered through "Other…". A button works once.
 - "Other…" asks for your answer as a reply to its message, up to 2000 characters. An answer that looks like a secret is refused; delete it from the chat.

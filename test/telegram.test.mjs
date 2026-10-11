@@ -301,7 +301,7 @@ test('Other asks for own words with force_reply; the reply is recorded; too long
   const [tooLong, secret] = bot.sent().slice(-2).map((m) => m.body);
   assert.equal(tooLong.text, 'Not recorded: longer than 2000 characters. Reply again, shorter.');
   assert.deepEqual(tooLong.reply_parameters, { message_id: 502, allow_sending_without_reply: true });
-  assert.match(secret.text, /^Not recorded: the answer looks like it contains a secret \(github token\).* Delete your message from this chat\.$/);
+  assert.equal(secret.text, 'Not recorded: the answer looks like it contains a secret (github token). Delete your message from this chat and answer without it.');
   assert.ok(logs.includes('telegram: a message from another user was ignored'));
   assert.ok(logs.includes('telegram: a message from another chat was ignored'), 'the owner in a group is no answer either');
   assert.ok(!logs.join('\n').includes(token) && !JSON.stringify(bot.calls.filter((c) => c.method !== 'getUpdates')).includes(token));
@@ -556,4 +556,33 @@ test('a daemon that lost its lease takes no update, handles no more of a batch a
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.deepEqual(readAnswers(root, '3').map((r) => r.id), ['03-01-t2'], 'the second press is left to the new daemon');
   assert.equal(fs.readFileSync(stateOn(root), 'utf8'), before, 'its state untouched');
+});
+
+test('a long reply holding a secret still gets the advice to delete it; any other refusal is one sentence (S1b review F7)', async () => {
+  const { root, ctx, bot } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:o:00000003`, 1));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  const token = `ghp_${'a1B2'.repeat(9)}`;
+  bot.updates.push(reply(`${'x'.repeat(2001)} ${token}`, 2, 102), reply('   ', 3, 102));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(bot.sent().slice(-2).map((m) => m.body.text), [
+    'Not recorded: the answer looks like it contains a secret (github token). Delete your message from this chat and answer without it.',
+    'Not recorded: the answer is empty.',
+  ]);
+  assert.deepEqual(readAnswers(root, '3'), []);
+});
+
+test('a response whose body hangs after its headers is a timeout, not "HTTP 200" (S1b review F7)', async () => {
+  // the pending body holds the event loop the way a real socket does (see the slow fake above)
+  const hanging = createBot({ token: TOKEN, timeoutMs: 50, fetchImpl: async (url, init) => ({
+    status: 200,
+    json: () => new Promise((resolve, reject) => {
+      if (init.signal.aborted) return reject(init.signal.reason);
+      const socket = setTimeout(resolve, 60000);
+      init.signal.addEventListener('abort', () => { clearTimeout(socket); reject(init.signal.reason); });
+    }),
+  }) });
+  await assert.rejects(hanging('getUpdates', {}), (e) => e.message === 'telegram getUpdates failed: timed out' && e.transient === true);
 });

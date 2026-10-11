@@ -2,12 +2,11 @@
 // .planning/turbo/, reads `turbo-run view --json` on a clock, draws the pane and the band above the prompt, shows
 // toasts, and sends pane answers to `turbo-run answer … --by pane --rev <n>`. Module state is lost on a reload; the
 // next read rebuilds it.
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, bandLine, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, turboDir, turboRunPath, viewArgv } from './view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, parseView, refreshMs, render, shouldAutoOpen, turboDir, turboRunPath, viewArgv, wordsFor } from './view-model.mjs';
 
 const VIEW_TIMEOUT_MS = 10000;
 const ANSWER_TIMEOUT_MS = 30000;
 const TOAST_MS = 8000;
-const TONES = { title: { bold: true }, normal: {}, dim: { dimColor: true }, warn: { color: 'yellow' }, error: { color: 'red' } };
 
 let root = null; // the project directory whose .planning/ holds turbo/, or null
 let bin = null; // turbo-run.mjs
@@ -158,9 +157,19 @@ async function refresh($, force) {
   }
 }
 
-// One answer per question at a time. S1's arbiter prints one line on stdout for every outcome (answered, already
-// answered, changed since it was shown, refused); that line is the toast. The pane reads the run again at once.
-async function send($, q, choice) {
+// The time now for an answer's toast; NaN (no time shown) when the clock cannot be read.
+async function now($) {
+  try {
+    return await $.clock.now();
+  } catch {
+    return NaN;
+  }
+}
+
+// One answer per question at a time. S1's arbiter exits with a code for every outcome (answered, already answered,
+// changed since it was shown, refused); the toast says it in words from that code and what was sent (view-model.mjs
+// answerToast), never the arbiter's line with its ids. The pane reads the run again at once.
+async function send($, q, choice, sent) {
   if (sending.has(q.id)) return;
   sending.add(q.id);
   try {
@@ -168,19 +177,57 @@ async function send($, q, choice) {
     await runner($);
   } catch (err) {
     sending.delete(q.id);
-    $.ui.toast(`turbo-run answer not sent: ${firstLine(err?.message ?? err)}`, { timeoutMs: TOAST_MS });
+    $.ui.toast(wordsFor(view).notSent(firstLine(err?.message ?? err)), { timeoutMs: TOAST_MS });
     return;
   }
   try {
     const r = await $.process.run(answerArgv({ node, turboRun: bin, root, question: q, ...choice }), { cwd: turboDir(bin) || root, timeoutMs: ANSWER_TIMEOUT_MS });
-    $.ui.toast(firstLine(r.stdout) || firstLine(r.stderr) || `turbo-run answer exited with ${r.exitCode}`, { timeoutMs: TOAST_MS });
+    const nowMs = r.exitCode === 0 ? await now($) : NaN;
+    $.ui.toast(answerToast(view, { code: r.exitCode, stdout: r.stdout, stderr: r.stderr, sent, nowMs }), { timeoutMs: TOAST_MS });
     field = afterAnswer(field, q.id, r.exitCode);
   } catch (err) {
-    $.ui.toast(`turbo-run answer failed: ${firstLine(err?.message ?? err)}`, { timeoutMs: TOAST_MS });
+    $.ui.toast(wordsFor(view).notSent(firstLine(err?.message ?? err)), { timeoutMs: TOAST_MS });
   } finally {
     sending.delete(q.id);
   }
   await refresh($, true);
+}
+
+// A press in the pane (view-model.mjs render): an option answers at once, Other… opens the field.
+function press($, act) {
+  if (act.other) {
+    field = openField(field, act.question.id);
+    $.ui.invalidate('ui.render');
+    return;
+  }
+  void send($, act.question, { option: act.option }, act.label);
+}
+
+// The pane's node tree drawn with the surface's elements; the controls get their handlers here.
+function draw($, E, node) {
+  if (typeof node === 'string') return node;
+  if (node.type === 'Button') return E.Button({ ...node.props, onPress: () => press($, node.press) });
+  if (node.type === 'Input') {
+    const q = node.input.question;
+    return E.Input({
+      ...node.props,
+      onInput: (value) => {
+        field = { ...field, draft: value, draftFor: q.id };
+      },
+      onSubmit: (value) => {
+        const text = value.trim();
+        if (text) {
+          // kept if the answer is refused or the question changed meanwhile
+          field = { ...field, draft: value, draftFor: q.id };
+          void send($, q, { text }, text);
+          return;
+        }
+        field = NO_FIELD;
+        $.ui.invalidate('ui.render');
+      },
+    });
+  }
+  return E[node.type]({ ...node.props, children: (node.children ?? []).map((c) => draw($, E, c)) });
 }
 
 export function register(on) {
@@ -205,7 +252,7 @@ export function register(on) {
       await $.ui.open({ id: PANE_ID, title: PANE_TITLE, focus: true });
     } catch (err) {
       // Claude Code names the mod in the message already: "turbo-view: $.ui.open: <reason>"
-      $.ui.toast(`turbo-view: pane not opened: ${firstLine(err?.message ?? err).replace(/^turbo-view: /, '')}`, { timeoutMs: TOAST_MS });
+      $.ui.toast(wordsFor(view).paneNotOpened(firstLine(err?.message ?? err).replace(/^turbo-view: /, '')), { timeoutMs: TOAST_MS });
     }
     // reads at once, and starts the clock again if it failed to start
     void refresh($, true);
@@ -219,65 +266,12 @@ export function register(on) {
     const line = bandLine(view, { error });
     if (!line) return next(e);
     const { Box, Text } = $.ui.resolve(e);
-    const mine = Text({ children: [line], wrap: 'truncate-end', dimColor: true });
+    // one colour, the verdict's: green all fine, amber an answer waits or a phase is silent, red stopped or CI red
+    const mine = Text({ children: [line], wrap: 'truncate-end', ...bandStyle(view, { error }) });
     const theirs = await next(e);
     return theirs ? Box({ flexDirection: 'column', children: [mine, theirs] }) : mine;
   });
 
-  on('ui.render', { component: 'Pane', requestId: 'turbo-view' }, async ($, e) => {
-    const { Box, Text, Button, Input } = $.ui.resolve(e);
-    const children = render(view, { error }).rows.map((row) => {
-      if (row.kind === 'text') return Text({ children: [row.text], wrap: 'truncate-end', ...TONES[row.tone] });
-      const controls = row.options.map((o) =>
-        Button({
-          key: o.key,
-          label: o.label,
-          onPress: () => {
-            void send($, row, { option: o.option });
-          },
-        }),
-      );
-      if (row.other && field.inputFor === row.id) {
-        controls.push(
-          Input({
-            key: row.inputKey,
-            label: row.inputLabel,
-            placeholder: row.inputHint,
-            value: field.draft,
-            submitLabel: row.submitLabel,
-            autoFocus: true,
-            onInput: (value) => {
-              field = { ...field, draft: value, draftFor: row.id };
-            },
-            onSubmit: (value) => {
-              const text = value.trim();
-              if (text) {
-                // kept if the answer is refused or the question changed meanwhile
-                field = { ...field, draft: value, draftFor: row.id };
-                void send($, row, { text });
-                return;
-              }
-              field = NO_FIELD;
-              $.ui.invalidate('ui.render');
-            },
-          }),
-        );
-      } else if (row.other) {
-        controls.push(
-          Button({
-            key: row.otherKey,
-            label: row.otherLabel,
-            onPress: () => {
-              field = openField(field, row.id);
-              $.ui.invalidate('ui.render');
-            },
-          }),
-        );
-      }
-      // the question and its numbered options wrap, so all of them is read before a numbered button is pressed
-      const lines = [row.text, ...row.choices].map((text) => Text({ children: [text], wrap: 'wrap' }));
-      return Box({ flexDirection: 'column', children: [...lines, Box({ flexDirection: 'row', columnGap: 1, flexWrap: 'wrap', children: controls })] });
-    });
-    return Box({ flexDirection: 'column', children });
-  });
+  // the pane: view-model.mjs render's tree (sections, question cards, colours), the field drawn with what was typed
+  on('ui.render', { component: 'Pane', requestId: 'turbo-view' }, async ($, e) => draw($, $.ui.resolve(e), render(view, { error, field })));
 }

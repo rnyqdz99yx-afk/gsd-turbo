@@ -141,7 +141,7 @@ test('without node in PATH the band says so and nothing runs', async ($, on) => 
   await begin($, clock)
   expect(calls).toEqual([])
   const band = await $.ui.mount(BAND)
-  expect(await band.find({ type: 'Text', text: 'turbo · ⚠ node not found in PATH' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'turbo · ⚠️ node not found in PATH' })).toBeDefined()
 })
 
 test('a missing turbo-run shows where it was looked for, and nothing is spawned', async ($, on) => {
@@ -149,14 +149,14 @@ test('a missing turbo-run shows where it was looked for, and nothing is spawned'
   await begin($, clock)
   expect(calls).toEqual([])
   const band = await $.ui.mount(BAND)
-  expect(await band.find({ type: 'Text', text: `turbo · ⚠ turbo-run not found at ${BIN}` })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: `turbo · ⚠️ turbo-run not found at ${BIN}` })).toBeDefined()
 })
 
 test('a failing turbo-run view shows one line in the band, keeps reading, and recovers', async ($, on) => {
   const { calls, clock } = stub(on, { views: ['invalid turbo config /work/.planning/turbo/config.json: Unexpected end of JSON input\n    at loadConfig (x.mjs:1:1)\n', VIEW] })
   await begin($, clock)
   const band = await $.ui.mount(BAND)
-  expect(await band.find({ type: 'Text', text: 'turbo · ⚠ invalid turbo config /work/.planning/turbo/config.json: Unexpected end of JSON input' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'turbo · ⚠️ invalid turbo config /work/.planning/turbo/config.json: Unexpected end of JSON input' })).toBeDefined()
   await band.unmount()
   await clock.advance(15000)
   expect(calls.filter((c) => c[2] === 'view').length).toBeGreaterThan(1)

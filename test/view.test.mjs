@@ -206,7 +206,7 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
   assert.equal(formatView(textView()), [
     'Phase 32 — running plans · 1h 12m so far · needs your answer (1)',
     '  Executor · plan 32-07, task 2 · editing lib/x.mjs · 6m',
-    '  ⚠ Verifier silent for 16m — may be stuck',
+    '  ⚠️ Verifier silent for 16m — may be stuck',
     '  Helper · plan 32-06 · done · 45s',
     '',
     'Needs your answer (1):',
@@ -224,7 +224,7 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
   assert.equal(ru(), [
     'Фаза 32 — выполняются планы · идёт 1 ч 12 мин · нужен ваш ответ (1)',
     '  Исполнитель · план 32-07, задача 2 · правит lib/x.mjs · 6 мин',
-    '  ⚠ Проверяющий молчит 16 мин — возможно, завис',
+    '  ⚠️ Проверяющий молчит 16 мин — возможно, завис',
     '  Помощник · план 32-06 · готов · 45 с',
     '',
     'Нужен ваш ответ (1):',
@@ -238,7 +238,7 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
     '',
     'Супервизор работает · фазы 32–…',
   ].join('\n'));
-  assert.equal(ru({ questions: [] }, { status: 'failed', reason: 'tests fail after 3 fix rounds' }).split('\n').slice(0, 2).join('\n'), 'Фаза 32 — выполняются планы · идёт 1 ч 12 мин · остановилась из-за сбоя\n  Причина: tests fail after 3 fix rounds');
+  assert.equal(ru({ questions: [] }, { status: 'failed', reason: 'tests fail after 3 fix rounds' }).split('\n').slice(0, 2).join('\n'), 'Фаза 32 остановилась из-за сбоя · шаг: выполнение планов · 1 ч 12 мин\n  Причина: tests fail after 3 fix rounds');
   assert.equal(ru({ questions: [] }, { status: 'needs-owner', reason: 'owner question 32-09-t3' }).split('\n')[1], '  Исполнитель · план 32-07, задача 2 · правит lib/x.mjs · 6 мин', 'no internal id: the verdict says it');
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [] }), 'Run — supervisor never started');
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [], ui: { lang: 'ru' } }), 'Прогон — супервизор не запускался');

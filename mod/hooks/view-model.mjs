@@ -55,11 +55,14 @@ const TEXT = {
     run: 'Run',
     going: (d) => `${d} so far`,
     took: (d) => `took ${d}`,
-    verdict: { fine: 'all fine', answer: (n) => `needs your answer (${n})`, ciRed: 'CI red', needsOwner: 'stopped — waits for your decision', failed: 'stopped by a failure', quiet: (d) => `silent${d ? ` for ${d}` : ''} — may be stuck`, paused: 'restarting with a fresh context', done: 'done', halted: 'supervisor stopped', supStopped: 'supervisor not running', finished: 'all phases done', never: 'supervisor never started' },
+    // a stopped phase names its step as a noun: `step: plan execution`
+    stepAt: { execute: 'plan execution' },
+    atStep: (s) => `step: ${s}`,
+    verdict: { fine: 'all fine', answer: (n) => `needs your answer (${n})`, ciRed: 'CI red', needsOwner: (asked) => (asked ? 'stopped — waits for your answer' : 'stopped — waits for your decision'), failed: 'stopped by a failure', quiet: (d) => `silent${d ? ` for ${d}` : ''} — may be stuck`, paused: 'restarting with a fresh context', done: 'done', halted: 'supervisor stopped', supStopped: 'supervisor not running', finished: 'all phases done', never: 'supervisor never started' },
     reason: 'Reason',
     doing: { edit: (x) => `editing ${x}`, write: (x) => `writing ${x}`, read: (x) => `reading ${x}`, search: 'searching the code', files: 'looking for files', tests: 'running tests', commit: 'committing', command: (x) => `running a command: ${x}`, helper: 'started a helper', skill: 'using a skill', web: 'searching the web', todo: 'updating its to-do list', message: 'messaging a helper', browser: 'using the browser', working: 'working' },
     state: { completed: 'done', stopped: 'stopped', failed: 'failed' },
-    quietAgent: (who, d) => `⚠ ${who} silent${d ? ` for ${d}` : ''} — may be stuck`,
+    quietAgent: (who, d) => `⚠️ ${who} silent${d ? ` for ${d}` : ''} — may be stuck`,
     moreDone: (n) => `+ ${n} more done`,
     askHead: (n) => `Needs your answer (${n}):`,
     recommended: 'recommended',
@@ -103,11 +106,13 @@ const TEXT = {
     run: 'Прогон',
     going: (d) => `идёт ${d}`,
     took: (d) => `заняла ${d}`,
-    verdict: { fine: 'всё в порядке', answer: (n) => `нужен ваш ответ (${n})`, ciRed: 'CI красный', needsOwner: 'остановилась — ждёт вашего решения', failed: 'остановилась из-за сбоя', quiet: (d) => `тишина${d ? ` ${d}` : ''} — возможно, зависла`, paused: 'перезапускается с чистым контекстом', done: 'готова', halted: 'супервизор остановился', supStopped: 'супервизор не работает', finished: 'все фазы готовы', never: 'супервизор не запускался' },
+    stepAt: { execute: 'выполнение планов' },
+    atStep: (s) => `шаг: ${s}`,
+    verdict: { fine: 'всё в порядке', answer: (n) => `нужен ваш ответ (${n})`, ciRed: 'CI красный', needsOwner: (asked) => (asked ? 'остановилась — ждёт вашего ответа' : 'остановилась — ждёт вашего решения'), failed: 'остановилась из-за сбоя', quiet: (d) => `тишина${d ? ` ${d}` : ''} — возможно, зависла`, paused: 'перезапускается с чистым контекстом', done: 'готова', halted: 'супервизор остановился', supStopped: 'супервизор не работает', finished: 'все фазы готовы', never: 'супервизор не запускался' },
     reason: 'Причина',
     doing: { edit: (x) => `правит ${x}`, write: (x) => `создаёт ${x}`, read: (x) => `читает ${x}`, search: 'ищет в коде', files: 'ищет файлы', tests: 'запустил тесты', commit: 'делает коммит', command: (x) => `выполняет команду: ${x}`, helper: 'запустил помощника', skill: 'запустил навык', web: 'ищет в интернете', todo: 'обновляет список дел', message: 'пишет помощнику', browser: 'работает в браузере', working: 'работает' },
     state: { completed: 'готов', stopped: 'остановлен', failed: 'сбой' },
-    quietAgent: (who, d) => `⚠ ${who} молчит${d ? ` ${d}` : ''} — возможно, завис`,
+    quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''} — возможно, завис`,
     moreDone: (n) => `+ ещё ${n} ${ruPlural(n, 'готовый', 'готовых', 'готовых')}`,
     askHead: (n) => `Нужен ваш ответ (${n}):`,
     recommended: 'рекомендуется',
@@ -264,7 +269,7 @@ function verdictOf(t, view) {
   const v = (kind, tone, text = t.verdict[kind]) => ({ kind, tone, text });
   if (sup?.halted) return v('halted', 'bad');
   if (has('failed')) return v('failed', 'bad');
-  if (has('needs-owner')) return v('needsOwner', 'bad');
+  if (has('needs-owner')) return v('needsOwner', 'bad', t.verdict.needsOwner(asked));
   if (lanes.some((l) => l.push?.ci === 'red')) return v('ciRed', 'bad');
   if (asked) return v('answer', 'warn', t.verdict.answer(asked));
   if (quiet) return v('quiet', 'warn', t.verdict.quiet(since(t, quiet.lastAt, view.at)));
@@ -292,13 +297,26 @@ const text = (props, ...children) => ({ type: 'Text', props, children: children.
 const box = (props, ...children) => ({ type: 'Box', props, children: children.flat().filter(Boolean) });
 const toned = (tone, extra = {}) => ({ ...TONES[tone], ...extra });
 
-function laneLine(t, lane, v) {
+// What a lane that is not running says about itself (`Фаза 32 остановилась — ждёт вашего ответа`), or null while it
+// runs: { kind (the verdict's), tone, text }.
+const LANE_KINDS = { 'needs-owner': ['needsOwner', 'bad'], failed: ['failed', 'bad'], done: ['done', 'ok'], 'paused-context': ['paused', 'ok'] };
+function laneState(t, lane, asked) {
+  const [kind, tone] = LANE_KINDS[lane.status] ?? [];
+  return kind ? { kind, tone, text: kind === 'needsOwner' ? t.verdict.needsOwner(asked) : t.verdict[kind] } : null;
+}
+
+// A running phase: `Фаза 32 — выполняются планы · идёт 1 ч 12 мин · <verdict>`. A phase that stopped, finished or
+// restarts says that first, in its colour, then where it was: `Фаза 32 остановилась — ждёт вашего ответа · шаг:
+// выполнение планов · 1 ч 12 мин`, and the run's verdict only when it says something else.
+function laneLine(t, lane, v, asked) {
   const d = fmtDuration(t, lane.elapsedMs);
-  return text({ wrap: 'truncate-end' },
-    text({ bold: true }, t.phase(cut(lane.phase, 20))),
-    ` — ${stepWord(t, lane.step)}`,
-    d === '-' ? null : text(TONES.dim, ` · ${lane.status === 'done' ? t.took(d) : t.going(d)}`),
-    v ? [' · ', text(toned(v.tone, { bold: true }), v.text)] : null);
+  const dur = d === '-' ? null : d;
+  const phase = t.phase(cut(lane.phase, 20));
+  const verdictPart = (state) => (v && v.kind !== state?.kind ? [' · ', text(toned(v.tone, { bold: true }), v.text)] : null);
+  const state = laneState(t, lane, asked);
+  if (!state) return text({ wrap: 'truncate-end' }, text({ bold: true }, phase), ` — ${stepWord(t, lane.step)}`, dur ? text(TONES.dim, ` · ${t.going(dur)}`) : null, verdictPart(null));
+  const where = [lane.step == null ? null : t.atStep(t.stepAt[lane.step] ?? stepWord(t, lane.step)), dur && (lane.status === 'done' ? t.took(dur) : dur)].filter(Boolean);
+  return text({ wrap: 'truncate-end' }, text(toned(state.tone, { bold: true }), `${phase} ${state.text}`), where.length ? text(TONES.dim, ` · ${where.join(' · ')}`) : null, verdictPart(state));
 }
 
 function agentRow(t, a, at) {
@@ -316,7 +334,7 @@ function runSection(t, view, v) {
   const lanes = list(view.lanes);
   const rows = lanes.length ? [] : [text({ wrap: 'truncate-end' }, text({ bold: true }, t.run), ' — ', text(toned(v.tone, { bold: true }), v.text))];
   lanes.forEach((lane, i) => {
-    rows.push(laneLine(t, lane, i === 0 ? v : null));
+    rows.push(laneLine(t, lane, i === 0 ? v : null, list(view.questions).length));
     const agents = list(lane.agents);
     const finished = agents.filter((a) => !ACTIVE.has(a.state));
     const why = laneReason(lane.reason);
@@ -360,7 +378,7 @@ function questionCard(t, q, field) {
 export function render(view, { error = null, field = NO_FIELD } = {}) {
   const t = textOf(view);
   const parts = [];
-  if (error) parts.push(text(toned('bad', { wrap: 'truncate-end' }), `⚠ ${t.failed}: ${cut(error, 200)}`));
+  if (error) parts.push(text(toned('bad', { wrap: 'truncate-end' }), `⚠️ ${t.failed}: ${cut(error, 200)}`));
   if (!view) return box({ flexDirection: 'column' }, parts.length ? parts : [text(TONES.dim, t.loading)]);
   parts.push(runSection(t, view, verdictOf(t, view)));
   const questions = list(view.questions);
@@ -401,14 +419,16 @@ function pushMarks(t, push, ci = true) {
 // (`turbo · фаза 32: выполняются планы · ❓ 1 вопрос ждёт вас · CI ✓`), or null when the project has no turbo run and
 // no open question. bandStyle is its colour, the verdict's.
 export function bandLine(view, { error = null } = {}) {
-  if (error) return `turbo · ⚠ ${cut(error, 100)}`;
+  if (error) return `turbo · ⚠️ ${cut(error, 100)}`;
   const questions = list(view?.questions);
   if (!view || (!view.supervisor && !questions.length)) return null;
   const t = textOf(view);
   const v = verdictOf(t, view);
   const lanes = list(view.lanes);
-  const parts = ['turbo', ...lanes.map((l) => t.bandPhase(cut(l.phase, 20), stepWord(t, l.step)))];
-  if (v.kind !== 'answer') parts.push(v.text);
+  const states = lanes.map((l) => laneState(t, l, questions.length));
+  // a running phase with its step, one that is not running with what happened to it (`фаза 32 готова`)
+  const parts = ['turbo', ...lanes.map((l, i) => (states[i] ? `${t.phaseOnly(cut(l.phase, 20))} ${states[i].text}` : t.bandPhase(cut(l.phase, 20), stepWord(t, l.step))))];
+  if (v.kind !== 'answer' && !states.some((s) => s?.kind === v.kind)) parts.push(v.text);
   if (questions.length) parts.push(t.waiting(questions.length));
   // a red CI verdict says it in words already
   parts.push(...(lanes.map((l) => pushMarks(t, l.push, v.kind !== 'ciRed')).find((m) => m.length) ?? []));

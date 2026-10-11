@@ -42,7 +42,7 @@ test('render draws the run in plain words, in sections a blank line apart: verdi
     'Phase 32 — running plans · 1h 12m so far · needs your answer (1)',
     '  Executor · plan 32-07, task 2 · editing lib/x.mjs · 6m',
     '  Executor · plan 32-08 · running tests · 2m',
-    '  ⚠ Verifier silent for 16m — may be stuck',
+    '  ⚠️ Verifier silent for 16m — may be stuck',
     '  Executor · plan 32-06 · done · 45s',
     '',
     'Needs your answer (1):',
@@ -63,7 +63,7 @@ test('render in Russian is Russian throughout: the owner approved layout, no Eng
     'Фаза 32 — выполняются планы · идёт 1 ч 12 мин · нужен ваш ответ (1)',
     '  Исполнитель · план 32-07, задача 2 · правит lib/x.mjs · 6 мин',
     '  Исполнитель · план 32-08 · запустил тесты · 2 мин',
-    '  ⚠ Проверяющий молчит 16 мин — возможно, завис',
+    '  ⚠️ Проверяющий молчит 16 мин — возможно, завис',
     '  Исполнитель · план 32-06 · готов · 45 с',
     '',
     'Нужен ваш ответ (1):',
@@ -87,7 +87,7 @@ test('the pane is coloured by state with real element props: verdict, quiet and 
   assert.deepEqual(head.children[0], { type: 'Text', props: { bold: true }, children: ['Phase 32'] }, 'the phase in bold');
   assert.deepEqual(head.children.at(-1), { type: 'Text', props: { color: 'warning', bold: true }, children: ['needs your answer (1)'] }, 'the verdict in its colour');
   assert.equal(head.children[2].props.dimColor, true, 'how long it runs is secondary');
-  assert.equal(textNode(tree, '⚠ Verifier').props.color, 'warning');
+  assert.equal(textNode(tree, '⚠️ Verifier').props.color, 'warning');
   assert.equal(textNode(tree, 'Executor · plan 32-06').props.dimColor, true);
   const running = textNode(tree, 'Executor · plan 32-07');
   assert.deepEqual(running.children.filter((c) => c.props?.dimColor).map(spanText), [' · plan 32-07, task 2', ' · 6m'], 'plan ids and times dim');
@@ -109,7 +109,8 @@ test('one verdict, first match: supervisor stopped, a failed or stopped phase, C
     [calm(), 'fine', 'success', 'all fine'],
     [view(), 'answer', 'warning', 'needs your answer (1)'],
     [view({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' } }), 'ciRed', 'error', 'CI red'],
-    [view({}, { status: 'needs-owner', reason: 'owner question q1' }), 'needsOwner', 'error', 'stopped — waits for your decision'],
+    [view({}, { status: 'needs-owner', reason: 'owner question q1' }), 'needsOwner', 'error', 'stopped — waits for your answer'],
+    [calm({}, { status: 'needs-owner', reason: 'a live check' }), 'needsOwner', 'error', 'stopped — waits for your decision'],
     [view({}, { status: 'failed' }), 'failed', 'error', 'stopped by a failure'],
     [view({ supervisor: { running: false, halted: true } }), 'halted', 'error', 'supervisor stopped'],
     [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z' }), 'quiet', 'warning', 'silent for 20m — may be stuck'],
@@ -123,11 +124,14 @@ test('one verdict, first match: supervisor stopped, a failed or stopped phase, C
     const got = verdict(v);
     assert.deepEqual([got.kind, got.text], [kind, words], kind);
     const line = render(v).children[0].children[0];
-    assert.equal(line.children.at(-1).props.color, color, kind);
-    assert.equal(spanText(line.children.at(-1)), words, kind);
+    // a running phase ends its line with the verdict; one that is not running starts with it (`Phase 32 done`)
+    const said = line.children.find((c) => typeof c !== 'string' && spanText(c).endsWith(words));
+    assert.equal(said?.props.color, color, kind);
+    assert.equal(said.props.bold, true, kind);
     assert.equal(bandStyle(v).color, color, `${kind}: the band takes the verdict's colour`);
   }
-  assert.equal(verdict(view(RU, { status: 'needs-owner' })).text, 'остановилась — ждёт вашего решения');
+  assert.equal(verdict(view(RU, { status: 'needs-owner' })).text, 'остановилась — ждёт вашего ответа');
+  assert.equal(verdict(calm(RU, { status: 'needs-owner' })).text, 'остановилась — ждёт вашего решения');
   assert.deepEqual(lines(calm({ supervisor: { running: false, finished: true }, lanes: [] }, {})).slice(0, 1), ['Run — all phases done']);
   assert.deepEqual(lines(calm({ ...RU, supervisor: null, lanes: [], commits: [] })), ['Прогон — супервизор не запускался']);
   assert.deepEqual(bandStyle(view(), { error: 'x' }), { color: 'error' });
@@ -137,7 +141,7 @@ test('a stopped phase says why under its line, in red; a stopped helper and more
   const done = Array.from({ length: 5 }, (_, i) => agent({ agentId: `d${i}`, plan: `32-0${i}`, state: 'completed' }));
   const tree = render(view({ questions: [] }, { status: 'needs-owner', reason: 'checkpoint 32-09 Task 3', agents: done }));
   assert.deepEqual(paneLines(tree).slice(0, 6), [
-    'Phase 32 — running plans · 1h 12m so far · stopped — waits for your decision',
+    'Phase 32 stopped — waits for your decision · step: plan execution · 1h 12m',
     '  Reason: checkpoint 32-09 Task 3',
     '  Executor · plan 32-00, task 2 · done · 6m',
     '  Executor · plan 32-01, task 2 · done · 6m',
@@ -145,6 +149,12 @@ test('a stopped phase says why under its line, in red; a stopped helper and more
     '  + 2 more done',
   ]);
   assert.equal(textNode(tree, 'Reason').props.color, 'error');
+  // what happened first, in its colour and bold; where it was, dim; never "running" beside "stopped"
+  const head = textNode(tree, 'Phase 32');
+  assert.deepEqual(head.children.map((c) => [spanText(c), c.props]), [['Phase 32 stopped — waits for your decision', { color: 'error', bold: true }], [' · step: plan execution · 1h 12m', { dimColor: true }]]);
+  assert.equal(lines(view(RU, { status: 'needs-owner', reason: '' }))[0], 'Фаза 32 остановилась — ждёт вашего ответа · шаг: выполнение планов · 1 ч 12 мин');
+  assert.equal(lines(view(RU, { status: 'paused-context', step: 'uat' }))[0], 'Фаза 32 перезапускается с чистым контекстом · шаг: приёмка · 1 ч 12 мин · нужен ваш ответ (1)');
+  assert.equal(lines(view({ supervisor: { running: false, halted: true } }, { status: 'failed' }))[0], 'Phase 32 stopped by a failure · step: plan execution · 1h 12m · supervisor stopped');
   assert.equal(textNode(tree, '+ 2').props.dimColor, true);
   assert.equal(lines(view(RU, { agents: done }))[4], '  + ещё 2 готовых');
   assert.equal(lines(view(RU, { agents: [agent({ state: 'failed' }), agent({ state: 'stopped', plan: null })] }))[1], '  Исполнитель · план 32-07, задача 2 · сбой · 6 мин');
@@ -153,7 +163,7 @@ test('a stopped phase says why under its line, in red; a stopped helper and more
 
 test("a phase stopped for a question: the reason loses /turbo-phase's `owner question <id>` (the verdict says it, the id is turbo's own) and keeps what follows", () => {
   const stopped = (reason) => view({}, { status: 'needs-owner', reason, agents: [] });
-  assert.deepEqual(lines(stopped('owner question 32-09-t3')).slice(0, 2), ['Phase 32 — running plans · 1h 12m so far · stopped — waits for your decision', '']);
+  assert.deepEqual(lines(stopped('owner question 32-09-t3')).slice(0, 2), ['Phase 32 stopped — waits for your answer · step: plan execution · 1h 12m', '']);
   assert.deepEqual(toastsFor(view(), stopped('owner question 32-09-t3')), ['Phase 32 stopped — needs your answer']);
   const locked = 'owner question 32-09-t3: app.exe holds release/app.exe; quit the app';
   assert.equal(lines(stopped(locked))[1], '  Reason: app.exe holds release/app.exe; quit the app');
@@ -171,7 +181,8 @@ test('every /turbo-phase step and the usual helper types are named in words in b
   assert.equal(WORDS.ru.step.uat, 'приёмка');
   assert.equal(lines(view(RU, { step: 'gates-off' }))[0].split(' · ')[0], 'Фаза 32 — подготовка к выполнению');
   assert.equal(lines(view({}, { step: 'odd-step' }))[0].split(' · ')[0], 'Phase 32 — odd-step');
-  assert.equal(lines(view(RU, { step: null, status: 'done' }))[0], 'Фаза 32 — все шаги пройдены · заняла 1 ч 12 мин · нужен ваш ответ (1)');
+  assert.equal(lines(view(RU, { step: null, status: 'done' }))[0], 'Фаза 32 готова · заняла 1 ч 12 мин · нужен ваш ответ (1)');
+  assert.equal(lines(view(RU, { step: null }))[0], 'Фаза 32 — все шаги пройдены · идёт 1 ч 12 мин · нужен ваш ответ (1)');
   const types = { 'gsd-executor': 'Исполнитель', 'gsd-verifier': 'Проверяющий', 'gsd-code-reviewer': 'Ревьюер', 'gsd-planner': 'Планировщик', 'gsd-plan-checker': 'Контролёр плана', 'gsd-security-auditor': 'Аудитор безопасности', 'gsd-nyquist-auditor': 'Аудитор тестов', 'turbo-uat': 'Приёмщик', 'general-purpose': 'Помощник', 'my-agent': 'my-agent' };
   for (const [type, word] of Object.entries(types)) assert.equal(lines(view(RU, { agents: [agent({ type, plan: null })] }))[1], `  ${word} · правит lib/x.mjs · 6 мин`, type);
   assert.equal(lines(view({}, { agents: [agent({ type: null, plan: null })] }))[1], '  Helper · editing lib/x.mjs · 6m');
@@ -252,10 +263,10 @@ test('render before the first read, after a failed read (the last good view belo
   assert.deepEqual(lines(bare), ['Run — supervisor never started']);
   assert.deepEqual(lines(null), ['reading the run…']);
   const failed = render(view(), { error: 'invalid turbo config /p/.planning/turbo/config.json: Unexpected end of JSON input' });
-  assert.deepEqual(failed.children[0], { type: 'Text', props: { color: 'error', wrap: 'truncate-end' }, children: ['⚠ Could not read the run: invalid turbo config /p/.planning/turbo/config.json: Unexpected end of JSON input'] });
+  assert.deepEqual(failed.children[0], { type: 'Text', props: { color: 'error', wrap: 'truncate-end' }, children: ['⚠️ Could not read the run: invalid turbo config /p/.planning/turbo/config.json: Unexpected end of JSON input'] });
   assert.equal(paneLines(failed)[1], 'Phase 32 — running plans · 1h 12m so far · needs your answer (1)', 'the last good view stays below the error');
-  assert.deepEqual(lines(null, { error: 'node: not found' }), ['⚠ Could not read the run: node: not found']);
-  assert.deepEqual(lines(view(RU), { error: 'x' })[0], '⚠ Не удалось прочитать прогон: x');
+  assert.deepEqual(lines(null, { error: 'node: not found' }), ['⚠️ Could not read the run: node: not found']);
+  assert.deepEqual(lines(view(RU), { error: 'x' })[0], '⚠️ Не удалось прочитать прогон: x');
 });
 
 test('long and multi-code-point text is cut by grapheme clusters to a cell width with an ellipsis, never splitting an emoji (Review Focus 4)', () => {
@@ -277,7 +288,7 @@ test('long and multi-code-point text is cut by grapheme clusters to a cell width
 });
 
 test('textWidth counts terminal cells, so wide text and emoji are cut by what the terminal draws', () => {
-  for (const [s, w] of [['ab', 2], ['Ж', 1], ['日本', 4], ['ＡＢ', 4], ['한', 2], ['👍', 2], ['👍🏽', 2], ['👨‍👩‍👧', 2], ['🇺🇸', 2], ['❤️', 2], ['⚠', 1], ['é', 1], ['…·▸—', 4]]) assert.equal(textWidth(s), w, s);
+  for (const [s, w] of [['ab', 2], ['Ж', 1], ['日本', 4], ['ＡＢ', 4], ['한', 2], ['👍', 2], ['👍🏽', 2], ['👨‍👩‍👧', 2], ['🇺🇸', 2], ['❤️', 2], ['⚠', 1], ['⚠️', 2],['é', 1], ['…·▸—', 4]]) assert.equal(textWidth(s), w, s);
   const row = lines(view({}, { agents: [agent({ plan: null, action: { tool: 'Edit', detail: `日本語のファイル名がとても長いです${'👨‍👩‍👧'.repeat(30)}.mjs` } })] }))[1];
   const detail = row.slice('  Executor · editing '.length, row.lastIndexOf(' · '));
   assert.ok(textWidth(detail) <= 60 && detail.endsWith('…'), detail);
@@ -313,7 +324,10 @@ test('bandLine is one line in words: each phase and its step, the verdict, the q
   assert.equal(bandLine(view(RU)), 'turbo · фаза 32: выполняются планы · ❓ 1 вопрос ждёт вас · CI ✓');
   assert.equal(bandLine(view({ ...RU, questions: [view().questions[0], { ...view().questions[0], id: 'q2' }] })), 'turbo · фаза 32: выполняются планы · ❓ 2 вопроса ждут вас · CI ✓');
   assert.equal(bandLine(calm(RU)), 'turbo · фаза 32: выполняются планы · всё в порядке · CI ✓');
-  assert.equal(bandLine(view({ supervisor: { running: false, halted: true } }, { status: 'needs-owner', agents: [], push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } })), 'turbo · phase 32: running plans · supervisor stopped · ❓ 1 question waits for you · CI ✗');
+  assert.equal(bandLine(view({ supervisor: { running: false, halted: true } }, { status: 'needs-owner', agents: [], push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } })), 'turbo · phase 32 stopped — waits for your answer · supervisor stopped · ❓ 1 question waits for you · CI ✗');
+  // a phase that is not running says what happened, never its step beside "stopped"
+  assert.equal(bandLine(view(RU, { status: 'needs-owner' })), 'turbo · фаза 32 остановилась — ждёт вашего ответа · ❓ 1 вопрос ждёт вас · CI ✓');
+  assert.equal(bandLine(calm(RU, { status: 'done', step: null })), 'turbo · фаза 32 готова · CI ✓');
   assert.equal(bandLine(calm({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } })), 'turbo · phase 32: running plans · CI red', 'a red CI verdict says it in words once');
   assert.equal(bandLine(view({}, { push: { outcome: 'refused', sha: null, ci: null } })), 'turbo · phase 32: running plans · ❓ 1 question waits for you · push ✗');
   assert.equal(bandLine(view(RU, { push: { outcome: 'refused', sha: null, ci: null } })), 'turbo · фаза 32: выполняются планы · ❓ 1 вопрос ждёт вас · отправка ✗');
@@ -324,7 +338,7 @@ test('bandLine is one line in words: each phase and its step, the verdict, the q
   assert.equal(bandLine(calm({ supervisor: { running: false, finished: true }, lanes: [] })), 'turbo · all phases done');
   assert.equal(bandLine({ v: 1, at: AT, supervisor: null, range: null, lanes: [], questions: [], commits: [] }), null);
   assert.equal(bandLine(null), null);
-  assert.equal(bandLine(view(), { error: 'invalid turbo config x: y' }), 'turbo · ⚠ invalid turbo config x: y');
+  assert.equal(bandLine(view(), { error: 'invalid turbo config x: y' }), 'turbo · ⚠️ invalid turbo config x: y');
 });
 
 test('toastsFor: nothing on the first view; a new question, phase done, red CI, a stopped phase and a stopped supervisor once each, in words', () => {

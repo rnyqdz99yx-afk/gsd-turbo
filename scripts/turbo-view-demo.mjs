@@ -25,13 +25,13 @@ const TEXT = {
   en: {
     q1: 'Deploy phase 32 after green CI?', ctx1: 'Users see the change once it is deployed; Stop keeps the phase waiting.', yes: 'Yes, by the gate', stop: 'Stop',
     q2: 'Does the export page look right?', accept: 'Accept if the checks pass', show: 'Stop and show me',
-    round: (n) => `demo, round ${n}`, again: (n) => `Demo: round ${n} — the questions are open again; the earlier answers were recorded.`,
+    round: (n) => `Demo, round ${n}`, again: 'The questions are open again; the earlier answers were recorded.',
     commits: ['feat: export page lists every chat', 'fix: the stop reason is kept', 'test: export of an empty chat'],
   },
   ru: {
     q1: 'Деплой фазы 32 после зелёного CI?', ctx1: 'После деплоя изменения увидят пользователи; «Стоп» оставит фазу ждать.', yes: 'Да, по гейту', stop: 'Стоп',
     q2: 'Страница экспорта выглядит верно?', accept: 'Принять, если проверки прошли', show: 'Остановиться и показать мне',
-    round: (n) => `демо, круг ${n}`, again: (n) => `Демо: круг ${n} — вопросы снова открыты, прежние ответы записаны.`,
+    round: (n) => `Демо, круг ${n}`, again: 'Вопросы снова открыты, прежние ответы записаны.',
     commits: ['экспорт: страница показывает все чаты', 'исправлено: причина остановки сохраняется', 'тесты: экспорт пустого чата'],
   },
 };
@@ -44,8 +44,8 @@ export function demoView({ tick, lang = 'en', startedAt, now, answered = {} }) {
   const t = TEXT[lang === 'ru' ? 'ru' : 'en'];
   const s = ((tick - 1) % CYCLE) + 1;
   const round = Math.floor((tick - 1) / CYCLE) + 1;
-  const ask = (text) => (round > 1 ? `${text} (${t.round(round)})` : text);
-  const context = (text) => (round > 1 ? `${t.again(round)}${text ? ` ${text}` : ''}` : text);
+  const ask = (text) => (round > 1 ? `${t.round(round)}: ${text}` : text);
+  const context = (text) => (round > 1 ? `${t.again}${text ? ` ${text}` : ''}` : text);
   const iso = (ms) => new Date(ms).toISOString();
   const status = s >= 13 ? 'done' : s >= 10 ? 'needs-owner' : 'running';
   const agent = (id, type, plan, task, state, action, fromMs, tokens) => ({ agentId: id, type, description: '', plan, task, model: 'opus', worktreeBranch: null, state, action, startedAt: iso(fromMs), lastAt: iso(state === 'quiet' ? now - 16 * MIN : now), elapsedMs: (state === 'quiet' ? now - 16 * MIN : now) - fromMs, tokens, sessionId: 'demo', transcript: 'demo' });
@@ -166,7 +166,7 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
     'Accept the trust prompt for the demo folder. Then check:',
     '  1. Within 3 s the pane opens by itself on the right and reads as below (the times grow every 3 s): the verdict',
     '     line first, its phase in bold and "needs your answer" in amber; the helpers indented under it, the silent one',
-    '     amber with ⚠ and the finished one dim; the question in a rounded amber card, bold, its context dim, the',
+    '     amber with ⚠️ and the finished one dim; the question in a rounded amber card, bold, its context dim, the',
     '     recommended option ★ in the accent colour; then the latest changes and the supervisor, dim:',
     ...pane,
     `  2. The band above the prompt reads "${bandLine(first)}", in amber.`,

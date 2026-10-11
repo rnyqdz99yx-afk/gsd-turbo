@@ -28,7 +28,7 @@ test('the demo builds a project with .planning/turbo/ and a test-free copy of th
   assert.ok(text.includes('       │   [1. Да, по гейту ★]  [2. Стоп]  [Свой ответ…]\n'), text);
   assert.ok(text.includes('"turbo · фаза 32: выполняются планы · ❓ 1 вопрос ждёт вас · CI ✓"'), text);
   assert.ok(text.includes('read 4: "Новый вопрос (фаза 32): «Страница экспорта выглядит верно?»"') && text.includes('read 10: "Фаза 32 остановилась — нужен ваш ответ"'), text);
-  assert.ok(text.includes('"Ответ принят: «Стоп» · <local time HH:MM>"') && text.includes('"Деплой фазы 32 после зелёного CI? (демо, круг 2)"'), text);
+  assert.ok(text.includes('"Ответ принят: «Стоп» · <local time HH:MM>"') && text.includes('"Демо, круг 2: Деплой фазы 32 после зелёного CI?"'), text);
   assert.doesNotMatch(text, / +\n/, 'no trailing blanks');
 });
 
@@ -52,10 +52,12 @@ test('when the script repeats it says so: an answered question back in round 2 c
     toasts.push(...toastsFor(prev, v));
     prev = v;
   }
-  assert.equal(toasts.at(-1), 'Новый вопрос (фаза 32): «Деплой фазы 32 после зелёного CI? (демо, круг 2)»');
+  assert.equal(toasts.at(-1), 'Новый вопрос (фаза 32): «Демо, круг 2: Деплой фазы 32 после зелёного CI?»');
   const [q] = prev.questions;
-  assert.match(q.context, /^Демо: круг 2 — вопросы снова открыты, прежние ответы записаны\. /);
-  assert.ok(paneLines(render(prev)).includes('│ Демо: круг 2 — вопросы снова открыты, прежние ответы записаны. После деплоя изменения увидят пользователи; «Стоп» оставит фазу ждать.'));
+  assert.match(q.context, /^Вопросы снова открыты, прежние ответы записаны\. /);
+  const card = paneLines(render(prev));
+  assert.ok(card.includes('│ Демо, круг 2: Деплой фазы 32 после зелёного CI? (план 32-09, задача 3)'), card.join('\n'));
+  assert.ok(card.includes('│ Вопросы снова открыты, прежние ответы записаны. После деплоя изменения увидят пользователи; «Стоп» оставит фазу ждать.'), card.join('\n'));
 });
 
 test('the scripted run, read the way the mod reads it, raises the four toasts in order and keeps the band current', () => {
@@ -75,7 +77,8 @@ test('the scripted run, read the way the mod reads it, raises the four toasts in
   assert.deepEqual(toasts, ['4: New question (phase 32): “Does the export page look right?”', '7: CI red: phase 32', '10: Phase 32 stopped — needs your answer', '13: Phase 32 done']);
   assert.equal(bands[0], 'turbo · phase 32: running plans · ❓ 1 question waits for you · CI ✓');
   assert.equal(bands[6], 'turbo · phase 32: running plans · CI red · ❓ 2 questions wait for you');
-  assert.equal(bands[12], 'turbo · phase 32: all steps done · CI red · ❓ 2 questions wait for you');
+  assert.equal(bands[9], 'turbo · phase 32 stopped — waits for your answer · ❓ 2 questions wait for you · CI ✗');
+  assert.equal(bands[12], 'turbo · phase 32 done · CI red · ❓ 2 questions wait for you');
 });
 
 test('answers from the pane are recorded once; the answered question leaves the next view; the real script speaks the same (Review Focus 3)', () => {

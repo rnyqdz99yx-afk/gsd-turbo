@@ -487,7 +487,8 @@ test('the channel off, or a refusal for the whole chat (bad token, blocked bot, 
   for (let i = 0; i < 3; i++) await telegramTick(ctx, NOW);
   assert.deepEqual(logs, ['telegram: answers are off: TURBO_TELEGRAM_CHAT is not the id of a private chat (a positive number without a leading zero; a group or an @name cannot answer)']);
   ctx.deps.env = ENV;
-  for (const [description, code] of [['Unauthorized', 401], ['Forbidden: bot was blocked by the user', 403], ['Bad Request: chat not found', 400]]) {
+  // 404: a malformed token (S1b follow-up N3)
+  for (const [description, code] of [['Unauthorized', 401], ['Forbidden: bot was blocked by the user', 403], ['Not Found', 404], ['Bad Request: chat not found', 400]]) {
     logs.length = 0;
     ctx.deps.telegram = async () => { throw refused(description, code); };
     for (let i = 0; i < 3; i++) await telegramTick(ctx, NOW);
@@ -539,6 +540,7 @@ test('a daemon that lost its lease takes no update, handles no more of a batch a
   };
   await telegramTick(ctx, NOW, { laneRunning: true });
   assert.equal(polls(bot).length, 0, 'lost while sending: no poll');
+  assert.equal(bot.sent().length, 1, 'and no further question sent (S1b follow-up N2)');
   assert.equal(fs.existsSync(stateOn(root)), false, 'nothing written');
   held = true;
   ctx.deps.telegram = bot.call;
@@ -642,4 +644,24 @@ test('ownerTick: a failed notification step does not skip Telegram; its error is
   ctx.deps.notify = async () => { throw new Error('notifier down'); };
   await assert.rejects(ownerTick(ctx, NOW, { lane: null }), /notifier down/);
   assert.equal(bot.sent().length, 1);
+});
+
+test('an Other prompt whose question a button of the same message answered is closed at the next tick, with no question open (S1b follow-up N1)', async () => {
+  const { root, ctx, bot } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  const short = shortId('3', '03-01-t2');
+  bot.updates.push(press(`t3:${short}:o:00000003`, 1));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  bot.updates.push(press(`t3:${short}:1:00000001`, 2));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(Object.keys(readTelegramState(root).replies), ['102'], 'the prompt is still open after the press');
+  const polled = polls(bot).length;
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(bot.calls.filter((c) => c.method === 'editMessageText').map((c) => [c.body.message_id, c.body.text]), [
+    [101, 'Phase 3 · 03-01 task 2\n✓ Files'],
+    [102, 'Closed: 03-01 task 2 changed or was answered; answer through its newest message.'],
+  ]);
+  assert.deepEqual(readTelegramState(root).replies, {});
+  assert.equal(polls(bot).length, polled, 'no question open: no poll');
 });

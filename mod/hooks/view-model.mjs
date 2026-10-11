@@ -218,6 +218,10 @@ export function clockText(ms, utcOffsetMinutes = null) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+// A lane's reason without the `owner question <id>` /turbo-phase puts first when it stops for a question: the
+// verdict and the questions say that already, and the id is turbo's own. What follows it stays; '' when nothing does.
+export const laneReason = (reason) => clean(reason).replace(/^owner questions?\s+[^\s:]+\s*:?\s*/i, '').trim();
+
 const stepWord = (t, step) => (step == null ? t.allDone : t.step[step] ?? cut(step, 40));
 const agentWord = (t, type) => (type ? t.agent[type] ?? cut(type, 40) : t.agent['general-purpose']);
 const planWords = (t, x) => (x?.plan ? t.plan(x.plan, x.task) : null);
@@ -315,8 +319,9 @@ function runSection(t, view, v) {
     rows.push(laneLine(t, lane, i === 0 ? v : null));
     const agents = list(lane.agents);
     const finished = agents.filter((a) => !ACTIVE.has(a.state));
+    const why = laneReason(lane.reason);
     const under = [
-      lane.reason ? text(toned(STOPPED.has(lane.status) ? 'bad' : 'dim', { wrap: 'wrap' }), `${t.reason}: ${cut(lane.reason, 200)}`) : null,
+      why ? text(toned(STOPPED.has(lane.status) ? 'bad' : 'dim', { wrap: 'wrap' }), `${t.reason}: ${cut(why, 200)}`) : null,
       ...agents.filter((a) => ACTIVE.has(a.state)).map((a) => agentRow(t, a, view.at)),
       ...finished.slice(0, FINISHED_SHOWN).map((a) => agentRow(t, a, view.at)),
       finished.length > FINISHED_SHOWN ? text(TONES.dim, t.moreDone(finished.length - FINISHED_SHOWN)) : null,
@@ -444,7 +449,7 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
     const phase = String(n.phase);
     const last = seen[phase] ?? { status: null, red: null };
     if (n.status === 'done' && last.status !== 'done') out.push(t.phaseDone(phase));
-    if (STOPPED.has(n.status) && n.status !== last.status) out.push((n.status === 'failed' ? t.laneFailed : t.laneNeedsOwner)(phase, n.reason ? cut(n.reason, 80) : ''));
+    if (STOPPED.has(n.status) && n.status !== last.status) out.push((n.status === 'failed' ? t.laneFailed : t.laneNeedsOwner)(phase, cut(laneReason(n.reason), 80)));
     const red = redOf(n);
     if (red !== null && red !== last.red) out.push(t.ciRed(phase));
     after[phase] = { status: n.status, red };

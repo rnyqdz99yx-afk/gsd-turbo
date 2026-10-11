@@ -238,7 +238,8 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
     '',
     'Супервизор работает · фазы 32–…',
   ].join('\n'));
-  assert.equal(ru({ questions: [] }, { status: 'needs-owner', reason: 'owner question q1' }).split('\n').slice(0, 2).join('\n'), 'Фаза 32 — выполняются планы · идёт 1 ч 12 мин · остановилась — ждёт вашего решения\n  Причина: owner question q1');
+  assert.equal(ru({ questions: [] }, { status: 'failed', reason: 'tests fail after 3 fix rounds' }).split('\n').slice(0, 2).join('\n'), 'Фаза 32 — выполняются планы · идёт 1 ч 12 мин · остановилась из-за сбоя\n  Причина: tests fail after 3 fix rounds');
+  assert.equal(ru({ questions: [] }, { status: 'needs-owner', reason: 'owner question 32-09-t3' }).split('\n')[1], '  Исполнитель · план 32-07, задача 2 · правит lib/x.mjs · 6 мин', 'no internal id: the verdict says it');
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [] }), 'Run — supervisor never started');
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [], ui: { lang: 'ru' } }), 'Прогон — супервизор не запускался');
 });
@@ -251,6 +252,8 @@ test('turbo-run view and status --watch speak the pane\'s words: the same tables
   const views = [
     textView({ questions: [] }),
     textView({ questions: [] }, { status: 'needs-owner', reason: 'checkpoint 32-09 Task 3', agents: done }),
+    textView({ questions: [] }, { status: 'needs-owner', reason: 'owner question 32-09-t3' }),
+    textView({ questions: [] }, { status: 'failed', reason: 'owner question 32-09-t3: app.exe holds release/app.exe' }),
     textView({ questions: [] }, { status: 'done', step: null, agents: [] }),
     textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), agents: [{ type: 'turbo-uat', plan: null, state: 'running', action: { tool: 'Bash', detail: 'git commit -m x' }, elapsedMs: 1000 }] }),
     textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, step: 'fanout', agents: [{ type: 'gsd-code-reviewer', state: 'running', action: { tool: 'Grep', detail: 'x' }, elapsedMs: 5000 }] }),

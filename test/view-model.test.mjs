@@ -151,6 +151,16 @@ test('a stopped phase says why under its line, in red; a stopped helper and more
   assert.equal(lines(view(RU, { agents: [agent({ state: 'stopped', plan: null })] }))[1], '  Исполнитель · остановлен · 6 мин');
 });
 
+test("a phase stopped for a question: the reason loses /turbo-phase's `owner question <id>` (the verdict says it, the id is turbo's own) and keeps what follows", () => {
+  const stopped = (reason) => view({}, { status: 'needs-owner', reason, agents: [] });
+  assert.deepEqual(lines(stopped('owner question 32-09-t3')).slice(0, 2), ['Phase 32 — running plans · 1h 12m so far · stopped — waits for your decision', '']);
+  assert.deepEqual(toastsFor(view(), stopped('owner question 32-09-t3')), ['Phase 32 stopped — needs your answer']);
+  const locked = 'owner question 32-09-t3: app.exe holds release/app.exe; quit the app';
+  assert.equal(lines(stopped(locked))[1], '  Reason: app.exe holds release/app.exe; quit the app');
+  assert.deepEqual(toastsFor(view(RU), view(RU, { status: 'needs-owner', reason: locked })), ['Фаза 32 остановилась — нужен ваш ответ: app.exe holds release/app.exe; quit the app']);
+  assert.equal(lines(stopped('tests fail after 3 fix rounds'))[1], '  Reason: tests fail after 3 fix rounds', 'any other reason stays');
+});
+
 test('every /turbo-phase step and the usual helper types are named in words in both languages; an unknown one shows as written', () => {
   const steps = ['freshness', 'discuss', 'prologue', 'plan', 'gates-off', 'execute', 'restore', 'fanout', 'fix', 'final-gate', 'uat', 'close', 'ci'];
   for (const lang of ['en', 'ru']) {

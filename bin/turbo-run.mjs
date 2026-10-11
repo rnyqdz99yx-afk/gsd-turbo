@@ -26,7 +26,7 @@ import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
-import { readQuestions } from '../lib/questions.mjs';
+import { readQuestions, refreshQuestions } from '../lib/questions.mjs';
 import { attendGates, attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -568,6 +568,15 @@ async function resumePhase(root, id, andStart) {
   clearAttend(root, id);
   // the owner's resume gives turbo-phase's bounded rounds a fresh budget; the steps done stay done
   clearAttempts(root, id);
+  // the questions as the plans are now, before any supervisor tick notifies them: a sitting may have finished plans
+  // whose questions (a released human-action stop, never answered there) would otherwise be announced again
+  if (openPlans(root, id) !== null) {
+    try {
+      refreshQuestions(root, id, { lang: loadConfig(root).lang, warn: (line) => process.stderr.write(`warn: ${line}\n`) });
+    } catch (err) {
+      process.stderr.write(`warn: the questions of phase ${id} were not rebuilt (${String(err?.message ?? err).split(/\r?\n/)[0]}); the lane rebuilds them\n`);
+    }
+  }
   const sup = readJson(supPath(root), null);
   if (sup) {
     const lane = sup.lane && String(sup.lane.phase) === id ? { ...sup.lane, notified: {}, restarts: 0, forceRelaunch: true } : sup.lane || null;

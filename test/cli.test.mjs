@@ -1151,3 +1151,18 @@ test('attend decides GSD\'s gates from the lane: on past the fan-out and in safe
     assert.deepEqual(p.claudeCalls(), []);
   }
 });
+
+test('resume N (and so attend N --done) rebuilds the phase\'s questions before any supervisor runs: a plan the sitting finished leaves none behind (F3)', () => {
+  const root = plainProject();
+  const dir = path.join(root, '.planning', 'phases', '04-four');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of ['04-01-PLAN.md', '04-01-SUMMARY.md', '04-02-PLAN.md', '04-02-SUMMARY.md']) fs.writeFileSync(path.join(dir, f), '# plan\n');
+  writeSup(root, { pid: null, lane: { phase: '4', sessionId: 'abc' } });
+  fs.writeFileSync(path.join(runDirOf(root), 'p4-attend.json'), '{}');
+  // the human-action stop attend released: open again, never answered in the sitting (D7), its plan now has a SUMMARY
+  fs.writeFileSync(path.join(runDirOf(root), 'p4-questions.json'), JSON.stringify([
+    { id: '04-02-t1', phase: '4', plan: '04-02', task: '1', kind: 'human-action', options: [], stopped: false, agentId: null, state: 'open', rev: 3 },
+  ]));
+  assert.match(run(['resume', '4'], root), /phase 4 cleared; run: turbo-run start/);
+  assert.deepEqual(readJsonFile(path.join(runDirOf(root), 'p4-questions.json')), [], 'no questionsReady for a finished plan at the next tick');
+});

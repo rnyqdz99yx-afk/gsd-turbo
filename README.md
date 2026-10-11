@@ -4,7 +4,7 @@
 
 gsd-turbo is an overlay for [GSD](https://github.com/open-gsd/gsd-core) on Claude Code that runs a milestone faster with background Claude Code sessions. A small supervisor process (no LLM of its own) starts each remaining phase of the current milestone as an unattended background session, starts a fresh one when a session stops at its context limit, replaces full test runs with targeted ones where that is safe, and notifies you when a phase finishes or needs you. It does not modify GSD: it talks to GSD only through `gsd-tools` and GSD's own skills, agents and workflows, and it writes only a few documented GSD settings (see [GSD settings turbo writes](#gsd-settings-turbo-writes)).
 
-This is v0.2.2 (stage 2 of the [roadmap](#roadmap)). Each phase now runs as `/turbo-phase`: a freshness check, discuss in assumptions mode, a parallel planning prologue, GSD planning and execution, gates in parallel, fixes, a full test run, automated UAT and a done record. One phase still runs at a time.
+This is v0.3.0 (stage 3 of the [roadmap](#roadmap)). Each phase runs as `/turbo-phase`: a freshness check, discuss in assumptions mode, a parallel planning prologue, GSD planning and execution, gates in parallel, fixes, a full test run, automated UAT and a done record. When a phase needs you, its checkpoints become clickable [owner questions](#owner-questions) you can answer ahead or at the stop (in your session, the [live view](#live-view) or [Telegram](#telegram-optional)), and the answer reaches the same waiting agent. Lanes can [push and watch CI](#push-and-ci-optional), and you can [sit with a phase](#live-sittings) in your own session. One phase still runs at a time.
 
 ## Requirements
 
@@ -407,10 +407,11 @@ To answer the owner questions in Telegram too (see [Owner questions](#owner-ques
 Each stage is a separate release.
 
 1. **Core and safe mode:** installer, `turbo-run doctor`, the supervisor (one phase at a time, automatic continuation, status, notifications), targeted tests, `/turbo-autonomous`.
-2. **Faster phases** (this release): `/turbo-phase` with a freshness check, a parallel prologue, gates fanned out in parallel, and `turbo-uat` for automated verification of `human_needed` items; the recorded import graph for targeted tests (`test.import_graph`).
-3. **Planning ahead and parallel phases:** `/turbo-plan-milestone`, `/turbo-new-milestone`, ROADMAP annotations, `lanes.json`, several phases at once, shared-resource locks, merging, and optional messaging between sessions (off by default).
-4. **Execution graph:** `turbo-exec` starts each plan as soon as its dependencies are done, instead of waiting for whole waves.
-5. **Adoption:** `/turbo-adopt` for milestones already in progress, a full trial on a reference project, and an upstream PR.
+2. **Faster phases:** `/turbo-phase` with a freshness check, a parallel prologue, gates fanned out in parallel, and `turbo-uat` for automated verification of `human_needed` items; the recorded import graph for targeted tests (`test.import_graph`).
+3. **The owner in the loop** (this release): checkpoints as clickable owner questions answered ahead or at the stop (session, live view, Telegram), delivery to the same waiting agent and waking a silent lane, push and CI inside a phase, the live view (`turbo-view` mod, `status --watch`), and live sittings (`attend`, gap rounds).
+4. **Planning ahead and parallel phases:** `/turbo-plan-milestone`, `/turbo-new-milestone`, ROADMAP annotations, `lanes.json`, several phases at once, shared-resource locks, merging, and optional messaging between sessions (off by default).
+5. **Execution graph:** `turbo-exec` starts each plan as soon as its dependencies are done, instead of waiting for whole waves.
+6. **Adoption:** `/turbo-adopt` for milestones already in progress, a full trial on a reference project, and an upstream PR.
 
 ## License
 

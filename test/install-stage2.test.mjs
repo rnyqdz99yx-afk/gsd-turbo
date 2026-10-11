@@ -8,7 +8,7 @@ import { install, uninstall } from '../install.mjs';
 test('install ships the stage-2 skill, agent and libraries under turbo-* names only', () => {
   const home = tmpDir('home');
   const m = install({ repoDir: path.resolve('.'), claudeHome: home, dryRun: false });
-  assert.equal(m.version, '0.2.2');
+  assert.equal(m.version, '0.3.0');
   for (const f of ['skills/turbo-phase/SKILL.md', 'agents/turbo-uat.md', 'turbo/lib/cli-phase.mjs', 'turbo/lib/staleness.mjs', 'turbo/lib/gates.mjs', 'turbo/lib/uat.mjs', 'turbo/lib/uat-stand.mjs']) {
     assert.ok(m.files.includes(f), f);
     assert.ok(fs.existsSync(path.join(home, f)), f);

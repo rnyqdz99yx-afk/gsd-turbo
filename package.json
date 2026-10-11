@@ -1,6 +1,6 @@
 {
   "name": "gsd-turbo",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Parallel, unattended execution overlay for GSD (get-shit-done) on Claude Code",
   "type": "module",
   "license": "MIT",

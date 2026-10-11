@@ -62,7 +62,8 @@ const VIEW_WORDS = {
     atStep: (s) => `step: ${s}`,
     stoppedAt: (s) => (s ? `stopped at step: ${s}` : 'stopped'),
     verdict: {
-      fine: 'all fine', answer: (n) => `needs your answer (${n})`, ciRed: 'CI red — needs your answer', ciFixing: (n, m) => `CI red — the phase fixes it itself (attempt ${n} of ${m}), nothing needed from you`,
+      fine: 'all fine', answer: (n) => `needs your answer (${n})`, ciRed: (asked) => (asked ? 'CI red — needs your answer' : 'CI red — needs your decision'), ciFixing: (n, m) => `CI red — the phase fixes it itself (attempt ${n} of ${m}), nothing needed from you`,
+      ciLast: "CI red — the phase's last attempt; if it fails, it will ask you", fullMode: 'waits for you: its final checks need full mode',
       needsOwner: (asked) => (asked ? 'stopped — waits for your answer' : 'stopped — waits for your decision'), failed: 'stopped by a failure',
       quiet: (d) => `silent${d ? ` for ${d}` : ''} — may be stuck`, quietHelper: (who, d, more) => `running, but ⚠️ ${who} silent${d ? ` for ${d}` : ''}${more ? ` (and ${more} more)` : ''}`,
       paused: 'paused: needs a fresh context', done: 'done', halted: 'supervisor stopped', failing: (at) => `supervisor failing${at ? ` since ${at}` : ''}`,
@@ -100,7 +101,8 @@ const VIEW_WORDS = {
     atStep: (s) => `шаг: ${s}`,
     stoppedAt: (s) => (s ? `остановлена на шаге: ${s}` : 'остановлена'),
     verdict: {
-      fine: 'всё в порядке', answer: (n) => `нужен ваш ответ (${n})`, ciRed: 'CI красный — нужен ваш ответ', ciFixing: (n, m) => `CI красный — фаза чинит сама (попытка ${n} из ${m}), от вас ничего не нужно`,
+      fine: 'всё в порядке', answer: (n) => `нужен ваш ответ (${n})`, ciRed: (asked) => (asked ? 'CI красный — нужен ваш ответ' : 'CI красный — нужно ваше решение'), ciFixing: (n, m) => `CI красный — фаза чинит сама (попытка ${n} из ${m}), от вас ничего не нужно`,
+      ciLast: 'CI красный — последняя попытка фазы; если не выйдет, она спросит вас', fullMode: 'ждёт вас: для финальных проверок нужен полный режим',
       needsOwner: (asked) => (asked ? 'остановилась — ждёт вашего ответа' : 'остановилась — ждёт вашего решения'), failed: 'остановилась из-за сбоя',
       quiet: (d) => `тишина${d ? ` ${d}` : ''} — возможно, зависла`, quietHelper: (who, d, more) => `идёт, но ⚠️ ${who} молчит${d ? ` ${d}` : ''}${more ? ` (и ещё ${more})` : ''}`,
       paused: 'на паузе: нужен новый контекст', done: 'готова', halted: 'супервизор остановился', failing: (at) => `супервизор сбоит${at ? ` с ${at}` : ''}`,
@@ -143,7 +145,7 @@ export const TEXT = {
     newQuestion: (p, q) => `New question (phase ${p}): “${q}”`,
     newQuestions: (n) => `${n} new questions`,
     phaseDone: (p) => `Phase ${p} done`,
-    ciRed: (p, fix) => `CI red: phase ${p} — ${fix ? `fixing it itself (attempt ${fix.n} of ${fix.m})` : 'needs your answer'}`,
+    ciRed: (p, fix, asked) => `CI red: phase ${p} — ${fix ? (fix.last ? 'last attempt; if it fails, it will ask you' : `fixing it itself (attempt ${fix.n} of ${fix.m})`) : asked ? 'needs your answer' : 'needs your decision'}`,
     laneNeedsOwner: (p, why) => `Phase ${p} stopped — needs your answer${why ? `: ${why}` : ''}`,
     laneFailed: (p, why) => `Phase ${p} stopped by a failure${why ? `: ${why}` : ''}`,
     halted: 'The supervisor stopped',
@@ -173,7 +175,7 @@ export const TEXT = {
     newQuestion: (p, q) => `Новый вопрос (фаза ${p}): «${q}»`,
     newQuestions: (n) => `Новых вопросов: ${n}`,
     phaseDone: (p) => `Фаза ${p} готова`,
-    ciRed: (p, fix) => `CI красный: фаза ${p} — ${fix ? `чинит сама (попытка ${fix.n} из ${fix.m})` : 'нужен ваш ответ'}`,
+    ciRed: (p, fix, asked) => `CI красный: фаза ${p} — ${fix ? (fix.last ? 'последняя попытка; если не выйдет, спросит вас' : `чинит сама (попытка ${fix.n} из ${fix.m})`) : asked ? 'нужен ваш ответ' : 'нужно ваше решение'}`,
     laneNeedsOwner: (p, why) => `Фаза ${p} остановилась — нужен ваш ответ${why ? `: ${why}` : ''}`,
     laneFailed: (p, why) => `Фаза ${p} остановилась из-за сбоя${why ? `: ${why}` : ''}`,
     halted: 'Супервизор остановился',
@@ -315,9 +317,13 @@ function doingWords(t, action) {
 function ciFixing(lane) {
   const m = lane?.ci?.rounds;
   const fixes = Number.isInteger(lane?.ci?.fixes) ? lane.ci.fixes : 0;
-  if (lane?.push?.ci !== 'red' || lane.status !== 'running' || !Number.isInteger(m) || m < 1 || fixes > m) return null;
-  return { n: Math.min(Math.max(1, fixes), m), m };
+  if (lane?.push?.ci !== 'red' || lane.status !== 'running' || lane.held || !Number.isInteger(m) || m < 1) return null;
+  // at the bound or past it the run in progress is the last one: never "nothing needed from you"
+  return { n: Math.min(Math.max(1, fixes), m), m, last: fixes >= m };
 }
+
+// A red CI the phase fixes itself, in words: the attempt, or at the bound the last one (the owner may be asked next).
+const ciWords = (t, fix) => (fix.last ? t.verdict.ciLast : t.verdict.ciFixing(fix.n, fix.m));
 
 // The one verdict of the run, the answer to "do I have to step in", first match: the supervisor stopped or failing,
 // a phase in the owner's own session, the supervisor not running, a failed or stopped phase, CI red that needs the
@@ -338,11 +344,12 @@ function verdictOf(t, view) {
   if (sup && !live && !sup.finished) return v('supStopped', 'warn');
   if (has('failed')) return v('failed', 'bad');
   if (has('needs-owner')) return v('needsOwner', 'bad', t.verdict.needsOwner(asked));
+  if (lanes.some((l) => l.held === 'fullMode')) return v('fullMode', 'bad');
   const red = lanes.find((l) => l.push?.ci === 'red');
   const fixing = red ? ciFixing(red) : null;
-  if (red && !fixing) return v('ciRed', 'bad');
+  if (red && !fixing) return v('ciRed', 'bad', t.verdict.ciRed(asked));
   if (asked) return v('answer', 'warn', t.verdict.answer(asked));
-  if (fixing) return v('ciFixing', 'warn', t.verdict.ciFixing(fixing.n, fixing.m));
+  if (fixing) return v('ciFixing', 'warn', ciWords(t, fixing));
   if (live) {
     const quiet = lanes.find((l) => l.quiet && l.status === 'running');
     if (quiet) return v('quiet', 'warn', t.verdict.quiet(since(t, quiet.lastAt, view.at)));
@@ -377,6 +384,7 @@ const toned = (tone, extra = {}) => ({ ...TONES[tone], ...extra });
 // runs: { kind (the verdict's), tone, text }.
 const LANE_KINDS = { 'needs-owner': ['needsOwner', 'bad'], failed: ['failed', 'bad'], done: ['done', 'ok'], 'paused-context': ['paused', 'warn'] };
 function laneState(t, lane, asked) {
+  if (lane.held === 'fullMode') return { kind: 'fullMode', tone: 'bad', text: t.verdict.fullMode };
   const [kind, tone] = LANE_KINDS[lane.status] ?? [];
   return kind ? { kind, tone, text: kind === 'needsOwner' ? t.verdict.needsOwner(asked) : t.verdict[kind] } : null;
 }
@@ -384,7 +392,7 @@ function laneState(t, lane, asked) {
 // How a lane line reads: 'state' (it stopped, finished or pauses: that first), 'held' (it would run, but the supervisor
 // does not: never «идёт»), else 'running'.
 function laneForm(view, lane) {
-  if (LANE_KINDS[lane.status]) return 'state';
+  if (LANE_KINDS[lane.status] || lane.held === 'fullMode') return 'state';
   const sup = view?.supervisor;
   return sup && !sup.running ? 'held' : 'running';
 }
@@ -454,7 +462,7 @@ function runSection(t, view, v, columns) {
     const red = lane.push?.ci === 'red' && !(i === 0 && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
     const under = [
       sign ? text(toned(live && lane.quiet ? 'warn' : 'dim', { wrap: 'truncate-end' }), t.life(since(t, sign, view.at) ?? '-')) : null,
-      red ? text(toned(fixing ? 'warn' : 'bad', { wrap: 'wrap' }), fixing ? t.verdict.ciFixing(fixing.n, fixing.m) : t.verdict.ciRed) : null,
+      red ? text(toned(fixing ? 'warn' : 'bad', { wrap: 'wrap' }), fixing ? ciWords(t, fixing) : t.verdict.ciRed(asked)) : null,
       why ? text(toned(STOPPED.has(lane.status) ? 'bad' : 'dim', { wrap: 'wrap' }), `${t.reason}: ${cut(why, 200)}`) : null,
       ...working.map((a) => agentRow(t, a, view.at, live, columns)),
       finished ? text(TONES.dim, t.helpersDone(finished, working.length > 0)) : null,
@@ -601,7 +609,7 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
     if (n.status === 'done' && last.status !== 'done') out.push(t.phaseDone(phase));
     if (STOPPED.has(n.status) && n.status !== last.status) out.push((n.status === 'failed' ? t.laneFailed : t.laneNeedsOwner)(phase, cut(laneReason(n.reason), 80)));
     const red = redOf(n);
-    if (red !== null && red !== last.red) out.push(t.ciRed(phase, sup?.running ? ciFixing(n) : null));
+    if (red !== null && red !== last.red) out.push(t.ciRed(phase, sup?.running ? ciFixing(n) : null, list(next.questions).length));
     after[phase] = { status: n.status, red };
   }
   if (!prev.supervisor?.halted && sup?.halted) out.push(t.halted);

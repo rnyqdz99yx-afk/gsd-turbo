@@ -11,7 +11,7 @@ import { watch } from '../lib/watch.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
-import { buildView, formatView, openQuestions, pushOf, recentCommits, stallMs } from '../lib/view.mjs';
+import { buildView, formatView, openQuestions, plansOf, pushOf, recentCommits, stallMs } from '../lib/view.mjs';
 import { DEFAULTS, viewRefreshSeconds } from '../lib/config.mjs';
 
 const NOW = new Date('2026-01-01T11:00:00.000Z');
@@ -293,6 +293,9 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, step: 'fanout', agents: [{ type: 'gsd-code-reviewer', state: 'running', action: { tool: 'Grep', detail: 'x' }, elapsedMs: 5000 }] }),
     textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }),
     textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, status: 'needs-owner' }),
+    textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 2, rounds: 2 } }),
+    textView({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, status: 'done', step: null }),
+    textView({ questions: [] }, { status: 'paused-context', held: 'fullMode' }),
     textView({ questions: [], supervisor: { ...textView().supervisor, halted: true, running: false } }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }),
     textView({ questions: [], supervisor: { running: false, finished: true, halted: false }, lanes: [], commits: [] }),
     textView({ questions: [], supervisor: { ...stoppedSup, halted: true }, range: null }),
@@ -322,6 +325,13 @@ test('the view carries what the pane needs to judge: plans done, the CI fix roun
   assert.deepEqual(buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes[0].ci, { fixes: 1, rounds: DEFAULTS.push.ci_fix_rounds }, 'the default rounds without a push config');
   const bare = laneProject();
   assert.deepEqual([buildView({ root: bare.root, sup: bare.sup, env: bare.env, now: NOW, commits: COMMITS }).lanes[0].plans], [null], 'no phase directory: no count');
+  // review n3: phases that cannot be read (a file where the directory should be: ENOTDIR) give no count, never a broken view
+  fs.writeFileSync(path.join(bare.root, '.planning', 'phases'), 'not a directory');
+  assert.equal(plansOf(bare.root, '32'), null);
+  assert.equal(buildView({ root: bare.root, sup: bare.sup, env: bare.env, now: NOW, commits: COMMITS }).lanes[0].plans, null);
+  // review n8: a lane the supervisor holds until full mode is back (holdDowngradedLane marks it notified.downgraded)
+  const heldSup = { ...sup, lane: { ...sup.lane, notified: { downgraded: true } } };
+  assert.deepEqual([buildView({ root, sup: heldSup, env, now: NOW, commits: COMMITS }).lanes[0].held, buildView({ root, sup, env, now: NOW, commits: COMMITS }).lanes[0].held], ['fullMode', null]);
   const repo = tmpGitRepo();
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'feat: timed'], { cwd: repo });
   const [c] = recentCommits(repo);

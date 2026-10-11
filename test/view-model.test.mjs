@@ -143,9 +143,15 @@ test('one verdict, first match, that says whether the owner has to step in: the 
     [view(), 'answer', 'warning', 'needs your answer (1)'],
     [calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }), 'ciFixing', 'warning', 'CI red — the phase fixes it itself (attempt 1 of 2), nothing needed from you'],
     [calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 0, rounds: 2 } }), 'ciFixing', 'warning', 'CI red — the phase fixes it itself (attempt 1 of 2), nothing needed from you'],
-    [calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 3, rounds: 2 } }), 'ciRed', 'error', 'CI red — needs your answer'],
-    [calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 0, rounds: 0 } }), 'ciRed', 'error', 'CI red — needs your answer'],
-    [calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: undefined }), 'ciRed', 'error', 'CI red — needs your answer'],
+    // the last attempt or beyond (review n1): never "nothing needed from you"
+    [calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 2, rounds: 2 } }), 'ciFixing', 'warning', "CI red — the phase's last attempt; if it fails, it will ask you"],
+    [calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 3, rounds: 2 } }), 'ciFixing', 'warning', "CI red — the phase's last attempt; if it fails, it will ask you"],
+    // nothing to answer (review n7): a decision, not an answer
+    [calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 0, rounds: 0 } }), 'ciRed', 'error', 'CI red — needs your decision'],
+    [calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: undefined }), 'ciRed', 'error', 'CI red — needs your decision'],
+    [view({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 0, rounds: 0 } }), 'ciRed', 'error', 'CI red — needs your answer'],
+    // a lane the supervisor holds until full mode is back (holdDowngradedLane, review n8)
+    [calm({}, { status: 'paused-context', held: 'fullMode' }), 'fullMode', 'error', 'waits for you: its final checks need full mode'],
     [view({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' } }), 'answer', 'warning', 'needs your answer (1)'],
     [view({}, { status: 'needs-owner', reason: 'owner question 32-09-t3' }), 'needsOwner', 'error', 'stopped — waits for your answer'],
     [calm({}, { status: 'needs-owner', reason: 'a live check' }), 'needsOwner', 'error', 'stopped — waits for your decision'],
@@ -180,7 +186,15 @@ test('one verdict, first match, that says whether the owner has to step in: the 
   assert.equal(textNode(render(view({}, { status: 'needs-owner', push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' } })), 'CI red').props.color, 'error');
   assert.equal(paneLines(render(calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }))).filter((l) => l.includes('CI red')).length, 1, 'said once: the verdict says it');
   assert.equal(verdict(view(RU, { status: 'needs-owner' })).text, 'остановилась — ждёт вашего ответа');
-  assert.equal(verdict(calm(RU, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 2, rounds: 2 } })).text, 'CI красный — фаза чинит сама (попытка 2 из 2), от вас ничего не нужно');
+  assert.equal(verdict(calm(RU, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 2, rounds: 2 } })).text, 'CI красный — последняя попытка фазы; если не выйдет, она спросит вас');
+  assert.equal(verdict(calm(RU, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 1, rounds: 2 } })).text, 'CI красный — фаза чинит сама (попытка 1 из 2), от вас ничего не нужно');
+  assert.equal(verdict(calm(RU, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 0, rounds: 0 } })).text, 'CI красный — нужно ваше решение');
+  // a finished phase with a red CI and nothing to answer
+  assert.equal(lines(calm(RU, { status: 'done', step: null, push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' } }))[0], 'Фаза 32 готова · 5 из 9 планов готово · заняла 1 ч 11 мин · CI красный — нужно ваше решение');
+  const held = calm(RU, { status: 'paused-context', held: 'fullMode' });
+  assert.equal(lines(held)[0], 'Фаза 32 ждёт вас: для финальных проверок нужен полный режим · шаг: выполнение планов · 5 из 9 планов готово · 1 ч 11 мин');
+  assert.equal(bandLine(held), 'turbo · фаза 32 ждёт вас: для финальных проверок нужен полный режим · CI ✓');
+  assert.equal(textNode(render(held), 'Фаза 32').children[0].props.color, 'error');
   assert.equal(verdict(calm(RU, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, status: 'needs-owner' })).text, 'остановилась — ждёт вашего решения', 'stopped on red CI: the phase waits, red');
   assert.equal(verdict(calm({ ...RU, supervisor: STOPPED_SUP, attended: ['32'] })).text, 'фаза 32 у вас в сессии — новые фазы ждут');
   assert.deepEqual(lines(calm({ supervisor: { running: false, finished: true }, lanes: [] }, {})).slice(0, 1), ['Run — all phases done']);
@@ -425,12 +439,13 @@ test('bandLine is one line in words: each phase (running: step and plans done; o
   assert.equal(bandLine(view(RU, { status: 'needs-owner' })), 'turbo · фаза 32 остановилась — ждёт вашего ответа · ❓ 1 вопрос ждёт вас · CI ✓');
   assert.equal(bandLine(calm(RU, { status: 'done', step: null })), 'turbo · фаза 32 готова · CI ✓');
   assert.equal(bandLine(calm({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } })), 'turbo · phase 32: running plans 5/9 · CI red — the phase fixes it itself (attempt 1 of 2), nothing needed from you', 'CI red in words once');
-  assert.equal(bandLine(calm({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 3, rounds: 2 } })), 'turbo · phase 32: running plans 5/9 · CI red — needs your answer');
+  assert.equal(bandLine(calm({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 3, rounds: 2 } })), "turbo · phase 32: running plans 5/9 · CI red — the phase's last attempt; if it fails, it will ask you");
+  assert.equal(bandLine(calm({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 0, rounds: 0 } })), 'turbo · phase 32: running plans 5/9 · CI red — needs your decision');
   assert.equal(bandLine(view({}, { push: { outcome: 'refused', sha: null, ci: null } })), 'turbo · phase 32: running plans 5/9 · ❓ 1 question waits for you · push ✗');
   assert.equal(bandLine(view(RU, { push: { outcome: 'refused', sha: null, ci: null } })), 'turbo · фаза 32: выполняются планы 5/9 · ❓ 1 вопрос ждёт вас · отправка ✗');
   assert.equal(bandLine(view({}, { push: null })), 'turbo · phase 32: running plans 5/9 · ❓ 1 question waits for you');
   // S2 keeps the latest request apart from the last push: a refused request beside the last push's red CI shows both
-  assert.equal(bandLine(view({}, { push: { outcome: 'refused', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 9, rounds: 2 } })), 'turbo · phase 32: running plans 5/9 · CI red — needs your answer · ❓ 1 question waits for you · push ✗');
+  assert.equal(bandLine(view({}, { push: { outcome: 'refused', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 0, rounds: 0 } })), 'turbo · phase 32: running plans 5/9 · CI red — needs your answer · ❓ 1 question waits for you · push ✗');
   assert.equal(bandLine(view({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'cancelled' } })), 'turbo · phase 32: running plans 5/9 · ❓ 1 question waits for you · CI ?');
   assert.equal(bandLine(calm({ supervisor: { running: false, finished: true }, lanes: [] })), 'turbo · all phases done');
   assert.equal(bandLine({ v: 1, at: AT, supervisor: null, range: null, lanes: [], questions: [], commits: [] }), null);
@@ -459,6 +474,8 @@ test('toastsFor: nothing on the first view; a new question, phase done, red CI (
   assert.deepEqual(toastsFor(ru(), ru({}, { status: 'needs-owner' })), ['Фаза 32 остановилась — нужен ваш ответ']);
   assert.deepEqual(toastsFor(ru(), ru({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 1, rounds: 2 } })), ['CI красный: фаза 32 — чинит сама (попытка 1 из 2)']);
   assert.deepEqual(toastsFor(ru(), ru({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 0, rounds: 0 } })), ['CI красный: фаза 32 — нужен ваш ответ']);
+  assert.deepEqual(toastsFor(ru(), ru({ questions: [] }, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 0, rounds: 0 } })), ['CI красный: фаза 32 — нужно ваше решение']);
+  assert.deepEqual(toastsFor(ru(), ru({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 2, rounds: 2 } })), ['CI красный: фаза 32 — последняя попытка; если не выйдет, спросит вас']);
   assert.deepEqual(toastsFor(ru(), ru({ supervisor: { ...v1.supervisor, running: false, halted: true } })), ['Супервизор остановился']);
 });
 

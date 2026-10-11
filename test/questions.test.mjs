@@ -51,11 +51,11 @@ test('a human-verify question: ahead "accept if the checks pass" or "stop and sh
   assert.deepEqual([stop.condition, stop.allowOther], [null, true]);
 });
 
-test('a human-action question: ahead only "I will do it when the lane asks", without own words; Done at the stop; class owner-only', () => {
+test('a human-action question: ahead only "I will do it when the phase asks", without own words; Done at the stop; class owner-only', () => {
   const ahead = buildQuestion(cpOf(ACTION_PLAN), { phase: '32', plan: '32-11' });
   assert.equal(ahead.question, 'Action: Complete the email verification for the mail service account');
   assert.equal(ahead.context, 'I created the account and asked for the verification mail. Click the link in it. The mail API key works: the test send succeeds');
-  assert.deepEqual(ahead.options.map((o) => [o.label, o.signal, o.defer]), [['I will do it when the lane asks', null, true]]);
+  assert.deepEqual(ahead.options.map((o) => [o.label, o.signal, o.defer]), [['I will do it when the phase asks', null, true]]);
   assert.deepEqual([ahead.allowOther, ahead.condition, ahead.class, ahead.gate], [false, null, 'owner-only', 'blocking-human']);
   const stop = buildQuestion(cpOf(ACTION_PLAN), { phase: '32', plan: '32-11', stopped: true });
   assert.deepEqual(stop.options.map((o) => [o.label, o.signal]), [['Done', 'done']]);
@@ -64,7 +64,7 @@ test('a human-action question: ahead only "I will do it when the lane asks", wit
 
 test('Russian labels with lang ru; long texts cut after masking; secrets masked; header at most 12 characters', () => {
   const ru = buildQuestion(cpOf(VERIFY_PLAN), { phase: '32', plan: '32-10', lang: 'ru' });
-  assert.deepEqual(ru.options.map((o) => o.label), ['Принять при условии', 'Остановиться и показать мне']);
+  assert.deepEqual(ru.options.map((o) => o.label), ['Принять, если проверки прошли', 'Остановиться и показать мне']);
   assert.match(ru.question, /^Проверка: /);
   assert.equal(ru.condition, 'все автоматические проверки из how-to-verify прошли, и доказательства приложены');
   const token = `ghp_${'a1B2'.repeat(9)}`;

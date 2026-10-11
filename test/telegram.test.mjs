@@ -260,7 +260,7 @@ test('a stranger\'s press, an unknown nonce, a button of an older revision and a
   const short = shortId('3', '03-01-t2');
   bot.updates.push(press(`t3:${short}:1:00000001`, 1, 999), press(`t3:${short}:1:0badc0de`, 2));
   await telegramTick(ctx, NOW, { laneRunning: true });
-  assert.ok(logs.includes('telegram: a button press from another user was ignored'));
+  assert.ok(logs.includes('telegram: ignored 1 update from another user or chat'), logs.join('\n'));
   assert.ok(!logs.join('\n').includes('999') && !logs.join('\n').includes(short), 'nothing of a stranger\'s update is logged');
   // the lane reopens the question at a stop (rev 2) between the last sync and the owner's press of an old button
   bot.onPoll = () => writeQuestions(root, '3', [Q('03-01-t2', { rev: 2, stopped: true })]);
@@ -302,8 +302,7 @@ test('Other asks for own words with force_reply; the reply is recorded; too long
   assert.equal(tooLong.text, 'Not recorded: longer than 2000 characters. Reply again, shorter.');
   assert.deepEqual(tooLong.reply_parameters, { message_id: 502, allow_sending_without_reply: true });
   assert.equal(secret.text, 'Not recorded: the answer looks like it contains a secret (github token). Delete your message from this chat and answer without it.');
-  assert.ok(logs.includes('telegram: a message from another user was ignored'));
-  assert.ok(logs.includes('telegram: a message from another chat was ignored'), 'the owner in a group is no answer either');
+  assert.ok(logs.includes('telegram: ignored 2 updates from another user or chat'), `a stranger, and the owner in a group: ${logs.join('\n')}`);
   assert.ok(!logs.join('\n').includes(token) && !JSON.stringify(bot.calls.filter((c) => c.method !== 'getUpdates')).includes(token));
   bot.updates.push(reply('Files, but keep a backup', 7, 102));
   await telegramTick(ctx, NOW, { laneRunning: true });
@@ -624,4 +623,23 @@ test('end to end through fetch: the question goes out, the owner\'s press is rec
   const secretPart = TOKEN.split(':')[1];
   assert.ok(!logs.join('\n').includes(secretPart), 'no log line holds the token');
   assert.ok(!fs.readFileSync(stateOn(root), 'utf8').includes(secretPart), 'nor the state file');
+});
+
+test('a burst of strangers\' updates is one log line with their count, per batch (S1b review F9)', async () => {
+  const { root, ctx, bot, logs } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  for (let i = 1; i <= 50; i++) bot.updates.push(i % 2 ? press(`t3:${shortId('3', '03-01-t2')}:1:00000001`, i, 900 + i) : reply('hi', i, 101, 900 + i));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(logs, ['telegram: ignored 50 updates from another user or chat']);
+  assert.deepEqual(pressReplies(bot), [], 'no reply to them');
+  assert.equal(readTelegramState(root).offset, 51);
+});
+
+test('ownerTick: a failed notification step does not skip Telegram; its error is still reported (S1b review F9)', async () => {
+  const { root, ctx, bot } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  ctx.deps.notify = async () => { throw new Error('notifier down'); };
+  await assert.rejects(ownerTick(ctx, NOW, { lane: null }), /notifier down/);
+  assert.equal(bot.sent().length, 1);
 });

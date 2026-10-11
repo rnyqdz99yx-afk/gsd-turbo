@@ -184,3 +184,10 @@ test('turbo-phase skill: gap rounds (S4) — execute and uat loop on phase-step 
   const loop = s.slice(s.indexOf('## The step loop'), s.indexOf('### Stopping early'));
   assert.ok(loop.includes('(the gap-closure rounds of execute and uat, fix iterations, final-gate rounds)'));
 });
+
+test('turbo-phase skill: a uat step that restarts with gap plans not run yet resumes their round first (F2)', () => {
+  const uat = section(fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8'), 'uat');
+  const zero = uat.indexOf('\n0. ');
+  assert.ok(zero > 0 && zero < uat.indexOf('\n1. '), 'point 0 before point 1');
+  for (const n of ['a plan without its SUMMARY', 'turbo-run phase-step N --attempt uat', 'go (round <n> resumed: …)', 'without counting it again']) assert.ok(uat.includes(n), n);
+});

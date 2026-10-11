@@ -175,3 +175,38 @@ test('gap rounds: the spec\'s case with block scalars — A fixed, C broke, the 
   assert.equal(r.go, false);
   assert.match(r.reason, /^no result to compare: 03-VERIFICATION\.md: a gap cannot be read \(.+\)$/);
 });
+
+test('a uat round whose gap plans did not run yet is resumed, not counted again; once they ran, the next round compares (F2)', async () => {
+  const p = project();
+  p.uat(UAT.replace('result: pass', 'result: issue'));
+  for (const f of ['03-01-PLAN.md', '03-01-SUMMARY.md', '03-02-PLAN.md']) fs.writeFileSync(path.join(p.dir, f), 'x'); // 03-02: verify-work's gap plan
+  let r = round(p.root, 'uat', 3);
+  assert.deepEqual([r.n, r.go, r.resumed], [1, true, []]);
+  // a context pause before the gap plan ran: the next session reaches --attempt uat with the same UAT rows
+  r = round(p.root, 'uat', 3);
+  assert.deepEqual([r.n, r.go, r.reason, r.resumed], [1, true, '', ['03-02']]);
+  assert.equal(readProgress(p.root, '3').attempts.uat, 1, 'not counted again');
+  const lines = [];
+  assert.equal(await runPhaseCommand('phase-step', ['3', '--attempt', 'uat'], { root: p.root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) }), 0);
+  assert.equal(lines.at(-1), 'attempt uat 1 of 1: go (round 1 resumed: its gap plans 03-02 have no SUMMARY yet)');
+  fs.writeFileSync(path.join(p.dir, '03-02-SUMMARY.md'), 'x');
+  r = round(p.root, 'uat', 3);
+  assert.deepEqual([r.n, r.go, r.reason], [2, false, 'no new evidence: round 1 left the same 5 failing item(s) in 03-UAT.md']);
+
+  // the owner's resume clears the count: a gap plan still open then starts a fresh round 1, counted
+  const q = project();
+  q.uat(UAT);
+  fs.writeFileSync(path.join(q.dir, '03-02-PLAN.md'), 'x');
+  assert.equal(round(q.root, 'uat', 3).go, true);
+  clearAttempts(q.root, '3');
+  r = round(q.root, 'uat', 3);
+  assert.deepEqual([r.n, r.go, r.resumed], [1, true, []]);
+  assert.equal(readProgress(q.root, '3').attempts.uat, 1);
+  // a round that stopped resumes nothing
+  const z = project();
+  z.uat(UAT);
+  fs.writeFileSync(path.join(z.dir, '03-02-PLAN.md'), 'x');
+  assert.equal(round(z.root, 'uat', 0).go, false);
+  r = round(z.root, 'uat', 0);
+  assert.deepEqual([r.n, r.go], [2, false]);
+});

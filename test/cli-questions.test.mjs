@@ -184,3 +184,12 @@ test('turbo-run questions --stop at a checkpoint of a plan whose name cannot mak
   assert.equal(r.code, 1);
   assert.match(r.text, /^ERR turbo-run questions: not a question id: 32-12 draft-t2: .*stop for the owner.*never rename the plan file/);
 });
+
+test('during an attend sitting turbo-run answer commits the answer itself, also under a supervisor started meanwhile whose lane is the attended phase (S4 N2)', async () => {
+  const root = project(tmpGitRepo());
+  withLane(root);
+  writeJsonAtomic(path.join(root, '.planning', 'turbo', 'run', 'p32-attend.json'), { phase: '32', at: '2026-01-01T10:00:00.000Z', sessionId: '1a2b3c4d' });
+  await run(root, ['questions', '32']);
+  const r = await run(root, ['answer', '32', '32-09-t2', '--option', '1', '--by', 'session']);
+  assert.match(r.text, /^answered 32-09-t2: Clerk, session, \S+ · committed$/);
+});

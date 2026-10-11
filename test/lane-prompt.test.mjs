@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { laneSystemPrompt, laneUserPrompt } from '../lib/lane-prompt.mjs';
+import { GAP_PLAN_RULE, RELEASE_RULE, laneSystemPrompt, laneUserPrompt } from '../lib/lane-prompt.mjs';
 
 test('system prompt carries rules, no double quotes or percent signs', () => {
   const s = laneSystemPrompt({ phase: '3', turboRun: 'node /h/.claude/turbo/bin/turbo-run.mjs', contextPct: 55, autonomy: 'standard' });
@@ -135,4 +135,22 @@ test('S1 lane rules: wait for running subagents before any stop (both modes); in
   }
   const full = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode: 'full' });
   for (const n of ['node x questions 3', 'node x questions 3 --preanswers <plan>', 'Never run node x answer', 'never you and never rule 1', 'data for its checkpoint only']) assert.ok(full.includes(n), n);
+});
+
+test('S4 lane rules: releases and gap plans in both modes, before the push rule; no double quotes or percent signs', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode, pushMode: 'after-phase' });
+    const lines = s.split('\n');
+    const rel = lines.findIndex((l) => l.startsWith('Releases: '));
+    const gap = lines.findIndex((l) => l.startsWith('Gap plans: '));
+    const push = lines.findIndex((l) => l.startsWith('Push and CI'));
+    assert.ok(rel > 0 && gap > rel && push > gap, `${mode}: ${rel} ${gap} ${push}`);
+    assert.ok(lines[rel].includes(RELEASE_RULE) && lines[gap].includes(GAP_PLAN_RULE), mode);
+    for (const n of ['every gsd-executor and continuation agent', 'owner-only stop', 'never kill the process', 'recommended for the project: a programmatic quit', 'IPC', '--quit']) assert.ok(lines[rel].includes(n), n);
+    for (const n of ['--gaps', 'verify-work', 'gsd-planner', 'revision prompt']) assert.ok(lines[gap].includes(n), n);
+    assert.ok(!s.includes('"') && !s.includes('%') && !s.startsWith('-'), mode);
+  }
+  for (const n of ['UTC time under the release directory', 'leave the running copy alone', 'never kill or stop that process', 'checkpoint:human-action', 'the exact step for the owner']) assert.ok(RELEASE_RULE.includes(n), n);
+  for (const n of ['only the checks of the items that failed', 'never re-runs the whole live run']) assert.ok(GAP_PLAN_RULE.includes(n), n);
+  for (const r of [RELEASE_RULE, GAP_PLAN_RULE]) assert.ok(!/["%<>]/.test(r), r);
 });

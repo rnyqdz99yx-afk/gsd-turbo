@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { RELEASE_RULE } from '../lib/lane-prompt.mjs';
 
 test('turbo-autonomous skill frontmatter and required steps', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
@@ -49,7 +50,7 @@ test('turbo-autonomous skill never sleeps and covers "no lane yet" and "not runn
 
 test('turbo-autonomous skill answers the open questions (S1): AskUserQuestion in batches of 4, recommended first, turbo-run answer --by session --rev; at start and while a run goes', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
-  assert.match(s, /^allowed-tools: \[Bash, Read, AskUserQuestion\]$/m);
+  assert.match(s, /^allowed-tools: \[Bash, Read, AskUserQuestion, Skill\]$/m);
   assert.match(s, /^argument-hint: ".*\| answer"$/m);
   const needles = [
     '## If the arguments are `answer`', '## Answer the open questions', 'turbo-run.mjs" questions --open --json', 'up to 4 questions per call', ' (Recommended)', 'Not now',
@@ -61,4 +62,51 @@ test('turbo-autonomous skill answers the open questions (S1): AskUserQuestion in
   assert.ok(start.includes('**Answer the open questions**'), 'the start flow asks the open questions');
   const running = start.slice(start.indexOf('supervisor: running'));
   assert.ok(running.indexOf('**Answer the open questions**') < running.indexOf('**Compatibility.**'), 'also while a run goes');
+});
+
+test('turbo-autonomous attend <phase> (S4): take over the lane, questions up front, GSD execute-phase one plan at a time in this checkout, hand back', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  assert.match(s, /^argument-hint: ".*\| resume <phase> \| attend <phase> \| answer"$/m);
+  const at = s.indexOf('## If the arguments are `attend <phase>`');
+  assert.ok(at > s.indexOf('## If the arguments are `answer`') && at < s.indexOf('## Otherwise'), 'its own section before the start flow');
+  const a = s.slice(at, s.indexOf('## Otherwise'));
+  const order = [
+    'turbo-run.mjs" attend <phase>', 'turbo-run.mjs" doctor', 'git worktree list --porcelain', 'turbo-run.mjs" questions <N>',
+    '**Answer the open questions**', 'turbo-run.mjs" gates off <N>', 'Skill(skill="gsd-execute-phase", args="<N> --no-transition")',
+    'turbo-run.mjs" state-sync <N>', 'turbo-run.mjs" attend <N> --done',
+  ];
+  let last = -1;
+  for (const n of order) {
+    const i = a.indexOf(n);
+    assert.ok(i > last, `in order: ${n}`);
+    last = i;
+  }
+  const needles = [
+    'isolation="worktree"', 'query dispatch-isolation --raw --phase', '--plan <the plan id> --force-isolation none', 'before each retry',
+    'questions <N> --preanswers <plan id>', '`human-action`', RELEASE_RULE, 'never kill or stop that process', '`gap_rounds`',
+    'resume <N> --start', 'Commit nothing and remove no worktree on your own',
+  ];
+  for (const n of needles) assert.ok(a.includes(n), n);
+});
+
+test('turbo-autonomous attend: GSD\'s gates follow the gates: line of turbo-run attend, never the session\'s judgment (F1)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const a = s.slice(s.indexOf('## If the arguments are `attend <phase>`'), s.indexOf('## Otherwise'));
+  const five = a.slice(a.indexOf('5. **GSD\'s gates.**'), a.indexOf('6. **Execute.**'));
+  for (const n of ['`gates: turn off`', '`gates: keep on`', 'gates off <N>', 'never decide this yourself']) assert.ok(five.includes(n), n);
+  // keep on: the idempotent restore puts back gates an earlier crash left off
+  const keep = five.slice(five.indexOf('`gates: keep on`'));
+  for (const n of ['turbo-run.mjs" gates restore <N>', '`nothing to do`', 'an earlier crash left them off']) assert.ok(keep.includes(n), `keep on: ${n}`);
+  assert.ok(five.indexOf('`gates: turn off`') < five.indexOf('gates off <N>') && five.indexOf('gates off <N>') < five.indexOf('`gates: keep on`'), 'gates off only under turn off');
+  assert.ok(!a.includes('as a lane does before it executes; the lane runs those gates in parallel after the hand-back'), 'no unconditional claim');
+});
+
+test('turbo-autonomous start flow: an attended: line means no lane runs; the user hears how to hand the phase back (F5)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const start = s.slice(s.indexOf('## Otherwise'), s.indexOf('## Answer the open questions'));
+  const one = start.slice(start.indexOf('1. **Already running?**'), start.indexOf('2. **Compatibility.**'));
+  const five = start.slice(start.indexOf('5. **Start.**'), start.indexOf('6. **Open questions.**'));
+  for (const part of [one, five]) {
+    for (const n of ['`attended:`', '/turbo-autonomous attend <N>', 'turbo-run attend <N> --done']) assert.ok(part.includes(n), n);
+  }
 });

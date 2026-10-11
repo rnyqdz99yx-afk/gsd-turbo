@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { STEPS } from '../lib/phase-progress.mjs';
+import { GAP_PLAN_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
 
 test('turbo-phase skill: frontmatter, every step in order, the commands it drives', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
@@ -151,4 +152,42 @@ test('turbo-phase skill: owner questions (S1) — list and classify, pre-answers
   assert.match(loop, /^4\. \*\*Commit the answers\*\* \(section \*\*Owner questions\*\*\), then `turbo-run phase-step N --done/m);
   assert.match(stop, /^0\. .*Then \*\*Commit the answers\*\*/m);
   assert.match(s, /\*\*Commit the answers\.\*\* .*Commit the whole directory with `gsd-tools commit "docs\(phase-N\): owner answers" --files \.planning\/turbo\/answers\/` before each `turbo-run phase-step N --done` and in \*\*Stopping early\*\*/);
+});
+
+test('turbo-phase skill: the release rule and the gap-plan rule (S4), verbatim as the lanes get them', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const conv = s.slice(s.indexOf('\n## Conventions\n'), s.indexOf('\n## The step loop\n')).split('\n');
+  const rel = conv.find((l) => l.startsWith('- Releases (spec §8): '));
+  const gap = conv.find((l) => l.startsWith('- Gap plans (spec §8): '));
+  assert.ok(rel && rel.includes(RELEASE_RULE), 'release rule verbatim');
+  assert.ok(gap && gap.includes(GAP_PLAN_RULE), 'gap-plan rule verbatim');
+  for (const n of ['continuation agent', '**Pre-answers**', '**At a checkpoint**', '--kind human-action', 'recommended for the project', 'Never kill the process']) assert.ok(rel.includes(n), n);
+  for (const n of ['gsd-plan-phase --gaps', 'verify-work', 'gsd-planner', 'revision prompt']) assert.ok(gap.includes(n), n);
+});
+
+test('turbo-phase skill: gap rounds (S4) — execute and uat loop on phase-step --attempt within gap_rounds, each round with new evidence; final-gate keeps one round', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  for (const step of ['execute', 'uat']) {
+    const body = section(s, step);
+    for (const n of [`turbo-run phase-step N --attempt ${step}`, `attempt ${step} <n> of <max>: go`, `attempt ${step} <n> of <max>: stop: <reason>`, '`gap_rounds`', 'new evidence', '**Gap plans**', 'args="N --gaps-only --no-transition"']) {
+      assert.ok(body.includes(n), `${step}: ${n}`);
+    }
+    assert.ok(!body.includes('after one gap-closure round'), step);
+    assert.ok(!body.includes('`n` above 1'), step);
+  }
+  assert.match(section(s, 'execute'), /then run point 2 again/);
+  assert.match(section(s, 'uat'), /this point runs again/);
+  const fg = section(s, 'final-gate');
+  assert.match(fg, /one gap-closure round, outside `gap_rounds`/);
+  assert.match(fg, /no `--attempt execute` here/);
+  assert.ok(!fg.includes('as in point 2 of step **execute**'), 'execute point 2 is a loop now');
+  const loop = s.slice(s.indexOf('## The step loop'), s.indexOf('### Stopping early'));
+  assert.ok(loop.includes('(the gap-closure rounds of execute and uat, fix iterations, final-gate rounds)'));
+});
+
+test('turbo-phase skill: a uat step that restarts with gap plans not run yet resumes their round first (F2)', () => {
+  const uat = section(fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8'), 'uat');
+  const zero = uat.indexOf('\n0. ');
+  assert.ok(zero > 0 && zero < uat.indexOf('\n1. '), 'point 0 before point 1');
+  for (const n of ['a plan without its SUMMARY', 'turbo-run phase-step N --attempt uat', 'go (round <n> resumed: …)', 'without counting it again']) assert.ok(uat.includes(n), n);
 });

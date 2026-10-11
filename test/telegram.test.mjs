@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { clearAttend, writeAttend } from '../lib/attend.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -664,4 +665,21 @@ test('an Other prompt whose question a button of the same message answered is cl
   ]);
   assert.deepEqual(readTelegramState(root).replies, {});
   assert.equal(polls(bot).length, polled, 'no question open: no poll');
+});
+
+test('while a phase is attended the questions still go out, but no Telegram answer is taken: a press waits in Telegram until the hand-back (S4 N2)', async () => {
+  const { root, ctx, bot, logs } = project();
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  writeAttend(root, '3', { now: NOW });
+  bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:2:00000002`, 41));
+  await ownerTick(ctx, NOW, { lane: { phase: '3' } });
+  await ownerTick(ctx, NOW, { lane: { phase: '3' } });
+  assert.equal(bot.sent().length, 1, 'the question still goes out');
+  assert.equal(polls(bot).length, 0, 'no update taken');
+  assert.deepEqual(readAnswers(root, '3'), []);
+  assert.equal(bot.updates.length, 1, 'the press waits in Telegram');
+  assert.equal(logs.filter((l) => l.startsWith('telegram: answers wait while a phase is attended')).length, 1, logs.join('\n'));
+  clearAttend(root, '3');
+  await ownerTick(ctx, NOW, { lane: { phase: '3' } });
+  assert.deepEqual(readAnswers(root, '3').map((r) => [r.id, r.option, r.by]), [['03-01-t2', 2, 'telegram']]);
 });

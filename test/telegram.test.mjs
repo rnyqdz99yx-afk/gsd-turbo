@@ -56,7 +56,12 @@ test('the bot posts JSON to the method URL; a Telegram error or a network failur
   await assert.rejects(garbled('getUpdates', {}), (e) => /telegram getUpdates failed: HTTP 502/.test(e.message) && e.transient === true);
   const busy = createBot({ token: TOKEN, fetchImpl: async () => ({ status: 429, json: async () => ({ ok: false, error_code: 429, description: 'Too Many Requests: retry after 5' }) }) });
   await assert.rejects(busy('sendMessage', {}), (e) => e.transient === true);
-  const slow = createBot({ token: TOKEN, timeoutMs: 1, fetchImpl: (url, init) => new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason))) });
+  // a pending request holds the event loop the way a real socket does: AbortSignal.timeout's own timer is unref'd, so a
+  // fake that waits on nothing else lets the loop drain before the abort (the Node 22 test runner cancels the file)
+  const slow = createBot({ token: TOKEN, timeoutMs: 1, fetchImpl: (url, init) => new Promise((resolve, reject) => {
+    const socket = setTimeout(resolve, 60000);
+    init.signal.addEventListener('abort', () => { clearTimeout(socket); reject(init.signal.reason); });
+  }) });
   await assert.rejects(slow('getUpdates', {}), (e) => e.message === 'telegram getUpdates failed: timed out' && e.transient === true);
 });
 

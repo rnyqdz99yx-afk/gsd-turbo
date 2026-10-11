@@ -1041,3 +1041,90 @@ test('init: an existing config only warns and prints the entries to add; a valid
   });
   assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set'));
 });
+
+// spec §8 (S4): phase 4 with plan 04-01 done and 04-02 open, a live supervisor whose lane is lanePhase, and a
+// question the lane stopped at
+function attendProject(t, { lanePhase = '4' } = {}) {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }] });
+  const dir = path.join(p.root, '.planning', 'phases', '04-four');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of ['04-01-PLAN.md', '04-01-SUMMARY.md', '04-02-PLAN.md']) fs.writeFileSync(path.join(dir, f), '# plan\n');
+  const child = sleeper(t);
+  writeSup(p.root, { pid: child.pid, updatedAt: ago(0), lane: { phase: lanePhase, sessionId: 'abc123' } });
+  p.setClaude({ agents: [{ id: 'abc123', name: laneSessionName(p.root, lanePhase), cwd: p.root, state: 'blocked' }] });
+  fs.writeFileSync(path.join(runDirOf(p.root), 'p4-questions.json'), JSON.stringify([
+    { id: '04-02-t1', phase: '4', plan: '04-02', task: '1', kind: 'human-action', options: [], stopped: true, agentId: 'a0123456789abcdef', state: 'open', rev: 2 },
+  ]));
+  return { p, child, env: { ...p.env, TURBO_LANE: '' } };
+}
+
+test('attend N stops the supervisor and the lane session, marks the phase, releases its stops and names the open plans; status names the mark (S4)', async (t) => {
+  const { p, child, env } = attendProject(t);
+  const r = await runAsync(['attend', '4'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(await exited(child), 'the supervisor is stopped');
+  assert.equal(readSup(p.root).pid, null);
+  assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop' || a[0] === 'rm'), [['stop', 'abc123']], 'claude stop keeps the conversation; nothing is removed');
+  assert.match(r.stdout, /^phase 4: attended in this session; no lane starts, relaunches or wakes until turbo-run attend 4 --done$/m);
+  assert.match(r.stdout, /^open plans: 04-02$/m);
+  assert.match(r.stdout, /^released stops: 04-02-t1 \(asked ahead again\)$/m);
+  const mark = readJsonFile(path.join(runDirOf(p.root), 'p4-attend.json'));
+  assert.deepEqual([mark.phase, mark.sessionId, typeof mark.at], ['4', 'abc123', 'string']);
+  assert.deepEqual(readJsonFile(path.join(runDirOf(p.root), 'p4-questions.json')).map((q) => [q.stopped, q.agentId]), [[false, null]]);
+  assert.match(run(['status'], p.root, env), /^attended: phase 4 since \S+ in the owner's session \(hand it back: turbo-run attend 4 --done\)$/m);
+  assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, env)).attended.map((a) => a.phase), ['4']);
+});
+
+test('attend refuses, changing nothing, for a phase that is not the lane, a phase with every plan summarized, and inside a lane (S4)', async (t) => {
+  const other = attendProject(t, { lanePhase: '5' });
+  let r = await runAsync(['attend', '4'], other.p.root, other.env);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /phase 4 is not the supervisor's lane \(that is phase 5\)/);
+  assert.equal(await exited(other.child, 300), false, 'the supervisor still runs');
+  assert.equal(fs.existsSync(path.join(runDirOf(other.p.root), 'p4-attend.json')), false);
+  assert.deepEqual(other.p.claudeCalls(), []);
+
+  const done = attendProject(t);
+  fs.writeFileSync(path.join(done.p.root, '.planning', 'phases', '04-four', '04-02-SUMMARY.md'), '# done\n');
+  r = await runAsync(['attend', '4'], done.p.root, done.env);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /phase 4 has no plan without a summary: nothing to attend/);
+  assert.equal(await exited(done.child, 300), false);
+  for (const args of [['attend', '4'], ['attend', '4', '--done']]) {
+    r = await runAsync(args, done.p.root, { ...done.env, TURBO_LANE: '1' });
+    assert.equal(r.code, 1, args.join(' '));
+    assert.match(r.stderr, /refused: attend is the owner's: a lane never runs it/);
+  }
+  assert.equal(fs.existsSync(path.join(runDirOf(done.p.root), 'p4-attend.json')), false);
+});
+
+test('attend N --done clears the mark and does resume N --start; a plain resume N clears the mark too (S4)', async (t) => {
+  const root = plainProject();
+  writeSup(root, { pid: null, lane: { phase: '4', sessionId: 'abc' } });
+  fs.writeFileSync(path.join(runDirOf(root), 'p4-attend.json'), '{}');
+  assert.match(run(['resume', '4'], root), /phase 4 cleared; run: turbo-run start/);
+  assert.equal(fs.existsSync(path.join(runDirOf(root), 'p4-attend.json')), false);
+
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: 'old111', restarts: 0, notified: {}, launchedAt: ago(5), fingerprint: 'x' } });
+  fs.writeFileSync(path.join(runDirOf(p.root), 'p4-attend.json'), JSON.stringify({ phase: '4', at: ago(30), sessionId: 'old111' }));
+  const r = await runAsync(['attend', '4', '--done'], p.root, { ...p.env, TURBO_LANE: '' });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^phase 4 cleared$/m);
+  assert.match(r.stdout, /started supervisor pid \d+ \(mode full\)/);
+  assert.equal(fs.existsSync(path.join(runDirOf(p.root), 'p4-attend.json')), false);
+  const sup = await waitFor(() => { const s = readSup(p.root); return s?.pid && s.lane?.sessionId === 'abcdef123456' ? s : null; }, 15000);
+  assert.ok(sup, logOf(p.root));
+  assert.ok(p.claudeCalls().some((a) => a[0] === 'rm' && a[1] === 'old111'), 'the stopped lane session goes; a new one resumes the phase');
+  const stop = await runAsync(['stop'], p.root, p.env);
+  assert.equal(stop.code, 0, stop.stderr);
+});
+
+test('attend <N> --done --project <dir>: --done takes no value in attend, so --project after it still names the project (S4)', async () => {
+  const root = plainProject();
+  const elsewhere = tmpDir('cli-elsewhere');
+  const r = await runAsync(['attend', '4', '--done', '--project', root], elsewhere, { ...process.env, TURBO_LANE: '1' });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /refused: attend is the owner's: a lane never runs it/, 'the project was found: the lane refusal comes after it');
+});

@@ -26,9 +26,10 @@ import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
+import { attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync|questions|answer|agent-tail> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync|questions|answer|agent-tail> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
@@ -546,9 +547,66 @@ function readView(root) {
   return buildView({ root, sup, running: supAlive(sup, config.poll_seconds), config });
 }
 
+// The owner's resume, and attend N --done (spec §8): clears the phase's lane record and its attend mark (the owner
+// hands the phase back), gives turbo-phase's bounded rounds a fresh budget, arms a forced relaunch of its lane, and
+// with andStart starts the supervisor.
+async function resumePhase(root, id, andStart) {
+  if (andStart) {
+    // start would keep this range and never resume a phase outside it: refuse before anything changes
+    const prev = readJson(supPath(root), null);
+    const kept = keptRange(prev);
+    if (kept && !inRange(id, kept)) {
+      const stopFirst = supAlive(prev, pollOf(root)) ? 'turbo-run stop, then ' : '';
+      die(`phase ${id} is outside the range ${rangeLabel(kept)} that start keeps; nothing was stopped, removed or started. To run phase ${id}, change the range: ${stopFirst}turbo-run start --only ${id} (or --from <phase>, or --all)`);
+    }
+  }
+  // a live daemon (for example one waiting for the owner) rewrites supervisor.json every
+  // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
+  stopDaemon(root, readJson(supPath(root), null));
+  fs.rmSync(path.join(runDir(root), `p${id}.json`), { force: true });
+  clearAttend(root, id);
+  // the owner's resume gives turbo-phase's bounded rounds a fresh budget; the steps done stay done
+  clearAttempts(root, id);
+  const sup = readJson(supPath(root), null);
+  if (sup) {
+    const lane = sup.lane && String(sup.lane.phase) === id ? { ...sup.lane, notified: {}, restarts: 0, forceRelaunch: true } : sup.lane || null;
+    writeJsonAtomic(supPath(root), { ...sup, pid: null, finished: false, halted: false, lane });
+  }
+  if (andStart) {
+    out(`phase ${id} cleared`);
+    return start(root);
+  }
+  out(`phase ${id} cleared; run: turbo-run start`);
+  return 0;
+}
+
+// spec §8 (S4): the owner takes the rest of phase N's plans into their own session (/turbo-autonomous attend N).
+// Only the supervisor's own lane, and only while it has plans without a summary: refusals change nothing. The daemon
+// stops first, so no tick (a wake, a relaunch) runs alongside; then the mark, which holds every lane of any later
+// daemon until attend N --done or resume N clears it; then every lane session of this checkout stops (claude stop
+// keeps the conversation). The checkpoints the lane stopped at are asked ahead again.
+function attend(root, id) {
+  const plans = openPlans(root, id);
+  if (plans === null) die(`no single phase directory for phase ${id} under .planning/phases: nothing to attend`);
+  if (!plans.length) die(`phase ${id} has no plan without a summary: nothing to attend. For owner-only UAT items run /gsd-verify-work ${id}, then /turbo-autonomous resume ${id}`);
+  const sup = readJson(supPath(root), null);
+  const lane = sup?.lane ? String(sup.lane.phase) : null;
+  if (lane !== id) die(`phase ${id} is not the supervisor's lane${lane ? ` (that is phase ${lane})` : ''}: attend takes over the lane of the run (turbo-run status names it); nothing was stopped`);
+  stopDaemon(root, sup);
+  writeAttend(root, id, { sessionId: sup.lane.sessionId || null });
+  const code = stopLanes(root, sup);
+  const released = releaseStops(root, id);
+  out(`phase ${id}: attended in this session; no lane starts, relaunches or wakes until turbo-run attend ${id} --done`);
+  out(`open plans: ${plans.join(', ')}`);
+  if (released.length) out(`released stops: ${released.join(', ')} (asked ahead again)`);
+  if (code !== 0) process.stderr.write('a lane session did not stop (see the warnings above): stop it with claude stop <id> before anything runs in this checkout\n');
+  return code;
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
-  const root = projectArg(args);
+  // attend's --done takes no value (phase-step's does): it never hides a --project after it
+  const root = projectArg(cmd === 'attend' ? args.filter((a) => a !== '--done') : args);
   const pos = positional(args);
   if (PHASE_COMMANDS.has(cmd)) {
     if (!root) die('no .planning directory found');
@@ -655,10 +713,12 @@ async function main() {
       const running = supAlive(sup, config.poll_seconds);
       const ownerRequests = ownerRequestFiles(root); // a phase run by hand has one without a supervisor
       const leftovers = gatesLeftovers(root);
-      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ownerRequests, gatesOff: leftovers.gates }, null, 2)); return 0; }
+      const attended = attendedPhases(root); // spec §8: phases the owner runs in their session; no lane runs meanwhile
+      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ownerRequests, gatesOff: leftovers.gates, attended }, null, 2)); return 0; }
       if (!sup) out('supervisor: not running (never started)');
       else printStatus(sup, running);
       for (const f of ownerRequests) out(`owner request: ${f}`);
+      for (const a of attended) out(`attended: phase ${a.phase}${a.at ? ` since ${a.at}` : ''} in the owner's session (hand it back: turbo-run attend ${a.phase} --done)`);
       printLeftovers(leftovers);
       return 0;
     }
@@ -695,33 +755,15 @@ async function main() {
     case 'resume': {
       const [phase] = pos;
       if (!root || !phase || !PHASE_ID.test(phase)) die('resume <phase> [--start]');
+      return resumePhase(root, normalizePhaseId(phase), args.includes('--start'));
+    }
+    case 'attend': {
+      // spec §8 (S4): attend <phase> takes the lane over for the owner's session; --done hands it back (resume --start)
+      const [phase] = pos;
+      if (!root || !phase || !PHASE_ID.test(phase)) die('attend <phase> [--done]');
+      if (process.env.TURBO_LANE) die("refused: attend is the owner's: a lane never runs it");
       const id = normalizePhaseId(phase);
-      if (args.includes('--start')) {
-        // start would keep this range and never resume a phase outside it: refuse before anything changes
-        const prev = readJson(supPath(root), null);
-        const kept = keptRange(prev);
-        if (kept && !inRange(id, kept)) {
-          const stopFirst = supAlive(prev, pollOf(root)) ? 'turbo-run stop, then ' : '';
-          die(`phase ${id} is outside the range ${rangeLabel(kept)} that start keeps; nothing was stopped, removed or started. To run phase ${id}, change the range: ${stopFirst}turbo-run start --only ${id} (or --from <phase>, or --all)`);
-        }
-      }
-      // a live daemon (for example one waiting for the owner) rewrites supervisor.json every
-      // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
-      stopDaemon(root, readJson(supPath(root), null));
-      fs.rmSync(path.join(runDir(root), `p${id}.json`), { force: true });
-      // the owner's resume gives turbo-phase's bounded rounds a fresh budget; the steps done stay done
-      clearAttempts(root, id);
-      const sup = readJson(supPath(root), null);
-      if (sup) {
-        const lane = sup.lane && String(sup.lane.phase) === id ? { ...sup.lane, notified: {}, restarts: 0, forceRelaunch: true } : sup.lane || null;
-        writeJsonAtomic(supPath(root), { ...sup, pid: null, finished: false, halted: false, lane });
-      }
-      if (args.includes('--start')) {
-        out(`phase ${id} cleared`);
-        return start(root);
-      }
-      out(`phase ${id} cleared; run: turbo-run start`);
-      return 0;
+      return args.includes('--done') ? resumePhase(root, id, true) : attend(root, id);
     }
     case 'context': {
       // a lane decides on this (paused-context at or above its stop percentage): anything it cannot measure

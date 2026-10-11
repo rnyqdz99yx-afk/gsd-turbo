@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { STEPS } from '../lib/phase-progress.mjs';
+import { GAP_PLAN_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
 
 test('turbo-phase skill: frontmatter, every step in order, the commands it drives', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
@@ -151,4 +152,15 @@ test('turbo-phase skill: owner questions (S1) — list and classify, pre-answers
   assert.match(loop, /^4\. \*\*Commit the answers\*\* \(section \*\*Owner questions\*\*\), then `turbo-run phase-step N --done/m);
   assert.match(stop, /^0\. .*Then \*\*Commit the answers\*\*/m);
   assert.match(s, /\*\*Commit the answers\.\*\* .*Commit the whole directory with `gsd-tools commit "docs\(phase-N\): owner answers" --files \.planning\/turbo\/answers\/` before each `turbo-run phase-step N --done` and in \*\*Stopping early\*\*/);
+});
+
+test('turbo-phase skill: the release rule and the gap-plan rule (S4), verbatim as the lanes get them', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const conv = s.slice(s.indexOf('\n## Conventions\n'), s.indexOf('\n## The step loop\n')).split('\n');
+  const rel = conv.find((l) => l.startsWith('- Releases (spec §8): '));
+  const gap = conv.find((l) => l.startsWith('- Gap plans (spec §8): '));
+  assert.ok(rel && rel.includes(RELEASE_RULE), 'release rule verbatim');
+  assert.ok(gap && gap.includes(GAP_PLAN_RULE), 'gap-plan rule verbatim');
+  for (const n of ['continuation agent', '**Pre-answers**', '**At a checkpoint**', '--kind human-action', 'recommended for the project', 'Never kill the process']) assert.ok(rel.includes(n), n);
+  for (const n of ['gsd-plan-phase --gaps', 'verify-work', 'gsd-planner', 'revision prompt']) assert.ok(gap.includes(n), n);
 });

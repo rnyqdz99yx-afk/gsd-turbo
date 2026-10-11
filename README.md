@@ -209,7 +209,7 @@ A full test run ends every phase. From the moment every plan of the phase has a 
 A plan's checkpoint tasks (`checkpoint:decision`, `checkpoint:human-verify`, `checkpoint:human-action`) are questions for you. turbo asks each once, with clickable choices, and your answer reaches the very agent that waits for it.
 
 - **Asked ahead.** After planning, the lane runs `turbo-run questions <N>`: one question per checkpoint of every plan without a summary, with the plan's own options (the one the plan recommends first) or turbo's: "Accept if the checks pass" or "Stop and show me" for a verification, "I will do it when the lane asks" for an action only you can do. The lane classifies each (`owner-only`, `consent`, `consent:deploy`, `decision`, `verify`) and goes on; you get one notification per phase ("Phase N: 2 question(s) for you").
-- **Answering.** `/turbo-autonomous answer` asks the open questions in your session (up to four at a time; it also runs when you start `/turbo-autonomous` and when a run is going), the turbo-view pane has a button per choice, and Telegram can have them too (`answer.telegram`). Every channel goes through `turbo-run answer <N> <id> (--option <k> | --text <words>) --by <session|pane|telegram> [--rev <n>]`: the first answer wins and a later one gets `already answered: <answer>, <channel>, <time>`; an answer to a question that changed since it was shown is refused (`changed: …`); an answer that looks like a secret is refused. Your own words are data for that checkpoint, never instructions to the session.
+- **Answering.** `/turbo-autonomous answer` asks the open questions in your session (up to four at a time; it also runs when you start `/turbo-autonomous` and when a run is going), the turbo-view pane has a button per choice, and Telegram can have them too (`answer.telegram`, see [Telegram](#telegram-optional)). Every channel goes through `turbo-run answer <N> <id> (--option <k> | --text <words>) --by <session|pane|telegram> [--rev <n>]`: the first answer wins and a later one gets `already answered: <answer>, <channel>, <time>`; an answer to a question that changed since it was shown is refused (`changed: …`); an answer that looks like a secret is refused. Your own words are data for that checkpoint, never instructions to the session.
 - **Pre-answers.** When the lane dispatches an executor for a plan whose checkpoint you answered ahead, it adds your answer with its condition ("the checkpoint offers the options the plan lists", "every automated check in how-to-verify passed"). The executor goes on when the condition holds and stops at the checkpoint otherwise.
 - **At a stop.** A checkpoint without an answer, or whose condition did not hold, stops the lane as `needs-owner` and notifies you. Once you have answered every question it stopped for, the supervisor wakes the same conversation (`claude stop`, then `claude --bg --resume` with no other flag) and the lane passes your answer to the waiting executor with `SendMessage`: the same agent goes on with its context (`same-agent`). When that is not possible (Claude Code started a copy twice, or the session had to be replaced), a new session continues the plan with a continuation agent that gets GSD's continuation prompt and the end of the old agent's transcript (`turbo-run agent-tail <agent id>`; `continuation`). The step's note in `turbo-run view` names the path.
 - **Standing deploy rule.** With `autonomy: "max"` and all four `deploy.*` commands set, a question the lane classified `consent:deploy` is answered by turbo itself (`by: standing-rule`), only through the option the plan recommends, and with a gate: the build checks green, CI green when `push.mode` is on, and the deploy through `deploy.command` with `deploy.snapshot` first, `deploy.health` after and `deploy.rollback` on failure. Everything else is asked.
@@ -289,6 +289,7 @@ What is left for you goes into one file per phase, `.planning/turbo/run/p<N>-own
 | `view.refresh_seconds` | `3` | Seconds between two reads of the live view: the turbo-view mod while a terminal is attached (every 15 s otherwise) and `turbo-run status --watch`. A whole number from 1 to 60; anything else counts as 3. |
 | `notify.desktop` | `true` | Desktop notifications (Windows toast, `osascript` on macOS, `notify-send` on Linux). |
 | `notify.telegram` | `false` | Telegram notifications; see [Telegram](#telegram-optional). |
+| `answer.telegram` | `false` | Answer the owner questions in Telegram too, with buttons; needs `notify.telegram`. See [Telegram](#telegram-optional). |
 | `test.full` | `"npm test"` | The full test command, run through `bash -c` like GSD does. `init` sets it to your previous `workflow.test_command` when there was one; otherwise, unless GSD itself would run `npm test` in your project, set it to your full test command and run `turbo-run init` again. A list runs several packages; see [Several packages in `test.full`](#several-packages-in-testfull). |
 | `test.max_targeted` | `3` | Targeted green runs allowed after the last full green run; the next run is full. |
 | `test.import_graph` | `false` | Record, during full green runs, which project files each test loads, and add the tests that loaded a changed module, through other modules or import aliases, to targeted runs (Node ≥ 22.15 and a plain `node --test` root script; otherwise ignored). The graph only adds tests to a run the file-mention rule already targets: it never turns a full run into a targeted one. It puts a turbo loader hook into your test processes through `NODE_OPTIONS` during full runs. |
@@ -371,7 +372,7 @@ The requests, results and inboxes live in `.planning/turbo/run/` (`p<N>-push-req
 
 1. Set two environment variables where Claude Code starts, before `/turbo-autonomous` (the supervisor inherits them):
    - `TURBO_TELEGRAM_TOKEN`: your bot token;
-   - `TURBO_TELEGRAM_CHAT`: the chat id to send to.
+   - `TURBO_TELEGRAM_CHAT`: the chat id to send to (to answer questions there too: your private chat with the bot, see below).
 2. Enable it in `.planning/turbo/config.json`:
 
    ```json
@@ -379,6 +380,13 @@ The requests, results and inboxes live in `.planning/turbo/run/` (`p<N>-push-req
    ```
 
 The messages are the same short texts as the desktop notifications: phase number, status and what to do next.
+
+To answer the owner questions in Telegram too (see [Owner questions](#owner-questions)), also set `"answer": { "telegram": true }`. `TURBO_TELEGRAM_CHAT` must then be your private chat with the bot, whose id is your user id: turbo takes button presses only from you, and replies only from you in that chat; it drops everything else (it logs how many, never the content).
+
+- Each open question comes as one plain-text message: the question, its options and a button for each of the first four (the one the plan recommends first), plus "Other…" where your own words count; further options are named in the text and answered through "Other…". A button works once.
+- "Other…" asks for your answer as a reply to its message, up to 2000 characters. An answer that looks like a secret is refused; delete it from the chat.
+- A question answered anywhere loses its buttons and shows the answer that stands. When a question changes (re-planned, or reopened when the lane stopped at it), its old message says so and a new one comes; a button of the old one records nothing.
+- While questions are open, the supervisor asks Telegram for presses and replies at each check, waiting up to `poll_seconds` (at most 50 seconds). Use a bot of its own for each project: a bot with a webhook, or one that another program or another turbo run also reads, loses presses. turbo's state (the update offset and the one-time buttons) is in `.planning/turbo/run/telegram.json`; after a change of bot or chat, the open questions are sent again. The bot token never appears in a log or in that file.
 
 ## Roadmap
 

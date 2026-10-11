@@ -25,7 +25,7 @@ test('ownerTick: one questionsReady per phase for open questions not notified be
   assert.deepEqual(notes, []);
   assert.equal(fs.existsSync(path.join(root, '.planning', 'turbo', 'run')), false, 'nothing written for nothing');
   writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t4', { state: 'answered' })]);
-  writeQuestions(root, '10', [Q('10-02-t1', { phase: '10', header: '10-02 T1', question: 'Deploy after green CI?' })]);
+  writeQuestions(root, '10', [Q('10-02-t1', { phase: '10', plan: '10-02', task: '1', header: '10-02 T1', question: 'Deploy after green CI?' })]);
   await ownerTick(ctx, NOW, {});
   assert.deepEqual(notes.map((x) => [x.key, x.vars.phase, x.vars.n]), [['questionsReady', '3', 1], ['questionsReady', '10', 1]]);
   assert.equal(notes[1].vars.list, '10-02 T1: Deploy after green CI?');
@@ -51,4 +51,11 @@ test('every supervisor tick runs ownerTick; a failure there is logged and never 
   assert.deepEqual(notes.map((x) => x.key), ['questionsReady']);
   assert.ok(logs.includes('questions: notifier down'), logs.join('\n'));
   assert.equal(s.failingSince, undefined);
+});
+
+test('questionsReady names each question by its own plan and task, never by the cut header: "32.1A-07b T12" is not "T1" (review n4)', async () => {
+  const { root, ctx, notes } = project();
+  writeQuestions(root, '32.1A', [Q('32.1A-07b-t12', { phase: '32.1A', plan: '32.1A-07b', task: '12', header: '32.1A-07b T1', question: 'Ship it?' })]);
+  await ownerTick(ctx, NOW, {});
+  assert.equal(notes[0].vars.list, '32.1A-07b T12: Ship it?');
 });

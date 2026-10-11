@@ -7,7 +7,7 @@ import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/p
 import { deliveryState, markDelivered, readQuestions, refreshQuestions, stopQuestion } from '../lib/questions.mjs';
 import { answerQuestion, preAnswerText } from '../lib/answers.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
-import { attendFile, attendGates, attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
+import { attendFile, attendGates, attendedPhases, clearAttend, openPlans, releaseStops, sweepLateLanes, writeAttend } from '../lib/attend.mjs';
 
 const AG = 'a0123456789abcdef';
 
@@ -85,4 +85,26 @@ test('releaseStops leaves a stop whose answer the stopped session already took: 
   const d = readQuestions(root, '32').find((q) => q.id === '32-09-t2');
   assert.deepEqual([d.stopped, d.state], [true, 'delivered']);
   assert.deepEqual(deliveryState(root, '32'), { waiting: [], ready: [] }, 'nothing to deliver after the hand-back either');
+});
+
+test('sweepLateLanes: for the settle time, a live lane session that appears late is stopped once; other sessions and ended ones are left; a failed stop is retried and reported (F7)', async () => {
+  const lane = (id, state = 'working') => ({ id, name: 'lane', state });
+  const seq = [[], [lane('late01'), { id: 'other9', name: 'other', state: 'working' }, lane('old', 'stopped')], [lane('late01'), lane('stuck1')], [lane('late01'), lane('stuck1')]];
+  let calls = 0;
+  const stops = [];
+  const slept = [];
+  const r = await sweepLateLanes({
+    list: () => seq[Math.min(calls++, seq.length - 1)],
+    stop: (id) => { stops.push(id); if (id === 'stuck1') throw new Error('permission denied'); },
+    isLane: (x) => x.name === 'lane',
+    settleMs: 3500, stepMs: 1000, sleep: async (ms) => { slept.push(ms); },
+  });
+  assert.deepEqual(slept, [1000, 1000, 1000, 500]);
+  assert.deepEqual(stops, ['late01', 'stuck1', 'stuck1']);
+  assert.deepEqual(r, { stopped: ['late01'], failed: [{ id: 'stuck1', error: 'permission denied' }] });
+  let listed = 0;
+  assert.deepEqual(await sweepLateLanes({ list: () => { listed++; return []; }, stop: () => {}, isLane: () => true, settleMs: 0 }), { stopped: [], failed: [] });
+  assert.equal(listed, 0, 'no settle time: no sweep');
+  const broken = await sweepLateLanes({ list: () => { throw new Error('agents broke'); }, stop: () => {}, isLane: () => true, settleMs: 100, sleep: async () => {} });
+  assert.deepEqual(broken, { stopped: [], failed: [{ id: null, error: 'agents broke' }] });
 });

@@ -27,7 +27,7 @@ import { buildView, formatView } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
 import { readQuestions, refreshQuestions } from '../lib/questions.mjs';
-import { attendFile, attendGates, attendedPhases, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
+import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|state-sync|questions|answer|agent-tail> [args]';
@@ -604,12 +604,19 @@ async function resumePhase(root, id, andStart) {
   return 0;
 }
 
+// How long attend watches for a lane session that a killed supervisor's claude child registers late: 5 s, or
+// TURBO_ATTEND_SETTLE_MS (0 to 60000).
+function attendSettleMs() {
+  const v = Number(process.env.TURBO_ATTEND_SETTLE_MS ?? '');
+  return process.env.TURBO_ATTEND_SETTLE_MS && Number.isInteger(v) && v >= 0 && v <= 60000 ? v : 5000;
+}
+
 // spec §8 (S4): the owner takes the rest of phase N's plans into their own session (/turbo-autonomous attend N).
 // Only the supervisor's own lane, and only while it has plans without a summary: refusals change nothing. The daemon
 // stops first, so no tick (a wake, a relaunch) runs alongside; then the mark, which holds every lane of any later
 // daemon until attend N --done or resume N clears it; then every lane session of this checkout stops (claude stop
 // keeps the conversation). The checkpoints the lane stopped at are asked ahead again.
-function attend(root, id) {
+async function attend(root, id) {
   const plans = openPlans(root, id);
   if (plans === null) die(`no single phase directory for phase ${id} under .planning/phases: nothing to attend`);
   if (!plans.length) die(`phase ${id} has no plan without a summary: nothing to attend. For owner-only UAT items run /gsd-verify-work ${id}, then /turbo-autonomous resume ${id}`);
@@ -619,9 +626,19 @@ function attend(root, id) {
   // GSD's gates in the sitting, decided here from the lane's mode and next step; the skill follows the gates: line
   const gates = attendGates({ mode: sup.lane.mode, next: nextStep(readProgress(root, id)) });
   if (gates.refuse) die(`phase ${id} is not ready to attend: ${gates.refuse}; nothing was stopped`);
+  // a daemon that ran (or a lease that named one) may have left a claude --bg child that registers a lane late
+  const hadDaemon = [sup.pid, readJson(lockPath(root), null)?.pid].some((p) => Number.isInteger(p) && p > 0);
   stopDaemon(root, sup);
   writeAttend(root, id, { sessionId: sup.lane.sessionId || null });
-  const code = stopLanes(root, sup);
+  let code = stopLanes(root, sup);
+  if (hadDaemon) {
+    const claude = createClaude();
+    const late = await sweepLateLanes({ list: () => claude.list(), stop: (x) => claude.stop(x), isLane: (a) => projectLaneAgents([a], root).length === 1, settleMs: attendSettleMs() });
+    for (const x of late.stopped) out(`stopped late lane session ${x} (started by the stopped supervisor)`);
+    for (const f of late.failed) process.stderr.write(`warn: ${f.id ? `late lane session ${f.id} not stopped` : 'cannot list sessions after the stop'}: ${f.error}
+`);
+    if (late.failed.length) code = 1;
+  }
   const released = releaseStops(root, id);
   out(`phase ${id}: attended in this session; no lane starts, relaunches or wakes until turbo-run attend ${id} --done`);
   out(`open plans: ${plans.join(', ')}`);

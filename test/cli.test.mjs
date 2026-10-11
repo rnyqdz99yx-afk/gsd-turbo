@@ -54,7 +54,12 @@ function fakeClaude() {
   const [cmd, id = ''] = args;
   if (cmd === '--version') console.log(`${b.version} (Claude Code)`);
   else if (cmd === 'agents') {
-    if (b.agentsFail) { console.error('agents broke'); process.exitCode = 1; } else console.log(JSON.stringify(b.agents || []));
+    if (b.agentsFail) { console.error('agents broke'); process.exitCode = 1; } else if (Array.isArray(b.agentsSeq)) {
+      const count = path.join(__dirname, 'agents-calls');
+      const n = fs.existsSync(count) ? Number(fs.readFileSync(count, 'utf8')) : 0;
+      fs.writeFileSync(count, String(n + 1));
+      console.log(JSON.stringify(b.agentsSeq[Math.min(n, b.agentsSeq.length - 1)]));
+    } else console.log(JSON.stringify(b.agents || []));
   } else if (cmd === '--bg') console.log('backgrounded abcdef123456');
   else if (cmd === 'stop' || cmd === 'rm') {
     if (id.startsWith('gone')) { console.error(`No job matching '${id}'. Run 'claude agents' to list running sessions.`); process.exitCode = 1; }
@@ -1058,7 +1063,8 @@ function attendProject(t, { lanePhase = '4', mode = 'full', next = 'execute' } =
     { id: '04-02-t1', phase: '4', plan: '04-02', task: '1', kind: 'human-action', options: [], stopped: true, agentId: 'a0123456789abcdef', state: 'open', rev: 2 },
     { id: '04-02-t3', phase: '4', plan: '04-02', task: '3', kind: 'decision', options: [], stopped: true, agentId: 'a0123456789abcdef', state: 'delivered', rev: 1 },
   ]));
-  return { p, child, env: { ...p.env, TURBO_LANE: '' } };
+  // no late-session sweep unless a test asks for one (F7)
+  return { p, child, env: { ...p.env, TURBO_LANE: '', TURBO_ATTEND_SETTLE_MS: '0' } };
 }
 
 test('attend N stops the supervisor and the lane session, marks the phase, releases its stops and names the open plans; status names the mark (S4)', async (t) => {
@@ -1191,4 +1197,18 @@ test('a forgotten mark is never hidden: status shows the lane held instead of cl
   assert.equal(s.code, 0, s.stderr);
   assert.match(s.stdout, /^attended: phase 4 since \S+ in the owner's session \(hand it back: turbo-run attend 4 --done\)$/m);
   assert.equal((await runAsync(['stop'], p.root, p.env)).code, 0);
+});
+
+test('attend stops a lane session the killed supervisor registers after the first stop (F7)', async (t) => {
+  const { p, env } = attendProject(t);
+  const lane = laneSessionName(p.root, '4');
+  p.setClaude({ agentsSeq: [
+    [{ id: 'abc123', name: lane, cwd: p.root, state: 'blocked' }],
+    [{ id: 'abc123', name: lane, cwd: p.root, state: 'stopped' }],
+    [{ id: 'abc123', name: lane, cwd: p.root, state: 'stopped' }, { id: 'late01', name: lane, cwd: p.root, state: 'working' }, { id: 'other9', name: 'another session', cwd: p.root, state: 'working' }],
+  ] });
+  const r = await runAsync(['attend', '4'], p.root, { ...env, TURBO_ATTEND_SETTLE_MS: '1500' });
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop'), [['stop', 'abc123'], ['stop', 'late01']]);
+  assert.match(r.stdout, /^stopped late lane session late01 \(started by the stopped supervisor\)$/m);
 });

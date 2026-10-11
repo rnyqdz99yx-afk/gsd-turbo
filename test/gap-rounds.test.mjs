@@ -183,12 +183,10 @@ test('a uat round whose gap plans did not run yet is resumed, not counted again;
   let r = round(p.root, 'uat', 3);
   assert.deepEqual([r.n, r.go, r.resumed], [1, true, []]);
   // a context pause before the gap plan ran: the next session reaches --attempt uat with the same UAT rows
-  r = round(p.root, 'uat', 3);
-  assert.deepEqual([r.n, r.go, r.reason, r.resumed], [1, true, '', ['03-02']]);
-  assert.equal(readProgress(p.root, '3').attempts.uat, 1, 'not counted again');
   const lines = [];
   assert.equal(await runPhaseCommand('phase-step', ['3', '--attempt', 'uat'], { root: p.root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) }), 0);
   assert.equal(lines.at(-1), 'attempt uat 1 of 1: go (round 1 resumed: its gap plans 03-02 have no SUMMARY yet)');
+  assert.equal(readProgress(p.root, '3').attempts.uat, 1, 'not counted again');
   fs.writeFileSync(path.join(p.dir, '03-02-SUMMARY.md'), 'x');
   r = round(p.root, 'uat', 3);
   assert.deepEqual([r.n, r.go, r.reason], [2, false, 'no new evidence: round 1 left the same 5 failing item(s) in 03-UAT.md']);
@@ -209,4 +207,27 @@ test('a uat round whose gap plans did not run yet is resumed, not counted again;
   assert.equal(round(z.root, 'uat', 0).go, false);
   r = round(z.root, 'uat', 0);
   assert.deepEqual([r.n, r.go], [2, false]);
+});
+
+test('a gap round is resumed again only after one more of its plans got a SUMMARY: a gap plan that never finishes cannot loop past the budget (N1)', () => {
+  const p = project();
+  p.uat(UAT);
+  fs.writeFileSync(path.join(p.dir, '03-02-PLAN.md'), 'x'); // its executor keeps failing: never a SUMMARY
+  const results = [];
+  for (let i = 0; i < 50; i++) results.push(round(p.root, 'uat', 1));
+  assert.deepEqual(results.slice(0, 3).map((r) => [r.n, r.go, r.resumed]), [[1, true, []], [1, true, ['03-02']], [2, false, []]]);
+  assert.equal(results[2].reason, 'round 1 was resumed and its gap plans 03-02 still have no SUMMARY: their execution does not finish');
+  assert.equal(results.filter((r) => r.go).length, 2, 'round 1 and its one resume, then never go again');
+  assert.equal(readProgress(p.root, '3').attempts.uat, 49, 'every later call is counted against the budget');
+
+  // a long round with progress between its interruptions: each resume needs one more SUMMARY
+  const q = project();
+  q.uat(UAT);
+  for (const f of ['03-02-PLAN.md', '03-03-PLAN.md']) fs.writeFileSync(path.join(q.dir, f), 'x');
+  assert.deepEqual([round(q.root, 'uat', 3).go, round(q.root, 'uat', 3).resumed], [true, ['03-02', '03-03']]);
+  fs.writeFileSync(path.join(q.dir, '03-02-SUMMARY.md'), 'x');
+  let r = round(q.root, 'uat', 3);
+  assert.deepEqual([r.n, r.go, r.resumed], [1, true, ['03-03']]);
+  r = round(q.root, 'uat', 3);
+  assert.deepEqual([r.n, r.go, r.reason], [2, false, 'round 1 was resumed and its gap plans 03-03 still have no SUMMARY: their execution does not finish']);
 });

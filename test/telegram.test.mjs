@@ -525,3 +525,35 @@ test('a reply to a prompt whose question changed, or to any other message of the
   assert.deepEqual(bot.sent().slice(before).map((m) => [m.body.text, m.body.reply_parameters.message_id]), [[stale, 502], [stale, 503]]);
   assert.deepEqual(readAnswers(root, '3'), []);
 });
+
+test('a daemon that lost its lease takes no update, handles no more of a batch and writes nothing over the new daemon\'s state (S1b review F6)', async () => {
+  const { root, ctx, bot } = project();
+  writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t5', { task: '5', header: '03-01 T5' })]);
+  let held = false;
+  ctx.deps.leaseHeld = () => held;
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(bot.calls, [], 'lost before the tick: nothing at all');
+  held = true;
+  ctx.deps.telegram = async (method, body, opts) => {
+    if (method === 'sendMessage') held = false;
+    return bot.call(method, body, opts);
+  };
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.equal(polls(bot).length, 0, 'lost while sending: no poll');
+  assert.equal(fs.existsSync(stateOn(root)), false, 'nothing written');
+  held = true;
+  ctx.deps.telegram = bot.call;
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  const before = fs.readFileSync(stateOn(root), 'utf8');
+  // the tick that lost its lease recorded nothing: this one sent both again, with new buttons
+  const button = (id) => Object.entries(readTelegramState(root).nonces).find(([, r]) => r.id === id && r.k === 1)[0];
+  const [t2, t5] = [button('03-01-t2'), button('03-01-t5')];
+  ctx.deps.telegram = async (method, body, opts) => {
+    if (method === 'answerCallbackQuery') held = false;
+    return bot.call(method, body, opts);
+  };
+  bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:1:${t2}`, 7), press(`t3:${shortId('3', '03-01-t5')}:1:${t5}`, 8));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(readAnswers(root, '3').map((r) => r.id), ['03-01-t2'], 'the second press is left to the new daemon');
+  assert.equal(fs.readFileSync(stateOn(root), 'utf8'), before, 'its state untouched');
+});

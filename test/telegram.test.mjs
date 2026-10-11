@@ -159,6 +159,21 @@ test('a button reads its number and its option, cut with … to a readable lengt
   assert.deepEqual(m.body.reply_markup.inline_keyboard.map((r) => parseCallback(r[0].callback_data).k), [1, 2, 3], 'the callback data are as before');
 });
 
+test('a button and a message are cut between whole characters: a ZWJ family, a flag or a skin tone is never split (review n2)', async () => {
+  const { root, ctx, bot } = project();
+  const family = '👨‍👩‍👧';
+  const flags = '🇺🇸🇩🇪🇫🇷🇯🇵🇧🇷🇨🇦🇮🇳🇰🇷🇲🇽🇳🇱🇸🇪🇳🇴';
+  writeQuestions(root, '3', [Q('03-01-t2', { question: `Pick ${'👍🏽'.repeat(1500)}`, options: [OPT(family.repeat(10)), OPT(`a${flags}`)], allowOther: false })]);
+  await telegramTick(ctx, NOW);
+  const [m] = bot.sent();
+  const graphemes = (s) => Array.from(new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(s), (x) => x.segment);
+  const [one, two] = m.body.reply_markup.inline_keyboard.map((r) => r[0].text);
+  assert.match(one, new RegExp(`^1\\. (${family})+…$`), one);
+  assert.ok(graphemes(two.slice(3, -1)).every((g) => /^\p{Regional_Indicator}{2}$/u.test(g) || g === 'a'), two);
+  assert.ok(m.body.text.length <= 4000);
+  assert.ok(graphemes(m.body.text).every((g) => !/^[\u{1F3FB}-\u{1F3FF}]$/u.test(g)), 'no skin tone left without its hand');
+});
+
 test('a question answered on another channel: its message loses its buttons and shows the answer; a changed question gets a new message', async () => {
   const { root, ctx, bot } = project();
   writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t5', { task: '5', header: '03-01 T5' })]);

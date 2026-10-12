@@ -56,7 +56,7 @@ test('deferRows --rulings: owner-ruled skipped rows become GSD deferrals with th
   const section = text.slice(text.indexOf('## Deferred Follow-Ups'));
   for (const n of [6, 8, 9]) assert.match(section, new RegExp(`^- test: ${n}\\n {2}idea: ".+"\\n {2}deferred_at: 2026-02-03\\n {2}source: turbo-uat$`, 'm'));
   assert.match(section, /idea: "Payment with a real card — no test card; owner ruling 2026-01-02: defer to Phase 9"/);
-  assert.match(text, /^skipped: 6$/m);
+  assert.match(text, /^skipped: 5$/m);
   assert.match(text, /^blocked: 1$/m);
   assert.match(text, /^updated: 2026-02-03T04:05:06\.000Z$/m);
 });
@@ -90,7 +90,7 @@ test('deferRows by number: the owner confirms skipped or blocked rows; anything 
 test('ownerRequest: skipped or blocked rows ask for a confirmation, never for a new test, in both languages', () => {
   const { tests } = parseUat(deferRows(withRuled(), { rulings: true, now: NOW }).text.replace(/result: \[pending\]/g, 'result: pass'));
   const ru = ownerRequest({ phase: '3', tests, lang: 'ru', file: 'f' });
-  assert.deepEqual([ru.needsOwner, ru.counts.signoff, ru.counts.confirm], [true, 2, 2]);
+  assert.deepEqual([ru.needsOwner, ru.counts.signoff, ru.confirm], [true, 2, [7, 11]]);
   assert.match(ru.reason, /^ничего не надо тестировать — подтвердите, что пункты остаются отложенными: 7, 11/);
   assert.match(ru.text, /Ничего не надо тестировать заново/);
   assert.match(ru.text, /^- 7\. Store listing shows the app — the store review is still pending$/m);
@@ -102,6 +102,6 @@ test('ownerRequest: skipped or blocked rows ask for a confirmation, never for a 
   assert.doesNotMatch(en.text, /signature/);
   // a pending row still asks for the owner's check or signature, next to the confirmation
   const mixed = ownerRequest({ phase: '3', tests: parseUat(withRuled()).tests, lang: 'en', file: 'f' });
-  assert.equal(mixed.counts.confirm, 5);
+  assert.deepEqual(mixed.confirm, [6, 7, 8, 9, 11]);
   assert.match(mixed.reason, /item\(s\) need your sign-off; see f; nothing to test again — confirm that items 6, 7, 8, 9, 11 stay deferred/);
 });

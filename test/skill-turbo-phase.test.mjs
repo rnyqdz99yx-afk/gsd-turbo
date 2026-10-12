@@ -208,3 +208,12 @@ test('turbo-phase skill: owner-ruled UAT rows are deferred before owner-request;
   assert.ok(uat.split('\n').find((l) => l.startsWith('1. ')).includes('**Stale report**'), 'point 1 handles stale');
   assert.ok(section(s, 'close').includes('**Stale report**'));
 });
+
+test('turbo-phase skill: deferred rows are committed before a stop; close canonicalises a verifier-only human_needed report through uat point 5', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const p3 = section(s, 'uat').split('\n').find((l) => l.startsWith('3. '));
+  assert.ok(p3.indexOf('gsd-tools commit') > p3.indexOf('turbo-run uat defer N --rulings') && p3.indexOf('gsd-tools commit') < p3.indexOf('turbo-run uat owner-request N --json'), p3);
+  const p2 = section(s, 'close').split('\n').find((l) => l.startsWith('2. '));
+  assert.match(p2, /`human_needed`.*point 5 of step \*\*uat\*\*/);
+  assert.ok(section(s, 'Stale report').includes('not re-run'), 'the note says what was not run again');
+});

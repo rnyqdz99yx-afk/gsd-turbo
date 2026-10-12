@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { OWNER_RULING_RE, deferRows, ownerRequest, parseUat } from '../lib/uat.mjs';
+import { deferRows, ownerRuling, ownerRequest, parseUat } from '../lib/uat.mjs';
 import { UAT } from './fixtures/uat-sample.mjs';
 
 // GSD's own deferral matcher (uat-predicate.cjs DEFERRED_REASON_RE), copied: the rewritten rows must satisfy it
@@ -25,15 +25,45 @@ const withRuled = () => UAT.replace('## Summary', `${RULED}\n## Summary`);
 const rowOf = (text, n) => parseUat(text).tests.find((t) => t.number === n);
 const firstReasonLine = (t) => String(t.fields.reason ?? '').trim();
 
-test('OWNER_RULING_RE: an owner ruling or a deferral to a phase, in English and Russian; a plain reason is no ruling', () => {
+test('ownerRuling: only an affirmative owner ruling or a deferral to a numbered phase; pending, needed or negated ones are no ruling', () => {
   for (const s of [
-    'owner ruling 2026-01-02: later', "the owner's decision: not in this phase", 'owner decided to skip it', 'ruled by the owner',
+    // the shapes of a live run, in generic words
+    'no account for the second platform; owner ruling 2026-01-08 «Отложить вторую платформу на Phase 37» (tracker → L2).',
+    'no paid tester — owner ruling 2026-01-07 DEFERRED → Phase 37 L2 (tracker). The log line was seen live.',
+    'no tester accounts; owner ruling 2026-01-08: first fix start/stop on every platform, the tester steps afterwards.',
+    "the owner's ruling: later", 'owner decided to skip it', 'ruled by the owner', 'the owner deferred it',
     'DEFERRED → Phase 9', 'deferred to phase 12', 'deferred -> Phase 3 (tracker)',
-    'Отложить на фазу 9', 'отложено владельцем', 'по решению владельца', 'решение владельца: потом',
-  ]) assert.ok(OWNER_RULING_RE.test(s), s);
-  for (const s of ['the store review is still pending', 'not now', 'no test account', 'the owner signs the release', 'a deferred import runs later', 'phase 9 covers it']) {
-    assert.ok(!OWNER_RULING_RE.test(s), s);
-  }
+    'Отложить на фазу 9', 'отложено владельцем', 'по решению владельца', 'решение владельца 2026-01-02: потом', 'владелец решил отложить',
+  ]) assert.ok(ownerRuling(s), s);
+  for (const s of [
+    'the store review is still pending', 'not now', 'no test account', 'the owner signs the release', 'a deferred import runs later', 'phase 9 covers it',
+    "the owner's decision: not in this phase", 'решение владельца: потом',
+    'awaiting owner decision', 'needs owner decision on pricing', 'blocked: owner decision required', 'owner decision pending', 'pending owner choice',
+    'ждём решения владельца', 'нужно решение владельца', 'владелец не решил', 'владелец не отложил',
+    'cannot be deferred to phase 9', 'not deferred to phase 9 — must test now', 'Отложенный импорт данных не работает', 'deferred until phase-gate passes',
+    'owner ruling required', 'owner ruling pending', 'требуется решение владельца 2026-01-02',
+  ]) assert.ok(!ownerRuling(s), s);
+});
+
+test('deferRows keeps a reason that spans lines whole, in the row and in the follow-up entry, and never doubles the prefix', () => {
+  const rows = [
+    '### 6. Multi-line quoted', 'result: skipped', 'reason: "no test card; owner ruling 2026-01-02:', '  defer to Phase 9 with the rest"', '',
+    '### 7. Multi-line plain', 'result: skipped', 'reason: owner ruling 2026-01-02: the first part', '  and the second part', '',
+    '### 8. Blocked, already worded as a deferral', 'result: blocked', 'reason: "Deferred follow-up: later"', '',
+    '### 9. Block reason', 'result: blocked', 'reason: |', '  waiting for the store', '  review', '',
+  ].join('\n');
+  const before = UAT.replace('## Summary', `${rows}\n## Summary`);
+  const r = deferRows(before, { rulings: true, now: NOW });
+  assert.deepEqual(r.deferred, [6, 7]);
+  assert.equal(rowOf(r.text, 6).fields.reason, '"Deferred follow-up: no test card; owner ruling 2026-01-02: defer to Phase 9 with the rest"');
+  assert.equal(rowOf(r.text, 7).fields.reason, '"Deferred follow-up: owner ruling 2026-01-02: the first part and the second part"');
+  assert.ok(!/^ {2}(defer to Phase 9|and the second part)/m.test(r.text), 'no continuation line is left behind');
+  assert.match(r.text, /idea: "Multi-line plain — owner ruling 2026-01-02: the first part and the second part"/);
+  const b = deferRows(before, { tests: [8], now: NOW });
+  assert.equal(rowOf(b.text, 8).fields.reason, '"Deferred follow-up: later"');
+  // the owner request shows a block reason's text, never its indicator
+  const req = ownerRequest({ phase: '3', tests: parseUat(before).tests, lang: 'en', file: 'f' });
+  assert.match(req.text, /^- 9\. Block reason — waiting for the store review$/m);
 });
 
 test('deferRows --rulings: owner-ruled skipped rows become GSD deferrals with the reason unchanged; the others stay', () => {
@@ -87,21 +117,24 @@ test('deferRows by number: the owner confirms skipped or blocked rows; anything 
   assert.throws(() => deferRows(issue, { tests: [5], now: NOW }), /only a skipped or blocked row/);
 });
 
-test('ownerRequest: skipped or blocked rows ask for a confirmation, never for a new test, in both languages', () => {
+test('ownerRequest: skipped or blocked rows were not tested: the owner confirms the deferral or tests them with verify-work, in both languages', () => {
   const { tests } = parseUat(deferRows(withRuled(), { rulings: true, now: NOW }).text.replace(/result: \[pending\]/g, 'result: pass'));
   const ru = ownerRequest({ phase: '3', tests, lang: 'ru', file: 'f' });
   assert.deepEqual([ru.needsOwner, ru.counts.signoff, ru.confirm], [true, 2, [7, 11]]);
-  assert.match(ru.reason, /^ничего не надо тестировать — подтвердите, что пункты остаются отложенными: 7, 11/);
-  assert.match(ru.text, /Ничего не надо тестировать заново/);
+  assert.equal(ru.reason, 'пункты 7, 11 не проверялись; если они остаются на потом — подтверди: turbo-run uat defer 3 7,11; или проверь их через /gsd-verify-work 3');
+  assert.match(ru.text, /^Эти пункты не проверялись/m);
+  assert.match(ru.text, /сохрани файл UAT в git \(commit\)/);
+  assert.doesNotMatch(ru.text, /подтвердите|закоммит/, 'one form of address, plain words');
   assert.match(ru.text, /^- 7\. Store listing shows the app — the store review is still pending$/m);
   assert.match(ru.text, /turbo-run uat defer 3 7,11/);
   assert.doesNotMatch(ru.text, /подпись/, 'nothing here needs a signature');
   const en = ownerRequest({ phase: '3', tests, lang: 'en', file: 'f' });
-  assert.match(en.reason, /^nothing to test again — confirm that items 7, 11 stay deferred/);
+  assert.equal(en.reason, 'items 7, 11 were not tested; if they stay for later, confirm: turbo-run uat defer 3 7,11; or test them with /gsd-verify-work 3');
+  assert.match(en.text, /save the UAT file in git \(commit\)/);
   assert.match(en.text, /turbo-run uat defer 3 7,11/);
   assert.doesNotMatch(en.text, /signature/);
   // a pending row still asks for the owner's check or signature, next to the confirmation
   const mixed = ownerRequest({ phase: '3', tests: parseUat(withRuled()).tests, lang: 'en', file: 'f' });
   assert.deepEqual(mixed.confirm, [6, 7, 8, 9, 11]);
-  assert.match(mixed.reason, /item\(s\) need your sign-off; see f; nothing to test again — confirm that items 6, 7, 8, 9, 11 stay deferred/);
+  assert.match(mixed.reason, /item\(s\) need your sign-off; see f; items 6, 7, 8, 9, 11 were not tested/);
 });

@@ -211,4 +211,5 @@ test('uat defer: --rulings defers the owner-ruled rows, numbers confirm the othe
   assert.equal(await p.run('defer', '3', '7'), 0);
   assert.equal(p.lines.at(-1), 'deferred as follow-ups: 7 (.planning/phases/03-demo/03-UAT.md)');
   assert.equal(await p.run('defer', '3'), 2, 'neither --rulings nor numbers');
+  assert.equal(await p.run('defer', '3', '7', '11'), 2, 'a second number list is never ignored');
 });

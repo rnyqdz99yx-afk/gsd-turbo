@@ -426,6 +426,7 @@ test('verificationRoute: only planning files changed since the report → verifi
   assert.deepEqual({ ...ok, planning: ok.planning.sort() }, {
     route: 'verifier-only', report: `${dir}/03-VERIFICATION.md`, since, review, code: [],
     planning: ['.planning/STATE.md', `${dir}/03-UAT.md`, '.planning/turbo/run/p3.json'].sort(),
+    note: `regression gate and code review not re-run: counted from the code review at ${review.slice(0, 12)}`,
   });
   // untracked, unstaged and committed code changes each make it full
   r.write('src/new.js', 'n\n');
@@ -463,4 +464,26 @@ test('verificationRoute: no report or a report never committed → full; the CLI
   r.write('lib/x.mjs', 'x\n');
   assert.equal(await run('3', '--verification'), 0);
   assert.match(lines.at(-1), /^full: code changed since the report's commit [0-9a-f]{12}: lib\/x\.mjs$/);
+});
+
+test('verificationRoute: code changed after the last code review → full; no code review on record → verifier-only, and the note says so', async () => {
+  const { verificationRoute } = await import('../lib/staleness.mjs');
+  const r = repo();
+  const dir = '.planning/phases/03-demo';
+  const phaseDir = path.join(r.root, dir);
+  r.write('src/a.js', 'a\n');
+  r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
+  r.commit('verify without a review');
+  r.write(`${dir}/03-UAT.md`, 'uat\n');
+  const bare = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([bare.route, bare.review, bare.note], ['verifier-only', null, 'regression gate and code review not re-run; no code review on record']);
+  r.write(`${dir}/03-REVIEW.md`, 'review\n');
+  r.commit('review');
+  r.write('src/a.js', 'a2\n');
+  r.commit('a fix after the review');
+  r.write(`${dir}/03-VERIFICATION.md`, 'v2\n');
+  const since = r.commit('verify again');
+  r.write(`${dir}/03-UAT.md`, 'uat2\n');
+  const late = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([late.route, late.since, late.code, late.reason], ['full', since, ['src/a.js'], 'code changed after the last code review']);
 });

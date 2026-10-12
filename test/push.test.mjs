@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { createGit, scanRange, requestPush, requestFile, recordFile, pushTick, describeRecord } from '../lib/push.mjs';
+import { createGit, scanRange, scanFingerprint, allowFile, requestPush, requestFile, recordFile, pushTick, describeRecord } from '../lib/push.mjs';
 import { DEFAULTS, pushSettings } from '../lib/config.mjs';
 import { readJson, writeJsonAtomic } from '../lib/fsx.mjs';
 import { readInbox, inboxFile } from '../lib/inbox.mjs';
@@ -871,4 +871,64 @@ test('CI on a host other than github.com is read only once gh is logged in to th
   await pushTick(c2.ctx, later(2));
   assert.deepEqual(ok.calls.map((a) => a.slice(0, 2).join(' ')), ['auth status', 'run list', 'run list']);
   assert.ok(ok.calls[1].includes('ghe.example.test/acme/app'));
+});
+
+// a prose line the credential rule still reads as an assignment: a false alarm the owner reviewed (joined at run time)
+const PROSE = ['Tok', 'en: rotate-monthly'].join('');
+const CRED = 'credential assignment';
+
+test('scanRange skips a line whose fingerprint is allowed, keeps any other hit in the same file, and collects the fingerprints it reports', () => {
+  const r = pushRepo();
+  const base = r.sh('rev-parse', 'HEAD');
+  r.commit('docs/a.md', `${PROSE}\n`);
+  r.commit('logs/run.log', 'started\n');
+  const sha = r.commit('src/conf.mjs', `export const t = '${GH}';\n`);
+  const fps = new Set();
+  assert.deepEqual(scanRange(r.git, base, sha, { fingerprints: fps }), [
+    { file: 'docs/a.md', kind: CRED }, { file: 'logs/run.log', kind: 'forbidden name *.log' }, { file: 'src/conf.mjs', kind: 'github token' },
+  ]);
+  const mine = scanFingerprint('docs/a.md', CRED, PROSE);
+  assert.match(mine, /^[0-9a-f]{16}$/);
+  assert.deepEqual([...fps].sort(), [mine, scanFingerprint('src/conf.mjs', 'github token', `export const t = '${GH}';`)].sort(), 'a forbidden name has none');
+  const allowed = new Set([mine]);
+  assert.deepEqual(scanRange(r.git, base, sha, { allowed }), [{ file: 'logs/run.log', kind: 'forbidden name *.log' }, { file: 'src/conf.mjs', kind: 'github token' }]);
+  // a new hit in the same file is not covered by the allowed line
+  const next = ['Tok', 'en: another-value'].join('');
+  const sha2 = r.commit('docs/a.md', `${PROSE}\n${next}\n`);
+  assert.deepEqual(scanRange(r.git, sha, sha2, { allowed }), [{ file: 'docs/a.md', kind: CRED }]);
+  // a commit message line: the same fingerprint whatever its commit, so a rewritten commit keeps the clearance
+  fs.writeFileSync(path.join(r.root, 'src', 'b.mjs'), 'export const b = 1;\n');
+  r.sh('add', '-A');
+  r.sh('commit', '-q', '-m', `docs\n\n${PROSE}`);
+  const sha3 = r.sh('rev-parse', 'HEAD');
+  assert.deepEqual(scanRange(r.git, sha2, sha3), [{ file: `(commit message ${sha3.slice(0, 7)})`, kind: CRED }]);
+  assert.deepEqual(scanRange(r.git, sha2, sha3, { allowed: new Set([scanFingerprint('(commit message)', CRED, PROSE)]) }), []);
+});
+
+test('the owner clears a reviewed false alarm: the refused record keeps its fingerprints, and once the allow file has them the same request is scanned again and pushed', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes } = supervisorCtx(r);
+  const before = r.remoteHead();
+  const sha = r.commit('docs/a.md', `${PROSE}\n`);
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), before);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.equal(rec.outcome, 'refused');
+  assert.deepEqual(rec.allowable, [scanFingerprint('docs/a.md', CRED, PROSE)]);
+  assert.equal(notes.length, 1);
+  const scans = () => calls.filter((a) => sub(a) === 'log' && a.includes('-p')).length;
+  // nothing changed: the refused request is not scanned again
+  await pushTick(ctx, later(1));
+  assert.equal(scans(), 1);
+  // an allow file that does not cover it: scanned again, still refused, not notified again
+  fs.writeFileSync(allowFile(r.root), `# reviewed\n${'0'.repeat(16)}\n`);
+  await pushTick(ctx, later(2));
+  assert.equal(scans(), 2);
+  assert.equal(readJson(recordFile(r.root, '3')).outcome, 'refused');
+  assert.equal(notes.length, 1);
+  fs.appendFileSync(allowFile(r.root), `${rec.allowable[0]}\n`);
+  await pushTick(ctx, later(3));
+  assert.equal(r.remoteHead(), sha);
+  assert.equal(readJson(recordFile(r.root, '3')).outcome, 'pushed');
 });

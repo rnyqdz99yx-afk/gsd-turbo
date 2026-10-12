@@ -11,8 +11,9 @@ import { readVersion, versionInRange } from '../lib/gsd.mjs';
 const PHASE_REL = '.planning/phases/05-demo';
 
 // A project in the middle of phase 5: four plans, the first two with a SUMMARY.
-// before/after: STATE.md lines around the Current Position section (archives, for example).
-function fixture({ summaries = 2, plans = 4, before = [], after = [] } = {}) {
+// before/after: STATE.md lines around the Current Position section (archives, for example); status, activity:
+// the values of its Status and Last activity lines.
+function fixture({ summaries = 2, plans = 4, before = [], after = [], status = 'Ready to execute', activity = '2026-01-01 — planned' } = {}) {
   const root = tmpGitRepo();
   const dir = path.join(root, PHASE_REL);
   fs.mkdirSync(dir, { recursive: true });
@@ -24,7 +25,7 @@ function fixture({ summaries = 2, plans = 4, before = [], after = [] } = {}) {
   ].join('\n'));
   fs.writeFileSync(path.join(root, '.planning', 'STATE.md'), [
     '---', "gsd_state_version: '1.0'", 'status: planning', '---', '', '# Project State', '', ...before, '## Current Position', '',
-    'Phase: 5 of 5 (Demo Feature)', `Plan: 0 of ${plans} in current phase`, 'Status: Ready to execute', 'Last activity: 2026-01-01 — planned', '',
+    'Phase: 5 of 5 (Demo Feature)', `Plan: 0 of ${plans} in current phase`, `Status: ${status}`.trimEnd(), `Last activity: ${activity}`, '',
     ...after, '## Session Continuity', '', 'Last session: 2026-01-01', 'Stopped at: planned', 'Resume file: None', '',
   ].join('\n'));
   for (let i = 1; i <= plans; i++) {
@@ -35,7 +36,8 @@ function fixture({ summaries = 2, plans = 4, before = [], after = [] } = {}) {
 }
 
 // Answers like gsd-tools 1.16 for the fixture and records every call.
-function fakeGsd(root, { found = true } = {}) {
+// waves: { planId: wave } (GSD's topological wave; 1 when not given).
+function fakeGsd(root, { found = true, waves = {} } = {}) {
   const calls = [];
   const gsd = (args) => {
     calls.push(args);
@@ -43,7 +45,7 @@ function fakeGsd(root, { found = true } = {}) {
     if (cmd === 'init') return found ? { phase_found: true, phase_dir: `${root.replace(/\\/g, '/')}/${PHASE_REL}`, phase_number: '05', phase_name: 'Demo Feature' } : { phase_found: false, phase_dir: null, phase_number: null };
     if (cmd === 'phase-plan-index') {
       const files = fs.readdirSync(path.join(root, PHASE_REL));
-      const plans = files.filter((f) => f.endsWith('-PLAN.md')).sort().map((f) => ({ id: f.slice(0, -8), has_summary: files.includes(f.replace('-PLAN.md', '-SUMMARY.md')) }));
+      const plans = files.filter((f) => f.endsWith('-PLAN.md')).sort().map((f) => ({ id: f.slice(0, -8), wave: waves[f.slice(0, -8)] ?? 1, has_summary: files.includes(f.replace('-PLAN.md', '-SUMMARY.md')) }));
       return { phase: sub, plans, incomplete: plans.filter((p) => !p.has_summary).map((p) => p.id) };
     }
     if (cmd === 'state' && sub === 'patch') {
@@ -75,7 +77,6 @@ test('state-sync names the real position through GSD\'s own state commands: phas
     Phase: '05 (Demo Feature) — EXECUTING',
     Plan: '3 of 4',
     Status: 'Executing Phase 05',
-    'Last activity': '2026-10-10 — Phase 05 stopped; next plan 05-03',
   });
   assert.deepEqual(calls[3].slice(2), ['--stopped-at', 'Phase 05: 2 of 4 plans done; next plan 05-03', '--resume-file', `${PHASE_REL}/05-03-PLAN.md`]);
   assert.deepEqual(calls[4].slice(2), ['--files', '.planning/STATE.md']);
@@ -137,7 +138,7 @@ test('state-sync sends only the fields whose first match (bold, then plain, then
   const { gsd, calls } = fakeGsd(root);
   const r = await sync(root, { gsd, now: new Date(2026, 9, 10, 12) });
   assert.equal(r.code, 0, r.lines.join('\n'));
-  assert.deepEqual(JSON.parse(calls.find((c) => c[1] === 'patch')[2]), { Plan: '3 of 4', 'Last activity': '2026-10-10 — Phase 05 stopped; next plan 05-03' });
+  assert.deepEqual(JSON.parse(calls.find((c) => c[1] === 'patch')[2]), { Plan: '3 of 4' });
   assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-03 (3 of 4); committed; not written, their first match lies outside Current Position: Phase, Current Plan, Status']);
 });
 
@@ -242,4 +243,262 @@ test('state-sync with the installed GSD 1.16: begin-phase keeps the synced plan;
   assert.equal(position()[0], 'Phase: 05 (Demo Feature) — READY TO EXECUTE');
   r = await sync(root, {});
   assert.deepEqual(position().slice(0, 3), ['Phase: 05 (Demo Feature) — EXECUTING', 'Plan: 3 of 4', 'Status: Executing Phase 05']);
+});
+
+// The owner's (or a controller's) words in Status and Last activity are not state-sync's to replace: it sends
+// no Last activity, and keeps a Status text first with GSD's resume marker at its end, where advance-plan and
+// planned-phase leave the text alone and begin-phase still finds the marker.
+const OWNER_STATUS = 'Owner ruling: hold the release until the review; build 5 is the one to ship';
+const OWNER_ACTIVITY = '2026-01-02 — plan 05-02 done; the release waits for the review';
+const patchOf = (calls) => JSON.parse(calls.find((c) => c[1] === 'patch')[2]);
+
+test('state-sync never sends Last activity, and keeps the owner\'s Status text with the marker at its end', async () => {
+  for (const [status, want] of [
+    ['Ready to execute', 'Executing Phase 05'],
+    ['', 'Executing Phase 05'],
+    ['Phase complete — ready for verification', 'Executing Phase 05'],
+    [OWNER_STATUS, `${OWNER_STATUS} (Executing Phase 05)`],
+    [`${OWNER_STATUS} (Executing Phase 04)`, `${OWNER_STATUS} (Executing Phase 05)`],
+    [`${OWNER_STATUS} (Executing Phase 05)`, undefined],
+    [`Executing Phase 05 — ${OWNER_STATUS}`, `${OWNER_STATUS} (Executing Phase 05)`],
+    ['Paused', 'Executing Phase 05'],
+    ['Active', 'Executing Phase 05'],
+    ['unknown', 'Executing Phase 05'],
+    ['All phases complete', 'Executing Phase 05'],
+    ['v1.0 milestone complete', 'Executing Phase 05'],
+    ['Paused (Executing Phase 04)', 'Executing Phase 05'],
+    ['Executing Phase 05', undefined],
+  ]) {
+    const root = fixture({ status, activity: OWNER_ACTIVITY });
+    const { gsd, calls } = fakeGsd(root);
+    const r = await sync(root, { gsd });
+    assert.equal(r.code, 0, r.lines.join('\n'));
+    const patch = patchOf(calls);
+    assert.equal(patch.Status, want, status);
+    assert.ok(!('Last activity' in patch), status);
+    assert.deepEqual(patch.Plan, '3 of 4', status);
+  }
+});
+
+test('state-sync with the installed GSD 1.16 keeps the owner\'s Status and Last activity text, and begin-phase still keeps the plan', SKIP, async () => {
+  const { root, tool, position } = committedFixture({ status: OWNER_STATUS, activity: OWNER_ACTIVITY });
+  const r = await sync(root, {});
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(position().slice(0, 4), ['Phase: 05 (Demo Feature) — EXECUTING', 'Plan: 3 of 4', `Status: ${OWNER_STATUS} (Executing Phase 05)`, `Last activity: ${OWNER_ACTIVITY}`]);
+  tool('state', 'begin-phase', '--phase', '05', '--name', 'Demo Feature', '--plans', '4');
+  assert.equal(position()[1], 'Plan: 3 of 4', 'the resume branch keeps the plan');
+});
+
+// GSD's begin-phase writes `Status: Executing Phase <N>` and `Last activity: <date> — Phase <N> execution
+// started|resumed (wave continue)` on every run, over the owner's text (state-sync up to 0.3.1 wrote
+// `… stopped; next plan <id>`). state-sync takes the text back from the newest commit of STATE.md without them.
+const setLines = (root, lines) => {
+  const file = path.join(root, '.planning', 'STATE.md');
+  let s = fs.readFileSync(file, 'utf8');
+  for (const [field, value] of Object.entries(lines)) s = s.replace(new RegExp(`^${field}:.*$`, 'm'), `${field}: ${value}`);
+  fs.writeFileSync(file, s);
+};
+const commitAll = (root, msg) => {
+  execFileSync('git', ['add', '-A'], { cwd: root });
+  execFileSync('git', ['commit', '-q', '-m', msg], { cwd: root });
+};
+const BEGUN = { Status: 'Executing Phase 05', 'Last activity': '2026-01-03 — Phase 05 execution resumed (wave continue)' };
+
+test('state-sync takes the owner\'s Status and Last activity text back from the newest commit without begin-phase\'s lines', async () => {
+  for (const shape of ['uncommitted', 'committed', 'old state-sync']) {
+    const root = fixture({ status: OWNER_STATUS, activity: OWNER_ACTIVITY });
+    commitAll(root, 'owner text');
+    if (shape === 'old state-sync') {
+      setLines(root, { Status: 'Executing Phase 05', 'Last activity': '2026-01-02 — Phase 05 stopped; next plan 05-03' });
+      commitAll(root, 'state-sync 0.3.1');
+    }
+    setLines(root, BEGUN);
+    if (shape !== 'uncommitted') commitAll(root, 'begin-phase, then a plan');
+    const { gsd, calls } = fakeGsd(root);
+    const r = await sync(root, { gsd });
+    assert.equal(r.code, 0, r.lines.join('\n'));
+    const patch = patchOf(calls);
+    assert.equal(patch.Status, `${OWNER_STATUS} (Executing Phase 05)`, shape);
+    assert.equal(patch['Last activity'], OWNER_ACTIVITY, shape);
+    assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-03 (3 of 4); committed; put back the text begin-phase replaced: Status, Last activity'], shape);
+  }
+});
+
+test('state-sync without a commit of the owner\'s text leaves begin-phase\'s lines as they are', async () => {
+  const root = fixture({ status: BEGUN.Status, activity: BEGUN['Last activity'] });
+  commitAll(root, 'begun');
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  const patch = patchOf(calls);
+  assert.ok(!('Status' in patch) && !('Last activity' in patch), JSON.stringify(patch));
+  assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-03 (3 of 4); committed']);
+});
+
+test('state-sync with the installed GSD 1.16 puts back the owner\'s text after begin-phase replaced it, and keeps the plan', SKIP, async () => {
+  const { root, tool, position } = committedFixture({ status: OWNER_STATUS, activity: OWNER_ACTIVITY });
+  let r = await sync(root, {});
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  tool('state', 'begin-phase', '--phase', '05', '--name', 'Demo Feature', '--plans', '4');
+  assert.equal(position()[2], 'Status: Executing Phase 05', 'begin-phase replaced the text');
+  r = await sync(root, {});
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(position().slice(0, 4), ['Phase: 05 (Demo Feature) — EXECUTING', 'Plan: 3 of 4', `Status: ${OWNER_STATUS} (Executing Phase 05)`, `Last activity: ${OWNER_ACTIVITY}`]);
+  assert.equal(execFileSync('git', ['status', '--porcelain', '--', '.planning/STATE.md'], { cwd: root, encoding: 'utf8' }), '', 'committed');
+});
+
+// A re-run of execute-phase on a phase whose plans all have a SUMMARY (final-gate's re-verification, for
+// example) runs begin-phase's first-run branch: Plan 1 of N, the phase EXECUTING, begin-phase's Status and
+// Last activity. state-sync puts the position and the owner's text back.
+const FIRST_RUN = { Phase: '05 (Demo Feature) — EXECUTING', Plan: '1 of 4', Status: 'Executing Phase 05', 'Last activity': '2026-01-03 — Phase 05 execution started' };
+function summarizedFixture() {
+  const root = fixture({ summaries: 4, status: OWNER_STATUS, activity: OWNER_ACTIVITY });
+  setLines(root, { Plan: '4 of 4' });
+  commitAll(root, 'every plan summarized');
+  return root;
+}
+
+test('state-sync with every plan summarized puts back the position and the text begin-phase reset, without a session record', async () => {
+  const root = summarizedFixture();
+  setLines(root, FIRST_RUN);
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(calls.map((c) => c.slice(0, 2)), [['init', 'execute-phase'], ['phase-plan-index', '05'], ['state', 'patch'], ['commit', 'docs(phase-05): put back the STATE.md position that begin-phase reset']]);
+  assert.deepEqual(patchOf(calls), { Plan: '4 of 4', Status: OWNER_STATUS, 'Last activity': OWNER_ACTIVITY });
+  assert.deepEqual(r.lines, ['STATE.md: every plan of phase 05 has a summary; put back what begin-phase reset: Plan, Status, Last activity; committed']);
+});
+
+test('state-sync with every plan summarized and begin-phase\'s Status but no earlier commit puts the plan back and reads ready for verification', async () => {
+  const root = fixture({ summaries: 4, status: FIRST_RUN.Status, activity: FIRST_RUN['Last activity'] });
+  setLines(root, { Plan: FIRST_RUN.Plan });
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(patchOf(calls), { Plan: '4 of 4', Status: 'Phase complete — ready for verification' });
+  assert.deepEqual(r.lines, ['STATE.md: every plan of phase 05 has a summary; put back what begin-phase reset: Plan, Status; committed']);
+});
+
+test('state-sync with the installed GSD 1.16 puts back the position after begin-phase ran on a phase with every plan summarized', SKIP, async () => {
+  const root = summarizedFixture();
+  const tool = (...args) => execFileSync(process.execPath, [path.join(core, 'bin', 'gsd-tools.cjs'), ...args, '--cwd', root], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const position = () => /## Current Position\r?\n\r?\n([\s\S]*?)\r?\n\r?\n/.exec(stateOf(root))[1].split(/\r?\n/);
+  const was = position();
+  tool('state', 'begin-phase', '--phase', '05', '--name', 'Demo Feature', '--plans', '4');
+  assert.equal(position()[1], 'Plan: 1 of 4', 'begin-phase reset the plan');
+  const r = await sync(root, {});
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(position().slice(1), was.slice(1));
+  assert.equal(position()[0], 'Phase: 05 (Demo Feature) — EXECUTING', 'the phase line stays as begin-phase wrote it');
+  assert.doesNotMatch(stateOf(root), /^current_plan: 1$/m, 'begin-phase\'s plan is gone from the frontmatter too');
+  assert.equal(execFileSync('git', ['status', '--porcelain', '--', '.planning/STATE.md'], { cwd: root, encoding: 'utf8' }), '', 'committed');
+});
+
+// The next plan is the open plan of the lowest wave (GSD's waves follow depends_on), not the lowest number;
+// its place is the count of plans done plus one.
+test('state-sync names the open plan of the lowest wave as the next plan, at the count of plans done plus one', async () => {
+  const root = fixture();
+  const { gsd, calls } = fakeGsd(root, { waves: { '05-03': 3, '05-04': 2 } });
+  const r = await sync(root, { gsd });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.equal(patchOf(calls).Plan, '3 of 4');
+  assert.deepEqual(calls.find((c) => c[1] === 'record-session').slice(2), ['--stopped-at', 'Phase 05: 2 of 4 plans done; next plan 05-04', '--resume-file', `${PHASE_REL}/05-04-PLAN.md`]);
+  assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-04 (3 of 4); committed']);
+});
+
+test('state-sync does not put back a Last activity that GSD wrote itself', async () => {
+  const root = fixture({ status: OWNER_STATUS, activity: '2026-01-01 — Phase 04 marked complete' });
+  commitAll(root, 'phase 4 closed by GSD');
+  setLines(root, BEGUN);
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd });
+  assert.ok(!('Last activity' in patchOf(calls)), JSON.stringify(patchOf(calls)));
+  assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-03 (3 of 4); committed; put back the text begin-phase replaced: Status']);
+});
+
+test('state-sync takes each field from the newest commit where that field is not begin-phase\'s: newer owner text wins', async () => {
+  const root = fixture({ status: OWNER_STATUS, activity: OWNER_ACTIVITY });
+  commitAll(root, 'owner text before the phase');
+  setLines(root, BEGUN);
+  commitAll(root, 'begin-phase');
+  setLines(root, { Status: 'Owner: ship after the review' }); // Last activity still begin-phase's
+  commitAll(root, 'the owner writes a new Status');
+  setLines(root, { Status: BEGUN.Status });
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  const patch = patchOf(calls);
+  assert.equal(patch.Status, 'Owner: ship after the review (Executing Phase 05)');
+  assert.equal(patch['Last activity'], OWNER_ACTIVITY);
+});
+
+// The real lifecycle with the installed GSD 1.16: planned-phase's text, begin-phase's first run, a SUMMARY and
+// advance-plan per plan (the last sets `Phase complete — ready for verification`), then a re-run of
+// execute-phase (final-gate's) runs begin-phase again on the summarized phase.
+function lifecycle({ ownerAfter } = {}) {
+  const { root, tool, position } = committedFixture({ summaries: 0, status: OWNER_STATUS, activity: OWNER_ACTIVITY });
+  tool('state', 'begin-phase', '--phase', '05', '--name', 'Demo Feature', '--plans', '4');
+  commitAll(root, 'begin-phase');
+  for (let i = 1; i <= 4; i++) {
+    fs.writeFileSync(path.join(root, PHASE_REL, `05-0${i}-SUMMARY.md`), `---\nphase: 05-demo\nplan: 0${i}\nstatus: complete\n---\n\n# Summary\n`);
+    tool('state', 'advance-plan');
+    commitAll(root, `plan ${i}`);
+  }
+  if (ownerAfter) {
+    setLines(root, { Status: ownerAfter });
+    commitAll(root, 'the owner writes a new Status');
+  }
+  tool('state', 'begin-phase', '--phase', '05', '--name', 'Demo Feature', '--plans', '4');
+  return { root, position };
+}
+
+test('state-sync with the installed GSD 1.16 after a re-run of begin-phase on a summarized phase: ready for verification, never back to before execution', SKIP, async () => {
+  const { root, position } = lifecycle();
+  assert.equal(position()[1], 'Plan: 1 of 4', 'begin-phase reset the plan');
+  let r = await sync(root, {});
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(position().slice(0, 4), ['Phase: 05 (Demo Feature) — EXECUTING', 'Plan: 4 of 4', 'Status: Phase complete — ready for verification', `Last activity: ${OWNER_ACTIVITY}`]);
+  assert.match(stateOf(root), /^status: verifying$/m);
+  assert.equal(execFileSync('git', ['status', '--porcelain', '--', '.planning/STATE.md'], { cwd: root, encoding: 'utf8' }), '', 'committed');
+  r = await sync(root, {});
+  assert.deepEqual(r.lines, ['STATE.md: left as it is (every plan has a summary)']);
+});
+
+test('state-sync with the installed GSD 1.16 keeps the Status the owner wrote after execution when begin-phase ran again', SKIP, async () => {
+  const { root, position } = lifecycle({ ownerAfter: 'Owner: ship after the review' });
+  const r = await sync(root, {});
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(position().slice(1, 3), ['Plan: 4 of 4', 'Status: Owner: ship after the review']);
+});
+
+test('state-sync names only the fields it changed: a GSD Status in the older commit is nothing to put back', async () => {
+  const root = fixture({ activity: OWNER_ACTIVITY }); // Status: Ready to execute
+  commitAll(root, 'planned');
+  setLines(root, { Status: BEGUN.Status });
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd });
+  assert.ok(!('Status' in patchOf(calls)), JSON.stringify(patchOf(calls)));
+  assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-03 (3 of 4); committed']);
+});
+
+test('state-sync with every plan summarized keeps the Status HEAD had when begin-phase had not written it, even one GSD wrote', async () => {
+  const root = fixture({ summaries: 4, status: 'Verifying Phase 05', activity: OWNER_ACTIVITY });
+  setLines(root, { Plan: '4 of 4' });
+  commitAll(root, 'verifying');
+  setLines(root, FIRST_RUN);
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.equal(patchOf(calls).Status, 'Verifying Phase 05');
+});
+
+test('state-sync puts back an owner\'s Last activity that only starts like GSD\'s phase-complete note', async () => {
+  for (const [activity, back] of [['2026-01-01 — Phase 5 complete, waiting for the partner', true], ['2026-01-01 — Phase 4 complete, transitioned to Phase 5', false], ['2026-01-01 — Phase 4 complete', false]]) {
+    const root = fixture({ status: OWNER_STATUS, activity });
+    commitAll(root, 'before');
+    setLines(root, BEGUN);
+    const { gsd, calls } = fakeGsd(root);
+    await sync(root, { gsd });
+    assert.equal(patchOf(calls)['Last activity'], back ? activity : undefined, activity);
+  }
 });

@@ -178,7 +178,12 @@ test('push-allow with the id of the last refusal allows exactly its lines, outsi
   const root = tmpDir('allow');
   refusedRecord(root);
   const wrong = await allowRun(root, ['3', 'abcd0000']);
-  assert.deepEqual([wrong.code, wrong.lines], [1, ['push-allow 3: abcd0000 is not the last refusal of phase 3 (that is abcd1234); nothing allowed']]);
+  // the current refusal is shown with its lines, never only its id to copy blindly
+  assert.deepEqual([wrong.code, wrong.lines], [1, [
+    'push-allow 3: abcd0000 is not the last refusal of phase 3; nothing allowed',
+    ...LISTED,
+    'after checking them, allow these lines: turbo-run push-allow 3 abcd1234',
+  ]]);
   assert.equal(fs.existsSync(allowFile(root)), false);
   const r = await allowRun(root, ['3', 'abcd1234']);
   assert.equal(r.code, 0, r.lines.join('\n'));

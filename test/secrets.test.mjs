@@ -58,6 +58,8 @@ test('credential assignment: real assignments still match, identifier-shaped key
     `DB_PASSWORD=${v}`, `GITHUB_TOKEN=${v}`, `client.secret: ${v}`, `my-api-key: ${v}`, `api_key: "${v}"`, `secret: ${v}`,
     // a bare pass in config: indented YAML, an object literal, a spaced =, a dotted key, no space after the colon
     `  pass: ${v}`, `auth: { user: 'u', pass: '${v}' }`, `pass = '${v}'`, `PASS = ${v}`, `smtp.pass: ${v}`, `pass:${v}`,
+    // a root YAML key: lowercase at the start of a line, the value with a letter and a digit
+    `pass: ${v}`, `pass: ${'S3cret9'}`,
   ];
   for (const line of hits) {
     assert.equal(CRED.test(line), true, line);

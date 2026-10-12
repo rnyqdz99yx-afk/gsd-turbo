@@ -957,10 +957,16 @@ test('a refusal with the same files and kinds but other lines is a new refusal: 
   ask(r, ctx.config.push);
   await pushTick(ctx, NOW);
   const first = readJson(recordFile(r.root, '3'));
+  // a clean wave: the same lines, so the same refusal id (the notified id stays valid), not notified again
+  r.commit('src/ok.mjs', 'export const ok = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, later(1));
+  assert.equal(readJson(recordFile(r.root, '3')).refusal, first.refusal);
+  assert.equal(notes.length, 1);
   // the next wave adds a real secret-shaped line to the same file: the same (file, kind), another fingerprint
   r.commit('docs/a.md', `${PROSE}\n${['pass', 'word=', 'hunter2'.repeat(2)].join('')}\n`);
   ask(r, ctx.config.push);
-  await pushTick(ctx, later(1));
+  await pushTick(ctx, later(2));
   const second = readJson(recordFile(r.root, '3'));
   assert.deepEqual(second.findings, first.findings);
   assert.notEqual(second.refusal, first.refusal);

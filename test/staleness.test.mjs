@@ -494,3 +494,24 @@ test('verificationRoute: code changed after the last code review → full; no co
   const late = verificationRoute({ root: r.root, phaseDir });
   assert.deepEqual([late.route, late.since, late.code, late.reason], ['full', since, ['src/a.js'], 'code changed after the last code review']);
 });
+
+test('verificationRoute: while turbo has GSD\'s gates off, the code review setting is the one saved before, not the live config', async () => {
+  const { verificationRoute } = await import('../lib/staleness.mjs');
+  const r = repo();
+  const dir = '.planning/phases/03-demo';
+  const phaseDir = path.join(r.root, dir);
+  r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
+  r.commit('verify');
+  r.write(`${dir}/03-UAT.md`, 'uat\n');
+  // another lane turned the gates off: the live config says false, the saved original decides
+  r.write('.planning/config.json', JSON.stringify({ workflow: { code_review: false } }));
+  const gates = (original) => r.write('.planning/turbo/gates/p4.json', JSON.stringify({ phase: '4', active: [], original }));
+  gates({ 'workflow.code_review': true });
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'full');
+  gates({ 'workflow.code_review': '__turbo_absent__' });
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'full', 'absent before: GSD\'s default, on');
+  gates({ 'workflow.code_review': false });
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'verifier-only');
+  gates({ 'workflow.nyquist_validation': true });
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'verifier-only', 'no saved code_review: the live config');
+});

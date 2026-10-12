@@ -194,14 +194,14 @@ test('turbo-run status lists owner requests in every view', () => {
 
 test('uat defer: --rulings defers the owner-ruled rows, numbers confirm the others, a refused number changes nothing', async () => {
   const rows = [
-    '### 6. Payment with a real card', 'result: skipped', 'reason: owner ruling: defer to Phase 9', '',
+    '### 6. Payment with a real card', 'result: skipped', 'reason: owner ruling 2026-01-02: defer to Phase 9', '',
     '### 7. Store listing', 'result: blocked', 'reason: the store review is pending', '',
   ].join('\n');
   const p = project(UAT.replace('## Summary', `${rows}\n## Summary`));
   const uatFile = path.join(p.dir, '03-UAT.md');
   assert.equal(await p.run('defer', '3', '--rulings'), 0);
   assert.equal(p.lines.at(-1), 'deferred as follow-ups: 6 (.planning/phases/03-demo/03-UAT.md)');
-  assert.equal(parseUat(fs.readFileSync(uatFile, 'utf8')).tests.find((t) => t.number === 6).fields.reason, '"Deferred follow-up: owner ruling: defer to Phase 9"');
+  assert.equal(parseUat(fs.readFileSync(uatFile, 'utf8')).tests.find((t) => t.number === 6).fields.reason, '"Deferred follow-up: owner ruling 2026-01-02: defer to Phase 9"');
   assert.equal(await p.run('defer', '3', '--rulings', '--json'), 0);
   assert.deepEqual(JSON.parse(p.lines.at(-1)), { file: '.planning/phases/03-demo/03-UAT.md', deferred: [], already: [] });
   const before = fs.readFileSync(uatFile, 'utf8');

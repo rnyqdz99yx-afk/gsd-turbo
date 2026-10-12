@@ -55,7 +55,7 @@ With `push.mode` set in `.planning/turbo/config.json`, the supervisor pushes thi
   - exit 0: `pushed <sha> to <remote>/<branch> · CI green (…)`, `… · CI none (…)`, or `push off: nothing requested …`;
   - exit 3: `waiting: …` → run the same command again (it keeps the same request);
   - exit 1: `… · CI red (…)` → **CI red**, then the same command again. Any other line ends this request, and the point that ran the command says what to do:
-    - `… · CI timeout …`, `diverged: …`, `refused: …` and a `failed: …` the supervisor recorded (a fetch, a push, a detached HEAD, a step that failed): the owner was notified (`refused:` with the same findings as the last refusal only the first time);
+    - `… · CI timeout …`, `diverged: …`, `refused: …` and a `failed: …` the supervisor recorded (a fetch, a push, a detached HEAD, a step that failed): the owner was notified (`refused:` with the same findings as the last refusal only the first time). After `refused:` never reword committed text or rewrite commits only to get past the scan: the owner clears a false alarm with `turbo-run push-allow <N> <refusal>`, and the supervisor then pushes the same request. Never write turbo's push allow file (`<Claude config dir>/turbo/allow/`) and never run `push-allow`: only the owner clears findings;
     - `failed: no supervisor is running …` and `failed: the supervisor has not taken this request …`: nobody was notified; name the line in your note or stop reason;
     - `superseded: …` and `… · CI superseded by a later push`: a newer request or push from this checkout replaced this one; nobody was notified.
     - `… · CI cancelled …`: every CI run of the push was cancelled, so nothing was tested; nobody was notified. Name it in your note and go on.

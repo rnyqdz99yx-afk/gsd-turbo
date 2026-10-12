@@ -35,3 +35,34 @@ test('the UAT scan still uses the shared rules', () => {
   const f = scanSecrets(['ok', SAMPLES['github token']].join('\n'));
   assert.deepEqual(f, [{ rule: 'github token', line: 2 }]);
 });
+
+const CRED = SECRET_RULES.find(([rule]) => rule === 'credential assignment')[1];
+
+test('credential assignment: prose with pass: or PASS: is not a finding', () => {
+  const prose = [
+    'prints `PASS: dry-run complete (a -> b-before)`',
+    '(third pass: re-review of the fixes)',
+    'the targeted tests pass: `node --test test/a.test.mjs`',
+    'PASS: 14/14 checks',
+    'pass: all-green-today',
+    'PASS:14/14',
+    'a first-pass: re-review-later',
+  ];
+  for (const line of prose) assert.equal(CRED.test(line), false, line);
+});
+
+test('credential assignment: real assignments still match, identifier-shaped keys included, and the value is masked', () => {
+  const v = 'hunter2'.repeat(2);
+  const hits = [
+    `password=${v}`, `"pass": "${v}"`, `'pass' = '${v}'`, `pass=${v}`, `DB_PASS: ${v}`, `smtp_pass=${v}`,
+    `DB_PASSWORD=${v}`, `GITHUB_TOKEN=${v}`, `client.secret: ${v}`, `my-api-key: ${v}`, `api_key: "${v}"`, `secret: ${v}`,
+    // a bare pass in config: indented YAML, an object literal, a spaced =, a dotted key, no space after the colon
+    `  pass: ${v}`, `auth: { user: 'u', pass: '${v}' }`, `pass = '${v}'`, `PASS = ${v}`, `smtp.pass: ${v}`, `pass:${v}`,
+    // a root YAML key: lowercase at the start of a line, the value with a letter and a digit
+    `pass: ${v}`, `pass: ${'S3cret9'}`,
+  ];
+  for (const line of hits) {
+    assert.equal(CRED.test(line), true, line);
+    assert.equal(maskSecrets(line).includes(v), false, line);
+  }
+});

@@ -5,7 +5,8 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
-import { describeRecord, requestFile, recordFile } from '../lib/push.mjs';
+import { describeRecord, requestFile, recordFile, allowFile, readAllowed } from '../lib/push.mjs';
+import { msg } from '../lib/messages.mjs';
 import { readJson, writeJsonAtomic } from '../lib/fsx.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
@@ -131,4 +132,101 @@ test('describeRecord: one line and exit code per outcome', () => {
     [{ outcome: 'failed', reason: 'HEAD is detached; turbo pushes a branch only' }, 1, 'failed: HEAD is detached; turbo pushes a branch only'],
   ];
   for (const [rec, code, line] of cases) assert.deepEqual(describeRecord(rec), { code, line });
+});
+
+// the owner's allow files live under turbo's own directory: a throwaway one for this file (the bin runs inherit it)
+process.env.CLAUDE_CONFIG_DIR = tmpDir('home');
+
+// the refused record the supervisor writes: two secret-rule lines with their fingerprints, one forbidden name
+const C1 = 'b'.repeat(40);
+const C2 = 'c'.repeat(40);
+function refusedRecord(root) {
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  writeJsonAtomic(recordFile(root, '3'), {
+    requestId: 'r1', phase: '3', remote: 'origin', outcome: 'refused', branch: 'main', sha: 'a'.repeat(40), refusal: 'abcd1234',
+    findings: [{ file: 'data/app.sqlite', kind: 'forbidden name *.sqlite' }, { file: 'docs/a.md', kind: 'credential assignment' }, { file: 'docs/b.md', kind: 'credential assignment' }],
+    allowable: ['0123456789abcdef', 'fedcba9876543210'],
+    lines: [
+      { fp: '0123456789abcdef', commit: C1, file: 'docs/a.md', line: 4, kind: 'credential assignment' },
+      { fp: 'fedcba9876543210', commit: C2, file: 'docs/b.md', line: 2, kind: 'credential assignment' },
+    ],
+    allowSeen: '',
+  });
+}
+const allowRun = (root, args, env = {}) => {
+  const lines = [];
+  const code = runPhaseCommand('push-allow', args, { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`), deps: { env: { ...env } } });
+  return code.then((c) => ({ code: c, lines }));
+};
+const LISTED = [
+  'push-allow 3: the last refusal is abcd1234 (commit aaaaaaa); the lines the scan found:',
+  `  ${C1.slice(0, 7)} docs/a.md:4 (credential assignment)`,
+  `  ${C2.slice(0, 7)} docs/b.md:2 (credential assignment)`,
+  'not allowed (push these once by hand after checking them): data/app.sqlite (forbidden name *.sqlite)',
+];
+
+test('push-allow without a refusal id lists the lines of the last refusal (commit, file, line, never the value) and writes nothing', async () => {
+  const root = tmpDir('allow');
+  refusedRecord(root);
+  const r = await allowRun(root, ['3']);
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(r.lines, [...LISTED, 'after checking them, allow these lines: turbo-run push-allow 3 abcd1234']);
+  assert.equal(fs.existsSync(allowFile(root)), false);
+});
+
+test('push-allow with the id of the last refusal allows exactly its lines, outside the checkout, and adds nothing twice; another id allows nothing', async () => {
+  const root = tmpDir('allow');
+  refusedRecord(root);
+  const wrong = await allowRun(root, ['3', 'abcd0000']);
+  // the current refusal is shown with its lines, never only its id to copy blindly
+  assert.deepEqual([wrong.code, wrong.lines], [1, [
+    'push-allow 3: abcd0000 is not the last refusal of phase 3; nothing allowed',
+    ...LISTED,
+    'after checking them, allow these lines: turbo-run push-allow 3 abcd1234',
+  ]]);
+  assert.equal(fs.existsSync(allowFile(root)), false);
+  const r = await allowRun(root, ['3', 'abcd1234']);
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(r.lines, [...LISTED, 'push-allow 3: allowed 2 lines of refusal abcd1234; the supervisor scans the request again at its next check']);
+  assert.deepEqual([...readAllowed(root).allowed].sort(), ['0123456789abcdef', 'fedcba9876543210']);
+  const rel = path.relative(root, allowFile(root));
+  assert.ok(rel.startsWith('..') || path.isAbsolute(rel), 'outside the checkout');
+  const text = fs.readFileSync(allowFile(root), 'utf8');
+  assert.match(text, /^# phase 3, refusal abcd1234, .*: docs\/a\.md:4, docs\/b\.md:2$/m);
+  const again = await allowRun(root, ['3', 'abcd1234']);
+  assert.equal(again.lines.at(-1), 'push-allow 3: these lines are allowed already; the supervisor scans the request again at its next check');
+  assert.equal(fs.readFileSync(allowFile(root), 'utf8'), text, 'nothing added twice');
+});
+
+test('push-allow: nothing to allow when the last push was not refused; refused inside a lane; a phase is required', async () => {
+  const root = tmpDir('allow');
+  const none = await allowRun(root, ['3']);
+  assert.deepEqual([none.code, none.lines], [1, ['push-allow 3: the last push of phase 3 was not refused; nothing to allow']]);
+  refusedRecord(root);
+  const lane = await allowRun(root, ['3', 'abcd1234'], { TURBO_LANE: '1' });
+  assert.equal(lane.code, 1);
+  assert.match(lane.lines[0], /^refused: a lane never clears the push scan's findings/);
+  assert.equal(fs.existsSync(allowFile(root)), false);
+  const bad = await allowRun(root, []);
+  assert.equal(bad.code, 2);
+  assert.match(bad.lines[0], /^ERR usage: turbo-run push-allow <phase> \[<refusal>\]/);
+});
+
+test('the push-refused notification names push-allow with the refusal; pushAllowed says how many lines, in both languages', () => {
+  for (const lang of ['en', 'ru']) {
+    const m = msg(lang, 'pushRefused', { phase: '3', findings: 'docs/a.md (credential assignment)', remote: 'origin', branch: 'main', refusal: 'abcd1234' });
+    assert.ok(m.body.includes('turbo-run push-allow 3 abcd1234'), m.body);
+    assert.ok(m.body.includes('turbo-run push-allow 3 '), m.body);
+    const a = msg(lang, 'pushAllowed', { phase: '3', count: 2 });
+    assert.notEqual(a.title, 'pushAllowed');
+    assert.ok(a.body.includes('2'), a.body);
+  }
+});
+
+test('bin routes push-allow', () => {
+  const root = tmpDir('allow');
+  fs.mkdirSync(path.join(root, '.planning'));
+  const r = cli(['push-allow', '3'], root);
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(r.stdout.trim(), 'push-allow 3: the last push of phase 3 was not refused; nothing to allow');
 });

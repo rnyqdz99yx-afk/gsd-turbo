@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
-import { laneSessionName } from '../lib/claude.mjs';
+import { laneSessionName, projectHash } from '../lib/claude.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
@@ -651,7 +651,8 @@ test('start passes doctor\'s full mode to the daemon: the lane runs the turbo-ph
   assert.equal(bg.at(-1), 'Run the turbo-phase skill with arguments: 4');
   assert.match(bg[bg.indexOf('--append-system-prompt') + 1], /lane-status 4 done .*close step/);
   // the settings JSON crosses a real process boundary intact (on win32 too: the shim resolves to node, no cmd.exe)
-  const tmp = path.join(p.root, '.planning', 'turbo', 'run', 'tmp', 'p4');
+  // under turbo's own directory (CLAUDE_CONFIG_DIR/turbo), never in the project's tree or git directory
+  const tmp = path.join(p.env.CLAUDE_CONFIG_DIR, 'turbo', 'tmp', projectHash(p.root), 'p4');
   assert.deepEqual(JSON.parse(bg[bg.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' }, env: { TURBO_LANE: '1', TMP: tmp, TEMP: tmp, TMPDIR: tmp } });
   assert.ok(fs.statSync(tmp).isDirectory(), 'created before the launch');
   const sup = await waitFor(() => { const s = readSup(p.root); return s?.lane?.mode ? s : null; }, 15000);

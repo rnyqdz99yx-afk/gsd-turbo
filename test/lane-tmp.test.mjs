@@ -7,6 +7,11 @@ import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { laneTmpBase, laneTmpDir, prepareLaneTmp, removeLaneTmp } from '../lib/lane-tmp.mjs';
 import { laneSessionName, projectHash } from '../lib/claude.mjs';
 
+// lane temp directories live under turbo's own directory: a throwaway one for this file
+const HOME = tmpDir('home');
+process.env.CLAUDE_CONFIG_DIR = HOME;
+const TMP = path.join(HOME, 'turbo', 'tmp');
+
 const LINK = process.platform === 'win32' ? 'junction' : 'dir';
 const fill = (dir) => {
   fs.mkdirSync(path.join(dir, 'stand'), { recursive: true });
@@ -20,21 +25,37 @@ const precious = (rel = path.join('tmp', 'p3')) => {
   return outside;
 };
 
-test('a lane\'s temp directory lives in the git directory, per project, outside the working tree; outside a repository under run/', () => {
+// A project test may check that os.tmpdir() lies outside its checkout: inside a lane, TMP is this directory.
+test('a lane\'s temp directory lives under turbo\'s own directory, per project, outside the checkout and its git directory', () => {
   const repo = tmpGitRepo();
-  assert.equal(laneTmpBase(repo), path.join(repo, '.git', 'turbo', 'tmp', projectHash(repo)));
-  assert.equal(laneTmpDir(repo, '3'), path.join(repo, '.git', 'turbo', 'tmp', projectHash(repo), 'p3'));
+  assert.equal(laneTmpBase(repo), path.join(TMP, projectHash(repo)));
+  assert.equal(laneTmpDir(repo, '3'), path.join(TMP, projectHash(repo), 'p3'));
   assert.match(projectHash(repo), /^[0-9a-f]{6}$/);
   assert.ok(laneSessionName(repo, '3').includes(`-${projectHash(repo)}-p3`), 'the hash lane session names carry');
+  const rel = path.relative(repo, laneTmpDir(repo, '3'));
+  assert.ok(rel.startsWith('..') || path.isAbsolute(rel), 'never under the project root');
   // two GSD projects in one repository never share a directory
   const app = path.join(repo, 'app');
   const web = path.join(repo, 'web');
   fs.mkdirSync(app);
   fs.mkdirSync(web);
-  assert.equal(laneTmpBase(app), path.join(repo, '.git', 'turbo', 'tmp', projectHash(app)));
+  assert.equal(laneTmpBase(app), path.join(TMP, projectHash(app)));
   assert.notEqual(laneTmpDir(app, '3'), laneTmpDir(web, '3'));
+  // outside a repository: the same place
   const plain = tmpDir('plain');
-  assert.equal(laneTmpBase(plain), path.join(plain, '.planning', 'turbo', 'run', 'tmp'));
+  assert.equal(laneTmpBase(plain), path.join(TMP, projectHash(plain)));
+  // prepare creates turbo's directory when it is not there yet, and nothing in the checkout
+  const fresh = tmpDir('home-fresh');
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = path.join(fresh, 'not-yet');
+  try {
+    assert.equal(prepareLaneTmp(repo, '3'), path.join(fresh, 'not-yet', 'turbo', 'tmp', projectHash(repo), 'p3'));
+    assert.ok(fs.statSync(laneTmpDir(repo, '3')).isDirectory());
+  } finally {
+    process.env.CLAUDE_CONFIG_DIR = was;
+  }
+  assert.equal(fs.existsSync(path.join(repo, '.git', 'turbo')), false);
+  assert.equal(fs.existsSync(path.join(repo, '.planning')), false);
 });
 
 test('prepareLaneTmp empties a stale directory and creates it; removeLaneTmp removes p<N> only', () => {
@@ -84,7 +105,7 @@ test('a stale directory a leftover stand still works in is never partly deleted'
   assert.deepEqual(fs.readdirSync(laneTmpBase(repo)).filter((n) => n !== 'p3'), [], 'no renamed leftover stays behind');
 });
 
-test('removeLaneTmp and prepareLaneTmp refuse a p<N> that is a link, and a base that is itself a link or under one', () => {
+test('removeLaneTmp and prepareLaneTmp refuse a p<N> that is a link, and a base that is itself a link', () => {
   // p3 a link to outside
   const a = tmpGitRepo();
   const outA = precious();
@@ -92,19 +113,30 @@ test('removeLaneTmp and prepareLaneTmp refuse a p<N> that is a link, and a base 
   fs.symlinkSync(path.join(outA, 'tmp', 'p3'), laneTmpDir(a, '3'), LINK);
   assert.throws(() => removeLaneTmp(a, '3'), /not removed: it resolves outside/);
   assert.ok(fs.existsSync(path.join(outA, 'tmp', 'p3', 'precious.txt')));
-  // .git/turbo a link: the base resolves outside, so <target>/tmp/<project key>/p3 would go
+  // the project's base a link: <target>/p3 would go
   const b = tmpGitRepo();
-  const rel = path.join('tmp', projectHash(b), 'p3');
-  const outB = precious(rel);
-  fs.symlinkSync(outB, path.join(b, '.git', 'turbo'), LINK);
+  const outB = precious('p3');
+  fs.mkdirSync(TMP, { recursive: true });
+  fs.symlinkSync(outB, laneTmpBase(b), LINK);
   assert.throws(() => removeLaneTmp(b, '3'), /is a link or lies under one/);
   assert.throws(() => prepareLaneTmp(b, '3'), /is a link or lies under one/);
-  assert.ok(fs.existsSync(path.join(outB, rel, 'precious.txt')));
-  // outside a repository: .planning/turbo/run a link
-  const c = tmpDir('plain');
-  const outC = precious();
-  fs.mkdirSync(path.join(c, '.planning', 'turbo'), { recursive: true });
-  fs.symlinkSync(outC, path.join(c, '.planning', 'turbo', 'run'), LINK);
-  assert.throws(() => removeLaneTmp(c, '3'), /is a link or lies under one/);
-  assert.ok(fs.existsSync(path.join(outC, 'tmp', 'p3', 'precious.txt')));
+  assert.ok(fs.existsSync(path.join(outB, 'p3', 'precious.txt')));
+});
+
+test('a turbo tmp directory that is a link is refused for every project', () => {
+  const home = tmpDir('home-link');
+  const c = tmpGitRepo();
+  const rel = path.join(projectHash(c), 'p3');
+  const outC = precious(rel);
+  fs.mkdirSync(path.join(home, 'turbo'), { recursive: true });
+  fs.symlinkSync(outC, path.join(home, 'turbo', 'tmp'), LINK);
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = home;
+  try {
+    assert.throws(() => removeLaneTmp(c, '3'), /is a link or lies under one/);
+    assert.throws(() => prepareLaneTmp(c, '3'), /is a link or lies under one/);
+  } finally {
+    process.env.CLAUDE_CONFIG_DIR = was;
+  }
+  assert.ok(fs.existsSync(path.join(outC, rel, 'precious.txt')));
 });

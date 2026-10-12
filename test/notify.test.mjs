@@ -288,7 +288,7 @@ test('the Russian notifications hold no English but commands, paths, names and t
   const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
   const keys = ['laneNeedsOwner', 'laneStalled', 'questionsReady', 'laneDowngraded', 'ownerChecklist', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'workspaceUntrusted', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'rangeBlocked', 'supervisorFailing', 'pushDiverged', 'pushRefused', 'pushFailed', 'ciRed', 'ciTimeout', 'ciUnavailable'];
   // commands the owner runs, as printed, and the names of tools and files
-  const COMMANDS = [/\/turbo-autonomous [a-z]+(?: \{\w+\})?/g, /\/turbo-autonomous --only \{dep\}/g, /--(?:from|to|all)\b/g, /claude attach \{id\}/g, /\{turboRun\} doctor/g, /\{turboRun\} lane-status \{phase\} done/g, /turbo-phase restore, fanout, fix, final-gate и uat/g, /git push \{remote\} \{branch\}/g, /gh run list\{repo\} --commit \{commit\}/g, /\.planning\/turbo\/logs\/supervisor\.log/g, /ROADMAP\.md/g];
+  const COMMANDS = [/\/turbo-autonomous [a-z]+(?: \{\w+\})?/g, /\/turbo-autonomous --only \{dep\}/g, /--(?:from|to|all)\b/g, /claude attach \{id\}/g, /\{turboRun\} doctor/g, /\{turboRun\} lane-status \{phase\} done/g, /turbo-phase restore, fanout, fix, final-gate и uat/g, /git push \{remote\} \{branch\}/g, /turbo-run push-allow \{phase\}/g,/gh run list\{repo\} --commit \{commit\}/g, /\.planning\/turbo\/logs\/supervisor\.log/g, /ROADMAP\.md/g];
   const NAMES = new Set(['CI', 'GSD', 'Claude', 'Code', 'claude', 'turbo', 'turbo-phase', 'doctor', 'gh', 'Telegram']);
   for (const key of keys) {
     const m = msg('ru', key, keep);

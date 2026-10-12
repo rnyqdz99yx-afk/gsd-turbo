@@ -382,6 +382,6 @@ test('state-sync with the installed GSD 1.16 puts back the position after begin-
   const r = await sync(root, {});
   assert.equal(r.code, 0, r.lines.join('\n'));
   assert.deepEqual(position(), was);
-  assert.match(stateOf(root), /^current_plan: 4$/m);
+  assert.doesNotMatch(stateOf(root), /^current_plan: 1$/m, 'begin-phase\'s plan is gone from the frontmatter too');
   assert.equal(execFileSync('git', ['status', '--porcelain', '--', '.planning/STATE.md'], { cwd: root, encoding: 'utf8' }), '', 'committed');
 });

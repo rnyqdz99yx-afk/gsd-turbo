@@ -460,7 +460,7 @@ test('verificationRoute: no report or a report never committed → full; the CLI
   assert.equal(await run('3', '--verification', '--json'), 0);
   assert.equal(JSON.parse(lines.at(-1)).route, 'verifier-only');
   assert.equal(await run('3', '--verification'), 0);
-  assert.match(lines.at(-1), /^verifier-only: no code changed since the report's commit [0-9a-f]{12} \(1 planning file\(s\) changed\)$/);
+  assert.match(lines.at(-1), /^verifier-only: no code changed since the report's commit [0-9a-f]{12} \(1 planning file\(s\) changed\); regression gate and code review not re-run; no code review on record$/);
   r.write('lib/x.mjs', 'x\n');
   assert.equal(await run('3', '--verification'), 0);
   assert.match(lines.at(-1), /^full: code changed since the report's commit [0-9a-f]{12}: lib\/x\.mjs$/);

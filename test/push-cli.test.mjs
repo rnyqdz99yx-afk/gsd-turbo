@@ -5,7 +5,8 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
-import { describeRecord, requestFile, recordFile } from '../lib/push.mjs';
+import { describeRecord, requestFile, recordFile, allowFile, readAllowed } from '../lib/push.mjs';
+import { msg } from '../lib/messages.mjs';
 import { readJson, writeJsonAtomic } from '../lib/fsx.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
@@ -131,4 +132,65 @@ test('describeRecord: one line and exit code per outcome', () => {
     [{ outcome: 'failed', reason: 'HEAD is detached; turbo pushes a branch only' }, 1, 'failed: HEAD is detached; turbo pushes a branch only'],
   ];
   for (const [rec, code, line] of cases) assert.deepEqual(describeRecord(rec), { code, line });
+});
+
+// the refused record the supervisor writes: two secret-rule hits with their fingerprints, one forbidden name
+function refusedRecord(root) {
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  writeJsonAtomic(recordFile(root, '3'), {
+    requestId: 'r1', phase: '3', remote: 'origin', outcome: 'refused', branch: 'main', sha: 'a'.repeat(40),
+    findings: [{ file: 'data/app.sqlite', kind: 'forbidden name *.sqlite' }, { file: 'docs/a.md', kind: 'credential assignment' }, { file: 'docs/b.md', kind: 'credential assignment' }],
+    allowable: ['0123456789abcdef', 'fedcba9876543210'], allowSeen: '',
+  });
+}
+const allowRun = (root, args, env = {}) => {
+  const lines = [];
+  const code = runPhaseCommand('push-allow', args, { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`), deps: { env: { ...env } } });
+  return code.then((c) => ({ code: c, lines }));
+};
+
+test('push-allow clears the fingerprints of the last refusal, names what it cannot clear, and adds nothing twice', async () => {
+  const root = tmpDir('allow');
+  refusedRecord(root);
+  const r = await allowRun(root, ['3']);
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(r.lines, [
+    'push-allow 3: allowed 2 lines: docs/a.md (credential assignment), docs/b.md (credential assignment); the supervisor scans the request again at its next check',
+    'not allowed (push these once by hand after checking them): data/app.sqlite (forbidden name *.sqlite)',
+  ]);
+  assert.deepEqual([...readAllowed(root).allowed].sort(), ['0123456789abcdef', 'fedcba9876543210']);
+  const text = fs.readFileSync(allowFile(root), 'utf8');
+  assert.match(text, /^# phase 3, .*: docs\/a\.md \(credential assignment\), docs\/b\.md \(credential assignment\)$/m);
+  const again = await allowRun(root, ['3']);
+  assert.equal(again.lines[0], 'push-allow 3: these lines are allowed already; the supervisor scans the request again at its next check');
+  assert.equal(fs.readFileSync(allowFile(root), 'utf8'), text, 'nothing added twice');
+});
+
+test('push-allow: nothing to clear when the last push was not refused; refused inside a lane; a phase is required', async () => {
+  const root = tmpDir('allow');
+  const none = await allowRun(root, ['3']);
+  assert.deepEqual([none.code, none.lines], [1, ['push-allow 3: the last push of phase 3 was not refused; nothing to allow']]);
+  refusedRecord(root);
+  const lane = await allowRun(root, ['3'], { TURBO_LANE: '1' });
+  assert.equal(lane.code, 1);
+  assert.match(lane.lines[0], /^refused: a lane never clears the push scan's findings/);
+  assert.equal(fs.existsSync(allowFile(root)), false);
+  const bad = await allowRun(root, []);
+  assert.equal(bad.code, 2);
+  assert.match(bad.lines[0], /^ERR usage: turbo-run push-allow <phase>/);
+});
+
+test('the push-refused notification names push-allow, in both languages', () => {
+  for (const lang of ['en', 'ru']) {
+    const m = msg(lang, 'pushRefused', { phase: '3', findings: 'docs/a.md (credential assignment)', remote: 'origin', branch: 'main' });
+    assert.ok(m.body.includes('turbo-run push-allow 3'), m.body);
+  }
+});
+
+test('bin routes push-allow', () => {
+  const root = tmpDir('allow');
+  fs.mkdirSync(path.join(root, '.planning'));
+  const r = cli(['push-allow', '3'], root);
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(r.stdout.trim(), 'push-allow 3: the last push of phase 3 was not refused; nothing to allow');
 });

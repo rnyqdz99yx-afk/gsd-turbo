@@ -42,7 +42,7 @@ Inbox: before each step (right after point 2) and after each wave of a `gsd-exec
 When a section says **stop for the owner** or **fail**:
 
 0. Wait until every subagent you started in the background has finished and its result has arrived. Then **Commit the answers** (section **Owner questions**).
-1. `turbo-run gates restore N` (puts GSD's built-in gates back; does nothing when they are on), then `turbo-run gates docs-restore N` (puts GSD's docs commits back after a parallel window; does nothing when none is open), then `turbo-run state-sync N` (records the real position in STATE.md: the phase, executing, the first plan without a SUMMARY; keeps the owner's Status and Last activity text; with every plan summarized it only puts back what begin-phase reset). Best effort: if any of them fails, add its error to the reason and go on.
+1. `turbo-run gates restore N` (puts GSD's built-in gates back; does nothing when they are on), then `turbo-run gates docs-restore N` (puts GSD's docs commits back after a parallel window; does nothing when none is open), then `turbo-run state-sync N` (records the real position in STATE.md: the phase, executing, the next plan without a SUMMARY by wave; keeps the owner's Status and Last activity text; with every plan summarized it only puts back what begin-phase reset). Best effort: if any of them fails, add its error to the reason and go on.
 2. `turbo-run lane-status N needs-owner --reason "<one line>"`, or `failed` for **fail**.
 3. End your turn without marking the step done. `/turbo-autonomous resume N` starts the step again later.
 

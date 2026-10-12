@@ -45,6 +45,8 @@ test('credential assignment: prose with pass: or PASS: is not a finding', () => 
     'the targeted tests pass: `node --test test/a.test.mjs`',
     'PASS: 14/14 checks',
     'pass: all-green-today',
+    'PASS:14/14',
+    'a first-pass: re-review-later',
   ];
   for (const line of prose) assert.equal(CRED.test(line), false, line);
 });
@@ -54,6 +56,8 @@ test('credential assignment: real assignments still match, identifier-shaped key
   const hits = [
     `password=${v}`, `"pass": "${v}"`, `'pass' = '${v}'`, `pass=${v}`, `DB_PASS: ${v}`, `smtp_pass=${v}`,
     `DB_PASSWORD=${v}`, `GITHUB_TOKEN=${v}`, `client.secret: ${v}`, `my-api-key: ${v}`, `api_key: "${v}"`, `secret: ${v}`,
+    // a bare pass in config: indented YAML, an object literal, a spaced =, a dotted key, no space after the colon
+    `  pass: ${v}`, `auth: { user: 'u', pass: '${v}' }`, `pass = '${v}'`, `PASS = ${v}`, `smtp.pass: ${v}`, `pass:${v}`,
   ];
   for (const line of hits) {
     assert.equal(CRED.test(line), true, line);

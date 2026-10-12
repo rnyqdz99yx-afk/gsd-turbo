@@ -366,7 +366,7 @@ test('a secret or forbidden file in the range: nothing pushed, file and kind nam
   const rec = readJson(recordFile(r.root, '3'));
   assert.equal(rec.outcome, 'refused');
   assert.deepEqual(rec.findings, [{ file: 'data/app.sqlite', kind: 'forbidden name *.sqlite' }, { file: 'src/conf.mjs', kind: 'github token' }]);
-  assert.deepEqual(notes, [{ key: 'pushRefused', vars: { phase: '3', remote: 'origin', branch: 'main', findings: 'data/app.sqlite (forbidden name *.sqlite), src/conf.mjs (github token)' } }]);
+  assert.deepEqual(notes, [{ key: 'pushRefused', vars: { phase: '3', remote: 'origin', branch: 'main', findings: 'data/app.sqlite (forbidden name *.sqlite), src/conf.mjs (github token)', refusal: rec.refusal } }]);
   // the next wave adds a clean commit: the same findings, refused again, not notified again
   r.commit('src/ok.mjs', 'export const ok = 1;\n');
   ask(r, ctx.config.push);

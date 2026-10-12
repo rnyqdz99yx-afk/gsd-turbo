@@ -480,3 +480,25 @@ test('state-sync names only the fields it changed: a GSD Status in the older com
   assert.ok(!('Status' in patchOf(calls)), JSON.stringify(patchOf(calls)));
   assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-03 (3 of 4); committed']);
 });
+
+test('state-sync with every plan summarized keeps the Status HEAD had when begin-phase had not written it, even one GSD wrote', async () => {
+  const root = fixture({ summaries: 4, status: 'Verifying Phase 05', activity: OWNER_ACTIVITY });
+  setLines(root, { Plan: '4 of 4' });
+  commitAll(root, 'verifying');
+  setLines(root, FIRST_RUN);
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.equal(patchOf(calls).Status, 'Verifying Phase 05');
+});
+
+test('state-sync puts back an owner\'s Last activity that only starts like GSD\'s phase-complete note', async () => {
+  for (const [activity, back] of [['2026-01-01 — Phase 5 complete, waiting for the partner', true], ['2026-01-01 — Phase 4 complete, transitioned to Phase 5', false], ['2026-01-01 — Phase 4 complete', false]]) {
+    const root = fixture({ status: OWNER_STATUS, activity });
+    commitAll(root, 'before');
+    setLines(root, BEGUN);
+    const { gsd, calls } = fakeGsd(root);
+    await sync(root, { gsd });
+    assert.equal(patchOf(calls)['Last activity'], back ? activity : undefined, activity);
+  }
+});

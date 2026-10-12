@@ -191,3 +191,20 @@ test('turbo-phase skill: a uat step that restarts with gap plans not run yet res
   assert.ok(zero > 0 && zero < uat.indexOf('\n1. '), 'point 0 before point 1');
   for (const n of ['a plan without its SUMMARY', 'turbo-run phase-step N --attempt uat', 'go (round <n> resumed: …)', 'without counting it again']) assert.ok(uat.includes(n), n);
 });
+
+test('turbo-phase skill: owner-ruled UAT rows are deferred before owner-request; a stale report after UAT re-runs only the verifier when no code changed', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const stale = s.slice(s.indexOf('\n### Stale report\n'), s.indexOf('\n## Steps\n'));
+  assert.ok(s.indexOf('\n### Stale report\n') > 0 && stale.length > 0, 'the procedure sits before the steps');
+  for (const n of ['turbo-run staleness N --verification --json', '`verifier-only`', '`full`', 'verify-phase-goal.md', '`verifier_dispatch`',
+    'args="N --no-transition"', 'gsd-tools commit', 'gsd-tools verification status <phase dir>']) assert.ok(stale.includes(n), n);
+  const uat = section(s, 'uat');
+  const defer = uat.indexOf('turbo-run uat defer N --rulings');
+  assert.ok(defer > 0 && defer < uat.indexOf('turbo-run uat owner-request N --json'), 'defer before owner-request');
+  assert.ok(uat.includes('turbo-run uat defer N <numbers>'), 'the owner confirms by number');
+  const complete = uat.indexOf('uat.complete-session');
+  assert.ok(complete > 0 && complete < uat.indexOf('Skill(skill="gsd-verify-work"'), 'the session is completed before verify-work');
+  assert.ok(uat.slice(complete).indexOf('**Stale report**') > 0, 'the stale check follows the completed session');
+  assert.ok(uat.split('\n').find((l) => l.startsWith('1. ')).includes('**Stale report**'), 'point 1 handles stale');
+  assert.ok(section(s, 'close').includes('**Stale report**'));
+});

@@ -191,3 +191,24 @@ test('turbo-run status lists owner requests in every view', () => {
   assert.equal(out.match(/owner request:/g).length, 1, 'the notification sidecar is not an owner request');
   assert.deepEqual(JSON.parse(status('--json')).ownerRequests, want);
 });
+
+test('uat defer: --rulings defers the owner-ruled rows, numbers confirm the others, a refused number changes nothing', async () => {
+  const rows = [
+    '### 6. Payment with a real card', 'result: skipped', 'reason: owner ruling: defer to Phase 9', '',
+    '### 7. Store listing', 'result: blocked', 'reason: the store review is pending', '',
+  ].join('\n');
+  const p = project(UAT.replace('## Summary', `${rows}\n## Summary`));
+  const uatFile = path.join(p.dir, '03-UAT.md');
+  assert.equal(await p.run('defer', '3', '--rulings'), 0);
+  assert.equal(p.lines.at(-1), 'deferred as follow-ups: 6 (.planning/phases/03-demo/03-UAT.md)');
+  assert.equal(parseUat(fs.readFileSync(uatFile, 'utf8')).tests.find((t) => t.number === 6).fields.reason, '"Deferred follow-up: owner ruling: defer to Phase 9"');
+  assert.equal(await p.run('defer', '3', '--rulings', '--json'), 0);
+  assert.deepEqual(JSON.parse(p.lines.at(-1)), { file: '.planning/phases/03-demo/03-UAT.md', deferred: [], already: [] });
+  const before = fs.readFileSync(uatFile, 'utf8');
+  assert.equal(await p.run('defer', '3', '7,1'), 1);
+  assert.match(p.lines.at(-1), /test 1: only a skipped or blocked row/);
+  assert.equal(fs.readFileSync(uatFile, 'utf8'), before);
+  assert.equal(await p.run('defer', '3', '7'), 0);
+  assert.equal(p.lines.at(-1), 'deferred as follow-ups: 7 (.planning/phases/03-demo/03-UAT.md)');
+  assert.equal(await p.run('defer', '3'), 2, 'neither --rulings nor numbers');
+});

@@ -405,3 +405,62 @@ test('stalenessReport: edits to top-level planning docs never reground; deleting
   const gone = ['.planning/STATE.md: deleted or renamed'];
   assert.deepEqual(report(), [['03-01-PLAN.md', 'rebuild', gone], ['03-02-PLAN.md', 'rebuild', gone]]);
 });
+
+test('verificationRoute: only planning files changed since the report → verifier-only; any code change → full', async () => {
+  const { verificationRoute } = await import('../lib/staleness.mjs');
+  const r = repo();
+  const dir = '.planning/phases/03-demo';
+  const phaseDir = path.join(r.root, dir);
+  r.write('src/a.js', 'a\n');
+  r.write(`${dir}/03-REVIEW.md`, 'review\n');
+  const review = r.commit('review');
+  r.write(`${dir}/03-VERIFICATION.md`, '---\nstatus: human_needed\n---\n');
+  const since = r.commit('verify');
+  // a UAT write, a STATE edit (committed and not) and a turbo run file: planning only
+  r.write(`${dir}/03-UAT.md`, 'uat\n');
+  r.write('.planning/STATE.md', 's\n');
+  r.commit('uat');
+  r.write('.planning/STATE.md', 's2\n');
+  r.write('.planning/turbo/run/p3.json', '{}');
+  const ok = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual({ ...ok, planning: ok.planning.sort() }, {
+    route: 'verifier-only', report: `${dir}/03-VERIFICATION.md`, since, review, code: [],
+    planning: ['.planning/STATE.md', `${dir}/03-UAT.md`, '.planning/turbo/run/p3.json'].sort(),
+  });
+  // untracked, unstaged and committed code changes each make it full
+  r.write('src/new.js', 'n\n');
+  assert.deepEqual([verificationRoute({ root: r.root, phaseDir }).route, verificationRoute({ root: r.root, phaseDir }).code], ['full', ['src/new.js']]);
+  fs.rmSync(path.join(r.root, 'src/new.js'));
+  r.write('src/a.js', 'a2\n');
+  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }).code, ['src/a.js']);
+  r.commit('code');
+  const full = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([full.route, full.since, full.code], ['full', since, ['src/a.js']]);
+  // a renamed file counts on both sides
+  r.g('mv', 'src/a.js', 'src/b.js');
+  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }).code.sort(), ['src/a.js', 'src/b.js']);
+});
+
+test('verificationRoute: no report or a report never committed → full; the CLI prints the route', async () => {
+  const { verificationRoute } = await import('../lib/staleness.mjs');
+  const r = repo();
+  const dir = '.planning/phases/03-demo';
+  const phaseDir = path.join(r.root, dir);
+  r.write(`${dir}/03-UAT.md`, 'uat\n');
+  r.commit('uat');
+  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }), { route: 'full', report: null, since: null, review: null, code: [], planning: [], reason: 'no verification report' });
+  r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
+  const loose = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([loose.route, loose.reason], ['full', 'the verification report is not committed']);
+  r.commit('verify');
+  r.write(`${dir}/03-UAT.md`, 'uat2\n');
+  const lines = [];
+  const run = (...a) => runPhaseCommand('staleness', a, { root: r.root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { planIndex: () => [] } });
+  assert.equal(await run('3', '--verification', '--json'), 0);
+  assert.equal(JSON.parse(lines.at(-1)).route, 'verifier-only');
+  assert.equal(await run('3', '--verification'), 0);
+  assert.match(lines.at(-1), /^verifier-only: no code changed since the report's commit [0-9a-f]{12} \(1 planning file\(s\) changed\)$/);
+  r.write('lib/x.mjs', 'x\n');
+  assert.equal(await run('3', '--verification'), 0);
+  assert.match(lines.at(-1), /^full: code changed since the report's commit [0-9a-f]{12}: lib\/x\.mjs$/);
+});

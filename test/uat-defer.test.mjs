@@ -15,9 +15,9 @@ const RULED = [
   '### 7. Store listing shows the app', 'expected: listed', 'result: blocked', 'blocked_by: third-party',
   'reason: the store review is still pending', '',
   '### 8. Partner sign-in', 'expected: signed in', 'result: skipped',
-  'reason: нет тестового аккаунта; владелец: «Отложить на фазу 9»', '',
+  'reason: нет тестового аккаунта; решение владельца 2026-01-02: «Отложить на фазу 9»', '',
   '### 9. Export of a large file', 'expected: the file downloads', 'result: skipped',
-  'reason: no sample data — DEFERRED → Phase 9', '',
+  'reason: no sample data — owner ruling: DEFERRED → Phase 9', '',
   '### 10. Already deferred', 'expected: x', 'result: skipped', 'reason: "Deferred follow-up: later"', '',
   '### 11. Skipped for now', 'expected: y', 'result: skipped', 'reason: not now', '',
 ].join('\n');
@@ -25,30 +25,39 @@ const withRuled = () => UAT.replace('## Summary', `${RULED}\n## Summary`);
 const rowOf = (text, n) => parseUat(text).tests.find((t) => t.number === n);
 const firstReasonLine = (t) => String(t.fields.reason ?? '').trim();
 
-test('ownerRuling: only an affirmative owner ruling or a deferral to a numbered phase; pending, needed or negated ones are no ruling', () => {
+test('ownerRuling: a strict whitelist — one clause with an owner ruling and a deferral, nothing negated, awaited or questioned from there on', () => {
   for (const s of [
     // the shapes of a live run, in generic words
     'no account for the second platform; owner ruling 2026-01-08 «Отложить вторую платформу на Phase 37» (tracker → L2).',
     'no paid tester — owner ruling 2026-01-07 DEFERRED → Phase 37 L2 (tracker). The log line was seen live.',
     'no tester accounts; owner ruling 2026-01-08: first fix start/stop on every platform, the tester steps afterwards.',
-    "the owner's ruling: later", 'owner decided to skip it', 'ruled by the owner', 'the owner deferred it',
-    'DEFERRED → Phase 9', 'deferred to phase 12', 'deferred -> Phase 3 (tracker)',
-    'Отложить на фазу 9', 'отложено владельцем', 'по решению владельца', 'решение владельца 2026-01-02: потом', 'владелец решил отложить',
+    "the owner's ruling: later", 'owner decided to defer it', 'the owner deferred it', 'owner ruling 2026-01-02: defer to Phase 9',
+    'ruled by the owner: deferred to phase 12', 'по решению владельца отложено на фазу 9', 'решение владельца 2026-01-02: отложить на потом', 'владелец решил отложить',
   ]) assert.ok(ownerRuling(s), s);
   for (const s of [
+    // no ruling, or a ruling without a deferral: the owner confirms these himself
     'the store review is still pending', 'not now', 'no test account', 'the owner signs the release', 'a deferred import runs later', 'phase 9 covers it',
-    "the owner's decision: not in this phase", 'решение владельца: потом',
+    'ruled by the owner', 'DEFERRED → Phase 9', 'deferred to phase 12', 'Отложить на фазу 9', 'отложено владельцем',
+    "the owner's decision: not in this phase", 'решение владельца: потом нельзя', 'owner ruling: must be tested in this phase',
     'awaiting owner decision', 'needs owner decision on pricing', 'blocked: owner decision required', 'owner decision pending', 'pending owner choice',
     'ждём решения владельца', 'нужно решение владельца', 'владелец не решил', 'владелец не отложил',
     'cannot be deferred to phase 9', 'not deferred to phase 9 — must test now', 'Отложенный импорт данных не работает', 'deferred until phase-gate passes',
     'owner ruling required', 'owner ruling pending', 'требуется решение владельца 2026-01-02',
+    // round 2: every one of these was taken as a deferral by the blacklist
+    'no owner ruling yet', 'without an owner ruling', 'waiting for the owner ruling', 'wait for owner ruling', 'ask for an owner ruling',
+    'owner ruling expected', 'owner ruling TBD', 'until the owner ruling arrives', "isn't deferred to phase 9", "won't be deferred to phase 9",
+    "shouldn't be deferred to phase 9", 'never deferred to phase 9', 'no longer deferred to phase 9', 'was deferred to phase 9, now back in scope',
+    'нельзя отложить на фазу 9', 'отложить на фазу 9 нельзя', 'the owner decided not to defer it', 'owner ruling 2026-01-08: проверить сейчас, не откладывать',
+    'по решению владельца — не откладывать', 'решение владельца 2026-01-02: проверить сейчас', 'owner ruling overturned — test now',
+    'owner ruling (x) superseded: test in this phase', 'previous owner ruling was revoked', 'Deferred to Phase 9? ask the owner', 'owner deferred? unclear',
+    'owner ruling 2026-01-08: defer to Phase 9; no, test it now',
   ]) assert.ok(!ownerRuling(s), s);
 });
 
 test('deferRows keeps a reason that spans lines whole, in the row and in the follow-up entry, and never doubles the prefix', () => {
   const rows = [
     '### 6. Multi-line quoted', 'result: skipped', 'reason: "no test card; owner ruling 2026-01-02:', '  defer to Phase 9 with the rest"', '',
-    '### 7. Multi-line plain', 'result: skipped', 'reason: owner ruling 2026-01-02: the first part', '  and the second part', '',
+    '### 7. Multi-line plain', 'result: skipped', 'reason: owner ruling 2026-01-02: the first part', '  and the second part later', '',
     '### 8. Blocked, already worded as a deferral', 'result: blocked', 'reason: "Deferred follow-up: later"', '',
     '### 9. Block reason', 'result: blocked', 'reason: |', '  waiting for the store', '  review', '',
   ].join('\n');
@@ -56,9 +65,9 @@ test('deferRows keeps a reason that spans lines whole, in the row and in the fol
   const r = deferRows(before, { rulings: true, now: NOW });
   assert.deepEqual(r.deferred, [6, 7]);
   assert.equal(rowOf(r.text, 6).fields.reason, '"Deferred follow-up: no test card; owner ruling 2026-01-02: defer to Phase 9 with the rest"');
-  assert.equal(rowOf(r.text, 7).fields.reason, '"Deferred follow-up: owner ruling 2026-01-02: the first part and the second part"');
-  assert.ok(!/^ {2}(defer to Phase 9|and the second part)/m.test(r.text), 'no continuation line is left behind');
-  assert.match(r.text, /idea: "Multi-line plain — owner ruling 2026-01-02: the first part and the second part"/);
+  assert.equal(rowOf(r.text, 7).fields.reason, '"Deferred follow-up: owner ruling 2026-01-02: the first part and the second part later"');
+  assert.ok(!/^ {2}(defer to Phase 9|and the second part later)/m.test(r.text), 'no continuation line is left behind');
+  assert.match(r.text, /idea: "Multi-line plain — owner ruling 2026-01-02: the first part and the second part later"/);
   const b = deferRows(before, { tests: [8], now: NOW });
   assert.equal(rowOf(b.text, 8).fields.reason, '"Deferred follow-up: later"');
   // the owner request shows a block reason's text, never its indicator
@@ -76,7 +85,7 @@ test('deferRows --rulings: owner-ruled skipped rows become GSD deferrals with th
     assert.ok(GSD_DEFERRED.test(firstReasonLine(t)), `${n}: ${t.fields.reason}`);
   }
   assert.equal(rowOf(text, 6).fields.reason, '"Deferred follow-up: no test card; owner ruling 2026-01-02: defer to Phase 9"');
-  assert.equal(rowOf(text, 8).fields.reason, '"Deferred follow-up: нет тестового аккаунта; владелец: «Отложить на фазу 9»"');
+  assert.equal(rowOf(text, 8).fields.reason, '"Deferred follow-up: нет тестового аккаунта; решение владельца 2026-01-02: «Отложить на фазу 9»"');
   // the heading and the expected line are kept; no second result or reason line is left behind
   const block = text.split('\n').slice(rowOf(text, 6).start, rowOf(text, 6).end);
   assert.deepEqual(block.filter((l) => /^(result|reason|expected):/.test(l)).map((l) => l.split(':')[0]), ['expected', 'result', 'reason']);

@@ -453,6 +453,8 @@ test('verificationRoute: no report or a report never committed → full; the CLI
   r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
   const loose = verificationRoute({ root: r.root, phaseDir });
   assert.deepEqual([loose.route, loose.reason], ['full', 'the verification report is not committed']);
+  // GSD's code review is off in this project: no REVIEW.md is expected
+  r.write('.planning/config.json', JSON.stringify({ workflow: { code_review: false } }));
   r.commit('verify');
   r.write(`${dir}/03-UAT.md`, 'uat2\n');
   const lines = [];
@@ -466,7 +468,7 @@ test('verificationRoute: no report or a report never committed → full; the CLI
   assert.match(lines.at(-1), /^full: code changed since the report's commit [0-9a-f]{12}: lib\/x\.mjs$/);
 });
 
-test('verificationRoute: code changed after the last code review → full; no code review on record → verifier-only, and the note says so', async () => {
+test('verificationRoute: code changed after the last code review → full; no code review on record → full while GSD\'s code review is on (its default), verifier-only when it is off, and the note says so', async () => {
   const { verificationRoute } = await import('../lib/staleness.mjs');
   const r = repo();
   const dir = '.planning/phases/03-demo';
@@ -475,6 +477,11 @@ test('verificationRoute: code changed after the last code review → full; no co
   r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
   r.commit('verify without a review');
   r.write(`${dir}/03-UAT.md`, 'uat\n');
+  const on = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([on.route, on.review, on.reason], ['full', null, 'code review is on, but no code review is committed']);
+  r.write('.planning/config.json', JSON.stringify({ workflow: { code_review: true } }));
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'full');
+  r.write('.planning/config.json', JSON.stringify({ workflow: { code_review: false } }));
   const bare = verificationRoute({ root: r.root, phaseDir });
   assert.deepEqual([bare.route, bare.review, bare.note], ['verifier-only', null, 'regression gate and code review not re-run; no code review on record']);
   r.write(`${dir}/03-REVIEW.md`, 'review\n');

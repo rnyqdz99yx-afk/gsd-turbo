@@ -42,7 +42,7 @@ Inbox: before each step (right after point 2) and after each wave of a `gsd-exec
 When a section says **stop for the owner** or **fail**:
 
 0. Wait until every subagent you started in the background has finished and its result has arrived. Then **Commit the answers** (section **Owner questions**).
-1. `turbo-run gates restore N` (puts GSD's built-in gates back; does nothing when they are on), then `turbo-run gates docs-restore N` (puts GSD's docs commits back after a parallel window; does nothing when none is open), then `turbo-run state-sync N` (records the real position in STATE.md: the phase, executing, the first plan without a SUMMARY; does nothing when no plan is left open). Best effort: if any of them fails, add its error to the reason and go on.
+1. `turbo-run gates restore N` (puts GSD's built-in gates back; does nothing when they are on), then `turbo-run gates docs-restore N` (puts GSD's docs commits back after a parallel window; does nothing when none is open), then `turbo-run state-sync N` (records the real position in STATE.md: the phase, executing, the first plan without a SUMMARY; keeps the owner's Status and Last activity text; with every plan summarized it only puts back what begin-phase reset). Best effort: if any of them fails, add its error to the reason and go on.
 2. `turbo-run lane-status N needs-owner --reason "<one line>"`, or `failed` for **fail**.
 3. End your turn without marking the step done. `/turbo-autonomous resume N` starts the step again later.
 
@@ -154,7 +154,7 @@ Owner questions (section **Owner questions**): before point 0, **List and classi
 
 After each wave of point 1 (and of every other `gsd-execute-phase` run of this skill), once GSD reports the wave merged and its post-merge test gate passed, and before it starts the next wave: run `turbo-run push-request N --at wave`, then `turbo-run inbox N` (**CI red** for `ci-red` messages). A plan with a task that pushes or waits for CI: **A plan that pushes** in section **Push and CI**.
 
-3. When point 2 says done, run `turbo-run state-sync N` before marking the step done (a stop runs it through **Stopping early**). GSD's execute-phase starts with `state.begin-phase`, which resets STATE.md's plan position unless STATE.md reads executing; when plans without a SUMMARY remain, this records the real position for the next run; otherwise it changes nothing. Best effort: if it fails, put its error line into the step's note and go on. turbo itself never calls `begin-phase` or `planned-phase`.
+3. When point 2 says done, run `turbo-run state-sync N` before marking the step done (a stop runs it through **Stopping early**). GSD's execute-phase starts with `state.begin-phase`, which resets STATE.md's plan position unless STATE.md reads executing; when plans without a SUMMARY remain, this records the real position for the next run; with every plan summarized it puts back the position and the owner's text that begin-phase reset, if it did. It never replaces the owner's Status or Last activity text. Best effort: if it fails, put its error line into the step's note and go on. turbo itself never calls `begin-phase` or `planned-phase`.
 
 ### restore
 

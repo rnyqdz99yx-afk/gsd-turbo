@@ -11,8 +11,9 @@ import { readVersion, versionInRange } from '../lib/gsd.mjs';
 const PHASE_REL = '.planning/phases/05-demo';
 
 // A project in the middle of phase 5: four plans, the first two with a SUMMARY.
-// before/after: STATE.md lines around the Current Position section (archives, for example).
-function fixture({ summaries = 2, plans = 4, before = [], after = [] } = {}) {
+// before/after: STATE.md lines around the Current Position section (archives, for example); status, activity:
+// the values of its Status and Last activity lines.
+function fixture({ summaries = 2, plans = 4, before = [], after = [], status = 'Ready to execute', activity = '2026-01-01 — planned' } = {}) {
   const root = tmpGitRepo();
   const dir = path.join(root, PHASE_REL);
   fs.mkdirSync(dir, { recursive: true });
@@ -24,7 +25,7 @@ function fixture({ summaries = 2, plans = 4, before = [], after = [] } = {}) {
   ].join('\n'));
   fs.writeFileSync(path.join(root, '.planning', 'STATE.md'), [
     '---', "gsd_state_version: '1.0'", 'status: planning', '---', '', '# Project State', '', ...before, '## Current Position', '',
-    'Phase: 5 of 5 (Demo Feature)', `Plan: 0 of ${plans} in current phase`, 'Status: Ready to execute', 'Last activity: 2026-01-01 — planned', '',
+    'Phase: 5 of 5 (Demo Feature)', `Plan: 0 of ${plans} in current phase`, `Status: ${status}`.trimEnd(), `Last activity: ${activity}`, '',
     ...after, '## Session Continuity', '', 'Last session: 2026-01-01', 'Stopped at: planned', 'Resume file: None', '',
   ].join('\n'));
   for (let i = 1; i <= plans; i++) {
@@ -75,7 +76,6 @@ test('state-sync names the real position through GSD\'s own state commands: phas
     Phase: '05 (Demo Feature) — EXECUTING',
     Plan: '3 of 4',
     Status: 'Executing Phase 05',
-    'Last activity': '2026-10-10 — Phase 05 stopped; next plan 05-03',
   });
   assert.deepEqual(calls[3].slice(2), ['--stopped-at', 'Phase 05: 2 of 4 plans done; next plan 05-03', '--resume-file', `${PHASE_REL}/05-03-PLAN.md`]);
   assert.deepEqual(calls[4].slice(2), ['--files', '.planning/STATE.md']);
@@ -137,7 +137,7 @@ test('state-sync sends only the fields whose first match (bold, then plain, then
   const { gsd, calls } = fakeGsd(root);
   const r = await sync(root, { gsd, now: new Date(2026, 9, 10, 12) });
   assert.equal(r.code, 0, r.lines.join('\n'));
-  assert.deepEqual(JSON.parse(calls.find((c) => c[1] === 'patch')[2]), { Plan: '3 of 4', 'Last activity': '2026-10-10 — Phase 05 stopped; next plan 05-03' });
+  assert.deepEqual(JSON.parse(calls.find((c) => c[1] === 'patch')[2]), { Plan: '3 of 4' });
   assert.deepEqual(r.lines, ['STATE.md: phase 05 executing, next plan 05-03 (3 of 4); committed; not written, their first match lies outside Current Position: Phase, Current Plan, Status']);
 });
 
@@ -242,4 +242,42 @@ test('state-sync with the installed GSD 1.16: begin-phase keeps the synced plan;
   assert.equal(position()[0], 'Phase: 05 (Demo Feature) — READY TO EXECUTE');
   r = await sync(root, {});
   assert.deepEqual(position().slice(0, 3), ['Phase: 05 (Demo Feature) — EXECUTING', 'Plan: 3 of 4', 'Status: Executing Phase 05']);
+});
+
+// The owner's (or a controller's) words in Status and Last activity are not state-sync's to replace: it sends
+// no Last activity, and keeps a Status text first with GSD's resume marker at its end, where advance-plan and
+// planned-phase leave the text alone and begin-phase still finds the marker.
+const OWNER_STATUS = 'Owner ruling: hold the release until the review; build 5 is the one to ship';
+const OWNER_ACTIVITY = '2026-01-02 — plan 05-02 done; the release waits for the review';
+const patchOf = (calls) => JSON.parse(calls.find((c) => c[1] === 'patch')[2]);
+
+test('state-sync never sends Last activity, and keeps the owner\'s Status text with the marker at its end', async () => {
+  for (const [status, want] of [
+    ['Ready to execute', 'Executing Phase 05'],
+    ['', 'Executing Phase 05'],
+    ['Phase complete — ready for verification', 'Executing Phase 05'],
+    [OWNER_STATUS, `${OWNER_STATUS} (Executing Phase 05)`],
+    [`${OWNER_STATUS} (Executing Phase 04)`, `${OWNER_STATUS} (Executing Phase 05)`],
+    [`${OWNER_STATUS} (Executing Phase 05)`, undefined],
+    [`Executing Phase 05 — ${OWNER_STATUS}`, undefined],
+    ['Executing Phase 05', undefined],
+  ]) {
+    const root = fixture({ status, activity: OWNER_ACTIVITY });
+    const { gsd, calls } = fakeGsd(root);
+    const r = await sync(root, { gsd });
+    assert.equal(r.code, 0, r.lines.join('\n'));
+    const patch = patchOf(calls);
+    assert.equal(patch.Status, want, status);
+    assert.ok(!('Last activity' in patch), status);
+    assert.deepEqual(patch.Plan, '3 of 4', status);
+  }
+});
+
+test('state-sync with the installed GSD 1.16 keeps the owner\'s Status and Last activity text, and begin-phase still keeps the plan', SKIP, async () => {
+  const { root, tool, position } = committedFixture({ status: OWNER_STATUS, activity: OWNER_ACTIVITY });
+  const r = await sync(root, {});
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(position().slice(0, 4), ['Phase: 05 (Demo Feature) — EXECUTING', 'Plan: 3 of 4', `Status: ${OWNER_STATUS} (Executing Phase 05)`, `Last activity: ${OWNER_ACTIVITY}`]);
+  tool('state', 'begin-phase', '--phase', '05', '--name', 'Demo Feature', '--plans', '4');
+  assert.equal(position()[1], 'Plan: 3 of 4', 'the resume branch keeps the plan');
 });

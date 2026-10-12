@@ -11,7 +11,7 @@ import { laneSessionName, parseAgents, projectHash } from '../lib/claude.mjs';
 // lane temp directories live under turbo's own directory: a throwaway one for this file
 const HOME = tmpDir('home');
 process.env.CLAUDE_CONFIG_DIR = HOME;
-const laneBase = (root) => path.join(HOME, 'turbo', 'tmp', projectHash(root));
+const laneBase = (root) => path.join(HOME, 'turbo', 'tmp', projectHash(root, 16));
 
 function harness({ phases, agents = [], git = false }) {
   const root = git ? tmpGitRepo() : tmpDir('sup');

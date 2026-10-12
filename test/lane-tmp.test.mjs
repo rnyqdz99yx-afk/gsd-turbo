@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
@@ -28,9 +29,10 @@ const precious = (rel = path.join('tmp', 'p3')) => {
 // A project test may check that os.tmpdir() lies outside its checkout: inside a lane, TMP is this directory.
 test('a lane\'s temp directory lives under turbo\'s own directory, per project, outside the checkout and its git directory', () => {
   const repo = tmpGitRepo();
-  assert.equal(laneTmpBase(repo), path.join(TMP, projectHash(repo)));
-  assert.equal(laneTmpDir(repo, '3'), path.join(TMP, projectHash(repo), 'p3'));
+  assert.equal(laneTmpBase(repo), path.join(TMP, projectHash(repo, 16)));
+  assert.equal(laneTmpDir(repo, '3'), path.join(TMP, projectHash(repo, 16), 'p3'));
   assert.match(projectHash(repo), /^[0-9a-f]{6}$/);
+  assert.match(path.basename(laneTmpBase(repo)), /^[0-9a-f]{16}$/, 'what all projects share is keyed by 16 hex');
   assert.ok(laneSessionName(repo, '3').includes(`-${projectHash(repo)}-p3`), 'the hash lane session names carry');
   const rel = path.relative(repo, laneTmpDir(repo, '3'));
   assert.ok(rel.startsWith('..') || path.isAbsolute(rel), 'never under the project root');
@@ -39,17 +41,17 @@ test('a lane\'s temp directory lives under turbo\'s own directory, per project, 
   const web = path.join(repo, 'web');
   fs.mkdirSync(app);
   fs.mkdirSync(web);
-  assert.equal(laneTmpBase(app), path.join(TMP, projectHash(app)));
+  assert.equal(laneTmpBase(app), path.join(TMP, projectHash(app, 16)));
   assert.notEqual(laneTmpDir(app, '3'), laneTmpDir(web, '3'));
   // outside a repository: the same place
   const plain = tmpDir('plain');
-  assert.equal(laneTmpBase(plain), path.join(TMP, projectHash(plain)));
+  assert.equal(laneTmpBase(plain), path.join(TMP, projectHash(plain, 16)));
   // prepare creates turbo's directory when it is not there yet, and nothing in the checkout
   const fresh = tmpDir('home-fresh');
   const was = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = path.join(fresh, 'not-yet');
   try {
-    assert.equal(prepareLaneTmp(repo, '3'), path.join(fresh, 'not-yet', 'turbo', 'tmp', projectHash(repo), 'p3'));
+    assert.equal(prepareLaneTmp(repo, '3'), path.join(fresh, 'not-yet', 'turbo', 'tmp', projectHash(repo, 16), 'p3'));
     assert.ok(fs.statSync(laneTmpDir(repo, '3')).isDirectory());
   } finally {
     process.env.CLAUDE_CONFIG_DIR = was;
@@ -126,7 +128,7 @@ test('removeLaneTmp and prepareLaneTmp refuse a p<N> that is a link, and a base 
 test('a turbo tmp directory that is a link is refused for every project', () => {
   const home = tmpDir('home-link');
   const c = tmpGitRepo();
-  const rel = path.join(projectHash(c), 'p3');
+  const rel = path.join(projectHash(c, 16), 'p3');
   const outC = precious(rel);
   fs.mkdirSync(path.join(home, 'turbo'), { recursive: true });
   fs.symlinkSync(outC, path.join(home, 'turbo', 'tmp'), LINK);
@@ -139,4 +141,21 @@ test('a turbo tmp directory that is a link is refused for every project', () => 
     process.env.CLAUDE_CONFIG_DIR = was;
   }
   assert.ok(fs.existsSync(path.join(outC, rel, 'precious.txt')));
+});
+
+test('a config directory inside the project never puts the lane temp directory back in the tree: it moves to the system temp directory, and the launch log says so', () => {
+  const repo = tmpGitRepo();
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = path.join(repo, 'claude-home');
+  try {
+    const expected = path.join(os.tmpdir(), 'gsd-turbo', 'tmp', projectHash(repo, 16));
+    assert.equal(laneTmpBase(repo), expected);
+    const logs = [];
+    assert.equal(prepareLaneTmp(repo, '3', (l) => logs.push(l)), path.join(expected, 'p3'));
+    assert.match(logs.join('\n'), /lies inside the project .*; the lane temp directory is .*gsd-turbo/);
+    assert.equal(fs.existsSync(path.join(repo, 'claude-home', 'turbo', 'tmp')), false);
+    assert.equal(removeLaneTmp(repo, '3'), path.join(expected, 'p3'));
+  } finally {
+    process.env.CLAUDE_CONFIG_DIR = was;
+  }
 });

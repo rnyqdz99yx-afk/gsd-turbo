@@ -67,6 +67,16 @@ test('ownerRuling: only a dated owner ruling that defers to a numbered phase in 
     'owner ruling 2026-01-02: defer to phase 9 only if the store is down', 'owner ruling 2026-01-02 (draft): defer to phase 9', 'no — owner ruling 2026-01-02: defer to phase 9',
     'owner ruling 2026-01-02: test in this phase, defer the rest to phase 9', 'owner ruling 2026-01-02 rejected: defer to phase 9', 'owner ruling 2026-01-02 — defer to phase 9',
     'needs a fix first; owner ruling 2026-01-02: defer to phase 9',
+    // final batch: withdrawn, reversed, replaced, proposed or conditional rulings, two rulings, a "no way" precondition
+    'owner ruling 2026-01-02: defer to phase 9 was withdrawn', 'owner ruling 2026-01-02: defer to phase 9 (reversed 2026-01-05)',
+    'owner ruling 2026-01-02: defer to phase 9 — retracted', 'owner ruling 2026-01-02: defer to phase 9 replaced by owner ruling 2026-01-05 test in phase 8',
+    'owner ruling 2026-01-02: defer to phase 9; owner ruling 2026-01-05: defer to phase 10',
+    'proposed owner ruling 2026-01-02: defer to phase 9', 'owner ruling 2026-01-02 would defer to phase 9',
+    'решение владельца 2026-01-02: отложить на фазу 9 — отозвано', 'предлагаемое решение владельца 2026-01-02: отложить на фазу 9',
+    'решение владельца 2026-01-02: отложить на фазу 9 под вопросом', 'решение владельца 2026-01-02: отложить на фазу 9, пересмотреть позже',
+    'решение владельца 2026-01-02: отложить на фазу 9 — отклонено', 'owner ruling 2026-01-02 deferred the decision to phase 9',
+    'no way; owner ruling 2026-01-02: defer to phase 9', 'no deferral; owner ruling 2026-01-02: defer to phase 9',
+    'no ruling; owner ruling 2026-01-02: defer to phase 9', 'no decision yet; owner ruling 2026-01-02: defer to phase 9',
   ]) assert.ok(!ownerRuling(s), s);
 });
 

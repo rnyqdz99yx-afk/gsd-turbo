@@ -405,3 +405,113 @@ test('stalenessReport: edits to top-level planning docs never reground; deleting
   const gone = ['.planning/STATE.md: deleted or renamed'];
   assert.deepEqual(report(), [['03-01-PLAN.md', 'rebuild', gone], ['03-02-PLAN.md', 'rebuild', gone]]);
 });
+
+test('verificationRoute: only planning files changed since the report → verifier-only; any code change → full', async () => {
+  const { verificationRoute } = await import('../lib/staleness.mjs');
+  const r = repo();
+  const dir = '.planning/phases/03-demo';
+  const phaseDir = path.join(r.root, dir);
+  r.write('src/a.js', 'a\n');
+  r.write(`${dir}/03-REVIEW.md`, 'review\n');
+  const review = r.commit('review');
+  r.write(`${dir}/03-VERIFICATION.md`, '---\nstatus: human_needed\n---\n');
+  const since = r.commit('verify');
+  // a UAT write, a STATE edit (committed and not) and a turbo run file: planning only
+  r.write(`${dir}/03-UAT.md`, 'uat\n');
+  r.write('.planning/STATE.md', 's\n');
+  r.commit('uat');
+  r.write('.planning/STATE.md', 's2\n');
+  r.write('.planning/turbo/run/p3.json', '{}');
+  const ok = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual({ ...ok, planning: ok.planning.sort() }, {
+    route: 'verifier-only', report: `${dir}/03-VERIFICATION.md`, since, review, code: [],
+    planning: ['.planning/STATE.md', `${dir}/03-UAT.md`, '.planning/turbo/run/p3.json'].sort(),
+    note: `regression gate and code review not re-run: counted from the code review at ${review.slice(0, 12)}`,
+  });
+  // untracked, unstaged and committed code changes each make it full
+  r.write('src/new.js', 'n\n');
+  assert.deepEqual([verificationRoute({ root: r.root, phaseDir }).route, verificationRoute({ root: r.root, phaseDir }).code], ['full', ['src/new.js']]);
+  fs.rmSync(path.join(r.root, 'src/new.js'));
+  r.write('src/a.js', 'a2\n');
+  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }).code, ['src/a.js']);
+  r.commit('code');
+  const full = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([full.route, full.since, full.code], ['full', since, ['src/a.js']]);
+  // a renamed file counts on both sides
+  r.g('mv', 'src/a.js', 'src/b.js');
+  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }).code.sort(), ['src/a.js', 'src/b.js']);
+});
+
+test('verificationRoute: no report or a report never committed → full; the CLI prints the route', async () => {
+  const { verificationRoute } = await import('../lib/staleness.mjs');
+  const r = repo();
+  const dir = '.planning/phases/03-demo';
+  const phaseDir = path.join(r.root, dir);
+  r.write(`${dir}/03-UAT.md`, 'uat\n');
+  r.commit('uat');
+  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }), { route: 'full', report: null, since: null, review: null, code: [], planning: [], reason: 'no verification report' });
+  r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
+  const loose = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([loose.route, loose.reason], ['full', 'the verification report is not committed']);
+  // GSD's code review is off in this project: no REVIEW.md is expected
+  r.write('.planning/config.json', JSON.stringify({ workflow: { code_review: false } }));
+  r.commit('verify');
+  r.write(`${dir}/03-UAT.md`, 'uat2\n');
+  const lines = [];
+  const run = (...a) => runPhaseCommand('staleness', a, { root: r.root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { planIndex: () => [] } });
+  assert.equal(await run('3', '--verification', '--json'), 0);
+  assert.equal(JSON.parse(lines.at(-1)).route, 'verifier-only');
+  assert.equal(await run('3', '--verification'), 0);
+  assert.match(lines.at(-1), /^verifier-only: no code changed since the report's commit [0-9a-f]{12} \(1 planning file\(s\) changed\); regression gate and code review not re-run; no code review on record$/);
+  r.write('lib/x.mjs', 'x\n');
+  assert.equal(await run('3', '--verification'), 0);
+  assert.match(lines.at(-1), /^full: code changed since the report's commit [0-9a-f]{12}: lib\/x\.mjs$/);
+});
+
+test('verificationRoute: code changed after the last code review → full; no code review on record → full while GSD\'s code review is on (its default), verifier-only when it is off, and the note says so', async () => {
+  const { verificationRoute } = await import('../lib/staleness.mjs');
+  const r = repo();
+  const dir = '.planning/phases/03-demo';
+  const phaseDir = path.join(r.root, dir);
+  r.write('src/a.js', 'a\n');
+  r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
+  r.commit('verify without a review');
+  r.write(`${dir}/03-UAT.md`, 'uat\n');
+  const on = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([on.route, on.review, on.reason], ['full', null, 'code review is on, but no code review is committed']);
+  r.write('.planning/config.json', JSON.stringify({ workflow: { code_review: true } }));
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'full');
+  r.write('.planning/config.json', JSON.stringify({ workflow: { code_review: false } }));
+  const bare = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([bare.route, bare.review, bare.note], ['verifier-only', null, 'regression gate and code review not re-run; no code review on record']);
+  r.write(`${dir}/03-REVIEW.md`, 'review\n');
+  r.commit('review');
+  r.write('src/a.js', 'a2\n');
+  r.commit('a fix after the review');
+  r.write(`${dir}/03-VERIFICATION.md`, 'v2\n');
+  const since = r.commit('verify again');
+  r.write(`${dir}/03-UAT.md`, 'uat2\n');
+  const late = verificationRoute({ root: r.root, phaseDir });
+  assert.deepEqual([late.route, late.since, late.code, late.reason], ['full', since, ['src/a.js'], 'code changed after the last code review']);
+});
+
+test('verificationRoute: while turbo has GSD\'s gates off, the code review setting is the one saved before, not the live config', async () => {
+  const { verificationRoute } = await import('../lib/staleness.mjs');
+  const r = repo();
+  const dir = '.planning/phases/03-demo';
+  const phaseDir = path.join(r.root, dir);
+  r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
+  r.commit('verify');
+  r.write(`${dir}/03-UAT.md`, 'uat\n');
+  // another lane turned the gates off: the live config says false, the saved original decides
+  r.write('.planning/config.json', JSON.stringify({ workflow: { code_review: false } }));
+  const gates = (original) => r.write('.planning/turbo/gates/p4.json', JSON.stringify({ phase: '4', active: [], original }));
+  gates({ 'workflow.code_review': true });
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'full');
+  gates({ 'workflow.code_review': '__turbo_absent__' });
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'full', 'absent before: GSD\'s default, on');
+  gates({ 'workflow.code_review': false });
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'verifier-only');
+  gates({ 'workflow.nyquist_validation': true });
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'verifier-only', 'no saved code_review: the live config');
+});

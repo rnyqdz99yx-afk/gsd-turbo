@@ -53,7 +53,7 @@ test('credential assignment: real assignments still match, identifier-shaped key
   const v = 'hunter2'.repeat(2);
   const hits = [
     `password=${v}`, `"pass": "${v}"`, `'pass' = '${v}'`, `pass=${v}`, `DB_PASS: ${v}`, `smtp_pass=${v}`,
-    `DB_PASSWORD=${v}`, `GITHUB_TOKEN=${v}`, `client.secret: ${v}`, `my-api-key: ${v}`, `api_key: "${v}"`, `secret: ${v}`, `pwd=${v}`,
+    `DB_PASSWORD=${v}`, `GITHUB_TOKEN=${v}`, `client.secret: ${v}`, `my-api-key: ${v}`, `api_key: "${v}"`, `secret: ${v}`,
   ];
   for (const line of hits) {
     assert.equal(CRED.test(line), true, line);

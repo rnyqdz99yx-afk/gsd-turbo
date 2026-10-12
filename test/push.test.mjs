@@ -14,6 +14,8 @@ const GH = `ghp_${'a1B2'.repeat(9)}`;
 // a URL with credentials, joined at run time like the token
 const CRED_URL = `https://bob:${'s3cretpw'}@example.com/r.git/`;
 const SETTINGS = pushSettings({ mode: 'after-wave', ci: 'none' });
+// the owner's allow files live under turbo's own directory: a throwaway one for this file
+process.env.CLAUDE_CONFIG_DIR = tmpDir('home');
 
 // A repository with a temporary local bare remote: no network, nothing outside the temp directory.
 function pushRepo() {
@@ -877,37 +879,43 @@ test('CI on a host other than github.com is read only once gh is logged in to th
 const PROSE = ['Tok', 'en: rotate-monthly'].join('');
 const CRED = 'credential assignment';
 
-test('scanRange skips a line whose fingerprint is allowed, keeps any other hit in the same file, and collects the fingerprints it reports', () => {
+test('scanRange skips a line whose fingerprint is allowed, keeps any other hit in the same file, and names the commit, file and line of each fingerprint it reports', () => {
   const r = pushRepo();
   const base = r.sh('rev-parse', 'HEAD');
-  r.commit('docs/a.md', `${PROSE}\n`);
+  const c1 = r.commit('docs/a.md', `intro\n${PROSE}\n`);
   r.commit('logs/run.log', 'started\n');
   const sha = r.commit('src/conf.mjs', `export const t = '${GH}';\n`);
-  const fps = new Set();
+  const fps = new Map();
   assert.deepEqual(scanRange(r.git, base, sha, { fingerprints: fps }), [
     { file: 'docs/a.md', kind: CRED }, { file: 'logs/run.log', kind: 'forbidden name *.log' }, { file: 'src/conf.mjs', kind: 'github token' },
   ]);
   const mine = scanFingerprint('docs/a.md', CRED, PROSE);
+  const conf = scanFingerprint('src/conf.mjs', 'github token', `export const t = '${GH}';`);
   assert.match(mine, /^[0-9a-f]{16}$/);
-  assert.deepEqual([...fps].sort(), [mine, scanFingerprint('src/conf.mjs', 'github token', `export const t = '${GH}';`)].sort(), 'a forbidden name has none');
+  assert.deepEqual([...fps.keys()].sort(), [mine, conf].sort(), 'a forbidden name has none');
+  assert.deepEqual(fps.get(mine), { commit: c1, file: 'docs/a.md', line: 2, kind: CRED });
+  assert.deepEqual(fps.get(conf), { commit: sha, file: 'src/conf.mjs', line: 1, kind: 'github token' });
+  assert.ok(!JSON.stringify([...fps]).includes(GH), 'never the value');
   const allowed = new Set([mine]);
   assert.deepEqual(scanRange(r.git, base, sha, { allowed }), [{ file: 'logs/run.log', kind: 'forbidden name *.log' }, { file: 'src/conf.mjs', kind: 'github token' }]);
   // a new hit in the same file is not covered by the allowed line
   const next = ['Tok', 'en: another-value'].join('');
-  const sha2 = r.commit('docs/a.md', `${PROSE}\n${next}\n`);
+  const sha2 = r.commit('docs/a.md', `intro\n${PROSE}\n${next}\n`);
   assert.deepEqual(scanRange(r.git, sha, sha2, { allowed }), [{ file: 'docs/a.md', kind: CRED }]);
   // a commit message line: the same fingerprint whatever its commit, so a rewritten commit keeps the clearance
   fs.writeFileSync(path.join(r.root, 'src', 'b.mjs'), 'export const b = 1;\n');
   r.sh('add', '-A');
   r.sh('commit', '-q', '-m', `docs\n\n${PROSE}`);
   const sha3 = r.sh('rev-parse', 'HEAD');
-  assert.deepEqual(scanRange(r.git, sha2, sha3), [{ file: `(commit message ${sha3.slice(0, 7)})`, kind: CRED }]);
+  const msgFps = new Map();
+  assert.deepEqual(scanRange(r.git, sha2, sha3, { fingerprints: msgFps }), [{ file: `(commit message ${sha3.slice(0, 7)})`, kind: CRED }]);
+  assert.deepEqual([...msgFps.values()], [{ commit: sha3, file: `(commit message ${sha3.slice(0, 7)})`, line: 3, kind: CRED }]);
   assert.deepEqual(scanRange(r.git, sha2, sha3, { allowed: new Set([scanFingerprint('(commit message)', CRED, PROSE)]) }), []);
 });
 
-test('the owner clears a reviewed false alarm: the refused record keeps its fingerprints, and once the allow file has them the same request is scanned again and pushed', async () => {
+test('the owner clears a reviewed false alarm: the refused record names the refusal and its lines, the allow file lies outside the checkout, and once it has them the same request is scanned again and pushed', async () => {
   const r = pushRepo();
-  const { ctx, calls, notes } = supervisorCtx(r);
+  const { ctx, calls, notes, logs } = supervisorCtx(r);
   const before = r.remoteHead();
   const sha = r.commit('docs/a.md', `${PROSE}\n`);
   ask(r, ctx.config.push);
@@ -915,20 +923,47 @@ test('the owner clears a reviewed false alarm: the refused record keeps its fing
   assert.equal(r.remoteHead(), before);
   const rec = readJson(recordFile(r.root, '3'));
   assert.equal(rec.outcome, 'refused');
-  assert.deepEqual(rec.allowable, [scanFingerprint('docs/a.md', CRED, PROSE)]);
+  const fp = scanFingerprint('docs/a.md', CRED, PROSE);
+  assert.deepEqual(rec.allowable, [fp]);
+  assert.deepEqual(rec.lines, [{ fp, commit: sha, file: 'docs/a.md', line: 1, kind: CRED }]);
+  assert.match(rec.refusal, /^[0-9a-f]{8}$/);
   assert.equal(notes.length, 1);
+  assert.equal(notes[0].vars.refusal, rec.refusal, 'the notification names the refusal');
+  const rel = path.relative(r.root, allowFile(r.root));
+  assert.ok(rel.startsWith('..') || path.isAbsolute(rel), 'the allow file lies outside the checkout');
   const scans = () => calls.filter((a) => sub(a) === 'log' && a.includes('-p')).length;
   // nothing changed: the refused request is not scanned again
   await pushTick(ctx, later(1));
   assert.equal(scans(), 1);
-  // an allow file that does not cover it: scanned again, still refused, not notified again
+  // an allow file that does not cover it: scanned again, still refused, nobody notified
+  fs.mkdirSync(path.dirname(allowFile(r.root)), { recursive: true });
   fs.writeFileSync(allowFile(r.root), `# reviewed\n${'0'.repeat(16)}\n`);
   await pushTick(ctx, later(2));
   assert.equal(scans(), 2);
   assert.equal(readJson(recordFile(r.root, '3')).outcome, 'refused');
   assert.equal(notes.length, 1);
-  fs.appendFileSync(allowFile(r.root), `${rec.allowable[0]}\n`);
+  fs.appendFileSync(allowFile(r.root), `${fp}\n`);
   await pushTick(ctx, later(3));
   assert.equal(r.remoteHead(), sha);
   assert.equal(readJson(recordFile(r.root, '3')).outcome, 'pushed');
+  assert.deepEqual(notes.slice(1), [{ key: 'pushAllowed', vars: { phase: '3', count: 1 } }]);
+  assert.ok(logs.some((l) => /^push p3: the allow file changed: 1 line of the last refusal allowed/.test(l)), logs.join('\n'));
+});
+
+test('a refusal with the same files and kinds but other lines is a new refusal: notified again with a new id', async () => {
+  const r = pushRepo();
+  const { ctx, notes } = supervisorCtx(r);
+  r.commit('docs/a.md', `${PROSE}\n`);
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  const first = readJson(recordFile(r.root, '3'));
+  // the next wave adds a real secret-shaped line to the same file: the same (file, kind), another fingerprint
+  r.commit('docs/a.md', `${PROSE}\n${['pass', 'word=', 'hunter2'.repeat(2)].join('')}\n`);
+  ask(r, ctx.config.push);
+  await pushTick(ctx, later(1));
+  const second = readJson(recordFile(r.root, '3'));
+  assert.deepEqual(second.findings, first.findings);
+  assert.notEqual(second.refusal, first.refusal);
+  assert.equal(second.allowable.length, 2);
+  assert.deepEqual(notes.map((n) => [n.key, n.vars.refusal]), [['pushRefused', first.refusal], ['pushRefused', second.refusal]]);
 });

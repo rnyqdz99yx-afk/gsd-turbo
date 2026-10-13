@@ -95,3 +95,24 @@ test('agent-tail finds an agent of a slot lane: every lane\'s transcript directo
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanesMode: 'slots', lanes: { 3: { key: '3', job: 'phase', phase: '3', slot: 1, slotPath: slot, sessionId: jobId } } }));
   assert.equal(agentTail({ root, agentId: AGENT, env }).agentId, AGENT);
 });
+
+test('agent-tail finds an agent of a slot lane whose session is not known yet: the slot is a project of its own (Stage 4 L4, Review Focus 2)', () => {
+  const { root, env } = setup();
+  const home = env.CLAUDE_CONFIG_DIR;
+  const slot = path.join(path.dirname(root), 'app.turbo', 'lane-2');
+  fs.mkdirSync(slot, { recursive: true });
+  const sdir = projectDirFor(home, slot);
+  writeAgent(sdir, SESSION, AGENT, [entry.agentUser(AGENT, 'Run the checks', at(1)), entry.assistant({ ts: at(2), text: 'all green', sidechain: true })]);
+  assert.equal(agentTail({ root, agentId: AGENT, env }), null, 'no lane names the slot yet');
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanes: { 4: { key: '4', job: 'phase', phase: '4', slot: 2, slotPath: slot, sessionId: null } } }));
+  const r = agentTail({ root, agentId: AGENT, env });
+  assert.ok(r && r.transcript.startsWith(sdir), r?.transcript);
+});
+
+test('review I4: a hand-edited slotPath that is not a path is skipped, never thrown on', () => {
+  const { root, env } = setup();
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanes: { 4: { key: '4', job: 'phase', phase: '4', slot: 2, slotPath: 5, sessionId: 'abcd1234' } } }));
+  assert.equal(agentTail({ root, agentId: AGENT, env }), null);
+});

@@ -28,6 +28,9 @@ const ruPlural = (n, one, few, many) => {
   const b = n % 100;
   return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many;
 };
+// Phase ids as words: `phase 34`, `phases 33, 34` (one and many name the word in the case the phrase needs).
+const ids = (l) => [].concat(l ?? []).map(String);
+const idList = (l, one, many) => (ids(l).length > 1 ? `${many} ${ids(l).join(', ')}` : `${one} ${ids(l)[0] ?? ''}`.trim());
 
 // The /turbo-phase steps (lib/phase-progress.mjs STEPS, and ci) and the subagent types, in words; anything else is
 // shown as written. lib/view.mjs keeps the same tables for turbo-run view and status --watch (test/view.test.mjs
@@ -68,6 +71,8 @@ const VIEW_WORDS = {
       quiet: (d) => `silent${d ? ` for ${d}` : ''} — may be stuck`, quietHelper: (who, d, more) => `running, but ⚠️ ${who} silent${d ? ` for ${d}` : ''}${more ? ` (and ${more} more)` : ''}`,
       paused: 'paused: needs a fresh context', done: 'done', halted: 'supervisor stopped', failing: (at) => `supervisor failing${at ? ` since ${at}` : ''}`,
       attended: (p) => `phase ${p} is in your session — new phases wait`, supStopped: 'supervisor not running', finished: 'all phases done', never: 'supervisor never started',
+      // Stage 4: a lane the supervisor stopped alone; a lane whose turn ended and that is merged into main
+      laneHalted: 'a lane stopped — the other lanes go on', merging: 'done — being merged into the main branch',
     },
     reason: 'Reason',
     life: (d) => `last activity ${d} ago`,
@@ -105,12 +110,32 @@ const VIEW_WORDS = {
       none: 'Nothing needed from you now', held: 'Needed from you: answer the question above — the phase waits for it', ahead: (n) => `You can answer ${n === 1 ? 'the question' : `the ${n} questions`} above ahead`,
       decide: 'Needed from you: the phase waits for your decision — the reason is above', failed: 'Needed from you: the phase stopped by a failure and will not go on by itself', fullMode: 'Needed from you: its final checks need full mode',
       ciLast: 'If the last CI attempt fails, the phase will ask you',
+      halted: 'Needed from you: a stopped lane waits for you to resume it',
     },
     kind: {
       feat: (n) => `${n} new ${n === 1 ? 'feature' : 'features'}`, fix: (n) => `${n} ${n === 1 ? 'fix' : 'fixes'}`, refactor: (n) => `${n} ${n === 1 ? 'code rework' : 'code reworks'}`,
       test: (n) => `${n} test ${n === 1 ? 'change' : 'changes'}`, docs: (n) => `${n} docs ${n === 1 ? 'change' : 'changes'}`, other: (n) => `${n} other ${n === 1 ? 'change' : 'changes'}`,
     },
     lastAgo: (ago) => `latest ${ago}`,
+    // Stage 4: several lanes (spec §8): a lane's slot, what a prep or annotate lane does, the summary line, why the next
+    // phase waits (supervisor.json next: its why, the phases it waits for, a shared resource by name)
+    lane: (k) => `lane ${k}`,
+    // reconcile R12: the annotate job's questions (pseudo-phase annotate)
+    markup: 'lane markup',
+    stoppedLane: 'stopped — the other lanes go on',
+    laneHead: (k) => `Lane ${k}`,
+    lanesCount: (n) => `${n} ${n === 1 ? 'lane' : 'lanes'}`,
+    questionsCount: (n) => `${n} ${n === 1 ? 'question' : 'questions'}`,
+    job: { prep: (s) => `getting ready ahead: ${s}`, annotate: 'working out which phases can run together' },
+    gate: { 'prod-deploy': 'the deploy', 'owner-live': 'your live check', 'owner-signature': 'your signature', 'packaged-build': 'the packaged build' },
+    waits: {
+      deps: (p, l) => `next: phase ${p} waits for ${idList(l, 'phase', 'phases')}`,
+      areas: (p, l) => `next: phase ${p} waits for ${idList(l, 'phase', 'phases')} — they change the same files`,
+      gates: (p, l, g) => (ids(l).length ? `next: phase ${p} waits for ${idList(l, 'phase', 'phases')} — both need ${g}` : `next: phase ${p} waits its turn for ${g}`),
+      slots: (p) => `next: phase ${p} waits for a free lane`,
+      annotation: (p) => `next: phase ${p} waits until turbo knows which phases can run together`,
+      merge: (p, l) => `next: phase ${p} waits for ${idList(l, 'phase', 'phases')} to be merged`,
+    },
   },
   ru: {
     ...WORDS.ru,
@@ -131,6 +156,7 @@ const VIEW_WORDS = {
       quiet: (d) => `тишина${d ? ` ${d}` : ''} — возможно, зависла`, quietHelper: (who, d, more) => `идёт, но ⚠️ ${who} молчит${d ? ` ${d}` : ''}${more ? ` (и ещё ${more})` : ''}`,
       paused: 'на паузе: нужен новый контекст', done: 'готова', halted: 'супервизор остановился', failing: (at) => `супервизор сбоит${at ? ` с ${at}` : ''}`,
       attended: (p) => `фаза ${p} у вас в сессии — новые фазы ждут`, supStopped: 'супервизор не работает', finished: 'все фазы готовы', never: 'супервизор не запускался',
+      laneHalted: 'полоса остановилась — остальные идут дальше', merging: 'готова — вливается в основную ветку',
     },
     reason: 'Причина',
     life: (d) => `последнее действие ${d} назад`,
@@ -167,12 +193,30 @@ const VIEW_WORDS = {
       none: 'От вас сейчас ничего не нужно', held: 'Нужны вы: ответить на вопрос выше — фаза ждёт его', ahead: (n) => (n === 1 ? 'На вопрос выше можно ответить заранее' : `На вопросы выше (${n}) можно ответить заранее`),
       decide: 'Нужны вы: фаза ждёт вашего решения — причина выше', failed: 'Нужны вы: фаза остановилась из-за сбоя и сама не продолжит', fullMode: 'Нужны вы: финальным проверкам нужен полный режим',
       ciLast: 'Если последняя попытка починить CI не выйдет, фаза спросит вас',
+      halted: 'Нужны вы: остановленная полоса ждёт, что вы её возобновите',
     },
     kind: {
       feat: (n) => `${n} ${ruPlural(n, 'новая возможность', 'новые возможности', 'новых возможностей')}`, fix: (n) => `${n} ${ruPlural(n, 'исправление', 'исправления', 'исправлений')}`, refactor: (n) => `${n} ${ruPlural(n, 'переделка кода', 'переделки кода', 'переделок кода')}`,
       test: (n) => `${n} ${ruPlural(n, 'правка тестов', 'правки тестов', 'правок тестов')}`, docs: (n) => `${n} ${ruPlural(n, 'правка документов', 'правки документов', 'правок документов')}`, other: (n) => `${n} ${ruPlural(n, 'служебное изменение', 'служебных изменения', 'служебных изменений')}`,
     },
     lastAgo: (ago) => `последнее ${ago}`,
+    lane: (k) => `полоса ${k}`,
+    markup: 'разметка полос',
+    stoppedLane: 'остановилась — остальные полосы идут дальше',
+    laneHead: (k) => `Полоса ${k}`,
+    lanesCount: (n) => `${n} ${ruPlural(n, 'полоса', 'полосы', 'полос')}`,
+    questionsCount: (n) => `${n} ${ruPlural(n, 'вопрос', 'вопроса', 'вопросов')}`,
+    job: { prep: (s) => `готовится заранее: ${s}`, annotate: 'разбирает, какие фазы могут идти вместе' },
+    // the case after «используют» and «очереди на»
+    gate: { 'prod-deploy': 'деплой', 'owner-live': 'вашу живую проверку', 'owner-signature': 'вашу подпись', 'packaged-build': 'сборку пакета' },
+    waits: {
+      deps: (p, l) => `следующая: фаза ${p} ждёт ${idList(l, 'фазу', 'фазы')}`,
+      areas: (p, l) => `следующая: фаза ${p} ждёт ${idList(l, 'фазу', 'фазы')} — они меняют одни и те же файлы`,
+      gates: (p, l, g) => (ids(l).length ? `следующая: фаза ${p} ждёт ${idList(l, 'фазу', 'фазы')} — обе используют ${g}` : `следующая: фаза ${p} ждёт своей очереди на ${g}`),
+      slots: (p) => `следующая: фаза ${p} ждёт свободную полосу`,
+      annotation: (p) => `следующая: фаза ${p} ждёт, пока turbo разберёт, какие фазы могут идти вместе`,
+      merge: (p, l) => `следующая: фаза ${p} ждёт слияния ${idList(l, 'фазы', 'фаз')}`,
+    },
   },
 };
 
@@ -191,6 +235,7 @@ export const TEXT = {
     pushFailed: 'push ✗',
     newQuestion: (p, q) => `New question (phase ${p}): “${q}”`,
     newQuestions: (n) => `${n} new questions`,
+    newMarkupQuestion: (q) => `New question (lane markup): “${q}”`,
     phaseDone: (p) => `Phase ${p} done`,
     ciRed: (p, fix, asked) => `CI red: phase ${p} — ${fix ? (fix.last ? 'last attempt; if it fails, it will ask you' : `fixing it itself (attempt ${fix.n} of ${fix.m})`) : asked ? 'needs your answer' : 'needs your decision'}`,
     laneNeedsOwner: (p, why) => `Phase ${p} stopped — needs your answer${why ? `: ${why}` : ''}`,
@@ -222,6 +267,7 @@ export const TEXT = {
     pushFailed: 'отправка ✗',
     newQuestion: (p, q) => `Новый вопрос (фаза ${p}): «${q}»`,
     newQuestions: (n) => `Новых вопросов: ${n}`,
+    newMarkupQuestion: (q) => `Новый вопрос (разметка полос): «${q}»`,
     phaseDone: (p) => `Фаза ${p} готова`,
     ciRed: (p, fix, asked) => `CI красный: фаза ${p} — ${fix ? (fix.last ? 'последняя попытка; если не выйдет, спросит вас' : `чинит сама (попытка ${fix.n} из ${fix.m})`) : asked ? 'нужен ваш ответ' : 'нужно ваше решение'}`,
     laneNeedsOwner: (p, why) => `Фаза ${p} остановилась — нужен ваш ответ${why ? `: ${why}` : ''}`,
@@ -335,6 +381,29 @@ const agentWord = (t, type) => (type ? t.agent[type] ?? cut(type, 40) : t.agent[
 const planWords = (t, x) => (x?.plan ? t.plan(x.plan, x.task) : null);
 const plansWords = (t, lane) => (lane?.plans?.total > 0 ? t.plans(lane.plans.done, lane.plans.total) : null);
 
+// Stage 4 (L4): a lane's slot (1, 2, …; 0 or none: the main checkout), its head (`Phase 34 · lane 2`, an annotate lane
+// `Lane 2`), what it does in words (a prep lane `getting ready ahead: discussion`), a shared resource by name, why the
+// next phase waits (supervisor.json next, at most three phases named) and the run's summary line (`3 lanes · 1
+// question · next: phase 36 waits for phase 34`). A view from v0.3 has no job: a phase lane.
+const slotOf = (lane) => (Number.isInteger(lane?.slot) && lane.slot >= 1 ? lane.slot : null);
+const laneHeadText = (t, lane) => (lane.job === 'annotate' ? t.laneHead(slotOf(lane) ?? '–') : `${t.phase(cut(lane.phase, 20))}${slotOf(lane) ? ` · ${t.lane(slotOf(lane))}` : ''}`);
+const stepText = (t, lane) => (lane.job === 'annotate' ? t.job.annotate : lane.job === 'prep' ? t.job.prep(stepWord(t, lane.step)) : stepWord(t, lane.step));
+const gateWord = (t, g) => (Object.hasOwn(t.gate, String(g)) ? t.gate[String(g)] : cut(g, 30));
+const NAMES_FOR = new Set(['deps', 'areas', 'merge']);
+function waitsWords(t, next) {
+  if (!next || next.phase == null || !Object.hasOwn(t.waits, String(next.why))) return null;
+  const all = list(next.waitsFor);
+  const on = [...all.slice(0, 3).map((x) => cut(x, 20)), ...(all.length > 3 ? ['…'] : [])];
+  if (NAMES_FOR.has(next.why) && !on.length) return null;
+  if (next.why === 'gates' && (next.gate == null || next.gate === '')) return null;
+  return t.waits[next.why](cut(next.phase, 20), on, next.gate == null ? '' : gateWord(t, next.gate));
+}
+function summaryLine(t, view) {
+  const asked = list(view?.questions).length;
+  return [t.lanesCount(list(view?.lanes).length), asked ? t.questionsCount(asked) : null, waitsWords(t, view?.next)].filter(Boolean).join(' · ');
+}
+export const runSummary = (view) => clean(summaryLine(textOf(view), view));
+
 const TEST_RUN = /\b(?:node\s+--test|npm\s+(?:run\s+)?test|npx\s+(?:jest|vitest|mocha)|jest|vitest|mocha|pytest|go\s+test|cargo\s+test|test-changed|plugin\s+test)\b/;
 const COMMIT = /\bgit\b.*\bcommit\b/;
 const EDITS = new Set(['Edit', 'MultiEdit', 'NotebookEdit']);
@@ -395,6 +464,7 @@ function verdictOf(t, view) {
   if (attended != null) return v('attended', 'warn', t.verdict.attended(cut(attended, 20)));
   if (sup && !live && !sup.finished) return v('supStopped', 'warn');
   if (has('failed')) return v('failed', 'bad');
+  if (lanes.some((l) => l.halted)) return v('laneHalted', 'bad');
   if (has('needs-owner')) return v('needsOwner', 'bad', t.verdict.needsOwner(asked));
   if (lanes.some((l) => l.held === 'fullMode')) return v('fullMode', 'bad');
   const red = lanes.find((l) => l.push?.ci === 'red');
@@ -434,8 +504,11 @@ const toned = (tone, extra = {}) => ({ ...TONES[tone], ...extra });
 
 // What a lane that is not running says about itself (`Фаза 32 остановилась — ждёт вашего ответа`), or null while it
 // runs: { kind (the verdict's), tone, text }.
-const LANE_KINDS = { 'needs-owner': ['needsOwner', 'bad'], failed: ['failed', 'bad'], done: ['done', 'ok'], 'paused-context': ['paused', 'warn'] };
+// Stage 4: ready (a phase), prepped and annotated (a job): its turn ended and it is merged into main (calm)
+const LANE_KINDS = { 'needs-owner': ['needsOwner', 'bad'], failed: ['failed', 'bad'], done: ['done', 'ok'], 'paused-context': ['paused', 'warn'], ready: ['merging', 'ok'], prepped: ['merging', 'ok'], annotated: ['merging', 'ok'] };
 function laneState(t, lane, asked) {
+  // Stage 4: a lane the supervisor stopped alone (L1's lane.halted); the other lanes go on
+  if (lane.halted) return { kind: 'laneHalted', tone: 'bad', text: t.stoppedLane };
   if (lane.held === 'fullMode') return { kind: 'fullMode', tone: 'bad', text: t.verdict.fullMode };
   const [kind, tone] = LANE_KINDS[lane.status] ?? [];
   return kind ? { kind, tone, text: kind === 'needsOwner' ? t.verdict.needsOwner(asked) : t.verdict[kind] } : null;
@@ -444,7 +517,7 @@ function laneState(t, lane, asked) {
 // How a lane line reads: 'state' (it stopped, finished or pauses: that first), 'held' (it would run, but the supervisor
 // does not: never «идёт»), else 'running'.
 function laneForm(view, lane) {
-  if (LANE_KINDS[lane.status] || lane.held === 'fullMode') return 'state';
+  if (LANE_KINDS[lane.status] || lane.held === 'fullMode' || lane.halted) return 'state';
   const sup = view?.supervisor;
   return sup && !sup.running ? 'held' : 'running';
 }
@@ -463,16 +536,33 @@ function laneTime(t, lane, form) {
 function laneLine(t, view, lane, v, asked) {
   const form = laneForm(view, lane);
   const dur = laneTime(t, lane, form);
-  const phase = t.phase(cut(lane.phase, 20));
+  const head = laneHeadText(t, lane);
   const plans = plansWords(t, lane);
   const state = form === 'state' ? laneState(t, lane, asked) : null;
   const tail = v && v.kind !== state?.kind ? [' · ', text(toned(v.tone, { bold: true }), v.text)] : null;
   const dimmed = (parts) => (parts.filter(Boolean).length ? text(TONES.dim, ` · ${parts.filter(Boolean).join(' · ')}`) : null);
-  if (form === 'running') return text({ wrap: 'wrap' }, text({ bold: true }, phase), ` — ${stepWord(t, lane.step)}`, dimmed([plans, dur]), tail);
-  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${phase} ${t.stoppedAt(stepNoun(t, lane.step))}`), dimmed([plans, dur]), tail);
+  if (form === 'running') return text({ wrap: 'wrap' }, text({ bold: true }, head), ` — ${stepText(t, lane)}`, dimmed([plans, dur]), tail);
+  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${head} ${t.stoppedAt(stepNoun(t, lane.step))}`), dimmed([plans, dur]), tail);
   const where = [stepNoun(t, lane.step) && t.atStep(stepNoun(t, lane.step)), plans, dur && (lane.status === 'done' ? t.took(dur) : dur)];
-  return text({ wrap: 'wrap' }, text(toned(state.tone, { bold: true }), `${phase} ${state.text}`), dimmed(where), tail);
+  return text({ wrap: 'wrap' }, text(toned(state.tone, { bold: true }), `${head} ${state.text}`), dimmed(where), tail);
 }
+
+// Stage 4 (D7): past two lanes a lane keeps its rows only while it is alert: stopped, failed, paused or held for full
+// mode, its CI red, a question of its phase open, or (while the supervisor runs) it or a helper of it silent.
+function laneAlert(view, lane) {
+  if (lane.held === 'fullMode' || lane.halted || STOPPED.has(lane.status) || lane.status === 'paused-context') return true;
+  if (lane.push?.ci === 'red') return true;
+  const own = lane.job === 'annotate' ? 'annotate' : lane.phase;
+  if (own != null && list(view?.questions).some((q) => String(q?.phase ?? '') === String(own))) return true;
+  return Boolean(view?.supervisor?.running) && lane.status === 'running' && (Boolean(lane.quiet) || list(lane.agents).some((a) => a.state === 'quiet'));
+}
+
+// The slot of the phase lane a question's phase runs in, or null (the main checkout, a view from v0.3).
+// A question asked during its phase's prep (review M1) names the prep lane.
+const laneSlot = (view, phase) => {
+  const of = (job) => list(view?.lanes).find((l) => (l.job ?? 'phase') === job && String(l.phase) === String(phase) && slotOf(l));
+  return slotOf(of('phase') ?? of('prep'));
+};
 
 // A helper: what it does now, its plan and time dim; `columns` (the pane's width) cuts what it does, never the time.
 // While the supervisor does not run, nothing is called stuck: a silent helper says how long it is silent, dim.
@@ -496,14 +586,19 @@ function lastSign(lane) {
 }
 
 // The verdict line, then, indented: the sign of life (amber once the phase reads as silent), the reason it stopped,
-// the helpers at work, and the finished ones as one dim count.
+// the helpers at work, and the finished ones as one dim count. Several lanes (Stage 4 D7): the verdict and the run's
+// summary line first, then a block per lane without the verdict; past two lanes a calm lane is its line alone.
 function runSection(t, view, v, columns) {
   const lanes = list(view.lanes);
+  const multi = lanes.length > 1;
   const live = Boolean(view.supervisor?.running);
   const asked = list(view.questions).length;
-  const rows = lanes.length ? [] : [text({ wrap: 'wrap' }, text({ bold: true }, t.run), ' — ', text(toned(v.tone, { bold: true }), v.text))];
+  const rows = lanes.length && !multi ? [] : [text({ wrap: 'wrap' }, text({ bold: true }, t.run), ' — ', text(toned(v.tone, { bold: true }), v.text))];
+  if (multi) rows.push(text({ wrap: 'wrap' }, summaryLine(t, view)));
   lanes.forEach((lane, i) => {
-    rows.push(laneLine(t, view, lane, i === 0 ? v : null, asked));
+    const first = !multi && i === 0;
+    rows.push(laneLine(t, view, lane, first ? v : null, asked));
+    if (lanes.length > 2 && !laneAlert(view, lane)) return;
     const agents = list(lane.agents);
     const working = agents.filter((a) => ACTIVE.has(a.state));
     const finished = agents.length - working.length;
@@ -512,7 +607,7 @@ function runSection(t, view, v, columns) {
     // a red CI the verdict does not speak of (an answer waits, the phase stopped) is said under it all the same
     // a red CI the phase fixes itself is said by Now (nowRow); one that needs the owner, here unless the verdict says it
     const fixing = selfFixing(view, lane);
-    const red = lane.push?.ci === 'red' && !fixing && !(i === 0 && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
+    const red = lane.push?.ci === 'red' && !fixing && !(first && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
     const under = [
       nowRow(t, view, lane),
       sign ? text(toned(live && lane.quiet ? 'warn' : 'dim', { wrap: 'truncate-end' }), t.life(since(t, sign, view.at) ?? '-')) : null,
@@ -534,7 +629,10 @@ function questionCard(t, view, q, field) {
   const id = String(q.id);
   // the revision drawn (S1: every question starts at rev 1); turbo-run answer gets it as --rev
   const question = { id, phase: String(q.phase ?? ''), rev: Number.isInteger(q.rev) && q.rev > 0 ? q.rev : 1 };
-  const where = planWords(t, { plan: q.plan == null ? null : cut(q.plan, 20), task: q.task == null ? null : cut(q.task, 10) }) ?? (question.phase ? t.phaseOnly(cut(question.phase, 20)) : null);
+  const plain = planWords(t, { plan: q.plan == null ? null : cut(q.plan, 20), task: q.task == null ? null : cut(q.task, 10) }) ?? (question.phase === 'annotate' ? t.markup : question.phase ? t.phaseOnly(cut(question.phase, 20)) : null);
+  // Stage 4 (spec §8): the lane the question's phase runs in (`plan 34-02, task 3 · lane 2`)
+  const slot = laneSlot(view, question.phase);
+  const where = [plain, slot ? t.lane(slot) : null].filter(Boolean).join(' · ') || null;
   const holds = q.stopped === true;
   const running = Boolean(view.supervisor?.running) && list(view.lanes).some((l) => String(l.phase) === question.phase && l.status === 'running');
   const options = list(q.options).map((o, i) => ({ n: i + 1, label: cut(typeof o === 'string' ? o : o?.label ?? '', LABEL_MAX), description: cut(o?.description ?? '', CONTEXT_MAX), recommended: o?.recommended === true }));
@@ -563,6 +661,8 @@ function nowOf(t, view, lane) {
   if (fix) return { tone: 'warn', text: fix.last ? t.now.ciLast : t.now.ciFix(fix.n, fix.m) };
   const plain = (s) => ({ tone: 'plain', text: s });
   const working = list(lane.agents).filter((a) => a.state === 'running');
+  // an annotate lane says what it does in its line; with no helper at work there is nothing to add
+  if (lane.job === 'annotate' && !working.length) return null;
   if (working.length) {
     const type = NOW_ORDER.find((x) => working.some((a) => a.type === x));
     if (type === 'gsd-executor') return plain(t.now.executors(working.filter((a) => a.type === type).length));
@@ -590,7 +690,7 @@ const GATE_STEPS = new Set(['gates-off', 'restore', 'integrate']);
 // The lane's steps, each { step, state: 'done' | 'now' | 'ahead' }, from its step alone (completeStep keeps them in
 // order); a step turbo does not know is the only one; none for a phase done or no lane.
 export function phaseSteps(lane) {
-  if (!lane || lane.status === 'done') return [];
+  if (!lane || lane.status === 'done' || lane.job === 'annotate') return [];
   const at = lane.step == null ? STEPS.length : STEPS.indexOf(lane.step);
   if (at < 0) return [{ step: lane.step, state: 'now' }];
   return STEPS.map((step, i) => ({ step, state: i < at ? 'done' : i === at ? 'now' : 'ahead' })).filter((s) => s.state === 'now' || !GATE_STEPS.has(s.step));
@@ -602,7 +702,7 @@ export function phaseSteps(lane) {
 // phase done or no lane.
 // { chain, needs: [{ tone, text }] }.
 function nextOf(t, view, lane) {
-  if (!lane || lane.status === 'done') return null;
+  if (!lane || lane.status === 'done' || lane.job === 'annotate') return null;
   const ahead = phaseSteps(lane).filter((s) => s.state === 'ahead').map((s) => stepWord(t, s.step));
   const last = view?.range?.to != null && String(view.range.to) === String(lane.phase);
   const questions = list(view?.questions);
@@ -613,6 +713,7 @@ function nextOf(t, view, lane) {
   else if (lane.status === 'needs-owner') need('bad', t.need.decide);
   if (lane.status === 'failed') need('bad', t.need.failed);
   if (lane.held === 'fullMode') need('bad', t.need.fullMode);
+  if (lane.halted) need('bad', t.need.halted);
   if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
   if (selfFixing(view, lane)?.last) need('warn', t.need.ciLast);
   // the view knows no owner-only acceptance items ahead of time: no guess about them here (review r1)
@@ -622,19 +723,39 @@ function nextOf(t, view, lane) {
 
 export const whatNext = (view, lane) => nextOf(textOf(view), view, lane);
 
+// Several lanes (Stage 4 D7): when the owner is needed, across every lane; each lane's line names its step, and the
+// summary line the next phase, so no chain of steps.
+function nextOfRun(t, view) {
+  const lanes = list(view?.lanes);
+  const questions = list(view?.questions);
+  const held = questions.filter((q) => q?.stopped === true).length;
+  const needs = [];
+  const need = (tone, s) => needs.push({ tone, text: s });
+  if (held) need('bad', t.need.held);
+  else if (lanes.some((l) => l.status === 'needs-owner')) need('bad', t.need.decide);
+  if (lanes.some((l) => l.status === 'failed')) need('bad', t.need.failed);
+  if (lanes.some((l) => l.held === 'fullMode')) need('bad', t.need.fullMode);
+  if (lanes.some((l) => l.halted)) need('bad', t.need.halted);
+  if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
+  if (lanes.some((l) => selfFixing(view, l)?.last)) need('warn', t.need.ciLast);
+  if (!needs.length) need('ok', t.need.none);
+  return { chain: null, needs };
+}
+
 function nextSection(t, view, lane) {
-  const n = nextOf(t, view, lane);
+  const n = list(view.lanes).length > 1 || lane?.job === 'prep' ? nextOfRun(t, view) : nextOf(t, view, lane);
   if (!n) return null;
   return box({ flexDirection: 'column', marginTop: 1 }, text({ bold: true }, t.nextHead),
-    box({ flexDirection: 'column', paddingLeft: 2 }, text({ wrap: 'wrap' }, n.chain), n.needs.map((x) => text(toned(x.tone, { wrap: 'wrap' }), x.text))));
+    box({ flexDirection: 'column', paddingLeft: 2 }, n.chain ? text({ wrap: 'wrap' }, n.chain) : null, n.needs.map((x) => text(toned(x.tone, { wrap: 'wrap' }), x.text))));
 }
 
 // The phase's steps (D5): done ✓ dim, now ▶ bold (where a stopped phase stopped: ■, red; paused or held: amber), ahead
 // · dim.
 function stepsSection(t, view, lane) {
-  const steps = phaseSteps(lane);
+  // several lanes: each lane line says its step (Stage 4 D7)
+  const steps = list(view.lanes).length > 1 || lane?.job === 'prep' ? [] : phaseSteps(lane);
   if (!steps.length) return null;
-  const halt = laneForm(view, lane) === 'running' ? null : STOPPED.has(lane.status) || lane.held === 'fullMode' ? 'bad' : 'warn';
+  const halt = laneForm(view, lane) === 'running' ? null : STOPPED.has(lane.status) || lane.held === 'fullMode' || lane.halted ? 'bad' : 'warn';
   const row = (s) => {
     const word = stepWord(t, s.step);
     if (s.state === 'done') return text({}, text(TONES.ok, '✓'), text(TONES.dim, ` ${word}`));
@@ -727,13 +848,17 @@ export function bandLine(view, { error = null, paneWaiting = false } = {}) {
   const lanes = list(view.lanes);
   const states = lanes.map((l) => (laneForm(view, l) === 'state' ? laneState(t, l, questions.length) : null));
   const lanePart = (l, i) => {
-    const p = cut(l.phase, 20);
-    if (states[i]) return `${t.phaseOnly(p)} ${states[i].text}`;
-    if (laneForm(view, l) === 'held') return `${t.phaseOnly(p)} ${t.stoppedShort}`;
-    return `${t.bandPhase(p, stepWord(t, l.step))}${l.plans?.total > 0 ? ` ${l.plans.done}/${l.plans.total}` : ''}`;
+    const p = l.job === 'annotate' ? null : cut(l.phase, 20);
+    const who = p === null ? t.lane(slotOf(l) ?? '–') : t.phaseOnly(p);
+    if (states[i]) return `${who} ${states[i].text}`;
+    if (laneForm(view, l) === 'held') return `${who} ${t.stoppedShort}`;
+    if (p === null) return `${who}: ${t.job.annotate}`;
+    return `${t.bandPhase(p, stepText(t, l))}${l.plans?.total > 0 ? ` ${l.plans.done}/${l.plans.total}` : ''}`;
   };
-  const parts = ['turbo', ...lanes.map(lanePart)];
-  if (v.kind !== 'answer' && !states.some((s) => s?.kind === v.kind)) parts.push(v.text);
+  // Stage 4 (D8): past two lanes the band counts them, so it stays one line
+  const many = lanes.length > 2;
+  const parts = ['turbo', ...(many ? [t.lanesCount(lanes.length)] : lanes.map(lanePart))];
+  if (v.kind !== 'answer' && (many || !states.some((s) => s?.kind === v.kind))) parts.push(v.text);
   if (questions.length) parts.push(t.waiting(questions.length));
   // a red CI verdict says it in words already
   parts.push(...(lanes.map((l) => pushMarks(t, l.push, v.kind !== 'ciRed' && v.kind !== 'ciFixing')).find((m) => m.length) ?? []));
@@ -747,7 +872,13 @@ export const bandStyle = (view, { error = null } = {}) => ({ ...TONES[error ? 'b
 // What the toasts remember of each lane between reads: { [phase]: { status, red } }, red the sha of the red CI run
 // already toasted. A lane that left the view stays, with status 'gone'.
 const redOf = (lane) => (lane.push?.ci === 'red' ? lane.push.sha ?? '' : null);
-const lanesSeen = (view) => Object.fromEntries(list(view?.lanes).map((l) => [String(l.phase), { status: l.status, red: redOf(l) }]));
+// Stage 4 (D9): only phase lanes raise toasts (a view from v0.3 has no job: a phase lane); prep and annotate lanes never
+// say a phase is done. slot: the lane's slot (null in the main checkout), for when it leaves.
+const phaseLanes = (view) => list(view?.lanes).filter((l) => (l.job ?? 'phase') === 'phase' && l.phase != null);
+const lanesSeen = (view) => Object.fromEntries(phaseLanes(view).map((l) => [String(l.phase), { status: l.status, red: redOf(l), slot: slotOf(l) }]));
+// A phase lane in a slot ends its turn with lane-status ready and stays while it is merged into main; it leaves done
+// only after that (L1's DONE_STATUSES.phase). One released while it ran (failed, abandoned) leaves without it.
+const DONE_BEFORE_LEAVING = new Set(['ready', 'done']);
 
 // Toasts for what changed between two views, against seen (the lanes as last seen, kept by the caller across reads;
 // prev's lanes when not given): a new question, a phase done, red CI (whether the phase fixes it itself), a lane that
@@ -762,15 +893,16 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
   const out = [];
   const asked = new Set(list(prev.questions).map((q) => q.id));
   const fresh = list(next.questions).filter((q) => !asked.has(q.id));
-  if (fresh.length === 1) out.push(t.newQuestion(cut(fresh[0].phase ?? '', 20), cut(fresh[0].question || fresh[0].header || '', 80)));
+  const asks = (q) => cut(q.question || q.header || '', 80);
+  if (fresh.length === 1) out.push(fresh[0].phase === 'annotate' ? t.newMarkupQuestion(asks(fresh[0])) : t.newQuestion(cut(fresh[0].phase ?? '', 20), asks(fresh[0])));
   else if (fresh.length > 1) out.push(t.newQuestions(fresh.length));
   const after = { ...seen };
-  const lanes = list(next.lanes);
+  const lanes = phaseLanes(next);
   const sup = next.supervisor;
   const cleared = Boolean(sup && !sup.halted && (sup.finished || (sup.pid != null && sup.pid === prev.supervisor?.pid)));
   for (const [phase, last] of Object.entries(seen)) {
     if (last.status === 'gone' || lanes.some((l) => String(l.phase) === phase)) continue;
-    if (cleared && last.status !== 'done') out.push(t.phaseDone(phase));
+    if (cleared && last.status !== 'done' && (!last.slot || DONE_BEFORE_LEAVING.has(last.status))) out.push(t.phaseDone(phase));
     after[phase] = { ...last, status: 'gone' };
   }
   for (const n of lanes) {
@@ -780,7 +912,7 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
     if (STOPPED.has(n.status) && n.status !== last.status) out.push((n.status === 'failed' ? t.laneFailed : t.laneNeedsOwner)(phase, cut(laneReason(n.reason), 80)));
     const red = redOf(n);
     if (red !== null && red !== last.red) out.push(t.ciRed(phase, sup?.running ? ciFixing(n) : null, list(next.questions).length));
-    after[phase] = { status: n.status, red };
+    after[phase] = { status: n.status, red, slot: slotOf(n) };
   }
   if (!prev.supervisor?.halted && sup?.halted) out.push(t.halted);
   return { toasts: out.map((s) => cut(s, 300)), seen: after };

@@ -144,3 +144,41 @@ test('the argument check: an Other… text of quotes, flags and a backslash reac
   assert.equal(r.code, 0, r.out);
   assert.equal(r.out, `ok: the answer arrived as one argument, by pane: ${JSON.stringify(PROBE)}\n`);
 });
+
+test('the three-lane demo (--lanes 3): the verdict, the summary line, the lane with the question open, the calm ones one line; the band counts lanes', () => {
+  const v = demoView({ tick: 1, lang: 'ru', startedAt: 0, now: 0, lanes: 3 });
+  assert.deepEqual(v.lanes.map((l) => [l.key, l.job, l.slot]), [['32', 'phase', 1], ['33', 'phase', 2], ['prep-35', 'prep', 3]]);
+  const pane = paneLines(render(v));
+  assert.deepEqual(pane.slice(0, 3), ['Прогон — нужен ваш ответ (1)', '3 полосы · 1 вопрос · следующая: фаза 34 ждёт фазу 32 — они меняют одни и те же файлы', 'Фаза 32 · полоса 1 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин']);
+  assert.ok(pane.includes('Фаза 33 · полоса 2 — проверки качества · 2 из 4 планов готово · 25 мин'), pane.join('\n'));
+  assert.ok(pane.includes('Фаза 35 · полоса 3 — готовится заранее: обсуждение · 4 мин'), pane.join('\n'));
+  assert.equal(bandLine(v), 'turbo · 3 полосы · ❓ 1 вопрос ждёт вас · CI ✓');
+  assert.equal(bandLine(demoView({ tick: 1, lang: 'en', startedAt: 0, now: 0, lanes: 3 })), 'turbo · 3 lanes · ❓ 1 question waits for you · CI ✓');
+  const dir = tmpDir('demo');
+  const { project, mod } = setupDemo({ dir, lang: 'en', lanes: 3 });
+  const read = parseView(fakeTurboRun(['view', '--json'], project, 3000).stdout);
+  assert.equal(read.lanes.length, 3);
+  const text = instructions({ dir, project, mod, lang: 'en', lanes: 3 });
+  assert.ok(text.includes('\n       3 lanes · 1 question · next: phase 34 waits for phase 32 — they change the same files\n'), text);
+  assert.ok(text.includes('\n       Phase 33 · lane 2 — quality checks · 2 of 4 plans done · 25m\n'), text);
+  assert.ok(text.includes('"turbo · 3 lanes · ❓ 1 question waits for you · CI ✓"'), text);
+  assert.ok(text.includes('(3 lanes)'), text);
+  assert.doesNotMatch(text, / +\n/, 'no trailing blanks');
+  // the one-lane demo is as it was, and says how to see three
+  assert.ok(instructions({ dir, project, mod, lang: 'en' }).includes('--lanes 3'));
+});
+
+test('the Russian three-lane demo is Russian: the only Latin in its pane and band is a path, a sha, CI and turbo', () => {
+  for (let tick = 1; tick <= 20; tick++) {
+    const v = demoView({ tick, lang: 'ru', startedAt: 0, now: tick * 3000, lanes: 3 });
+    const drawn = paneLines(render(v)).join('\n').replace(/lib\/export\.mjs/g, '').replace(/\b[0-9a-f]{7}\b/g, '').replace(/CI/g, '');
+    assert.doesNotMatch(drawn, /[A-Za-z]/, `read ${tick}:\n${drawn}`);
+    assert.doesNotMatch(bandLine(v).replace(/^turbo/, '').replace(/CI/g, ''), /[A-Za-z]/, `read ${tick}`);
+  }
+});
+
+test('the three-lane demo raises the same toasts as the one-lane demo: the prep lane says nothing', () => {
+  const reads = (lanes) => Array.from({ length: 16 }, (_, i) => demoView({ tick: i + 1, lang: 'en', startedAt: 0, now: (i + 1) * 3000, lanes }));
+  const toasts = (vs) => vs.flatMap((v, i) => toastsFor(vs[i - 1] ?? null, v));
+  assert.deepEqual(toasts(reads(3)), toasts(reads(1)));
+});

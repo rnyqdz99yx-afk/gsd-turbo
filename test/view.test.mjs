@@ -39,7 +39,7 @@ const agentEntries = (id, from, to, tokens = 166000) => [
 test('without supervisor.json the view has no supervisor and no lanes, and still lists questions and commits', () => {
   const { root, env } = laneProject();
   const v = buildView({ root, sup: null, env, now: NOW, commits: COMMITS });
-  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], questions: [], commits: COMMITS(), attended: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
+  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], next: null, questions: [], commits: COMMITS(), attended: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
 });
 
 test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
@@ -482,4 +482,185 @@ test('escape sequences and bidi overrides in repository data are dropped where t
   assert.equal(v.questions[0].question, 'Deploy? redevil');
   assert.ok(v.lanes[0].agents[0].action.detail.includes('echo redevil'), JSON.stringify(v.lanes[0].agents[0]));
   assert.ok(!unsafe.test(formatView({ ...v, commits: [{ sha: 'abc1234', subject: `raw ${evil}` }] })), 'formatView drops them from a view built elsewhere too');
+});
+
+// Stage 4: three lanes in slots next to a control root; each slot is its own project for Claude Code.
+function slotsProject() {
+  const { root, home, env } = laneProject();
+  const slot = (k) => {
+    const p = path.join(path.dirname(root), `${path.basename(root)}.turbo`, `lane-${k}`);
+    fs.mkdirSync(p, { recursive: true });
+    return p;
+  };
+  const slots = [slot(1), slot(2), slot(3)];
+  const sup = { pid: 4242, updatedAt: at('10:59'), finished: false, halted: false, range: { from: '32', to: '36' }, next: { phase: '34', why: 'deps', waitsFor: ['32'] }, lanes: {
+    'prep-35': { key: 'prep-35', job: 'prep', phase: '35', slot: 3, slotPath: slots[2], branch: 'turbo/prep-35', sessionId: null, launchedAt: at('10:56'), restarts: 0, notified: {}, mode: 'safe' },
+    33: { key: '33', job: 'phase', phase: '33', slot: 2, slotPath: slots[1], branch: 'turbo/p33', sessionId: null, launchedAt: at('10:35'), restarts: 0, notified: {}, mode: 'safe' },
+    32: { key: '32', job: 'phase', phase: '32', slot: 1, slotPath: slots[0], branch: 'turbo/p32', sessionId: SESSION.slice(0, 8), launchedAt: at('09:48'), restarts: 0, notified: {}, mode: 'full' },
+  } };
+  return { root, home, env, slots, sup };
+}
+
+test('lanes in slots (Stage 4): each lane reads its plans and helpers from its own slot and its records from the control root; prep lanes after the phases; the next phase from supervisor.json', () => {
+  const { root, home, env, slots, sup } = slotsProject();
+  const sdir = projectDirFor(home, slots[0]);
+  writeSession(sdir, SESSION, [entry.user('run phase 32', at('09:48')), entry.launched('toolu_1', 'a2000000000000001', at('10:20'))]);
+  setMtime(writeAgent(sdir, SESSION, 'a2000000000000001', agentEntries('a2000000000000001', '10:20', '10:58', 41000)), new Date(at('10:58')));
+  const phaseDir = path.join(slots[0], '.planning', 'phases', '32-export');
+  fs.mkdirSync(phaseDir, { recursive: true });
+  for (const f of ['32-01-PLAN.md', '32-01-SUMMARY.md', '32-02-PLAN.md']) fs.writeFileSync(path.join(phaseDir, f), '# x\n');
+  // the control root's own sessions and plans are not this lane's
+  writeSession(projectDirFor(home, root), SESSION, [entry.launched('toolu_9', 'a2000000000000009', at('10:30'))]);
+  const rootPhase = path.join(root, '.planning', 'phases', '32-export');
+  fs.mkdirSync(rootPhase, { recursive: true });
+  fs.writeFileSync(path.join(rootPhase, '32-01-PLAN.md'), '# x\n');
+  completeStep(root, '32', 'freshness');
+  completeStep(root, '35', 'freshness');
+  writeLaneStatus(root, '33', 'needs-owner', { reason: 'a live check', at: at('10:50') });
+  const v = buildView({ root, sup, running: true, env, now: NOW, commits: COMMITS });
+  assert.deepEqual(v.lanes.map((l) => [l.key, l.job, l.phase, l.slot]), [['32', 'phase', '32', 1], ['33', 'phase', '33', 2], ['prep-35', 'prep', '35', 3]]);
+  const [l32, l33, prep] = v.lanes;
+  assert.deepEqual(l32.plans, { done: 1, total: 2 });
+  assert.deepEqual(l32.agents.map((a) => a.agentId), ['a2000000000000001']);
+  assert.ok(l32.transcript.startsWith(sdir), l32.transcript);
+  assert.equal(l32.step, 'discuss', 'progress from the control root');
+  assert.deepEqual([l33.status, l33.reason, l33.agents, l33.transcript], ['needs-owner', 'a live check', [], null]);
+  assert.deepEqual([prep.step, prep.plans, prep.push], ['discuss', null, null], 'a prep lane steps through the progress of its phase; its plans are not written yet');
+  assert.deepEqual(v.next, { phase: '34', why: 'deps', waitsFor: ['32'], gate: null });
+  const quick = buildView({ root, sup, running: true, env, now: NOW, commits: COMMITS, agents: false });
+  assert.deepEqual([quick.lanes[0].agents, quick.lanes[0].transcript, quick.lanes[0].plans], [[], null, { done: 1, total: 2 }], 'agents: false reads no transcript');
+  assert.equal(buildView({ root, sup: { ...sup, finished: true }, env, now: NOW, commits: COMMITS, agents: false }).next, null);
+});
+
+test('an annotate lane has no phase, steps, plans or push and reads its own record; a v0.3 lane reads as before with slot 0; hand-edited entries never read "null" (Stage 4)', () => {
+  const { root, env, slots, sup } = slotsProject();
+  writeLaneStatus(root, 'annotate', 'needs-owner', { reason: 'which phases share files?', at: at('10:57') });
+  const ann = { key: 'annotate', job: 'annotate', phase: null, slot: 3, slotPath: slots[2], sessionId: null, launchedAt: at('10:56'), restarts: 0, notified: {}, mode: 'safe' };
+  const v = buildView({ root, sup: { ...sup, lanes: { annotate: ann, 32: sup.lanes[32], broken: null, list: [1] } }, env, now: NOW, commits: COMMITS, agents: false });
+  assert.deepEqual(v.lanes.map((l) => l.key), ['32', 'annotate']);
+  const a = v.lanes[1];
+  assert.deepEqual([a.job, a.phase, a.step, a.plans, a.push, a.status, a.reason], ['annotate', null, null, null, null, 'needs-owner', 'which phases share files?']);
+  const legacy = laneProject();
+  const [l] = buildView({ root: legacy.root, sup: legacy.sup, env: legacy.env, now: NOW, commits: COMMITS }).lanes;
+  assert.deepEqual([l.key, l.job, l.phase, l.slot], ['32', 'phase', '32', 0]);
+  assert.equal(buildView({ root: legacy.root, sup: legacy.sup, env: legacy.env, now: NOW, commits: COMMITS }).next, null, 'checkout mode writes no next');
+});
+
+test('runLine is the pane\'s summary line while two or more lanes run, else nothing; waitReason says the next phase in the owner\'s language', async () => {
+  const pane = await import('../mod/hooks/view-model.mjs');
+  const { runLine, waitReason } = await import('../lib/view.mjs');
+  const one = textView({ next: { phase: '33', why: 'slots', waitsFor: [], gate: null } });
+  assert.equal(runLine(one), null);
+  const two = { ...one, lanes: [{ ...one.lanes[0], key: '32', job: 'phase', slot: 1 }, { ...one.lanes[0], key: '33', job: 'phase', slot: 2, phase: '33' }], next: { phase: '34', why: 'deps', waitsFor: ['32'], gate: null } };
+  assert.equal(runLine(two), '2 lanes · 1 question · next: phase 34 waits for phase 32');
+  for (const lang of ['en', 'ru']) assert.equal(runLine({ ...two, ui: { lang } }), pane.runSummary({ ...two, ui: { lang } }));
+  assert.equal(waitReason({ phase: '36', why: 'deps', waitsFor: ['34'] }, 'ru'), 'следующая: фаза 36 ждёт фазу 34');
+  assert.equal(waitReason({ phase: '36', why: 'slots', waitsFor: [] }), 'next: phase 36 waits for a free lane');
+  assert.equal(waitReason({ phase: '3\x1b[2J6', why: 'gates', waitsFor: ['3\x072'], gate: 'prod-deploy' }), 'next: phase 36 waits for phase 32 — both need the deploy', 'cleaned');
+  assert.equal(waitReason(null), null);
+  assert.equal(waitReason({ phase: '36', why: 'mystery' }), null);
+});
+
+// Stage 4: a view of three lanes in slots, as buildView returns it
+function textLanes(over = {}, l33 = {}, l35 = {}) {
+  const base = textView(over);
+  return {
+    ...base,
+    lanes: [
+      { ...base.lanes[0], key: '32', job: 'phase', slot: 1 },
+      { ...base.lanes[0], key: '33', job: 'phase', slot: 2, phase: '33', step: 'fanout', launchedAt: at('10:35'), elapsedMs: 25 * 60000, plans: { done: 2, total: 4 }, agents: [{ type: 'gsd-code-reviewer', plan: null, task: null, state: 'running', action: { tool: 'Grep', detail: 'x' }, lastAt: at('10:58'), elapsedMs: 3 * 60000, tokens: 1 }], ...l33 },
+      { ...base.lanes[0], key: 'prep-35', job: 'prep', slot: 3, phase: '35', step: 'discuss', launchedAt: at('10:56'), elapsedMs: 4 * 60000, plans: null, agents: [], ...l35 },
+    ],
+    next: { phase: '34', why: 'areas', waitsFor: ['32'], gate: null },
+    ...(Object.hasOwn(over, 'next') ? { next: over.next } : {}),
+    ...(Object.hasOwn(over, 'lanes') ? { lanes: over.lanes } : {}),
+  };
+}
+
+test('with several lanes formatView is the pane in plain lines too: summary, blocks, collapsed and open lanes, the card\'s lane (review m3)', async () => {
+  const pane = await import('../mod/hooks/view-model.mjs');
+  assert.deepEqual(formatView(textLanes()).split('\n').slice(0, 3), ['Run — needs your answer (1)', '3 lanes · 1 question · next: phase 34 waits for phase 32 — they change the same files', 'Phase 32 · lane 1 — running plans · 5 of 9 plans done · 1h 12m']);
+  const stopped = { running: false, pid: null, finished: false, halted: false };
+  const views = [
+    textLanes(),
+    textLanes({ questions: [] }),
+    textLanes({}, { status: 'needs-owner', reason: 'a live check' }),
+    textLanes({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }),
+    textLanes({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 0, rounds: 0 } }),
+    textLanes({}, { quiet: true }),
+    textLanes({ supervisor: stopped }),
+    textLanes({}, {}, { key: 'annotate', job: 'annotate', phase: null, step: null }),
+    textLanes({ lanes: textLanes().lanes.slice(0, 2) }),
+    textLanes({ next: { phase: '36', why: 'gates', waitsFor: ['33'], gate: 'owner-live' } }),
+    textLanes({ next: null, questions: [] }, { status: 'done', step: null }),
+    textView({}, { key: '32', job: 'phase', slot: 2 }),
+  ];
+  for (const lang of ['en', 'ru']) {
+    for (const v of views) {
+      // a question is a card with buttons in the pane and a list in the text: the lines are equal without questions
+      const view = { ...v, questions: [], ui: { lang, refreshSeconds: 3, utcOffsetMinutes: -new Date(at('10:10')).getTimezoneOffset() } };
+      assert.equal(formatView(view), pane.paneLines(pane.render(view)).join('\n'), `${lang}: ${JSON.stringify(v.lanes.map((l) => [l.key, l.status]))}`);
+    }
+  }
+  assert.ok(formatView(textLanes()).split('\n').includes('  Deploy after green CI? (plan 32-09, task 3 · lane 1)'), 'the question says its lane');
+  assert.ok(formatView(textLanes({ ui: { lang: 'ru' } })).split('\n').includes('  Deploy after green CI? (план 32-09, задача 3 · полоса 1)'));
+  const E = '\x1b';
+  assert.equal(formatView(textLanes(), { color: true }).split('\n')[0], `${E}[33mRun — needs your answer (1)${E}[0m`, 'the verdict in its colour on top');
+});
+
+test('the run line under every notification while two or more lanes run (Stage 4 D11)', async () => {
+  const { runLineFor, withRunLine } = await import('../lib/view.mjs');
+  assert.deepEqual(withRunLine({ title: 'Phase 33 done', body: 'Moving on.' }, '3 lanes · next: phase 34 waits for phase 32'), { title: 'Phase 33 done', body: 'Moving on.\n3 lanes · next: phase 34 waits for phase 32' });
+  assert.deepEqual(withRunLine({ title: 't', body: '' }, 'x'), { title: 't', body: 'x' });
+  assert.deepEqual(withRunLine({ title: 't', body: 'b' }, null), { title: 't', body: 'b' });
+  const { root, env, sup } = slotsProject();
+  writeJsonAtomic(path.join(runDirOf(root), 'supervisor.json'), sup);
+  assert.equal(runLineFor(root, { lang: 'ru' }, { env, now: NOW }), '3 полосы · следующая: фаза 34 ждёт фазу 32');
+  writeJsonAtomic(path.join(runDirOf(root), 'p32-questions.json'), [{ id: 'q1', phase: '32', question: 'Deploy?', options: [], state: 'open' }]);
+  assert.equal(runLineFor(root, {}, { env, now: NOW }), '3 lanes · 1 question · next: phase 34 waits for phase 32');
+  assert.equal(fs.existsSync(path.join(runDirOf(root), 'view-cache.json')), false, 'no transcript read, no cache written');
+  const legacy = laneProject();
+  writeJsonAtomic(path.join(runDirOf(legacy.root), 'supervisor.json'), legacy.sup);
+  assert.equal(runLineFor(legacy.root, {}, { env: legacy.env, now: NOW }), null, 'one lane: nothing added');
+  assert.equal(runLineFor(path.join(legacy.root, 'missing'), {}, { env: legacy.env, now: NOW }), null);
+  fs.writeFileSync(path.join(runDirOf(legacy.root), 'supervisor.json'), '{ broken');
+  assert.equal(runLineFor(legacy.root, null, { env: legacy.env, now: NOW }), null);
+});
+
+// Review fixes (L4 final review)
+test('review I4, M4: a hand-edited slotPath that is not a path never throws; next only while the supervisor runs', () => {
+  const { root, env, sup } = slotsProject();
+  const odd = { ...sup, lanes: { ...sup.lanes, 33: { ...sup.lanes[33], slotPath: 5 }, 'prep-35': { ...sup.lanes['prep-35'], slotPath: true } } };
+  const v = buildView({ root, sup: odd, running: true, env, now: NOW, commits: COMMITS });
+  assert.deepEqual(v.lanes.map((l) => l.key), ['32', '33', 'prep-35']);
+  assert.deepEqual(buildView({ root, sup, running: false, env, now: NOW, commits: COMMITS, agents: false }).next, null, 'a stopped supervisor schedules nothing');
+});
+
+test('review: lanes that stopped alone or finished their turn draw the same in the text as in the pane', async () => {
+  const pane = await import('../mod/hooks/view-model.mjs');
+  const views = [
+    textLanes({ questions: [] }, { halted: { why: 'missing', at: at('10:50') } }),
+    textLanes({ questions: [] }, { status: 'ready', step: null, quiet: true }),
+    textLanes({ questions: [] }, {}, { status: 'prepped', step: null }),
+    textLanes({ questions: [], lanes: textLanes().lanes.slice(0, 2) }, { halted: { why: 'missing', at: at('10:50') } }),
+    textView({ questions: [] }, { key: 'prep-35', job: 'prep', slot: 1, phase: '35', step: 'discuss', plans: null }),
+    textView({ questions: [] }, { halted: { why: 'missing', at: at('10:50') } }),
+  ];
+  for (const lang of ['en', 'ru']) {
+    for (const v of views) {
+      const view = { ...v, ui: { lang, refreshSeconds: 3, utcOffsetMinutes: -new Date(at('10:10')).getTimezoneOffset() } };
+      assert.equal(formatView(view), pane.paneLines(pane.render(view)).join('\n'), `${lang}: ${JSON.stringify(v.lanes.map((l) => [l.key, l.status]))}`);
+    }
+  }
+  const q = { id: 'm1', phase: 'annotate', question: 'Remove the relaxed dependencies?', options: [{ label: 'Remove all' }] };
+  assert.ok(formatView(textLanes({ questions: [q] }, {}, { key: 'annotate', job: 'annotate', phase: null, step: null })).split('\n').includes('  Remove the relaxed dependencies? (lane markup)'));
+});
+
+test('review I5: the run line of a notification leaves out the lane that is leaving, and is not built with fewer than two lanes', async () => {
+  const { runLineFor } = await import('../lib/view.mjs');
+  const { root, env, sup } = slotsProject();
+  writeJsonAtomic(path.join(runDirOf(root), 'supervisor.json'), sup);
+  assert.equal(runLineFor(root, {}, { env, now: NOW, leaving: '33' }), '2 lanes · next: phase 34 waits for phase 32');
+  writeJsonAtomic(path.join(runDirOf(root), 'supervisor.json'), { ...sup, lanes: { 32: sup.lanes[32], 33: sup.lanes[33] } });
+  assert.equal(runLineFor(root, {}, { env, now: NOW, leaving: '33' }), null);
 });

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, STEPS, TONES, WORDS, afterAnswer, commitSummary, currentAction, phaseSteps, whatNext, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, clean, clockText, cut, errorWords, notSentToast, turboDir, viewArgv, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, paneLines, parseView, refreshMs, render, shouldAutoOpen, spanText, textWidth, toastsFor, turboRunPath, verdict } from '../mod/hooks/view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, STEPS, TEXT, TONES, WORDS, runSummary, afterAnswer, commitSummary, currentAction, phaseSteps, whatNext, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, clean, clockText, cut, errorWords, notSentToast, turboDir, viewArgv, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, paneLines, parseView, refreshMs, render, shouldAutoOpen, spanText, textWidth, toastsFor, turboRunPath, verdict } from '../mod/hooks/view-model.mjs';
 
 const AT = '2026-01-01T11:00:00.000Z';
 const agent = (over) => ({ agentId: 'a1', type: 'gsd-executor', description: '', plan: '32-07', task: '2', model: 'opus', worktreeBranch: null, state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, startedAt: '2026-01-01T10:54:00.000Z', lastAt: '2026-01-01T10:59:50.000Z', elapsedMs: 360000, tokens: 166000, sessionId: 's', transcript: 't', ...over });
@@ -981,4 +981,271 @@ test('a close during the open is not overwritten, and a hung open never holds th
   t.$.ui.open = () => new Promise(() => {});
   t.$.clock.sleep = async () => {};
   assert.deepEqual(await t.hooks['prompt.submit'](t.$, { text: 'go', origin: { kind: 'composer' } }, async (e) => ({ text: e.text })), { text: 'go' });
+});
+
+// Stage 4: three lanes in slots: phase 32 in lane 1 (the question is its), phase 33 in lane 2 (calm), the prep of
+// phase 35 in lane 3; the next phase 34 waits for 32 (the same files), as the scheduler wrote it.
+function lanes3(over = {}, l32 = {}, l33 = {}, l35 = {}) {
+  const base = view(over);
+  const [first] = base.lanes;
+  return {
+    ...base,
+    lanes: [
+      { ...first, key: '32', job: 'phase', slot: 1, ...l32 },
+      { ...first, key: '33', job: 'phase', slot: 2, phase: '33', step: 'fanout', launchedAt: '2026-01-01T10:35:00.000Z', elapsedMs: 25 * 60000, plans: { done: 2, total: 4 }, push: null, agents: [agent({ agentId: 'b1', type: 'gsd-code-reviewer', plan: null, task: null, action: { tool: 'Grep', detail: 'x' }, elapsedMs: 180000 })], ...l33 },
+      { ...first, key: 'prep-35', job: 'prep', slot: 3, phase: '35', step: 'discuss', launchedAt: '2026-01-01T10:56:00.000Z', elapsedMs: 4 * 60000, plans: null, push: null, agents: [], ...l35 },
+    ],
+    next: { phase: '34', why: 'areas', waitsFor: ['32'], gate: null },
+    ...(Object.hasOwn(over, 'next') ? { next: over.next } : {}),
+  };
+}
+
+test('the summary line of a run with lanes: lanes, questions, the next phase and why it waits, in words, in both languages', () => {
+  const s = (next, over = {}) => runSummary(lanes3({ ...over, next }));
+  const ru = (next) => s(next, RU);
+  const N = (why, waitsFor = [], gate = null) => ({ phase: '36', why, waitsFor, gate });
+  assert.equal(s(N('deps', ['34'])), '3 lanes · 1 question · next: phase 36 waits for phase 34');
+  assert.equal(ru(N('deps', ['34'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт фазу 34');
+  assert.equal(s(N('deps', ['33', '34'])), '3 lanes · 1 question · next: phase 36 waits for phases 33, 34');
+  assert.equal(ru(N('deps', ['33', '34'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт фазы 33, 34');
+  assert.equal(s(N('areas', ['32'])), '3 lanes · 1 question · next: phase 36 waits for phase 32 — they change the same files');
+  assert.equal(ru(N('areas', ['32'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт фазу 32 — они меняют одни и те же файлы');
+  assert.equal(s(N('gates', ['33'], 'prod-deploy')), '3 lanes · 1 question · next: phase 36 waits for phase 33 — both need the deploy');
+  assert.equal(ru(N('gates', ['33'], 'owner-signature')), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт фазу 33 — обе используют вашу подпись');
+  assert.equal(s(N('gates', ['33'], 'lab-printer')), '3 lanes · 1 question · next: phase 36 waits for phase 33 — both need lab-printer', 'a project gate as written');
+  assert.equal(s(N('gates', [], 'owner-live')), '3 lanes · 1 question · next: phase 36 waits its turn for your live check', 'a gate locked by hand: no phase holds it');
+  assert.equal(ru(N('gates', [], 'packaged-build')), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт своей очереди на сборку пакета');
+  assert.equal(s(N('slots')), '3 lanes · 1 question · next: phase 36 waits for a free lane');
+  assert.equal(ru(N('slots')), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт свободную полосу');
+  assert.equal(s(N('annotation', ['32'])), '3 lanes · 1 question · next: phase 36 waits until turbo knows which phases can run together');
+  assert.equal(ru(N('annotation')), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт, пока turbo разберёт, какие фазы могут идти вместе');
+  assert.equal(s(N('merge', ['34'])), '3 lanes · 1 question · next: phase 36 waits for phase 34 to be merged');
+  assert.equal(ru(N('merge', ['33', '34'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт слияния фаз 33, 34');
+  assert.equal(ru(N('merge', ['34'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт слияния фазы 34');
+  assert.equal(s(N('deps')), '3 lanes · 1 question', 'waiting for nobody named says nothing');
+  assert.equal(s(N('mystery', ['34'])), '3 lanes · 1 question', 'a reason this mod does not know says nothing');
+  assert.equal(s(null, { questions: [] }), '3 lanes');
+  assert.deepEqual([TEXT.ru.lanesCount(2), TEXT.ru.lanesCount(5), TEXT.ru.lanesCount(21), TEXT.ru.questionsCount(3), TEXT.en.lanesCount(1), TEXT.en.questionsCount(2)], ['2 полосы', '5 полос', '21 полоса', '3 вопроса', '1 lane', '2 questions']);
+  assert.deepEqual([TEXT.en.lane(2), TEXT.en.laneHead(2), TEXT.ru.lane(2), TEXT.ru.laneHead(2), TEXT.en.job.prep('discussion'), TEXT.ru.job.annotate], ['lane 2', 'Lane 2', 'полоса 2', 'Полоса 2', 'getting ready ahead: discussion', 'разбирает, какие фазы могут идти вместе']);
+});
+
+const CARD = (where) => ['│ you can answer ahead — the phase is not waiting', `│ Deploy after green CI? (${where})`, '│   [1. Yes, by the gate]  [2. Stop]', '│   [Your own answer…]'];
+const LANE32 = ['  Now: writing code for 2 plans at once', '  last activity 10s ago', '  Executor · plan 32-07, task 2 · editing lib/x.mjs · 6m', '  Executor · plan 32-08 · running tests · 2m', '  ⚠️ Verifier silent for 16m — may be stuck', '  1 more helper finished'];
+
+test('two lanes: the verdict, the summary line, a block per lane, the questions with their lane, the owner\'s needs; no phase steps', () => {
+  const two = { ...lanes3(), lanes: lanes3().lanes.slice(0, 2) };
+  assert.deepEqual(lines(two), [
+    'Run — needs your answer (1)',
+    '2 lanes · 1 question · next: phase 34 waits for phase 32 — they change the same files',
+    'Phase 32 · lane 1 — running plans · 5 of 9 plans done · 1h 12m',
+    ...LANE32,
+    'Phase 33 · lane 2 — quality checks · 2 of 4 plans done · 25m',
+    '  Now: reviewing the code',
+    '  last activity 10s ago',
+    '  Reviewer · searching the code · 3m',
+    '',
+    'Needs your answer (1):',
+    ...CARD('plan 32-09, task 3 · lane 1'),
+    '',
+    'What comes next:',
+    '  You can answer the question above ahead',
+    '',
+    'Latest changes: 1 fix, 1 test change · latest 12m ago',
+    '',
+    'Supervisor running · phases 32–34',
+  ]);
+});
+
+test('more than two lanes: calm lanes are one line, the lane with the question is open; in Russian too (Review Focus 5)', () => {
+  assert.deepEqual(lines(lanes3()), [
+    'Run — needs your answer (1)',
+    '3 lanes · 1 question · next: phase 34 waits for phase 32 — they change the same files',
+    'Phase 32 · lane 1 — running plans · 5 of 9 plans done · 1h 12m',
+    ...LANE32,
+    'Phase 33 · lane 2 — quality checks · 2 of 4 plans done · 25m',
+    'Phase 35 · lane 3 — getting ready ahead: discussion · 4m',
+    '',
+    'Needs your answer (1):',
+    ...CARD('plan 32-09, task 3 · lane 1'),
+    '',
+    'What comes next:',
+    '  You can answer the question above ahead',
+    '',
+    'Latest changes: 1 fix, 1 test change · latest 12m ago',
+    '',
+    'Supervisor running · phases 32–34',
+  ]);
+  assert.deepEqual(lines(lanes3(RU)), [
+    'Прогон — нужен ваш ответ (1)',
+    '3 полосы · 1 вопрос · следующая: фаза 34 ждёт фазу 32 — они меняют одни и те же файлы',
+    'Фаза 32 · полоса 1 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин',
+    '  Сейчас: пишет код по 2 планам сразу',
+    '  последнее действие 10 с назад',
+    '  Исполнитель · план 32-07, задача 2 · правит lib/x.mjs · 6 мин',
+    '  Исполнитель · план 32-08 · запустил тесты · 2 мин',
+    '  ⚠️ Проверяющий молчит 16 мин — возможно, завис',
+    '  ещё 1 помощник закончил',
+    'Фаза 33 · полоса 2 — проверки качества · 2 из 4 планов готово · 25 мин',
+    'Фаза 35 · полоса 3 — готовится заранее: обсуждение · 4 мин',
+    '',
+    'Нужен ваш ответ (1):',
+    '│ можно ответить заранее — фаза не стоит',
+    '│ Deploy after green CI? (план 32-09, задача 3 · полоса 1)',
+    '│   [1. Yes, by the gate]  [2. Stop]',
+    '│   [Свой ответ…]',
+    '',
+    'Что дальше:',
+    '  На вопрос выше можно ответить заранее',
+    '',
+    'Последние изменения: 1 исправление, 1 правка тестов · последнее 12 мин назад',
+    '',
+    'Супервизор работает · фазы 32–34',
+  ]);
+  const calm3 = lanes3({ questions: [] }, { agents: [agent()] });
+  assert.deepEqual(lines(calm3), [
+    'Run — all fine',
+    '3 lanes · next: phase 34 waits for phase 32 — they change the same files',
+    'Phase 32 · lane 1 — running plans · 5 of 9 plans done · 1h 12m',
+    'Phase 33 · lane 2 — quality checks · 2 of 4 plans done · 25m',
+    'Phase 35 · lane 3 — getting ready ahead: discussion · 4m',
+    '',
+    'What comes next:',
+    '  Nothing needed from you now',
+    '',
+    'Latest changes: 1 fix, 1 test change · latest 12m ago',
+    '',
+    'Supervisor running · phases 32–34',
+  ]);
+});
+
+test('a lane opens where a warning is: red CI, a stop, a silent lane while the supervisor runs; a done lane and a held one stay one line', () => {
+  const after = (v, head, n) => { const l = lines(v); const i = l.indexOf(head); assert.ok(i >= 0, `${head}\n${l.join('\n')}`); return l.slice(i + 1, i + 1 + n); };
+  const red = lanes3({ questions: [] }, { agents: [agent()] }, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 1, rounds: 2 } });
+  assert.deepEqual(after(red, 'Phase 33 · lane 2 — quality checks · 2 of 4 plans done · 25m', 3), ['  Now: fixing the red CI — attempt 1 of 2', '  last activity 10s ago', '  Reviewer · searching the code · 3m']);
+  const stopped = lanes3({ questions: [] }, { agents: [agent()] }, { status: 'needs-owner', reason: 'tests fail after 3 fix rounds' });
+  assert.deepEqual(after(stopped, 'Phase 33 · lane 2 stopped — waits for your decision · step: quality checks · 2 of 4 plans done · 24m', 3), ['  last activity 10s ago', '  Reason: tests fail after 3 fix rounds', '  Reviewer · searching the code · 3m']);
+  const quiet = lanes3({ questions: [] }, { agents: [agent()] }, { quiet: true });
+  assert.deepEqual(after(quiet, 'Phase 33 · lane 2 — quality checks · 2 of 4 plans done · 25m', 1), ['  Now: reviewing the code']);
+  const held = lanes3({ questions: [], supervisor: STOPPED_SUP }, { agents: [agent()] }, { quiet: true });
+  assert.deepEqual(lines(held).slice(0, 5), ['Run — supervisor not running', '3 lanes · next: phase 34 waits for phase 32 — they change the same files', 'Phase 32 · lane 1 stopped at step: plan execution · 5 of 9 plans done · 1h 11m', 'Phase 33 · lane 2 stopped at step: quality checks · 2 of 4 plans done · 24m', 'Phase 35 · lane 3 stopped at step: discussion · 3m']);
+  const done = lanes3({ questions: [] }, { agents: [agent()], status: 'done', step: null });
+  assert.equal(lines(done)[2], 'Phase 32 · lane 1 done · 5 of 9 plans done · took 1h 11m');
+  assert.equal(lines(done)[3], 'Phase 33 · lane 2 — quality checks · 2 of 4 plans done · 25m', 'a done lane is one line');
+});
+
+test('an annotate lane has a lane head, no phase, no steps; a single lane in a slot names its lane; a v0.3 lane draws as before', () => {
+  const ann = lanes3({ questions: [] }, { agents: [agent()] }, {}, { key: 'annotate', job: 'annotate', phase: null, step: null });
+  assert.equal(lines(ann)[4], 'Lane 3 — working out which phases can run together · 4m');
+  assert.ok(!lines(ann).join('\n').includes('null'));
+  assert.equal(lines(lanes3(RU, {}, {}, { key: 'annotate', job: 'annotate', phase: null, step: null }))[10], 'Полоса 3 — разбирает, какие фазы могут идти вместе · 4 мин');
+  assert.equal(currentAction(ann, ann.lanes[2]), null, 'an annotate lane says what it does in its line');
+  assert.deepEqual(phaseSteps(ann.lanes[2]), []);
+  assert.equal(whatNext(ann, ann.lanes[2]), null);
+  const single = view({}, { key: '32', job: 'phase', slot: 2 });
+  assert.equal(lines(single)[0], 'Phase 32 · lane 2 — running plans · 5 of 9 plans done · 1h 12m · needs your answer (1)');
+  assert.ok(lines(single).includes('│ Deploy after green CI? (plan 32-09, task 3 · lane 2)'));
+  assert.ok(lines(single).includes('Phase steps:'), 'one lane keeps its steps');
+  assert.equal(lines(view())[0], 'Phase 32 — running plans · 5 of 9 plans done · 1h 12m · needs your answer (1)');
+});
+
+test('a checkout lane (slot 0, L1 reconcile R1) draws exactly as v0.3: no lane named, its card neither', () => {
+  assert.deepEqual(lines(view({}, { key: '32', job: 'phase', slot: 0 })), lines(view()));
+});
+
+test('the band lists up to two lanes and counts them past two; a prep or annotate lane says what it does; a lane in a slot reads as before (Review Focus 5)', () => {
+  const l3 = lanes3();
+  assert.equal(bandLine({ ...l3, lanes: l3.lanes.slice(0, 2) }), 'turbo · phase 32: running plans 5/9 · phase 33: quality checks 2/4 · ❓ 1 question waits for you · CI ✓');
+  assert.equal(bandLine(l3), 'turbo · 3 lanes · ❓ 1 question waits for you · CI ✓');
+  assert.equal(bandLine(lanes3({ questions: [] }, { agents: [agent()] })), 'turbo · 3 lanes · all fine · CI ✓');
+  assert.equal(bandLine(lanes3(RU)), 'turbo · 3 полосы · ❓ 1 вопрос ждёт вас · CI ✓');
+  assert.equal(bandLine({ ...l3, lanes: [l3.lanes[0], l3.lanes[2]] }), 'turbo · phase 32: running plans 5/9 · phase 35: getting ready ahead: discussion · ❓ 1 question waits for you · CI ✓');
+  const ann = { ...l3, lanes: [l3.lanes[0], { ...l3.lanes[2], key: 'annotate', job: 'annotate', phase: null, step: null }] };
+  assert.equal(bandLine(ann), 'turbo · phase 32: running plans 5/9 · lane 3: working out which phases can run together · ❓ 1 question waits for you · CI ✓');
+  assert.ok(!bandLine({ ...ann, supervisor: STOPPED_SUP }).includes('null'), bandLine({ ...ann, supervisor: STOPPED_SUP }));
+  assert.equal(bandLine(view({}, { slot: 1, job: 'phase', key: '32' })), 'turbo · phase 32: running plans 5/9 · ❓ 1 question waits for you · CI ✓');
+});
+
+test('toasts with lanes: only phase lanes speak; a slot lane that left is done only after it said ready; never "Phase null" (Review Focus 1, 4)', () => {
+  const p3 = lanes3({ questions: [] }, { agents: [agent()] });
+  const [l32, l33, prep] = p3.lanes;
+  assert.deepEqual(toastsFor(p3, { ...p3, lanes: [l32, l33] }), [], 'a prep lane that ends says nothing');
+  assert.deepEqual(toastsFor(p3, { ...p3, lanes: [l32, l33, { ...prep, status: 'done' }] }), []);
+  assert.deepEqual(toastsFor(p3, { ...p3, lanes: [l32, prep] }), [], 'released while running (failed, abandoned): not done');
+  const ready = { ...p3, lanes: [l32, { ...l33, status: 'ready' }, prep] };
+  assert.deepEqual(toastsFor(p3, ready), [], 'ready: its merge goes on');
+  assert.deepEqual(toastsFor(ready, { ...p3, lanes: [l32, prep] }), ['Phase 33 done'], 'merged and released after ready');
+  const both = { ...p3, lanes: [{ ...l32, status: 'ready' }, { ...l33, status: 'ready' }, prep] };
+  assert.deepEqual(toastsFor(both, { ...p3, lanes: [prep] }), ['Phase 32 done', 'Phase 33 done'], 'two in one read, once each');
+  const seen = diffViews(both, { ...p3, lanes: [prep] }).seen;
+  assert.deepEqual(diffViews({ ...p3, lanes: [prep] }, { ...p3, lanes: [prep] }, seen).toasts, [], 'and never again');
+  // v0.3 and the main checkout (slot 0): a lane the same supervisor cleared is a phase done, as before
+  const legacy = view({ questions: [] }, { agents: [agent()] });
+  assert.deepEqual(toastsFor(legacy, { ...legacy, lanes: [] }), ['Phase 32 done']);
+  const checkout = view({ questions: [] }, { agents: [agent()], key: '32', job: 'phase', slot: 0 });
+  assert.deepEqual(toastsFor(checkout, { ...checkout, lanes: [] }), ['Phase 32 done']);
+  const ann = { ...p3, lanes: [l32, { ...prep, key: 'annotate', job: 'annotate', phase: null, step: null }] };
+  assert.deepEqual(toastsFor(ann, { ...ann, lanes: [l32, { ...ann.lanes[1], status: 'failed' }] }), []);
+  assert.deepEqual(toastsFor(p3, { ...p3, lanes: [l32, { ...l33, status: 'needs-owner', reason: 'a live check' }, prep] }), ['Phase 33 stopped — needs your answer: a live check']);
+  const all = toastsFor(p3, { ...p3, lanes: [] }).concat(toastsFor(ann, { ...ann, lanes: [] }));
+  assert.ok(!all.join('\n').includes('null'), all.join('\n'));
+});
+
+// Review fixes (L4 final review)
+test('review C1: a slot lane released while running says nothing, also when seen is carried across reads as register.mjs carries it', () => {
+  const p3 = lanes3({ questions: [] }, { agents: [agent()] });
+  const [l32, l33, prep] = p3.lanes;
+  const carry = (...views) => views.reduce((acc, v) => { const r = diffViews(acc.prev, v, acc.seen); return { prev: v, seen: r.seen, toasts: r.toasts }; }, { prev: null, seen: undefined, toasts: [] });
+  assert.deepEqual(carry(p3, p3, { ...p3, lanes: [l32, prep] }).toasts, []);
+  const ready = { ...p3, lanes: [l32, { ...l33, status: 'ready' }, prep] };
+  assert.deepEqual(carry(p3, p3, ready, { ...p3, lanes: [l32, prep] }).toasts, ['Phase 33 done']);
+});
+
+test('review I1 (reconcile R12): the annotate card is "lane markup", in the pane, the toast and both languages; its lane opens', () => {
+  const ann = { key: 'annotate', job: 'annotate', phase: null, step: null };
+  const q = { id: 'm1', phase: 'annotate', plan: null, task: null, kind: 'decision', question: 'Remove the relaxed dependencies?', options: [{ label: 'Remove all', recommended: true }, { label: 'Leave as is' }], allowOther: true, state: 'open', rev: 1 };
+  const v = lanes3({ questions: [q] }, { agents: [agent()] }, {}, ann);
+  const l = lines(v);
+  assert.ok(l.includes('│ Remove the relaxed dependencies? (lane markup)'), l.join('\n'));
+  assert.ok(!l.join('\n').includes('annotate'), l.join('\n'));
+  const i = l.indexOf('Lane 3 — working out which phases can run together · 4m');
+  assert.ok(i > 0 && l[i + 1].startsWith('  '), 'the markup lane opens where its question is');
+  assert.ok(lines({ ...v, ...RU }).includes('│ Remove the relaxed dependencies? (разметка полос)'));
+  assert.deepEqual(toastsFor({ ...v, questions: [] }, v), ['New question (lane markup): “Remove the relaxed dependencies?”']);
+  assert.deepEqual(toastsFor({ ...v, ...RU, questions: [] }, { ...v, ...RU }), ['Новый вопрос (разметка полос): «Remove the relaxed dependencies?»']);
+});
+
+test('review I2: a lane the supervisor stopped alone says so, opens, sets the verdict and what is needed', () => {
+  const v = lanes3({ questions: [] }, { agents: [agent()] }, { halted: { why: 'missing', at: '2026-01-01T10:50:00.000Z' } });
+  const l = lines(v);
+  assert.equal(l[0], 'Run — a lane stopped — the other lanes go on');
+  const i = l.indexOf('Phase 33 · lane 2 stopped — the other lanes go on · step: quality checks · 2 of 4 plans done · 24m');
+  assert.ok(i > 0 && l[i + 1].startsWith('  '), l.join('\n'));
+  assert.ok(l.includes('  Needed from you: a stopped lane waits for you to resume it'), l.join('\n'));
+  assert.ok(lines({ ...v, ...RU }).includes('Фаза 33 · полоса 2 остановилась — остальные полосы идут дальше · шаг: проверки качества · 2 из 4 планов готово · 24 мин'));
+  assert.equal(bandLine({ ...v, lanes: v.lanes.slice(0, 2) }), 'turbo · phase 32: running plans 5/9 · phase 33 stopped — the other lanes go on · CI ✓');
+});
+
+test('review I3: a lane that finished and is being merged is calm: its own words, one line, never silent', () => {
+  const v = lanes3({ questions: [] }, { agents: [agent()] }, { status: 'ready', step: null, quiet: true, agents: [] });
+  const l = lines(v);
+  assert.equal(l[0], 'Run — all fine');
+  const i = l.indexOf('Phase 33 · lane 2 done — being merged into the main branch · 2 of 4 plans done · 24m');
+  assert.ok(i > 0 && !l[i + 1].startsWith('  '), l.join('\n'));
+  assert.ok(lines({ ...v, ...RU }).includes('Фаза 33 · полоса 2 готова — вливается в основную ветку · 2 из 4 планов готово · 24 мин'));
+  const prepped = lanes3({ questions: [] }, { agents: [agent()] }, {}, { status: 'prepped', step: null });
+  assert.ok(lines(prepped).includes('Phase 35 · lane 3 done — being merged into the main branch · 3m'), lines(prepped).join('\n'));
+});
+
+test('review M8: a lone prep lane draws no phase chain and no phase steps, only what is needed from the owner', () => {
+  const l = lines(view({}, { key: 'prep-35', job: 'prep', slot: 1, phase: '35', step: 'discuss', plans: null }));
+  assert.equal(l[0], 'Phase 35 · lane 1 — getting ready ahead: discussion · 1h 12m · needs your answer (1)');
+  assert.ok(!l.includes('Phase steps:'), l.join('\n'));
+  const i = l.indexOf('What comes next:');
+  assert.deepEqual(l.slice(i, i + 3), ['What comes next:', '  You can answer the question above ahead', '']);
+});
+
+test('review M3: more than three phases waited for end with …; a gate wait without a gate says nothing', () => {
+  const s = (next) => runSummary(lanes3({ questions: [], next }));
+  assert.equal(s({ phase: '36', why: 'deps', waitsFor: ['31', '32', '33', '34'] }), '3 lanes · next: phase 36 waits for phases 31, 32, 33, …');
+  assert.equal(s({ phase: '36', why: 'gates', waitsFor: [], gate: null }), '3 lanes');
 });

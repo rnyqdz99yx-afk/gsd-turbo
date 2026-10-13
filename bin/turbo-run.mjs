@@ -24,7 +24,7 @@ import { ownerRequestFiles } from '../lib/uat.mjs';
 import { clearAttempts, nextStep, readProgress } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
-import { buildView, formatView, openQuestions } from '../lib/view.mjs';
+import { buildView, formatView, openQuestions, runLineFor, withRunLine } from '../lib/view.mjs';
 import { quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
 import { deliveryState, dropLaneQuestions, readQuestions, refreshQuestions } from '../lib/questions.mjs';
@@ -299,7 +299,9 @@ async function makeCtx(root, mode = 'safe') {
       // the lanes' transcripts, read-only: the session id a wake resumes, and a lane's activity (spec §5.5)
       lanes: createLaneProbe(root),
       fingerprint: fingerprint(root),
-      notify: (key, vars) => notify(config, msg(config.lang, key, vars)),
+      // Stage 4 (D11): while two or more lanes run, every notification ends with the run's summary line
+      // (a phaseDone tells of a lane still in supervisor.json: its line leaves that lane out, review I5)
+      notify: (key, vars) => notify(config, withRunLine(msg(config.lang, key, vars), runLineFor(root, config, { leaving: key === 'phaseDone' ? vars?.phase : null }))),
       now: () => new Date(),
       log: (line) => {
         try { fs.appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* logging is best-effort */ }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
+import { ACTION_PLAN, DECISION_PLAN, OWNER_ACTION_PLAN, OWNER_CONTEXT_PLAN, OWNER_DECISION_PLAN, OWNER_VERIFY_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
 import { parseCheckpoints } from '../lib/checkpoints.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
 import { completeStep, readProgress } from '../lib/phase-progress.mjs';
@@ -68,7 +68,7 @@ test('Russian labels with lang ru; long texts cut after masking; secrets masked;
   const ru = buildQuestion(cpOf(VERIFY_PLAN), { phase: '32', plan: '32-10', lang: 'ru' });
   assert.deepEqual(ru.options.map((o) => o.label), ['Принять, если проверки прошли', 'Остановиться и показать мне']);
   assert.match(ru.question, /^Проверка: /);
-  assert.equal(ru.condition, 'все автоматические проверки из how-to-verify прошли, и доказательства приложены');
+  assert.equal(ru.condition, 'все автоматические проверки из плана прошли, и доказательства приложены');
   const token = `ghp_${'a1B2'.repeat(9)}`;
   const q = buildQuestion({ ...cpOf(DECISION_PLAN), context: `${'x'.repeat(700)} ${token}`, decision: `Use ${token} now` }, { phase: '32', plan: '32.1-05' });
   assert.equal([...q.context].length, 600);
@@ -428,4 +428,85 @@ test('review 2: «and/or», «on/off», «yes/no», «read/write», CI/CD, dates
   for (const [t, re] of [['файл lib/foo.mjs', /lib\/foo\.mjs|foo\.mjs/], ['файл src/a/b.ts', /src\/a\/b\.ts|b\.ts/], ['запустите ./x', /path \.\/x/], ['в ../tools/run', /path \.\.\/tools\/run/], ['папка src/a/b', /path src\/a\/b/], ['папка lib/my_util', /path lib\/my_util/]]) {
     assert.throws(() => laneQuestion({ ...base, question: `Проверить ${t}?` }), re, t);
   }
+});
+
+// Owner cards from plans written for a Russian owner (synthetic fixtures): the owner's words only, never the
+// executor's lines, a tag, a fence or bold markers.
+const PLAN_IDS = ['32-12', '32-13', '32-14', '32-15'];
+const card = (text, plan, more = {}) => buildQuestion(cpOf(text), { phase: '32', plan, lang: 'ru', planIds: PLAN_IDS, ...more });
+function assertOwnerText(q) {
+  for (const t of [q.question, q.context]) {
+    assert.doesNotMatch(t, /<\/?[a-z][\w-]*>|\*\*|`{3}|\bExecutor\b|before presenting|\bpresent\b|\bverify 1\b/i, t);
+  }
+}
+
+test('owner card, human-verify: the verdict\'s first sentence is the question; the rest of the owner block and the steps are the context', () => {
+  const q = card(OWNER_VERIFY_PLAN, '32-12');
+  assert.equal(q.question, 'Проверка: проверил пакет библиотеки картинок, ничего не устанавливая.');
+  assert.equal(q.context, 'Что получилось: Контрольная сумма архива совпадает с реестром: <да/нет>. Что не сделано: ничего не установлено, файлы проекта не менялись. Что решаем: ставить ли эту версию библиотеки. 1. Открой страницу пакета в реестре — там ссылка на официальный репозиторий. 2. В сводке выше сверка контрольной суммы — «да».');
+  assertOwnerText(q);
+  assert.deepEqual([q.id, q.rev, q.options.map((o) => o.signal)], ['32-12-t1', 1, ['approved', null]]);
+});
+
+test('owner card, human-action: the task name is the question, never the executor\'s action; executor lines and English-only lines are left out', () => {
+  const q = card(OWNER_ACTION_PLAN, '32-13');
+  assert.equal(q.question, 'Действие: Владелец — создать тестового пользователя Windows и один раз войти в него');
+  assert.equal(q.context, 'Что получилось: пробная сборка готова и прошла все проверки сборки. Твои данные не трогались. Что нужно от тебя (5 минут): 1. Открой PowerShell от имени администратора. 2. Вставь и выполни: `powershell -File C:\\Users\\dev\\smoke\\create-user.ps1`. 3. Войди в нового пользователя один раз и вернись.');
+  assertOwnerText(q);
+  assert.ok(!/Get-LocalUser|Claude checks|administrator\b/.test(q.question + q.context));
+  // a «Коротко» line in the owner block is the question
+  const short = card(OWNER_ACTION_PLAN.replace('    **Что получилось:** пробная', '    **Коротко:** нужен отдельный пользователь для проверки.\n    **Что получилось:** пробная'), '32-13');
+  assert.equal(short.question, 'Действие: нужен отдельный пользователь для проверки.');
+  assert.match(short.context, /^Что получилось: пробная сборка/);
+});
+
+test('owner card, decision with options: the decision is the question, the context as written, the options as before; the action never shows', () => {
+  const q = card(OWNER_DECISION_PLAN, '32-14');
+  assert.equal(q.question, 'Где хранить превью картинок?');
+  assert.equal(q.context, 'Превью сейчас лежат рядом с оригиналами и занимают много места. Выбор нужен до следующего шага.');
+  assert.deepEqual(q.options.map((o) => [o.label, o.signal]), [['a — на локальном диске', 'a'], ['b — в облаке', 'b']]);
+  assertOwnerText(q);
+  const named = card(OWNER_DECISION_PLAN.replace(/ *<decision>.*<\/decision>\n/, ''), '32-14');
+  assert.equal(named.question, 'Владелец выбирает, где хранить превью картинок', 'no <decision>: the task name');
+});
+
+test('owner card, decision whose owner text is in <context> after the executor\'s preparation: only the text after the owner line', () => {
+  const q = card(OWNER_CONTEXT_PLAN, '32-15');
+  assert.equal(q.question, 'Включать ли сжатие картинок при загрузке?');
+  assert.equal(q.context, 'Коротко: сжатие картинок можно включить — проба на этом компьютере прошла. Нужно твоё решение, потому что это меняет правило «оригиналы не трогать». Что получилось: Проба сжала сто картинок без видимой потери качества. Что решить: a (рекомендую) — включить сжатие. b — оставить как есть.');
+  assertOwnerText(q);
+  // no owner line: the executor's lines and the lines indented under them are left out all the same
+  const noIntro = card(OWNER_CONTEXT_PLAN.replace(/ *The text for the owner .*\n/, ''), '32-15');
+  assert.match(noIntro.context, /^Коротко: сжатие картинок можно включить/);
+  assertOwnerText(noIntro);
+  const noDecision = card(OWNER_CONTEXT_PLAN.replace(/ *<decision>.*<\/decision>\n/, ''), '32-15');
+  assert.equal(noDecision.question, 'сжатие картинок можно включить — проба на этом компьютере прошла.');
+});
+
+test('owner card: text that fails the plain-words check falls back to the task name, then to a generic sentence in the card\'s language', () => {
+  const plan = VERIFY_PLAN.replace('<task type="checkpoint:human-verify" gate="blocking">', '<task type="checkpoint:human-verify" gate="blocking">\n  <name>Task 3: Проверить вывод gallery.mjs</name>')
+    .replace(/<what-built>.*<\/what-built>/, '<what-built>Обновлён gallery.mjs по плану 32-10.</what-built>');
+  const ru = buildQuestion(cpOf(plan), { phase: '32', plan: '32-10', lang: 'ru', planIds: ['32-10'] });
+  assert.equal(ru.question, 'Проверка: План 10, задача 3 ждёт вашего решения: подробности в плане');
+  assert.equal(ru.context, '', 'English steps are no Russian owner text');
+  const en = buildQuestion(cpOf(plan), { phase: '32', plan: '32-10', lang: 'en', planIds: ['32-10'] });
+  assert.equal(en.question, 'Verify: Plan 10, task 3 is waiting for your decision: see the plan for details');
+  assert.match(en.context, /^Visit http:\/\/localhost:3000\/dashboard and check: 1\. Sidebar left 2\. No horizontal scroll$/);
+  const named = buildQuestion(cpOf(plan.replace('Проверить вывод gallery.mjs', 'Проверить вывод галереи')), { phase: '32', plan: '32-10', lang: 'ru', planIds: ['32-10'] });
+  assert.equal(named.question, 'Проверка: Проверить вывод галереи');
+});
+
+test('owner cards: a re-extraction with new text keeps the id, the rev and the answer already given', () => {
+  const root = tmpDir('cards');
+  writePhase(root, '32-auth', { '32-15-PLAN.md': OWNER_CONTEXT_PLAN, '32-12-PLAN.md': OWNER_VERIFY_PLAN });
+  refreshQuestions(root, '32', { lang: 'ru' });
+  // the questions file as an older turbo wrote it: the plumbing text, the same options
+  const old = readQuestions(root, '32').map((q) => ({ ...q, question: `${q.question} </action> <what-built>`, context: 'Executor preparation, before presenting; no file changes:' }));
+  writeQuestions(root, '32', old);
+  owner(root, '32-15-t2', { option: 1 });
+  const list = refreshQuestions(root, '32', { lang: 'ru' });
+  const d = list.find((q) => q.id === '32-15-t2');
+  assert.deepEqual([d.rev, d.state, d.answer.label], [1, 'answered', 'a — включить сжатие']);
+  assert.match(d.context, /^Коротко: /);
+  assert.deepEqual(list.map((q) => [q.id, q.rev]), [['32-12-t1', 1], ['32-15-t2', 1]]);
 });

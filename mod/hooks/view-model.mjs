@@ -87,6 +87,30 @@ const VIEW_WORDS = {
     sup: { running: 'Supervisor running', stopped: 'Supervisor not running', finished: 'Supervisor finished', halted: 'Supervisor stopped', never: 'Supervisor never started' },
     phases: (from, to) => `phases ${from}–${to}`,
     duration: (h, m, s) => (h ? `${h}h ${m}m` : m ? `${m}m` : `${s}s`),
+    // v0.3.3: what the phase does now, its steps, what comes next, when the owner is needed, the commits by kind
+    nowHead: 'Now',
+    now: {
+      ciFix: (n, m) => `fixing the red CI — attempt ${n} of ${m}`, ciLast: 'fixing the red CI — the last attempt', ciWait: 'waiting for CI',
+      executors: (n) => (n > 1 ? `writing code for ${n} plans at once` : 'writing code for a plan'), helpers: (n) => `${n} ${n === 1 ? 'helper' : 'helpers'} at work`,
+      agent: { 'gsd-code-fixer': 'fixing what the review found', 'gsd-debugger': 'looking for the cause of a failure', 'gsd-code-reviewer': 'reviewing the code', 'gsd-security-auditor': 'checking security', 'gsd-nyquist-auditor': 'checking the tests cover the work', 'gsd-integration-checker': 'checking the parts fit together', 'gsd-verifier': 'checking the phase reached its goal', 'turbo-uat': 'acceptance: checking the items itself', 'gsd-planner': 'writing the plans', 'gsd-plan-checker': 'checking the plans', 'gsd-phase-researcher': 'researching how to build the phase' },
+      step: { freshness: 'checking the plans are still current', discuss: 'thinking the phase through', prologue: 'preparing the planning', plan: 'planning', 'gates-off': 'preparing to run the plans', execute: 'running the plans', restore: 'restoring settings', fanout: 'starting the quality checks', fix: 'fixing what the checks found', 'final-gate': 'running the final tests', uat: 'acceptance', close: 'wrapping up the phase' },
+    },
+    stepsHead: 'Phase steps:',
+    stepNow: (s) => `${s} — now`,
+    stepStopped: (s) => `${s} — stopped here`,
+    nextHead: 'What comes next:',
+    nextPhase: 'next phase',
+    runEnd: 'end of the run',
+    need: {
+      none: 'Nothing needed from you now', held: 'Needed from you: answer the question above — the phase waits for it', ahead: (n) => `You can answer ${n === 1 ? 'the question' : `the ${n} questions`} above ahead`,
+      decide: 'Needed from you: the phase waits for your decision — the reason is above', failed: 'Needed from you: the phase stopped by a failure and will not go on by itself', fullMode: 'Needed from you: its final checks need full mode',
+      ciLast: 'If the last CI attempt fails, the phase will ask you', live: 'At acceptance you may be needed for live checks only you can do',
+    },
+    kind: {
+      feat: (n) => `${n} new ${n === 1 ? 'feature' : 'features'}`, fix: (n) => `${n} ${n === 1 ? 'fix' : 'fixes'}`, refactor: (n) => `${n} ${n === 1 ? 'code rework' : 'code reworks'}`,
+      test: (n) => `${n} test ${n === 1 ? 'change' : 'changes'}`, docs: (n) => `${n} docs ${n === 1 ? 'change' : 'changes'}`, other: (n) => `${n} other ${n === 1 ? 'change' : 'changes'}`,
+    },
+    lastAgo: (ago) => `the last ${ago}`,
   },
   ru: {
     ...WORDS.ru,
@@ -126,6 +150,29 @@ const VIEW_WORDS = {
     sup: { running: 'Супервизор работает', stopped: 'Супервизор не работает', finished: 'Супервизор закончил', halted: 'Супервизор остановился', never: 'Супервизор не запускался' },
     phases: (from, to) => `фазы ${from}–${to}`,
     duration: (h, m, s) => (h ? `${h} ч ${m} мин` : m ? `${m} мин` : `${s} с`),
+    nowHead: 'Сейчас',
+    now: {
+      ciFix: (n, m) => `чинит красный CI — попытка ${n} из ${m}`, ciLast: 'чинит красный CI — последняя попытка', ciWait: 'ждёт результат CI',
+      executors: (n) => (n > 1 ? `пишет код по ${n} планам сразу` : 'пишет код по плану'), helpers: (n) => `работают помощники: ${n}`,
+      agent: { 'gsd-code-fixer': 'исправляет найденное ревью', 'gsd-debugger': 'ищет причину сбоя', 'gsd-code-reviewer': 'идёт ревью кода', 'gsd-security-auditor': 'проверяет безопасность', 'gsd-nyquist-auditor': 'проверяет, хватает ли тестов', 'gsd-integration-checker': 'проверяет, как части работают вместе', 'gsd-verifier': 'проверяет, достигнута ли цель фазы', 'turbo-uat': 'приёмка: проверяет пункты сама', 'gsd-planner': 'пишет планы', 'gsd-plan-checker': 'проверяет планы', 'gsd-phase-researcher': 'изучает, как сделать фазу' },
+      step: { freshness: 'проверяет, не устарели ли планы', discuss: 'обдумывает фазу', prologue: 'готовит планирование', plan: 'планирует', 'gates-off': 'готовится выполнять планы', execute: 'выполняет планы', restore: 'возвращает настройки', fanout: 'запускает проверки качества', fix: 'исправляет найденное проверками', 'final-gate': 'гоняет финальные тесты', uat: 'приёмка', close: 'завершает фазу' },
+    },
+    stepsHead: 'Шаги фазы:',
+    stepNow: (s) => `${s} — сейчас`,
+    stepStopped: (s) => `${s} — остановилась здесь`,
+    nextHead: 'Что дальше:',
+    nextPhase: 'следующая фаза',
+    runEnd: 'конец прогона',
+    need: {
+      none: 'От вас сейчас ничего не нужно', held: 'Нужны вы: ответить на вопрос выше — фаза ждёт его', ahead: (n) => (n === 1 ? 'На вопрос выше можно ответить заранее' : `На вопросы выше (${n}) можно ответить заранее`),
+      decide: 'Нужны вы: фаза ждёт вашего решения — причина выше', failed: 'Нужны вы: фаза остановилась из-за сбоя и сама не продолжит', fullMode: 'Нужны вы: финальным проверкам нужен полный режим',
+      ciLast: 'Если последняя попытка починить CI не выйдет, фаза спросит вас', live: 'На приёмке могут понадобиться вы: живые проверки, которые без вас не сделать',
+    },
+    kind: {
+      feat: (n) => `${n} ${ruPlural(n, 'новая возможность', 'новые возможности', 'новых возможностей')}`, fix: (n) => `${n} ${ruPlural(n, 'исправление', 'исправления', 'исправлений')}`, refactor: (n) => `${n} ${ruPlural(n, 'переделка кода', 'переделки кода', 'переделок кода')}`,
+      test: (n) => `${n} ${ruPlural(n, 'правка тестов', 'правки тестов', 'правок тестов')}`, docs: (n) => `${n} ${ruPlural(n, 'правка документов', 'правки документов', 'правок документов')}`, other: (n) => `${n} ${ruPlural(n, 'служебное изменение', 'служебных изменения', 'служебных изменений')}`,
+    },
+    lastAgo: (ago) => `последнее ${ago}`,
   },
 };
 
@@ -159,6 +206,7 @@ export const TEXT = {
     exited: (code) => `Answer not sent: turbo-run exited with ${code}`,
     notSent: (why) => `Answer not sent: ${why}`,
     paneNotOpened: (why) => `turbo-view: pane not opened: ${why}`,
+    paneHint: 'open the pane: /turbo-view',
   },
   ru: {
     ...VIEW_WORDS.ru,
@@ -189,6 +237,7 @@ export const TEXT = {
     exited: (code) => `Ответ не отправлен: turbo-run завершился с кодом ${code}`,
     notSent: (why) => `Ответ не отправлен: ${why}`,
     paneNotOpened: (why) => `turbo-view: панель не открылась: ${why}`,
+    paneHint: 'откройте панель: /turbo-view',
   },
 };
 
@@ -461,6 +510,7 @@ function runSection(t, view, v, columns) {
     const fixing = live ? ciFixing(lane) : null;
     const red = lane.push?.ci === 'red' && !(i === 0 && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
     const under = [
+      nowRow(t, view, lane),
       sign ? text(toned(live && lane.quiet ? 'warn' : 'dim', { wrap: 'truncate-end' }), t.life(since(t, sign, view.at) ?? '-')) : null,
       red ? text(toned(fixing ? 'warn' : 'bad', { wrap: 'wrap' }), fixing ? ciWords(t, fixing) : t.verdict.ciRed(asked)) : null,
       why ? text(toned(STOPPED.has(lane.status) ? 'bad' : 'dim', { wrap: 'wrap' }), `${t.reason}: ${cut(why, 200)}`) : null,
@@ -498,14 +548,127 @@ function questionCard(t, view, q, field) {
     other ? box({ flexDirection: 'row', paddingLeft: 2 }, other) : null);
 }
 
-// A commit: its subject, and how long ago dim; an older view without the commit time shows the short hash instead.
-function commitRow(t, view, c) {
-  const ago = agoText(t, c.at, view.at);
-  return ago ? text({ wrap: 'truncate-end' }, cut(c.subject, 100), text(TONES.dim, ` · ${ago}`)) : text({ wrap: 'truncate-end' }, text(TONES.dim, cut(c.sha, 12)), ` ${cut(c.subject, 100)}`);
+// What the running phase does now (docs/plans/2026-10-13-v0.3.3-pane.md D2), first match: a red CI it fixes itself,
+// its helpers at work by what they do (NOW_ORDER: the most telling type first; executors counted; any other type as a
+// count), a pending CI with no helper at work, else the step in an active form. null for a lane that is not running or
+// a supervisor that does not run: the lane line says that already. { tone, text }.
+const NOW_ORDER = ['gsd-code-fixer', 'gsd-debugger', 'gsd-code-reviewer', 'gsd-security-auditor', 'gsd-nyquist-auditor', 'gsd-integration-checker', 'gsd-verifier', 'turbo-uat', 'gsd-executor', 'gsd-planner', 'gsd-plan-checker', 'gsd-phase-researcher'];
+function nowOf(t, view, lane) {
+  if (!lane || laneForm(view, lane) !== 'running') return null;
+  const fix = ciFixing(lane);
+  if (fix) return { tone: 'warn', text: fix.last ? t.now.ciLast : t.now.ciFix(fix.n, fix.m) };
+  const plain = (s) => ({ tone: 'plain', text: s });
+  const working = list(lane.agents).filter((a) => a.state === 'running');
+  if (working.length) {
+    const type = NOW_ORDER.find((x) => working.some((a) => a.type === x));
+    if (type === 'gsd-executor') return plain(t.now.executors(working.filter((a) => a.type === type).length));
+    return plain(type ? t.now.agent[type] : t.now.helpers(working.length));
+  }
+  if (lane.push?.ci === 'pending') return plain(t.now.ciWait);
+  return plain(lane.step == null ? t.allDone : t.now.step[lane.step] ?? cut(lane.step, 40));
 }
 
-// The pane: the verdict and the run, the questions waiting for the owner (the ones the phase waits for first), the
-// latest commits and the supervisor, in sections a blank line apart. error is why the last refresh failed; the last
+export const currentAction = (view, lane) => nowOf(textOf(view), view, lane);
+
+// `Now: …`, the first line under a running lane's line.
+function nowRow(t, view, lane) {
+  const n = nowOf(t, view, lane);
+  return n ? text({ wrap: 'wrap' }, text({ bold: true }, `${t.nowHead}: `), text(TONES[n.tone], n.text)) : null;
+}
+
+// The /turbo-phase steps in order: lib/phase-progress.mjs STEPS, carried here since the mod imports nothing
+// (test/view-model.test.mjs holds the two equal). gates-off and restore are turbo switching GSD's own gates around the
+// plans: listed only while the lane is at one.
+export const STEPS = Object.freeze(['freshness', 'discuss', 'prologue', 'plan', 'gates-off', 'execute', 'restore', 'fanout', 'fix', 'final-gate', 'uat', 'close']);
+const GATE_STEPS = new Set(['gates-off', 'restore']);
+
+// The lane's steps, each { step, state: 'done' | 'now' | 'ahead' }, from its step alone (completeStep keeps them in
+// order); a step turbo does not know is the only one; none for a phase done or no lane.
+export function phaseSteps(lane) {
+  if (!lane || lane.status === 'done') return [];
+  const at = lane.step == null ? STEPS.length : STEPS.indexOf(lane.step);
+  if (at < 0) return [{ step: lane.step, state: 'now' }];
+  return STEPS.map((step, i) => ({ step, state: i < at ? 'done' : i === at ? 'now' : 'ahead' })).filter((s) => s.state === 'now' || !GATE_STEPS.has(s.step));
+}
+
+// What comes next (D4): the steps ahead joined with arrows, to the next phase or the end of the run; then when the
+// owner is needed, from what turbo knows: the question the phase waits for, or a stop for a decision without one, a
+// failure, full mode, the questions that can be answered ahead, the last CI attempt; else nothing needed; and while
+// acceptance is ahead, the live checks only the owner can do. null for a phase done or no lane.
+// { chain, needs: [{ tone, text }] }.
+function nextOf(t, view, lane) {
+  if (!lane || lane.status === 'done') return null;
+  const ahead = phaseSteps(lane).filter((s) => s.state === 'ahead').map((s) => stepWord(t, s.step));
+  const last = view?.range?.to != null && String(view.range.to) === String(lane.phase);
+  const questions = list(view?.questions);
+  const held = questions.filter((q) => q?.stopped === true).length;
+  const needs = [];
+  const need = (tone, s) => needs.push({ tone, text: s });
+  if (held) need('bad', t.need.held);
+  else if (lane.status === 'needs-owner') need('bad', t.need.decide);
+  if (lane.status === 'failed') need('bad', t.need.failed);
+  if (lane.held === 'fullMode') need('bad', t.need.fullMode);
+  if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
+  if (ciFixing(lane)?.last) need('warn', t.need.ciLast);
+  if (!needs.length) need('ok', t.need.none);
+  if (phaseSteps(lane).some((s) => s.step === 'uat' && s.state !== 'done')) need('dim', t.need.live);
+  return { chain: [...ahead, last ? t.runEnd : t.nextPhase].join(' → '), needs };
+}
+
+export const whatNext = (view, lane) => nextOf(textOf(view), view, lane);
+
+function nextSection(t, view, lane) {
+  const n = nextOf(t, view, lane);
+  if (!n) return null;
+  return box({ flexDirection: 'column', marginTop: 1 }, text({ bold: true }, t.nextHead),
+    box({ flexDirection: 'column', paddingLeft: 2 }, text({ wrap: 'wrap' }, n.chain), n.needs.map((x) => text(toned(x.tone, { wrap: 'wrap' }), x.text))));
+}
+
+// The phase's steps (D5): done ✓ dim, now ▶ bold (where a stopped phase stopped: ■, red; paused or held: amber), ahead
+// · dim.
+function stepsSection(t, view, lane) {
+  const steps = phaseSteps(lane);
+  if (!steps.length) return null;
+  const halt = laneForm(view, lane) === 'running' ? null : STOPPED.has(lane.status) || lane.held === 'fullMode' ? 'bad' : 'warn';
+  const row = (s) => {
+    const word = stepWord(t, s.step);
+    if (s.state === 'done') return text({}, text(TONES.ok, '✓'), text(TONES.dim, ` ${word}`));
+    if (s.state === 'ahead') return text(TONES.dim, `· ${word}`);
+    return halt ? text(toned(halt, { bold: true }), `■ ${t.stepStopped(word)}`) : text({ bold: true }, `▶ ${t.stepNow(word)}`);
+  };
+  return box({ flexDirection: 'column', marginTop: 1 }, text({ bold: true }, t.stepsHead), box({ flexDirection: 'column', paddingLeft: 2 }, steps.map(row)));
+}
+
+// The latest commits by kind (D3): a subject is the project's own text and jargon, so the pane counts them by their
+// conventional-commit type, the largest count first, and says how long ago the last one was. { kinds, last } or null.
+const KINDS = ['feat', 'fix', 'refactor', 'test', 'docs', 'other'];
+const kindOf = (subject) => {
+  const k = /^([A-Za-z]+)(?:\([^)]*\))?!?:/.exec(clean(subject).trim())?.[1].toLowerCase();
+  return KINDS.includes(k) ? k : 'other';
+};
+function commitsOf(t, view) {
+  const commits = list(view?.commits);
+  if (!commits.length) return null;
+  const counts = new Map();
+  for (const c of commits) {
+    const k = kindOf(c?.subject);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const kinds = [...counts].sort((a, b) => b[1] - a[1] || KINDS.indexOf(a[0]) - KINDS.indexOf(b[0])).map(([k, n]) => t.kind[k](n)).join(', ');
+  const ago = agoText(t, commits[0]?.at, view.at);
+  return { kinds, last: ago ? t.lastAgo(ago) : null };
+}
+
+export const commitSummary = (view) => commitsOf(textOf(view), view);
+
+function changesSection(t, view) {
+  const c = commitsOf(t, view);
+  return c ? box({ marginTop: 1 }, text({ wrap: 'truncate-end' }, text({ bold: true }, t.changes), ` ${c.kinds}`, c.last ? text(TONES.dim, ` · ${c.last}`) : null)) : null;
+}
+
+// The pane: the verdict and the run (what each phase does now under it), the questions waiting for the owner (the ones
+// the phase waits for first), what comes next and when the owner is needed, the phase's steps, the latest commits by
+// kind and the supervisor, in sections a blank line apart. error is why the last refresh failed; the last
 // good view stays below it. field is the Other… field (NO_FIELD, openField). columns is the pane's width, when known.
 export function render(view, { error = null, field = NO_FIELD, columns = null } = {}) {
   const t = textOf(view);
@@ -515,13 +678,13 @@ export function render(view, { error = null, field = NO_FIELD, columns = null } 
   parts.push(runSection(t, view, verdictOf(t, view), columns));
   const questions = [...list(view.questions)].sort((a, b) => (b?.stopped === true) - (a?.stopped === true));
   if (questions.length) parts.push(box({ flexDirection: 'column', marginTop: 1 }, text(toned('warn', { bold: true }), t.askHead(questions.length)), questions.map((q) => questionCard(t, view, q, field))));
-  const commits = list(view.commits);
-  if (commits.length) parts.push(box({ flexDirection: 'column', marginTop: 1 }, text({ bold: true }, t.changes), box({ flexDirection: 'column', paddingLeft: 2 }, commits.map((c) => commitRow(t, view, c)))));
+  const lane = list(view.lanes)[0] ?? null;
+  parts.push(nextSection(t, view, lane), stepsSection(t, view, lane), changesSection(t, view));
   if (view.supervisor) {
     const range = view.range ? t.phases(cut(view.range.from ?? '…', 20), cut(view.range.to ?? '…', 20)) : null;
     parts.push(box({ marginTop: 1 }, text(toned('dim', { wrap: 'truncate-end' }), [supWord(t, view.supervisor), range].filter(Boolean).join(' · '))));
   }
-  return box({ flexDirection: 'column' }, parts);
+  return box({ flexDirection: 'column' }, parts.filter(Boolean));
 }
 
 // A Text node's text: its strings and those of the Text nodes inside it, in order.
@@ -550,7 +713,7 @@ function pushMarks(t, push, ci = true) {
 // The one line above the prompt: turbo, each phase (running: its step and plans done, `5/9`; otherwise what happened),
 // the verdict, the questions waiting and the CI mark (`turbo · фаза 32: выполняются планы 5/9 · ❓ 1 вопрос ждёт вас ·
 // CI ✓`), or null when the project has no turbo run and no open question. bandStyle is its colour, the verdict's.
-export function bandLine(view, { error = null } = {}) {
+export function bandLine(view, { error = null, paneWaiting = false } = {}) {
   if (error) return `turbo · ⚠️ ${errorWords(view, cut(error, 100))}`;
   const questions = list(view?.questions);
   if (!view || (!view.supervisor && !questions.length)) return null;
@@ -569,6 +732,8 @@ export function bandLine(view, { error = null } = {}) {
   if (questions.length) parts.push(t.waiting(questions.length));
   // a red CI verdict says it in words already
   parts.push(...(lanes.map((l) => pushMarks(t, l.push, v.kind !== 'ciRed' && v.kind !== 'ciFixing')).find((m) => m.length) ?? []));
+  // the pane waits undrawn (opened by the mod in a terminal under the host's floor): how to open it
+  if (paneWaiting) parts.push(t.paneHint);
   return clean(parts.join(' · '));
 }
 

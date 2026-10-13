@@ -412,7 +412,7 @@ test('w1: the hint goes once the terminal widens and the host places the waiting
 
 // review r1 M1: the host stamps a close's origin as an object, { kind }; a plugin's own $.ui.close is kind 'plugin',
 // never the owner's, so the hint (and the next prompt's open) stay
-test('a close the host stamps as a plugin's (origin { kind: "plugin" }) is not the owner closing the pane', {
+test('a close the host stamps as a plugin close (origin { kind: "plugin" }) is not the owner closing the pane', {
   plugins: [{ name: 'closer', register: (on) => {
     on('session.start', async ($, e, next) => {
       await $.command.register({ name: 'shut', description: 'close the turbo pane' })
@@ -429,7 +429,7 @@ test('a close the host stamps as a plugin's (origin { kind: "plugin" }) is not t
   on('ui.close', (_$, e) => (seen.push(e.origin), { value: undefined }) as never)
   await begin($, clock)
   await $.command.run({ command: 'shut', args: '' })
-  for (const o of seen) expect(o).toEqual({ kind: 'plugin' })
+  expect(seen).toEqual([{ kind: 'plugin' }])
   await $.prompt.submit({ text: 'hi', origin: { kind: 'composer' } } as never)
   expect(opens.length).toBe(2)
 })

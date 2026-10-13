@@ -5,7 +5,7 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { PHASES, ROADMAP } from './fixtures/roadmap-lanes.mjs';
 import { writeAnswers } from '../lib/questions.mjs';
-import { readJobStatus, writeAnnotateAttempt, writeJobStatus } from '../lib/run-status.mjs';
+import { readAnnotateAttempt, readJobStatus, writeAnnotateAttempt, writeJobStatus } from '../lib/run-status.mjs';
 import { roadmapFile, writeLanesFile } from '../lib/lanes-file.mjs';
 import { roadmapDigest } from '../lib/roadmap-lanes.mjs';
 import { ANNOTATE_PHASE, annotateReason, finishJob, jobName, jobPrompts, jobSystemPrompt, jobUserPrompt, pendingJobs } from '../lib/prep.mjs';
@@ -167,4 +167,18 @@ test('job prompts: plain argv values that name the skill, the analyst and the jo
     assert.ok(!p.startsWith('-'));
   }
   assert.throws(() => jobUserPrompt({ kind: 'phase', phase: '5' }), /not a prep or annotate job/);
+});
+
+test('review: an annotate merge refusal is not retried on the same ROADMAP; the supervisor slot release is used when given', async () => {
+  const root = project({ context: ['2', '3', '4', '5'] });
+  const calls = [];
+  const ctx2 = { root, config: SLOTS, deps: { slots: { release: (slot, outcome) => calls.push([slot, outcome]) } } };
+  const lane = { key: 'annotate', job: 'annotate', phase: null, slot: 1 };
+  const r = await finishJob(ctx2, lane, { merge: async () => ({ outcome: 'refused', reason: 'changed src/a.js' }) });
+  assert.equal(r.outcome, 'failed');
+  assert.deepEqual(calls, [[1, 'failed']]);
+  assert.deepEqual([readAnnotateAttempt(root).status, readAnnotateAttempt(root).roadmapSha256], ['failed', roadmapDigest(ROADMAP5)]);
+  assert.equal(annotateReason(root, MORE), null);
+  assert.equal((await finishJob(ctx2, lane, { merge: async () => ({ outcome: 'merged' }) })).outcome, 'merged');
+  assert.deepEqual(calls.at(-1), [1, 'merged']);
 });

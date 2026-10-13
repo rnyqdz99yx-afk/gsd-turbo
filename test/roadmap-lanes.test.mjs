@@ -83,3 +83,12 @@ test('G4: setDependsOn writes Phase 3, Phase 4, keeps the label form, and GSD re
   assert.equal(depsText(['3', '4']), 'Phase 3, Phase 4');
   assert.equal(depsText([]), 'Nothing');
 });
+
+test('review: a multi-line Depends on keeps its continuation; a value with a line break is refused', () => {
+  const text = ROADMAP.replace('**Depends on**: Phase 1', '**Depends on**: Phase 1,\n  and the base docs');
+  const ls = writeLaneLines(text, '2', { areas: ['a/**'] }).split('\n');
+  const d = ls.indexOf('  and the base docs');
+  assert.equal(ls[d + 1], '**Areas**: a/**');
+  assert.throws(() => writeLaneLines(ROADMAP, '2', { areas: ['src/a\n## Phase 9: Evil'] }), /line break/);
+  assert.throws(() => writeLaneLines(ROADMAP, '2', { areas: ['x/**'], gates: ['a\rb'] }), /line break/);
+});

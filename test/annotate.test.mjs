@@ -187,3 +187,18 @@ test('applyAnswer refuses an unknown id, skips a Depends on line edited since th
   assert.equal(readLanesRaw(root).proposal.state, 'declined');
   assert.throws(() => applyAnswer(root, 'none', { phases: PH, config: {}, now: NOW }), /no dependency card waits for an answer/);
 });
+
+test('review: a mask with a control character is refused', () => {
+  const problems = validateAnalysis({ phases: { 2: { areas: ['src/a\n## Phase 9: Evil'], gates: [], confidence: 'high' } } }, { targets: ['2'], unfinished: ['2'], gates: [], deps: new Map() });
+  assert.ok(problems.some((p) => p.includes('has a control character')), problems.join('; '));
+});
+
+test('review: an answer applied while only a finished phase changed leaves the markup fresh', () => {
+  const root = project();
+  applyAnalysis(root, { ...GOOD, relax: [{ phase: '4', drop: ['3'], kind: 'prose', reason: 'wording only' }] }, { phases: PH, config: {}, now: NOW });
+  fs.writeFileSync(roadmapFile(root), fs.readFileSync(roadmapFile(root), 'utf8').replace('**Goal**: The skeleton builds', '**Goal**: The skeleton builds and runs'));
+  assert.equal(readLanesFile(root).fresh, false);
+  answerQuestion({ root, phase: 'annotate', id: 'ask-1', option: 1, by: 'session', commit: () => ({ committed: false, reason: 'test' }) });
+  assert.deepEqual(applyAnswer(root, 'all', { phases: PH, config: {}, now: NOW }).applied, ['r1']);
+  assert.equal(readLanesFile(root).fresh, true);
+});

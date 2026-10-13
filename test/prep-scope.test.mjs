@@ -23,7 +23,7 @@ test('prepAllowed: only files inside the phase\'s own directory', () => {
   const ok = prepAllowed('5');
   assert.ok(ok('.planning/phases/05-auth/05-CONTEXT.md'));
   assert.ok(ok('.planning/phases/05-auth/turbo-base.json'));
-  assert.ok(ok('.planning\\phases\\05-auth\\05-RESEARCH.md'), 'backslashes read as /');
+  assert.ok(!ok('.planning\\phases\\05-auth\\05-RESEARCH.md'), 'review: a backslash is a file name character for git, never a separator');
   for (const p of ['.planning/phases/05-auth', '.planning/phases/06-x/06-CONTEXT.md', '.planning/STATE.md', '.planning/ROADMAP.md', '.planning/config.json', 'src/a.js', '.planning/phases/05-auth/../06-x/a.md', '.planning/phases//a.md']) assert.ok(!ok(p), p);
 });
 
@@ -79,4 +79,16 @@ test('phase-step --prep: its own three steps, in the slot\'s own run directory, 
   assert.deepEqual(readProgress(root, '5').done, [], 'the phase\'s own record is untouched');
   assert.equal(await run('5', '--prep', '--attempt', 'discuss'), 2);
   assert.equal(await run('5', '--prep', '--reset'), 2);
+});
+
+test('review: outOfScope reads non-ASCII paths unquoted', () => {
+  const root = tmpGitRepo();
+  const git = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
+  git('config', 'core.quotePath', 'true');
+  const base = git('rev-parse', 'HEAD');
+  fs.mkdirSync(path.join(root, '.planning', 'phases', '05-auth'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'phases', '05-auth', 'notes-é.md'), 'x\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'prep');
+  assert.deepEqual(outOfScope(root, { kind: 'prep', phase: '5' }, { base }), { dirty: [], outside: [] });
 });

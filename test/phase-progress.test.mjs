@@ -112,3 +112,27 @@ test('the ci attempt counter (push.ci_fix_rounds) counts like a step, is no step
   clearAttempts(root, '3');
   assert.deepEqual(readProgress(root, '3').attempts, {});
 });
+
+test('review 1 (MAJOR 2): phase-step N --done close refuses unless VERIFICATION.md reads passed and SECURITY.md (when there) has no open threat', async () => {
+  const root = project();
+  const dir = path.join(root, '.planning', 'phases', '03-demo');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const s of STEPS.slice(0, -1)) completeStep(root, '3', s);
+  const lines = [];
+  const close = () => runPhaseCommand('phase-step', ['3', '--done', 'close'], { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) });
+  assert.equal(await close(), 1);
+  assert.match(lines.at(-1), /^ERR turbo-run phase-step: phase 3 cannot close: no VERIFICATION\.md$/);
+  fs.writeFileSync(path.join(dir, '03-VERIFICATION.md'), '---\nphase: 03-demo\nstatus: gaps_found\n---\n\nstatus: passed\n');
+  assert.equal(await close(), 1);
+  assert.match(lines.at(-1), /cannot close: VERIFICATION\.md status is gaps_found, not passed$/);
+  fs.writeFileSync(path.join(dir, '03-VERIFICATION.md'), '---\r\nstatus: "passed"\r\n---\r\n');
+  fs.writeFileSync(path.join(dir, '03-SECURITY.md'), '---\nthreats_open: 2\n---\n');
+  assert.equal(await close(), 1);
+  assert.match(lines.at(-1), /cannot close: SECURITY\.md has 2 open threat\(s\)$/);
+  fs.writeFileSync(path.join(dir, '03-SECURITY.md'), '---\nthreats_open: x\n---\n');
+  assert.equal(await close(), 1);
+  assert.match(lines.at(-1), /cannot close: SECURITY\.md threats_open is not a count$/);
+  fs.writeFileSync(path.join(dir, '03-SECURITY.md'), '---\nthreats_open: 0\n---\n');
+  assert.equal(await close(), 0);
+  assert.match(lines.at(-1), /next none/);
+});

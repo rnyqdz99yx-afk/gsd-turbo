@@ -233,3 +233,11 @@ test('turbo-phase skill (v0.3.3): every stop for the owner is asked with turbo-r
   for (const needle of ['turbo-run phase-step N --attempt owner-gaps', 'turbo-run owner-gaps N --review', '--gap', 'Skill(skill="gsd-plan-phase", args="N --gaps")', 'args="N --gaps-only --no-transition"', 'no hand-made UAT row']) assert.ok(fixes.includes(needle), needle);
   assert.ok(!/stop for the owner\*\* \("[^"]*\bWR-\d/.test(s), 'no finding codes in stop reasons');
 });
+
+test('turbo-phase skill (review 1, MAJOR 2): no "go on" past the hard gates — final-gate, uat, close, open threats, failed verification; close refuses in code too', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const early = s.slice(s.indexOf('### Stopping early'), s.indexOf('### Push and CI'));
+  assert.match(early, /Never offer to go on past a stop of step \*\*final-gate\*\*, \*\*uat\*\* or \*\*close\*\*, past open security threats or past a verification that did not pass: the options there are fix first \(\*\*Owner-chosen fixes\*\*\), run the live check again, or stop the phase here\./);
+  assert.match(s, /go on \(never for a stop of final-gate, uat or close\) →/);
+  assert.match(s, /`turbo-run phase-step N --done close` refuses unless VERIFICATION\.md reads `passed` and SECURITY\.md counts no open threat/);
+});

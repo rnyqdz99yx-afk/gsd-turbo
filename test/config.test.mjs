@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, pushSettings } from '../lib/config.mjs';
+import { DEFAULTS, LANE_MODES, loadConfig, initConfig, deepMerge, fullEntries, lanesSettings, pushSettings } from '../lib/config.mjs';
 import { findProjectRoot, turboDir, claudeHome } from '../lib/paths.mjs';
 import { writeJsonAtomic, readJson } from '../lib/fsx.mjs';
 
@@ -220,4 +220,34 @@ test('pushSettings: off by default; every key validated; a bad value is a one-li
   fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ push: { mode: 'after-phase' } }));
   assert.deepEqual(pushSettings(loadConfig(root).push), { ...DEFAULTS.push, mode: 'after-phase' });
+});
+
+test('lanes (Stage 4 L0): defaults, a valid hand-edited value, and every invalid one stops with the key named', () => {
+  assert.deepEqual(DEFAULTS.lanes, { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true });
+  assert.deepEqual(LANE_MODES, ['slots', 'checkout']);
+  assert.deepEqual(lanesSettings(), DEFAULTS.lanes);
+  assert.deepEqual(
+    lanesSettings({ mode: 'checkout', dir: ' ../slots ', copy: [' config/*.env ', '**/.npmrc'], install: ' pnpm install --offline ', trust_write: false, gates: ['packaged-build'] }),
+    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false },
+  );
+  const cases = [
+    [null, /lanes: must be an object/],
+    [{ mode: 'worktree' }, /lanes\.mode: must be one of slots, checkout/],
+    [{ dir: 3 }, /lanes\.dir: must be a path/],
+    [{ copy: '.env' }, /lanes\.copy: must be a list of path masks/],
+    [{ copy: [''] }, /lanes\.copy: must be a list of path masks/],
+    [{ copy: ['api\\.env'] }, /must use forward slashes/],
+    [{ copy: ['/etc/app.env'] }, /must be relative to the project root/],
+    [{ copy: ['C:/app.env'] }, /must be relative to the project root/],
+    [{ copy: ['../.env'] }, /must stay inside the project/],
+    [{ copy: ['.git/config'] }, /must not name \.git/],
+    [{ install: 1 }, /lanes\.install: must be a command string/],
+    [{ trust_write: 'no' }, /lanes\.trust_write: must be true or false/],
+  ];
+  for (const [v, re] of cases) assert.throws(() => lanesSettings(v), re, JSON.stringify(v));
+  // a hand-edited config file reaches it through loadConfig; the rest keeps its default
+  const root = tmpDir('lanes');
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lanes: { mode: 'checkout' } }));
+  assert.deepEqual(lanesSettings(loadConfig(root).lanes), { ...DEFAULTS.lanes, mode: 'checkout' });
 });

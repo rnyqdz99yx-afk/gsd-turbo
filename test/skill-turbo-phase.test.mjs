@@ -224,7 +224,9 @@ test('turbo-phase skill: one verifier pass per uat step — every UAT write firs
   const line = (n) => uat.split('\n').find((l) => l.startsWith(`${n}. `));
   // point 1: a report stale only from UAT writes, which said human_needed, is refreshed once at point 5, not here
   const p1 = line(1);
-  for (const n of ['turbo-run staleness N --verification --json', '`reported`', '`human_needed`', 'point 5']) assert.ok(p1.includes(n), n);
+  // only when nothing but the UAT file, STATE.md and turbo's run files changed (uatOnly): a changed plan or roadmap
+  // refreshes the report before turbo-uat reads its human items
+  for (const n of ['turbo-run staleness N --verification --json', '`uatOnly`', '`reported`', '`human_needed`', 'point 5']) assert.ok(p1.includes(n), n);
   // point 5: settle, complete the session, then the one Stale report, then verify-work
   const p5 = line(5);
   const settle = p5.indexOf('turbo-run uat settle N');
@@ -233,10 +235,15 @@ test('turbo-phase skill: one verifier pass per uat step — every UAT write firs
   const verify = p5.indexOf('Skill(skill="gsd-verify-work"');
   assert.ok(settle > 0 && settle < complete && complete < stale && stale < verify, p5);
   assert.ok(p5.includes('core.autocrlf'), 'the reason is named');
+  // the fresh report is read again before verify-work: new human items go back to turbo-uat, gaps or anything else fail
+  const after = p5.slice(stale, verify);
+  for (const n of ['human item', 'back to point 2', '`passed`', '**fail**']) assert.ok(after.includes(n), n);
   const proc = section(s, 'Stale report');
   for (const n of ['One pass per step', 'Never revert', 'keep the commit', '`verifier-only`']) assert.ok(proc.includes(n), n);
   // close: the owner request is current before the done record (a resume removed it)
   const close = section(s, 'close');
   const owner = close.indexOf('turbo-run uat owner-request N');
   assert.ok(owner > 0 && owner < close.indexOf('turbo-run lane-status N done'), 'owner-request before the done record');
+  // and before every stop for the owner in close, so status shows the checklist again after a resumed lane stops
+  assert.ok(owner < close.indexOf('\n1. ') && close.includes('Before every **stop for the owner** in this step'), 'owner-request before any stop of close');
 });

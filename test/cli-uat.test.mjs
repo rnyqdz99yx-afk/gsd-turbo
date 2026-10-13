@@ -217,7 +217,7 @@ test('uat defer: --rulings defers the owner-ruled rows, numbers confirm the othe
 // GSD's uat.complete-session compares the working UAT file with its blob at HEAD byte for byte (only updated: aside):
 // a checkout with core.autocrlf=true has CRLF in the working copy and LF in the blob, so every call wrote and committed
 // a new updated: line and made VERIFICATION.md stale again. uat settle gives the working copy the blob's LF.
-test('uat settle: a CRLF working copy of an LF blob gets the committed bytes and a clean git status; nothing else is touched', async () => {
+test('uat settle: a CRLF working copy of an LF blob gets the committed bytes; nothing is staged and nothing else is touched', async () => {
   const p = project();
   const g = (...a) => execFileSync('git', a, { cwd: p.root, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(p.root, '.git', 'no-global-config'), GIT_CONFIG_NOSYSTEM: '1' } });
   const uatFile = path.join(p.dir, '03-UAT.md');
@@ -233,7 +233,7 @@ test('uat settle: a CRLF working copy of an LF blob gets the committed bytes and
   assert.equal(await p.run('settle', '3', '--json'), 0);
   assert.deepEqual(JSON.parse(p.lines.at(-1)), { file: rel, settled: true, clean: true });
   assert.equal(fs.readFileSync(uatFile, 'utf8'), UAT);
-  assert.equal(g('status', '--porcelain', '--', rel), '', 'git sees the file clean');
+  assert.equal(g('diff', '--name-only', '--', rel), '', 'no content change');
   assert.equal(g('diff', '--cached', '--name-only'), '', 'nothing staged');
   // an LF working copy is left alone
   assert.equal(await p.run('settle', '3'), 0);
@@ -246,6 +246,13 @@ test('uat settle: a CRLF working copy of an LF blob gets the committed bytes and
   assert.equal(fs.readFileSync(uatFile, 'utf8'), changed);
   assert.equal(g('diff', '--cached', '--name-only'), '');
   assert.match(g('status', '--porcelain', '--', rel), /^ M /);
+  // a version staged by hand stays staged as it was: settle never touches the index
+  g('add', '--', rel);
+  const staged = g('diff', '--cached');
+  fs.writeFileSync(uatFile, UAT.replace(/\n/g, '\r\n'));
+  assert.equal(await p.run('settle', '3'), 0);
+  assert.equal(g('diff', '--cached'), staged);
+  assert.equal(fs.readFileSync(uatFile, 'utf8'), UAT);
 });
 
 test('uat settle: a blob committed with CRLF is left as it is', async () => {

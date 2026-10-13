@@ -424,10 +424,15 @@ test('verificationRoute: only planning files changed since the report → verifi
   r.write('.planning/turbo/run/p3.json', '{}');
   const ok = verificationRoute({ root: r.root, phaseDir });
   assert.deepEqual({ ...ok, planning: ok.planning.sort() }, {
-    route: 'verifier-only', report: `${dir}/03-VERIFICATION.md`, reported: 'human_needed', since, review, code: [],
+    route: 'verifier-only', uatOnly: true, report: `${dir}/03-VERIFICATION.md`, reported: 'human_needed', since, review, code: [],
     planning: ['.planning/STATE.md', `${dir}/03-UAT.md`, '.planning/turbo/run/p3.json'].sort(),
     note: `regression gate and code review not re-run: counted from the code review at ${review.slice(0, 12)}`,
   });
+  // a planning change beyond the UAT file, STATE.md and turbo's run files (a plan, the roadmap): still verifier-only,
+  // but not UAT-only, so the report is refreshed before turbo-uat reads its human items
+  r.write(`${dir}/03-01-PLAN.md`, 'must_haves changed\n');
+  assert.deepEqual([verificationRoute({ root: r.root, phaseDir }).route, verificationRoute({ root: r.root, phaseDir }).uatOnly], ['verifier-only', false]);
+  fs.rmSync(path.join(r.root, dir, '03-01-PLAN.md'));
   // untracked, unstaged and committed code changes each make it full
   r.write('src/new.js', 'n\n');
   assert.deepEqual([verificationRoute({ root: r.root, phaseDir }).route, verificationRoute({ root: r.root, phaseDir }).code], ['full', ['src/new.js']]);
@@ -436,12 +441,14 @@ test('verificationRoute: only planning files changed since the report → verifi
   assert.deepEqual(verificationRoute({ root: r.root, phaseDir }).code, ['src/a.js']);
   r.commit('code');
   const full = verificationRoute({ root: r.root, phaseDir });
+  assert.equal(full.uatOnly, false);
   assert.deepEqual([full.route, full.since, full.code], ['full', since, ['src/a.js']]);
   // a renamed file counts on both sides
   r.g('mv', 'src/a.js', 'src/b.js');
   assert.deepEqual(verificationRoute({ root: r.root, phaseDir }).code.sort(), ['src/a.js', 'src/b.js']);
-  // reported: the status the report's frontmatter holds, quoted or not, whatever the line endings
-  r.write(`${dir}/03-VERIFICATION.md`, '---\r\nphase: 03-demo\r\nstatus: "passed"\r\n---\r\n\r\nstatus: human_needed\r\n');
+  // reported: the status the report's frontmatter holds, quoted or not, whatever the line endings, after a BOM too
+  const BOM = String.fromCharCode(0xfeff);
+  r.write(`${dir}/03-VERIFICATION.md`, `${BOM}---\r\nphase: 03-demo\r\nstatus: "passed"\r\n---\r\n\r\nstatus: human_needed\r\n`);
   assert.equal(verificationRoute({ root: r.root, phaseDir }).reported, 'passed');
 });
 
@@ -452,7 +459,7 @@ test('verificationRoute: no report or a report never committed → full; the CLI
   const phaseDir = path.join(r.root, dir);
   r.write(`${dir}/03-UAT.md`, 'uat\n');
   r.commit('uat');
-  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }), { route: 'full', report: null, reported: null, since: null, review: null, code: [], planning: [], reason: 'no verification report' });
+  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }), { route: 'full', uatOnly: false, report: null, reported: null, since: null, review: null, code: [], planning: [], reason: 'no verification report' });
   r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
   const loose = verificationRoute({ root: r.root, phaseDir });
   assert.deepEqual([loose.route, loose.reason], ['full', 'the verification report is not committed']);

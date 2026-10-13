@@ -609,9 +609,13 @@ test('resume clears the phase\'s owner request, and status shows the resumed lan
   const text = run(['status'], root);
   assert.doesNotMatch(text, /p4-owner\.md/);
   assert.match(text, /owner request: \.planning\/turbo\/run\/p5-owner\.md/);
-  assert.match(text, /^lane: phase 4 · relaunch pending \(resume\) · replaces session old111 at the supervisor's next check · mode full$/m);
+  // no supervisor runs after a plain resume: the line says how to go on
+  assert.match(text, /^lane: phase 4 · relaunch pending \(resume\) · replaces session old111 once a supervisor runs: turbo-run start · mode full$/m);
   assert.doesNotMatch(text, /watch: claude attach old111/);
   assert.equal(JSON.parse(run(['status', '--json'], root)).lane.forceRelaunch, true);
+  // a supervisor that runs (resume --start) replaces it at its next check
+  writeSup(root, { ...readSup(root), pid: process.pid, updatedAt: ago(0) });
+  assert.match(run(['status'], root), /^lane: phase 4 · relaunch pending \(resume\) · replaces session old111 at the supervisor's next check · mode full$/m);
 });
 
 test('resume with a stale heartbeat kills nothing and revokes the lock lease', async (t) => {

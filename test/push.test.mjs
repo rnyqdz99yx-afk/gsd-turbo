@@ -362,6 +362,24 @@ test('a requested commit someone already pushed (the remote moved past it): alre
   assert.equal(ask(r, ctx.config.push).request.id, req.id);
 });
 
+test('a requested commit the remote branch already points at (pushed by hand): already pushed, no empty push, no new CI watch, no other watch superseded', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes } = supervisorCtx(r);
+  // another phase's push still waits for its CI
+  const other = { requestId: 'o', phase: '2', remote: 'origin', outcome: 'pushed', sha: 'e'.repeat(40), lastPush: { requestId: 'o', sha: 'e'.repeat(40), ci: { state: 'pending', since: NOW.toISOString(), runs: [] } } };
+  writeJsonAtomic(recordFile(r.root, '2'), other);
+  const sha = r.commit('src/a.mjs', 'export const a = 1;\n');
+  const req = ask(r, ctx.config.push).request;
+  r.sh('push', '-q', 'origin', 'main');
+  await pushTick(ctx, NOW);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.deepEqual([rec.requestId, rec.outcome, rec.already, rec.sha, rec.lastPush], [req.id, 'pushed', true, sha, undefined]);
+  assert.ok(!calls.some((a) => ['push', 'log'].includes(sub(a))), 'nothing scanned, nothing pushed');
+  assert.deepEqual(readJson(recordFile(r.root, '2')), other, 'the other phase keeps its CI watch');
+  assert.deepEqual(notes, []);
+  assert.equal(describeRecord(rec).code, 0);
+});
+
 test('a file name or a branch name that carries a secret is masked in the record, the log and the notification', async () => {
   const r = pushRepo();
   const { ctx, notes } = supervisorCtx(r);

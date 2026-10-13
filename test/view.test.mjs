@@ -207,9 +207,10 @@ function textView(over = {}, lane = {}) {
   };
 }
 
-test('formatView, what turbo-run view and status --watch print, is the pane in plain lines: verdict, sign of life, helpers, the questions (the held one first) with their options, latest changes with their age, supervisor', () => {
+test('formatView, what turbo-run view and status --watch print, is the pane in plain lines: verdict, now, sign of life, helpers, the questions (the held one first) with their options, what comes next, the steps, latest changes by kind, supervisor', () => {
   assert.equal(formatView(textView()), [
     'Phase 32 — running plans · 5 of 9 plans done · 1h 12m · needs your answer (1)',
+    '  Now: writing code for a plan',
     '  last activity 1m ago',
     '  Executor · plan 32-07, task 2 · editing lib/x.mjs · 6m',
     '  ⚠️ Verifier silent for 16m — may be stuck',
@@ -222,8 +223,24 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
     '    1. Yes, by the gate ★ recommended',
     '    2. Stop — the phase waits',
     '',
-    'Latest changes:',
-    '  fix: something · 12m ago',
+    'What comes next:',
+    '  quality checks → fixes → final check → acceptance → wrap-up → next phase',
+    '  You can answer the question above ahead',
+    '  At acceptance you may be needed for live checks only you can do',
+    '',
+    'Phase steps:',
+    '  ✓ freshness check',
+    '  ✓ discussion',
+    '  ✓ planning prep',
+    '  ✓ planning',
+    '  ▶ running plans — now',
+    '  · quality checks',
+    '  · fixes',
+    '  · final check',
+    '  · acceptance',
+    '  · wrap-up',
+    '',
+    'Latest changes: 1 fix · the last 12m ago',
     '',
     'Supervisor running · phases 32–…',
   ].join('\n'));
@@ -246,18 +263,35 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
     '    1. Yes, by the gate ★ рекомендуется',
     '    2. Stop — the phase waits',
     '',
-    'Последние изменения:',
-    '  fix: something · 12 мин назад',
+    'Что дальше:',
+    '  проверки качества → исправления → финальная проверка → приёмка → завершение → следующая фаза',
+    '  Нужны вы: ответить на вопрос выше — фаза ждёт его',
+    '  На вопрос выше можно ответить заранее',
+    '  На приёмке могут понадобиться вы: живые проверки, которые без вас не сделать',
+    '',
+    'Шаги фазы:',
+    '  ✓ проверка актуальности',
+    '  ✓ обсуждение',
+    '  ✓ подготовка к планированию',
+    '  ✓ планирование',
+    '  ■ выполняются планы — остановилась здесь',
+    '  · проверки качества',
+    '  · исправления',
+    '  · финальная проверка',
+    '  · приёмка',
+    '  · завершение',
+    '',
+    'Последние изменения: 1 исправление · последнее 12 мин назад',
     '',
     'Супервизор работает · фазы 32–…',
   ].join('\n'));
   assert.equal(ru({ questions: [] }, { status: 'failed', reason: 'tests fail after 3 fix rounds' }).split('\n').slice(0, 3).join('\n'), 'Фаза 32 остановилась из-за сбоя · шаг: выполнение планов · 5 из 9 планов готово · 1 ч 11 мин\n  последнее действие 1 мин назад\n  Причина: tests fail after 3 fix rounds');
   // after turbo-run stop: never "running", never "stuck", the time frozen at the last activity
   assert.equal(ru({ questions: [], at: at('15:00'), supervisor: { running: false, pid: null, finished: false, halted: false } }, { quiet: true }).split('\n')[0], 'Фаза 32 остановлена на шаге: выполнение планов · 5 из 9 планов готово · 1 ч 11 мин · супервизор не работает');
-  assert.equal(ru({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }).split('\n')[0], 'Фаза 32 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин · CI красный — фаза чинит сама (попытка 1 из 2), от вас ничего не нужно');
+  assert.deepEqual(ru({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }).split('\n').slice(0, 2), ['Фаза 32 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин · CI красный — фаза чинит сама (попытка 1 из 2), от вас ничего не нужно', '  Сейчас: чинит красный CI — попытка 1 из 2']);
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [] }), 'Run — supervisor never started');
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [], ui: { lang: 'ru' } }), 'Прогон — супервизор не запускался');
-  assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [{ sha: 'a1b2c3d', subject: 'old view' }] }), 'Run — supervisor never started\n\nLatest changes:\n  a1b2c3d old view', 'a view without commit times shows the hash');
+  assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [{ sha: 'a1b2c3d', subject: 'old view' }] }), 'Run — supervisor never started\n\nLatest changes: 1 other change', 'a view without commit times: the count alone');
 });
 
 // Every value of a words table, functions called with fixed arguments, as [path, value] pairs.
@@ -303,6 +337,12 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }),
     textView({ questions: [], supervisor: { ...textView().supervisor, failingSince: at('10:10') } }),
     textView({ questions: [], commits: [{ sha: 'a1b2c3d', at: '2025-12-28T10:00:00.000Z', subject: 'old' }, { sha: 'b', at: at('10:59'), subject: 'new' }, { sha: 'c', subject: 'no time' }] }),
+    // v0.3.3: now, what comes next, the steps, commits by kind
+    textView({ questions: [], range: { from: '32', to: '32' } }, { step: 'uat', agents: [{ type: 'turbo-uat', state: 'running', action: { tool: 'Bash', detail: 'curl x' }, elapsedMs: 5000 }] }),
+    textView({ questions: [] }, { step: 'final-gate', agents: [], push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'pending' } }),
+    textView({ questions: [] }, { step: 'restore', agents: [{ type: 'gsd-code-fixer', state: 'running', action: null, elapsedMs: 5000 }, { type: 'gsd-executor', state: 'running', action: null, elapsedMs: 5000 }] }),
+    textView({ questions: [] }, { step: 'odd-step', status: 'needs-owner', reason: 'a live check' }),
+    textView({ questions: [], commits: [{ sha: 'a', at: at('10:59'), subject: 'feat(32): x' }, { sha: 'b', at: at('10:58'), subject: 'docs(phase-32): y' }, { sha: 'c', at: at('10:57'), subject: 'feat: z' }] }),
   ];
   for (const lang of ['en', 'ru']) {
     for (const v of views) {
@@ -311,6 +351,28 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
       assert.equal(formatView(view), pane.paneLines(pane.render(view)).join('\n'), `${lang}: ${JSON.stringify(v.lanes[0]?.status)} ${JSON.stringify(v.supervisor)}`);
     }
   }
+});
+
+test('formatView in colour (status --watch on a terminal): each line wrapped in the SGR of its tone, reset at its end; the text unchanged; plain lines bare', () => {
+  const E = '\x1b';
+  const view = textView({ questions: [] }, { step: 'fanout', push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 }, agents: [{ type: 'gsd-code-reviewer', state: 'running', action: { tool: 'Grep', detail: 'x' }, elapsedMs: 5000 }, { type: 'gsd-verifier', state: 'quiet', lastAt: at('10:44'), elapsedMs: 5000 }] });
+  const plain = formatView(view).split('\n');
+  const color = formatView(view, { color: true }).split('\n');
+  assert.deepEqual(color.map((l) => l.replace(/\x1b\[[0-9;]*m/g, '')), plain, 'the same text');
+  const toneOf = (prefix) => {
+    const line = color.find((l) => l.replace(/\x1b\[[0-9;]*m/g, '').startsWith(prefix));
+    return /^\x1b\[([0-9;]+)m.*\x1b\[0m$/.exec(line)?.[1] ?? 'none';
+  };
+  assert.deepEqual(['Phase 32', '  Now:', '  last activity', '  Reviewer', '  ⚠️ Verifier', 'What comes next', '  Nothing needed', '  At acceptance', '  ✓ freshness', '  ▶ quality', '  · fixes', 'Latest changes', 'Supervisor'].map(toneOf), ['33', '33', '2', 'none', '33', '1', '32', '2', '2', '1', '2', 'none', '2']);
+  assert.equal(color.filter((l) => l === '').length, plain.filter((l) => l === '').length, 'blank lines stay bare');
+  const stopped = formatView(textView({ questions: [] }, { status: 'needs-owner', reason: 'a live check', step: 'uat' }), { color: true }).split('\n');
+  assert.ok(stopped.includes(`${E}[31m  Reason: a live check${E}[0m`));
+  assert.ok(stopped.includes(`${E}[31m  ■ acceptance — stopped here${E}[0m`));
+  assert.ok(stopped[0].startsWith(`${E}[31mPhase 32 stopped`));
+  // repository text never brings its own escapes, coloured or not
+  const evil = formatView(textView({ questions: [] }, { status: 'failed', reason: `x${E}[2Jy` }), { color: true });
+  assert.ok(evil.includes('Reason: xy'));
+  assert.ok(!evil.includes(`${E}[2J`));
 });
 
 test('the view carries what the pane needs to judge: plans done, the CI fix rounds left, attended phases, commit times', () => {

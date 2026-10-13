@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { EOL, EOS, HOME, quietOnClosedPipe, watch } from '../lib/watch.mjs';
+import { EOL, EOS, HOME, quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
 
 test('a closed pipe ends the watch quietly with exit 0 (EPIPE on POSIX, EOF on Windows); other stream errors still throw', () => {
   const stream = new EventEmitter();
@@ -46,4 +46,12 @@ test('a frame that throws shows its error on one line and the watch goes on at t
   assert.equal(writes[1], '\nerror: invalid turbo config /p/config.json: Unexpected end at x\nupdated 10:59:58 · every 7 s · Ctrl+C stops\n');
   assert.deepEqual(sleeps, [7000, 7000]);
   assert.match(writes[2], /^\nok again\n/);
+});
+
+test('useColor: status --watch is coloured on a terminal only, and never with NO_COLOR set (any value but empty, as no-color.org says)', () => {
+  assert.equal(useColor({ isTTY: true, env: {} }), true);
+  assert.equal(useColor({ isTTY: false, env: {} }), false, 'a pipe or a file: plain');
+  assert.equal(useColor({ isTTY: undefined, env: {} }), false);
+  assert.equal(useColor({ isTTY: true, env: { NO_COLOR: '1' } }), false);
+  assert.equal(useColor({ isTTY: true, env: { NO_COLOR: '' } }), true, 'an empty NO_COLOR is unset');
 });

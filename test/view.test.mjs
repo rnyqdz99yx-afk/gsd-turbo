@@ -560,3 +560,50 @@ test('runLine is the pane\'s summary line while two or more lanes run, else noth
   assert.equal(waitReason(null), null);
   assert.equal(waitReason({ phase: '36', why: 'mystery' }), null);
 });
+
+// Stage 4: a view of three lanes in slots, as buildView returns it
+function textLanes(over = {}, l33 = {}, l35 = {}) {
+  const base = textView(over);
+  return {
+    ...base,
+    lanes: [
+      { ...base.lanes[0], key: '32', job: 'phase', slot: 1 },
+      { ...base.lanes[0], key: '33', job: 'phase', slot: 2, phase: '33', step: 'fanout', launchedAt: at('10:35'), elapsedMs: 25 * 60000, plans: { done: 2, total: 4 }, agents: [{ type: 'gsd-code-reviewer', plan: null, task: null, state: 'running', action: { tool: 'Grep', detail: 'x' }, lastAt: at('10:58'), elapsedMs: 3 * 60000, tokens: 1 }], ...l33 },
+      { ...base.lanes[0], key: 'prep-35', job: 'prep', slot: 3, phase: '35', step: 'discuss', launchedAt: at('10:56'), elapsedMs: 4 * 60000, plans: null, agents: [], ...l35 },
+    ],
+    next: { phase: '34', why: 'areas', waitsFor: ['32'], gate: null },
+    ...(Object.hasOwn(over, 'next') ? { next: over.next } : {}),
+    ...(Object.hasOwn(over, 'lanes') ? { lanes: over.lanes } : {}),
+  };
+}
+
+test('with several lanes formatView is the pane in plain lines too: summary, blocks, collapsed and open lanes, the card\'s lane (review m3)', async () => {
+  const pane = await import('../mod/hooks/view-model.mjs');
+  assert.deepEqual(formatView(textLanes()).split('\n').slice(0, 3), ['Run — needs your answer (1)', '3 lanes · 1 question · next: phase 34 waits for phase 32 — they change the same files', 'Phase 32 · lane 1 — running plans · 5 of 9 plans done · 1h 12m']);
+  const stopped = { running: false, pid: null, finished: false, halted: false };
+  const views = [
+    textLanes(),
+    textLanes({ questions: [] }),
+    textLanes({}, { status: 'needs-owner', reason: 'a live check' }),
+    textLanes({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }),
+    textLanes({}, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 0, rounds: 0 } }),
+    textLanes({}, { quiet: true }),
+    textLanes({ supervisor: stopped }),
+    textLanes({}, {}, { key: 'annotate', job: 'annotate', phase: null, step: null }),
+    textLanes({ lanes: textLanes().lanes.slice(0, 2) }),
+    textLanes({ next: { phase: '36', why: 'gates', waitsFor: ['33'], gate: 'owner-live' } }),
+    textLanes({ next: null, questions: [] }, { status: 'done', step: null }),
+    textView({}, { key: '32', job: 'phase', slot: 2 }),
+  ];
+  for (const lang of ['en', 'ru']) {
+    for (const v of views) {
+      // a question is a card with buttons in the pane and a list in the text: the lines are equal without questions
+      const view = { ...v, questions: [], ui: { lang, refreshSeconds: 3, utcOffsetMinutes: -new Date(at('10:10')).getTimezoneOffset() } };
+      assert.equal(formatView(view), pane.paneLines(pane.render(view)).join('\n'), `${lang}: ${JSON.stringify(v.lanes.map((l) => [l.key, l.status]))}`);
+    }
+  }
+  assert.ok(formatView(textLanes()).split('\n').includes('  Deploy after green CI? (plan 32-09, task 3 · lane 1)'), 'the question says its lane');
+  assert.ok(formatView(textLanes({ ui: { lang: 'ru' } })).split('\n').includes('  Deploy after green CI? (план 32-09, задача 3 · полоса 1)'));
+  const E = '\x1b';
+  assert.equal(formatView(textLanes(), { color: true }).split('\n')[0], `${E}[33mRun — needs your answer (1)${E}[0m`, 'the verdict in its colour on top');
+});

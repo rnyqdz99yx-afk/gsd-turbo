@@ -518,16 +518,28 @@ function laneTime(t, lane, form) {
 function laneLine(t, view, lane, v, asked) {
   const form = laneForm(view, lane);
   const dur = laneTime(t, lane, form);
-  const phase = t.phase(cut(lane.phase, 20));
+  const head = laneHeadText(t, lane);
   const plans = plansWords(t, lane);
   const state = form === 'state' ? laneState(t, lane, asked) : null;
   const tail = v && v.kind !== state?.kind ? [' · ', text(toned(v.tone, { bold: true }), v.text)] : null;
   const dimmed = (parts) => (parts.filter(Boolean).length ? text(TONES.dim, ` · ${parts.filter(Boolean).join(' · ')}`) : null);
-  if (form === 'running') return text({ wrap: 'wrap' }, text({ bold: true }, phase), ` — ${stepWord(t, lane.step)}`, dimmed([plans, dur]), tail);
-  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${phase} ${t.stoppedAt(stepNoun(t, lane.step))}`), dimmed([plans, dur]), tail);
+  if (form === 'running') return text({ wrap: 'wrap' }, text({ bold: true }, head), ` — ${stepText(t, lane)}`, dimmed([plans, dur]), tail);
+  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${head} ${t.stoppedAt(stepNoun(t, lane.step))}`), dimmed([plans, dur]), tail);
   const where = [stepNoun(t, lane.step) && t.atStep(stepNoun(t, lane.step)), plans, dur && (lane.status === 'done' ? t.took(dur) : dur)];
-  return text({ wrap: 'wrap' }, text(toned(state.tone, { bold: true }), `${phase} ${state.text}`), dimmed(where), tail);
+  return text({ wrap: 'wrap' }, text(toned(state.tone, { bold: true }), `${head} ${state.text}`), dimmed(where), tail);
 }
+
+// Stage 4 (D7): past two lanes a lane keeps its rows only while it is alert: stopped, failed, paused or held for full
+// mode, its CI red, a question of its phase open, or (while the supervisor runs) it or a helper of it silent.
+function laneAlert(view, lane) {
+  if (lane.held === 'fullMode' || (LANE_KINDS[lane.status] && lane.status !== 'done')) return true;
+  if (lane.push?.ci === 'red') return true;
+  if (lane.phase != null && list(view?.questions).some((q) => String(q?.phase ?? '') === String(lane.phase))) return true;
+  return Boolean(view?.supervisor?.running) && (Boolean(lane.quiet) || list(lane.agents).some((a) => a.state === 'quiet'));
+}
+
+// The slot of the phase lane a question's phase runs in, or null (the main checkout, a view from v0.3).
+const laneSlot = (view, phase) => slotOf(list(view?.lanes).find((l) => (l.job ?? 'phase') === 'phase' && String(l.phase) === String(phase) && slotOf(l)));
 
 // A helper: what it does now, its plan and time dim; `columns` (the pane's width) cuts what it does, never the time.
 // While the supervisor does not run, nothing is called stuck: a silent helper says how long it is silent, dim.
@@ -551,14 +563,19 @@ function lastSign(lane) {
 }
 
 // The verdict line, then, indented: the sign of life (amber once the phase reads as silent), the reason it stopped,
-// the helpers at work, and the finished ones as one dim count.
+// the helpers at work, and the finished ones as one dim count. Several lanes (Stage 4 D7): the verdict and the run's
+// summary line first, then a block per lane without the verdict; past two lanes a calm lane is its line alone.
 function runSection(t, view, v, columns) {
   const lanes = list(view.lanes);
+  const multi = lanes.length > 1;
   const live = Boolean(view.supervisor?.running);
   const asked = list(view.questions).length;
-  const rows = lanes.length ? [] : [text({ wrap: 'wrap' }, text({ bold: true }, t.run), ' — ', text(toned(v.tone, { bold: true }), v.text))];
+  const rows = lanes.length && !multi ? [] : [text({ wrap: 'wrap' }, text({ bold: true }, t.run), ' — ', text(toned(v.tone, { bold: true }), v.text))];
+  if (multi) rows.push(text({ wrap: 'wrap' }, summaryLine(t, view)));
   lanes.forEach((lane, i) => {
-    rows.push(laneLine(t, view, lane, i === 0 ? v : null, asked));
+    const first = !multi && i === 0;
+    rows.push(laneLine(t, view, lane, first ? v : null, asked));
+    if (lanes.length > 2 && !laneAlert(view, lane)) return;
     const agents = list(lane.agents);
     const working = agents.filter((a) => ACTIVE.has(a.state));
     const finished = agents.length - working.length;
@@ -567,7 +584,7 @@ function runSection(t, view, v, columns) {
     // a red CI the verdict does not speak of (an answer waits, the phase stopped) is said under it all the same
     // a red CI the phase fixes itself is said by Now (nowRow); one that needs the owner, here unless the verdict says it
     const fixing = selfFixing(view, lane);
-    const red = lane.push?.ci === 'red' && !fixing && !(i === 0 && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
+    const red = lane.push?.ci === 'red' && !fixing && !(first && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
     const under = [
       nowRow(t, view, lane),
       sign ? text(toned(live && lane.quiet ? 'warn' : 'dim', { wrap: 'truncate-end' }), t.life(since(t, sign, view.at) ?? '-')) : null,
@@ -589,7 +606,10 @@ function questionCard(t, view, q, field) {
   const id = String(q.id);
   // the revision drawn (S1: every question starts at rev 1); turbo-run answer gets it as --rev
   const question = { id, phase: String(q.phase ?? ''), rev: Number.isInteger(q.rev) && q.rev > 0 ? q.rev : 1 };
-  const where = planWords(t, { plan: q.plan == null ? null : cut(q.plan, 20), task: q.task == null ? null : cut(q.task, 10) }) ?? (question.phase ? t.phaseOnly(cut(question.phase, 20)) : null);
+  const plain = planWords(t, { plan: q.plan == null ? null : cut(q.plan, 20), task: q.task == null ? null : cut(q.task, 10) }) ?? (question.phase ? t.phaseOnly(cut(question.phase, 20)) : null);
+  // Stage 4 (spec §8): the lane the question's phase runs in (`plan 34-02, task 3 · lane 2`)
+  const slot = laneSlot(view, question.phase);
+  const where = [plain, slot ? t.lane(slot) : null].filter(Boolean).join(' · ') || null;
   const holds = q.stopped === true;
   const running = Boolean(view.supervisor?.running) && list(view.lanes).some((l) => String(l.phase) === question.phase && l.status === 'running');
   const options = list(q.options).map((o, i) => ({ n: i + 1, label: cut(typeof o === 'string' ? o : o?.label ?? '', LABEL_MAX), description: cut(o?.description ?? '', CONTEXT_MAX), recommended: o?.recommended === true }));
@@ -618,6 +638,8 @@ function nowOf(t, view, lane) {
   if (fix) return { tone: 'warn', text: fix.last ? t.now.ciLast : t.now.ciFix(fix.n, fix.m) };
   const plain = (s) => ({ tone: 'plain', text: s });
   const working = list(lane.agents).filter((a) => a.state === 'running');
+  // an annotate lane says what it does in its line; with no helper at work there is nothing to add
+  if (lane.job === 'annotate' && !working.length) return null;
   if (working.length) {
     const type = NOW_ORDER.find((x) => working.some((a) => a.type === x));
     if (type === 'gsd-executor') return plain(t.now.executors(working.filter((a) => a.type === type).length));
@@ -644,7 +666,7 @@ const GATE_STEPS = new Set(['gates-off', 'restore']);
 // The lane's steps, each { step, state: 'done' | 'now' | 'ahead' }, from its step alone (completeStep keeps them in
 // order); a step turbo does not know is the only one; none for a phase done or no lane.
 export function phaseSteps(lane) {
-  if (!lane || lane.status === 'done') return [];
+  if (!lane || lane.status === 'done' || lane.job === 'annotate') return [];
   const at = lane.step == null ? STEPS.length : STEPS.indexOf(lane.step);
   if (at < 0) return [{ step: lane.step, state: 'now' }];
   return STEPS.map((step, i) => ({ step, state: i < at ? 'done' : i === at ? 'now' : 'ahead' })).filter((s) => s.state === 'now' || !GATE_STEPS.has(s.step));
@@ -656,7 +678,7 @@ export function phaseSteps(lane) {
 // phase done or no lane.
 // { chain, needs: [{ tone, text }] }.
 function nextOf(t, view, lane) {
-  if (!lane || lane.status === 'done') return null;
+  if (!lane || lane.status === 'done' || lane.job === 'annotate') return null;
   const ahead = phaseSteps(lane).filter((s) => s.state === 'ahead').map((s) => stepWord(t, s.step));
   const last = view?.range?.to != null && String(view.range.to) === String(lane.phase);
   const questions = list(view?.questions);
@@ -676,17 +698,36 @@ function nextOf(t, view, lane) {
 
 export const whatNext = (view, lane) => nextOf(textOf(view), view, lane);
 
+// Several lanes (Stage 4 D7): when the owner is needed, across every lane; each lane's line names its step, and the
+// summary line the next phase, so no chain of steps.
+function nextOfRun(t, view) {
+  const lanes = list(view?.lanes);
+  const questions = list(view?.questions);
+  const held = questions.filter((q) => q?.stopped === true).length;
+  const needs = [];
+  const need = (tone, s) => needs.push({ tone, text: s });
+  if (held) need('bad', t.need.held);
+  else if (lanes.some((l) => l.status === 'needs-owner')) need('bad', t.need.decide);
+  if (lanes.some((l) => l.status === 'failed')) need('bad', t.need.failed);
+  if (lanes.some((l) => l.held === 'fullMode')) need('bad', t.need.fullMode);
+  if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
+  if (lanes.some((l) => selfFixing(view, l)?.last)) need('warn', t.need.ciLast);
+  if (!needs.length) need('ok', t.need.none);
+  return { chain: null, needs };
+}
+
 function nextSection(t, view, lane) {
-  const n = nextOf(t, view, lane);
+  const n = list(view.lanes).length > 1 ? nextOfRun(t, view) : nextOf(t, view, lane);
   if (!n) return null;
   return box({ flexDirection: 'column', marginTop: 1 }, text({ bold: true }, t.nextHead),
-    box({ flexDirection: 'column', paddingLeft: 2 }, text({ wrap: 'wrap' }, n.chain), n.needs.map((x) => text(toned(x.tone, { wrap: 'wrap' }), x.text))));
+    box({ flexDirection: 'column', paddingLeft: 2 }, n.chain ? text({ wrap: 'wrap' }, n.chain) : null, n.needs.map((x) => text(toned(x.tone, { wrap: 'wrap' }), x.text))));
 }
 
 // The phase's steps (D5): done ✓ dim, now ▶ bold (where a stopped phase stopped: ■, red; paused or held: amber), ahead
 // · dim.
 function stepsSection(t, view, lane) {
-  const steps = phaseSteps(lane);
+  // several lanes: each lane line says its step (Stage 4 D7)
+  const steps = list(view.lanes).length > 1 ? [] : phaseSteps(lane);
   if (!steps.length) return null;
   const halt = laneForm(view, lane) === 'running' ? null : STOPPED.has(lane.status) || lane.held === 'fullMode' ? 'bad' : 'warn';
   const row = (s) => {

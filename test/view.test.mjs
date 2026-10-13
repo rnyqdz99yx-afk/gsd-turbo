@@ -39,7 +39,7 @@ const agentEntries = (id, from, to, tokens = 166000) => [
 test('without supervisor.json the view has no supervisor and no lanes, and still lists questions and commits', () => {
   const { root, env } = laneProject();
   const v = buildView({ root, sup: null, env, now: NOW, commits: COMMITS });
-  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], questions: [], commits: COMMITS(), attended: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
+  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], next: null, questions: [], commits: COMMITS(), attended: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
 });
 
 test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
@@ -482,4 +482,66 @@ test('escape sequences and bidi overrides in repository data are dropped where t
   assert.equal(v.questions[0].question, 'Deploy? redevil');
   assert.ok(v.lanes[0].agents[0].action.detail.includes('echo redevil'), JSON.stringify(v.lanes[0].agents[0]));
   assert.ok(!unsafe.test(formatView({ ...v, commits: [{ sha: 'abc1234', subject: `raw ${evil}` }] })), 'formatView drops them from a view built elsewhere too');
+});
+
+// Stage 4: three lanes in slots next to a control root; each slot is its own project for Claude Code.
+function slotsProject() {
+  const { root, home, env } = laneProject();
+  const slot = (k) => {
+    const p = path.join(path.dirname(root), `${path.basename(root)}.turbo`, `lane-${k}`);
+    fs.mkdirSync(p, { recursive: true });
+    return p;
+  };
+  const slots = [slot(1), slot(2), slot(3)];
+  const sup = { pid: 4242, updatedAt: at('10:59'), finished: false, halted: false, range: { from: '32', to: '36' }, next: { phase: '34', why: 'deps', waitsFor: ['32'] }, lanes: {
+    'prep-35': { key: 'prep-35', job: 'prep', phase: '35', slot: 3, slotPath: slots[2], branch: 'turbo/prep-35', sessionId: null, launchedAt: at('10:56'), restarts: 0, notified: {}, mode: 'safe' },
+    33: { key: '33', job: 'phase', phase: '33', slot: 2, slotPath: slots[1], branch: 'turbo/p33', sessionId: null, launchedAt: at('10:35'), restarts: 0, notified: {}, mode: 'safe' },
+    32: { key: '32', job: 'phase', phase: '32', slot: 1, slotPath: slots[0], branch: 'turbo/p32', sessionId: SESSION.slice(0, 8), launchedAt: at('09:48'), restarts: 0, notified: {}, mode: 'full' },
+  } };
+  return { root, home, env, slots, sup };
+}
+
+test('lanes in slots (Stage 4): each lane reads its plans and helpers from its own slot and its records from the control root; prep lanes after the phases; the next phase from supervisor.json', () => {
+  const { root, home, env, slots, sup } = slotsProject();
+  const sdir = projectDirFor(home, slots[0]);
+  writeSession(sdir, SESSION, [entry.user('run phase 32', at('09:48')), entry.launched('toolu_1', 'a2000000000000001', at('10:20'))]);
+  setMtime(writeAgent(sdir, SESSION, 'a2000000000000001', agentEntries('a2000000000000001', '10:20', '10:58', 41000)), new Date(at('10:58')));
+  const phaseDir = path.join(slots[0], '.planning', 'phases', '32-export');
+  fs.mkdirSync(phaseDir, { recursive: true });
+  for (const f of ['32-01-PLAN.md', '32-01-SUMMARY.md', '32-02-PLAN.md']) fs.writeFileSync(path.join(phaseDir, f), '# x\n');
+  // the control root's own sessions and plans are not this lane's
+  writeSession(projectDirFor(home, root), SESSION, [entry.launched('toolu_9', 'a2000000000000009', at('10:30'))]);
+  const rootPhase = path.join(root, '.planning', 'phases', '32-export');
+  fs.mkdirSync(rootPhase, { recursive: true });
+  fs.writeFileSync(path.join(rootPhase, '32-01-PLAN.md'), '# x\n');
+  completeStep(root, '32', 'freshness');
+  completeStep(root, '35', 'freshness');
+  writeLaneStatus(root, '33', 'needs-owner', { reason: 'a live check', at: at('10:50') });
+  const v = buildView({ root, sup, running: true, env, now: NOW, commits: COMMITS });
+  assert.deepEqual(v.lanes.map((l) => [l.key, l.job, l.phase, l.slot]), [['32', 'phase', '32', 1], ['33', 'phase', '33', 2], ['prep-35', 'prep', '35', 3]]);
+  const [l32, l33, prep] = v.lanes;
+  assert.deepEqual(l32.plans, { done: 1, total: 2 });
+  assert.deepEqual(l32.agents.map((a) => a.agentId), ['a2000000000000001']);
+  assert.ok(l32.transcript.startsWith(sdir), l32.transcript);
+  assert.equal(l32.step, 'discuss', 'progress from the control root');
+  assert.deepEqual([l33.status, l33.reason, l33.agents, l33.transcript], ['needs-owner', 'a live check', [], null]);
+  assert.deepEqual([prep.step, prep.plans, prep.push], ['discuss', null, null], 'a prep lane steps through the progress of its phase; its plans are not written yet');
+  assert.deepEqual(v.next, { phase: '34', why: 'deps', waitsFor: ['32'], gate: null });
+  const quick = buildView({ root, sup, running: true, env, now: NOW, commits: COMMITS, agents: false });
+  assert.deepEqual([quick.lanes[0].agents, quick.lanes[0].transcript, quick.lanes[0].plans], [[], null, { done: 1, total: 2 }], 'agents: false reads no transcript');
+  assert.equal(buildView({ root, sup: { ...sup, finished: true }, env, now: NOW, commits: COMMITS, agents: false }).next, null);
+});
+
+test('an annotate lane has no phase, steps, plans or push and reads its own record; a v0.3 lane reads as before with slot 0; hand-edited entries never read "null" (Stage 4)', () => {
+  const { root, env, slots, sup } = slotsProject();
+  writeLaneStatus(root, 'annotate', 'needs-owner', { reason: 'which phases share files?', at: at('10:57') });
+  const ann = { key: 'annotate', job: 'annotate', phase: null, slot: 3, slotPath: slots[2], sessionId: null, launchedAt: at('10:56'), restarts: 0, notified: {}, mode: 'safe' };
+  const v = buildView({ root, sup: { ...sup, lanes: { annotate: ann, 32: sup.lanes[32], broken: null, list: [1] } }, env, now: NOW, commits: COMMITS, agents: false });
+  assert.deepEqual(v.lanes.map((l) => l.key), ['32', 'annotate']);
+  const a = v.lanes[1];
+  assert.deepEqual([a.job, a.phase, a.step, a.plans, a.push, a.status, a.reason], ['annotate', null, null, null, null, 'needs-owner', 'which phases share files?']);
+  const legacy = laneProject();
+  const [l] = buildView({ root: legacy.root, sup: legacy.sup, env: legacy.env, now: NOW, commits: COMMITS }).lanes;
+  assert.deepEqual([l.key, l.job, l.phase, l.slot], ['32', 'phase', '32', 0]);
+  assert.equal(buildView({ root: legacy.root, sup: legacy.sup, env: legacy.env, now: NOW, commits: COMMITS }).next, null, 'checkout mode writes no next');
 });

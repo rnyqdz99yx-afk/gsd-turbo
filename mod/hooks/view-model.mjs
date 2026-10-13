@@ -822,13 +822,17 @@ export function bandLine(view, { error = null, paneWaiting = false } = {}) {
   const lanes = list(view.lanes);
   const states = lanes.map((l) => (laneForm(view, l) === 'state' ? laneState(t, l, questions.length) : null));
   const lanePart = (l, i) => {
-    const p = cut(l.phase, 20);
-    if (states[i]) return `${t.phaseOnly(p)} ${states[i].text}`;
-    if (laneForm(view, l) === 'held') return `${t.phaseOnly(p)} ${t.stoppedShort}`;
-    return `${t.bandPhase(p, stepWord(t, l.step))}${l.plans?.total > 0 ? ` ${l.plans.done}/${l.plans.total}` : ''}`;
+    const p = l.job === 'annotate' ? null : cut(l.phase, 20);
+    const who = p === null ? t.lane(slotOf(l) ?? '–') : t.phaseOnly(p);
+    if (states[i]) return `${who} ${states[i].text}`;
+    if (laneForm(view, l) === 'held') return `${who} ${t.stoppedShort}`;
+    if (p === null) return `${who}: ${t.job.annotate}`;
+    return `${t.bandPhase(p, stepText(t, l))}${l.plans?.total > 0 ? ` ${l.plans.done}/${l.plans.total}` : ''}`;
   };
-  const parts = ['turbo', ...lanes.map(lanePart)];
-  if (v.kind !== 'answer' && !states.some((s) => s?.kind === v.kind)) parts.push(v.text);
+  // Stage 4 (D8): past two lanes the band counts them, so it stays one line
+  const many = lanes.length > 2;
+  const parts = ['turbo', ...(many ? [t.lanesCount(lanes.length)] : lanes.map(lanePart))];
+  if (v.kind !== 'answer' && (many || !states.some((s) => s?.kind === v.kind))) parts.push(v.text);
   if (questions.length) parts.push(t.waiting(questions.length));
   // a red CI verdict says it in words already
   parts.push(...(lanes.map((l) => pushMarks(t, l.push, v.kind !== 'ciRed' && v.kind !== 'ciFixing')).find((m) => m.length) ?? []));
@@ -842,7 +846,13 @@ export const bandStyle = (view, { error = null } = {}) => ({ ...TONES[error ? 'b
 // What the toasts remember of each lane between reads: { [phase]: { status, red } }, red the sha of the red CI run
 // already toasted. A lane that left the view stays, with status 'gone'.
 const redOf = (lane) => (lane.push?.ci === 'red' ? lane.push.sha ?? '' : null);
-const lanesSeen = (view) => Object.fromEntries(list(view?.lanes).map((l) => [String(l.phase), { status: l.status, red: redOf(l) }]));
+// Stage 4 (D9): only phase lanes raise toasts (a view from v0.3 has no job: a phase lane); prep and annotate lanes never
+// say a phase is done. slot: the lane's slot (null in the main checkout), for when it leaves.
+const phaseLanes = (view) => list(view?.lanes).filter((l) => (l.job ?? 'phase') === 'phase' && l.phase != null);
+const lanesSeen = (view) => Object.fromEntries(phaseLanes(view).map((l) => [String(l.phase), { status: l.status, red: redOf(l), slot: slotOf(l) }]));
+// A phase lane in a slot ends its turn with lane-status ready and stays while it is merged into main; it leaves done
+// only after that (L1's DONE_STATUSES.phase). One released while it ran (failed, abandoned) leaves without it.
+const DONE_BEFORE_LEAVING = new Set(['ready', 'done']);
 
 // Toasts for what changed between two views, against seen (the lanes as last seen, kept by the caller across reads;
 // prev's lanes when not given): a new question, a phase done, red CI (whether the phase fixes it itself), a lane that
@@ -860,12 +870,12 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
   if (fresh.length === 1) out.push(t.newQuestion(cut(fresh[0].phase ?? '', 20), cut(fresh[0].question || fresh[0].header || '', 80)));
   else if (fresh.length > 1) out.push(t.newQuestions(fresh.length));
   const after = { ...seen };
-  const lanes = list(next.lanes);
+  const lanes = phaseLanes(next);
   const sup = next.supervisor;
   const cleared = Boolean(sup && !sup.halted && (sup.finished || (sup.pid != null && sup.pid === prev.supervisor?.pid)));
   for (const [phase, last] of Object.entries(seen)) {
     if (last.status === 'gone' || lanes.some((l) => String(l.phase) === phase)) continue;
-    if (cleared && last.status !== 'done') out.push(t.phaseDone(phase));
+    if (cleared && last.status !== 'done' && (!last.slot || DONE_BEFORE_LEAVING.has(last.status))) out.push(t.phaseDone(phase));
     after[phase] = { ...last, status: 'gone' };
   }
   for (const n of lanes) {

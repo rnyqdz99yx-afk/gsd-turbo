@@ -1151,3 +1151,41 @@ test('an annotate lane has a lane head, no phase, no steps; a single lane in a s
 test('a checkout lane (slot 0, L1 reconcile R1) draws exactly as v0.3: no lane named, its card neither', () => {
   assert.deepEqual(lines(view({}, { key: '32', job: 'phase', slot: 0 })), lines(view()));
 });
+
+test('the band lists up to two lanes and counts them past two; a prep or annotate lane says what it does; a lane in a slot reads as before (Review Focus 5)', () => {
+  const l3 = lanes3();
+  assert.equal(bandLine({ ...l3, lanes: l3.lanes.slice(0, 2) }), 'turbo · phase 32: running plans 5/9 · phase 33: quality checks 2/4 · ❓ 1 question waits for you · CI ✓');
+  assert.equal(bandLine(l3), 'turbo · 3 lanes · ❓ 1 question waits for you · CI ✓');
+  assert.equal(bandLine(lanes3({ questions: [] }, { agents: [agent()] })), 'turbo · 3 lanes · all fine · CI ✓');
+  assert.equal(bandLine(lanes3(RU)), 'turbo · 3 полосы · ❓ 1 вопрос ждёт вас · CI ✓');
+  assert.equal(bandLine({ ...l3, lanes: [l3.lanes[0], l3.lanes[2]] }), 'turbo · phase 32: running plans 5/9 · phase 35: getting ready ahead: discussion · ❓ 1 question waits for you · CI ✓');
+  const ann = { ...l3, lanes: [l3.lanes[0], { ...l3.lanes[2], key: 'annotate', job: 'annotate', phase: null, step: null }] };
+  assert.equal(bandLine(ann), 'turbo · phase 32: running plans 5/9 · lane 3: working out which phases can run together · ❓ 1 question waits for you · CI ✓');
+  assert.ok(!bandLine({ ...ann, supervisor: STOPPED_SUP }).includes('null'), bandLine({ ...ann, supervisor: STOPPED_SUP }));
+  assert.equal(bandLine(view({}, { slot: 1, job: 'phase', key: '32' })), 'turbo · phase 32: running plans 5/9 · ❓ 1 question waits for you · CI ✓');
+});
+
+test('toasts with lanes: only phase lanes speak; a slot lane that left is done only after it said ready; never "Phase null" (Review Focus 1, 4)', () => {
+  const p3 = lanes3({ questions: [] }, { agents: [agent()] });
+  const [l32, l33, prep] = p3.lanes;
+  assert.deepEqual(toastsFor(p3, { ...p3, lanes: [l32, l33] }), [], 'a prep lane that ends says nothing');
+  assert.deepEqual(toastsFor(p3, { ...p3, lanes: [l32, l33, { ...prep, status: 'done' }] }), []);
+  assert.deepEqual(toastsFor(p3, { ...p3, lanes: [l32, prep] }), [], 'released while running (failed, abandoned): not done');
+  const ready = { ...p3, lanes: [l32, { ...l33, status: 'ready' }, prep] };
+  assert.deepEqual(toastsFor(p3, ready), [], 'ready: its merge goes on');
+  assert.deepEqual(toastsFor(ready, { ...p3, lanes: [l32, prep] }), ['Phase 33 done'], 'merged and released after ready');
+  const both = { ...p3, lanes: [{ ...l32, status: 'ready' }, { ...l33, status: 'ready' }, prep] };
+  assert.deepEqual(toastsFor(both, { ...p3, lanes: [prep] }), ['Phase 32 done', 'Phase 33 done'], 'two in one read, once each');
+  const seen = diffViews(both, { ...p3, lanes: [prep] }).seen;
+  assert.deepEqual(diffViews({ ...p3, lanes: [prep] }, { ...p3, lanes: [prep] }, seen).toasts, [], 'and never again');
+  // v0.3 and the main checkout (slot 0): a lane the same supervisor cleared is a phase done, as before
+  const legacy = view({ questions: [] }, { agents: [agent()] });
+  assert.deepEqual(toastsFor(legacy, { ...legacy, lanes: [] }), ['Phase 32 done']);
+  const checkout = view({ questions: [] }, { agents: [agent()], key: '32', job: 'phase', slot: 0 });
+  assert.deepEqual(toastsFor(checkout, { ...checkout, lanes: [] }), ['Phase 32 done']);
+  const ann = { ...p3, lanes: [l32, { ...prep, key: 'annotate', job: 'annotate', phase: null, step: null }] };
+  assert.deepEqual(toastsFor(ann, { ...ann, lanes: [l32, { ...ann.lanes[1], status: 'failed' }] }), []);
+  assert.deepEqual(toastsFor(p3, { ...p3, lanes: [l32, { ...l33, status: 'needs-owner', reason: 'a live check' }, prep] }), ['Phase 33 stopped — needs your answer: a live check']);
+  const all = toastsFor(p3, { ...p3, lanes: [] }).concat(toastsFor(ann, { ...ann, lanes: [] }));
+  assert.ok(!all.join('\n').includes('null'), all.join('\n'));
+});

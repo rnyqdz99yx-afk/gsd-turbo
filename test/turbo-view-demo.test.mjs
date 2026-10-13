@@ -24,7 +24,9 @@ test('the demo builds a project with .planning/turbo/ and a test-free copy of th
   assert.ok(text.includes(`node "${DEMO}" check "${project}"`), text);
   assert.ok(text.includes(PROBE), text);
   // the checklist quotes the pane, the band and the toasts as the mod draws them
-  assert.ok(text.includes('\n       Фаза 32 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин · нужен ваш ответ (1)\n         последнее действие 20 с назад\n'), text);
+  assert.ok(text.includes('\n       Фаза 32 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин · нужен ваш ответ (1)\n         Сейчас: пишет код по 2 планам сразу\n         последнее действие 20 с назад\n'), text);
+  assert.ok(text.includes('\n       Последние изменения: 1 новая возможность, 1 исправление, 1 правка документов · последнее 12 мин назад\n'), text);
+  assert.ok(text.includes('"откройте панель: /turbo-view"'), text);
   assert.ok(text.includes('       │   [1. Да, по гейту ★]  [2. Стоп]\n       │   [Свой ответ…]\n'), text);
   assert.ok(text.includes('[Свой ответ…] on it'), text);
   assert.ok(text.includes('"turbo · фаза 32: выполняются планы 5/9 · ❓ 1 вопрос ждёт вас · CI ✓"'), text);
@@ -83,7 +85,8 @@ test('the scripted run, read the way the mod reads it, raises the four toasts in
   assert.equal(bands[12], 'turbo · phase 32 done · ❓ 2 questions wait for you · CI ✓');
   // what the scripted run shows on its way: the fixing CI under the verdict, the question the phase waits for marked
   const at = (tick) => paneLines(render(demoView({ tick, startedAt: 0, now: tick * 3000 })));
-  assert.ok(at(8).includes('  CI red — the phase fixes it itself (attempt 1 of 2), nothing needed from you'), at(8).join('\n'));
+  assert.ok(!at(8).includes('  CI red — the phase fixes it itself (attempt 1 of 2), nothing needed from you'), 'said once, by Now');
+  assert.equal(at(8)[1], '  Now: fixing the red CI — attempt 1 of 2');
   assert.equal(at(11).find((l) => l.startsWith('│ ')), '│ The phase waits for this answer');
   assert.equal(at(14)[0], 'Phase 32 done · 9 of 9 plans done · took 1h 12m · needs your answer (2)');
 });

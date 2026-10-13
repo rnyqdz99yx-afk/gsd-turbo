@@ -27,7 +27,7 @@ const NODE = '/usr/bin/node'
 // A session in /work: .planning/turbo/ exists unless turbo is false; views[i] answers the i-th view read; surfaces
 // is what $.session.surfaces() reports (none: a background session nobody is attached to). PATH holds a relative
 // entry and a directory without node before /usr/bin; the project itself has a node that must never run.
-function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCode: 0, stdout: 'answered q1 (pane)\n', stderr: '' } as Run, answerDelayMs = 0, surfaces = ['terminal'], binExists = true, pathVar = '.:relative/bin:/opt/none:/usr/bin', openFails = false, surfacesFail = 0, binChecks = Infinity } = {}) {
+function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCode: 0, stdout: 'answered q1 (pane)\n', stderr: '' } as Run, answerDelayMs = 0, surfaces = ['terminal'], binExists = true, pathVar = '.:relative/bin:/opt/none:/usr/bin', openFails = false, surfacesFail = 0, binChecks = Infinity, placed = [true] as boolean[], panes = [] as unknown[] } = {}) {
   const calls: string[][] = []
   const inits: { cwd?: string }[] = []
   const toasts: string[] = []
@@ -50,7 +50,15 @@ function stub(on, { turbo = true, views = [VIEW] as unknown[], answer = { exitCo
     return { value: turbo && /[\\/]work[\\/]\.planning([\\/]turbo)?$/.test(e.path) }
   })
   on('command.register', () => ({ value: undefined }))
-  on('ui.open', (_$, e) => (opens.push(e), openFails ? { deny: 'no room for a pane' } : { value: { isPlaced: true } }) as never)
+  // placed[i] answers the i-th open: false is the host's "waits undrawn" (an open nobody asked for, under 144 columns)
+  on('ui.open', (_$, e) => {
+    opens.push(e)
+    if (openFails) return { deny: 'no room for a pane' } as never
+    const isPlaced = placed[Math.min(opens.length - 1, placed.length - 1)]
+    return { value: isPlaced ? { isPlaced: true } : { isPlaced: false, reason: 'the terminal is 100 columns; a pane opened unasked needs 144' } } as never
+  })
+  on('ui.panes', () => ({ value: panes }) as never)
+  on('prompt.submit', (_$, e) => ({ text: e.text }) as never)
   on('ui.log', () => ({ value: undefined }))
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
@@ -364,4 +372,64 @@ test('in Russian the pane, the band and the toasts speak Russian', async ($, on)
   await pane.press({ key: 'q:q1:2' })
   await clock.settle()
   expect(toasts).toEqual(['Уже отвечено (в Telegram, 10:58): «Стоп»'])
+})
+
+// whether the band ends with the hint
+const hinted = async ($) => {
+  const band = await $.ui.mount(BAND)
+  const found = await band.findAll({ type: 'Text', text: /^turbo · .* · open the pane: \/turbo-view$/ })
+  await band.unmount()
+  return found.length > 0
+}
+
+test('w1: a pane the mod opens in a narrow terminal waits; the band says how to open it, and the next prompt of the owner opens it and goes on unchanged', async ($, on) => {
+  const { clock, opens } = stub(on, { placed: [false, true] })
+  await begin($, clock)
+  expect(opens.length).toBe(1)
+  // a background task's notification is no request of the owner's: nothing opens
+  await $.prompt.submit({ text: 'task done', origin: { kind: 'task-notification' } } as never)
+  expect(opens.length).toBe(1)
+  expect(await hinted($)).toBe(true)
+  const sent = await $.prompt.submit({ text: 'how is phase 32 going?', origin: { kind: 'composer' } } as never)
+  await clock.settle()
+  expect((sent as { text: string }).text).toBe('how is phase 32 going?')
+  expect(opens.length).toBe(2)
+  expect(await hinted($)).toBe(false)
+  // once placed, later prompts open nothing
+  await $.prompt.submit({ text: 'and now?', origin: { kind: 'composer' } } as never)
+  expect(opens.length).toBe(2)
+})
+
+// w1: a pane the owner closed by hand (ui.close, origin person) is driven in plain Node: test/view-model.test.mjs
+
+test('w1: the hint goes once the terminal widens and the host places the waiting pane', async ($, on) => {
+  const { clock } = stub(on, { placed: [false], panes: [{ id: 'turbo-view', title: 'turbo', isShown: true, isFocused: false, isPlaced: true }] })
+  await begin($, clock)
+  expect(await hinted($)).toBe(true)
+  await clock.advance(3000)
+  expect(await hinted($)).toBe(false)
+})
+
+// review r1 M1: the host stamps a close's origin as an object, { kind }; a plugin's own $.ui.close is kind 'plugin',
+// never the owner's, so the hint (and the next prompt's open) stay
+test('a close the host stamps as a plugin close (origin { kind: "plugin" }) is not the owner closing the pane', {
+  plugins: [{ name: 'closer', register: (on) => {
+    on('session.start', async ($, e, next) => {
+      await $.command.register({ name: 'shut', description: 'close the turbo pane' })
+      return next(e)
+    })
+    on('command.run', { command: 'shut' }, async ($) => {
+      await $.ui.close({ id: 'turbo-view' })
+      return {}
+    })
+  } }],
+}, async ($, on) => {
+  const seen: unknown[] = []
+  const { clock, opens } = stub(on, { placed: [false, true] })
+  on('ui.close', (_$, e) => (seen.push(e.origin), { value: undefined }) as never)
+  await begin($, clock)
+  await $.command.run({ command: 'shut', args: '' })
+  expect(seen).toEqual([{ kind: 'plugin' }])
+  await $.prompt.submit({ text: 'hi', origin: { kind: 'composer' } } as never)
+  expect(opens.length).toBe(2)
 })

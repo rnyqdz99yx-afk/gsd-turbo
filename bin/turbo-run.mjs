@@ -24,7 +24,7 @@ import { clearAttempts, nextStep, readProgress } from '../lib/phase-progress.mjs
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
-import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
+import { quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
 import { readQuestions, refreshQuestions } from '../lib/questions.mjs';
 import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
@@ -751,11 +751,13 @@ async function main() {
       if (!root) die('no .planning directory found');
       if (args.includes('--watch')) {
         quietOnClosedPipe(process.stdout);
-        // the live view without the mod: view's text form, redrawn every view.refresh_seconds until Ctrl+C
+        // the live view without the mod: view's text form, redrawn every view.refresh_seconds until Ctrl+C, in the
+        // pane's colours on a terminal (useColor)
+        const color = useColor({ isTTY: process.stdout.isTTY });
         await watch({
           frame: () => {
             const view = readView(root);
-            return { text: formatView(view), seconds: view.ui.refreshSeconds, lang: view.ui.lang };
+            return { text: formatView(view, { color }), seconds: view.ui.refreshSeconds, lang: view.ui.lang };
           },
           write: (s) => process.stdout.write(s),
           tty: Boolean(process.stdout.isTTY),

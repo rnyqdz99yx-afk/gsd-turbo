@@ -10,6 +10,16 @@ test('turbo-autonomous skill frontmatter and required steps', () => {
   assert.ok(!/gsd-turbo-/.test(s));
 });
 
+test('turbo-autonomous start tells the owner once, in plain words, where to watch: the pane in this session, /turbo-view, Telegram when away, status --watch without the mod (w2)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const report = s.slice(s.indexOf('7. **Report to the user, briefly:**'), s.indexOf('Do not run GSD phase commands'));
+  assert.ok(report.length > 0, 'the start report');
+  const where = report.split('\n').find((l) => l.includes('where to look'));
+  assert.ok(where, 'one bullet says where to look');
+  for (const needle of ['this session', 'pane', 'above the prompt', '/turbo-view', 'Telegram', 'turbo-run.mjs" status --watch', 'plain words', 'once']) assert.ok(where.includes(needle), needle);
+  assert.equal(report.split('\n').filter((l) => l.includes('/turbo-view')).length, 1, 'said once');
+});
+
 test('turbo-autonomous skill honours CLAUDE_CONFIG_DIR and resumes with one command', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
   assert.ok(s.includes('node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs"'), 'CLAUDE_CONFIG_DIR path form');

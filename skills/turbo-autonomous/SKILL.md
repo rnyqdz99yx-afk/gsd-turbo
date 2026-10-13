@@ -71,7 +71,8 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
 6. **Open questions.** Run **Answer the open questions**: questions from earlier runs, answered now, let their lane go on without a stop.
 7. **Report to the user, briefly:**
    - which phase is running now, and that the next phases start automatically (only those of the range, when status shows a `range:` line);
-   - how to watch: `claude attach <session id>` (exit with the detach key, the session keeps running), `/turbo-autonomous status`, and the log `.planning/turbo/logs/supervisor.log`;
+   - where to look, said once and in plain words, in the user's language: the run shows live right here, in this session (and in any Claude Code session opened in this project), in the turbo pane on the right and the line above the prompt, with the questions as buttons; if the pane is not on screen (a narrow window), `/turbo-view` opens it, and so does the user's next message; away from the computer, Telegram brings the questions when it is set up (`notify.telegram`); without the pane (an older Claude Code), `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status --watch` in a terminal shows the same;
+   - for the curious: `claude attach <session id>` (exit with the detach key, the session keeps running), `/turbo-autonomous status`, and the log `.planning/turbo/logs/supervisor.log`;
    - that a desktop notification arrives when the owner is needed or the milestone is done;
    - that this session can be closed: the supervisor and the lanes keep running;
    - how to stop: `/turbo-autonomous stop`.

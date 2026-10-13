@@ -80,12 +80,12 @@ Do not run GSD phase commands in this checkout while the supervisor is running.
 
 ## Answer the open questions
 
-The owner's questions are the checkpoints of the phases' plans. Every answer goes through `turbo-run answer`, the single arbiter: the first answer wins, whichever channel gave it (this session, the turbo-view pane, Telegram).
+The owner's questions are the checkpoints of the phases' plans and the questions a phase asks itself when it stops for the owner (`turbo-run ask`; no plan, no header). Every answer goes through `turbo-run answer`, the single arbiter: the first answer wins, whichever channel gave it (this session, the turbo-view pane, Telegram).
 
 1. Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" questions --open --json`. It prints a JSON array of questions. An empty array: tell the user there are no open questions and end this section.
 2. Order: the questions with `stopped: true` first (a lane stands still until they are answered), then the others as listed.
 3. Ask them with `AskUserQuestion`, up to 4 questions per call, as many calls as needed. For each question:
-   - `header`: its `header`;
+   - `header`: its `header`; a question without one (a phase's own) gets `Phase <its phase>`;
    - `question`: its `question`, a new line, then the first 300 characters of its `context`;
    - options: its `options` in their order, at most 4 (the option the plan recommends is already first): `label` is the option's `label` with ` (Recommended)` added when its `recommended` is true, `description` is the option's `description`;
    - a question with fewer than 2 options also gets the option `Not now`, which records nothing (`AskUserQuestion` needs at least 2).

@@ -1231,9 +1231,11 @@ test('a forgotten mark is never hidden: status shows the lane held instead of cl
 test('attend stops a lane session the killed supervisor registers after the first stop (F7)', async (t) => {
   const { p, env } = attendProject(t);
   const lane = laneSessionName(p.root, '4');
+  // the first list is attend's own stop; late01 registers after it, so every list of the sweep shows it. Its window is
+  // kept by the clock (N3): under load a slow claude agents call leaves room for one sweep list only, so the test never
+  // counts on a second one (it failed once under parallel load when late01 appeared only at the third list)
   p.setClaude({ agentsSeq: [
     [{ id: 'abc123', name: lane, cwd: p.root, state: 'blocked' }],
-    [{ id: 'abc123', name: lane, cwd: p.root, state: 'stopped' }],
     [{ id: 'abc123', name: lane, cwd: p.root, state: 'stopped' }, { id: 'late01', name: lane, cwd: p.root, state: 'working' }, { id: 'other9', name: 'another session', cwd: p.root, state: 'working' }],
   ] });
   const r = await runAsync(['attend', '4'], p.root, { ...env, TURBO_ATTEND_SETTLE_MS: '1500' });

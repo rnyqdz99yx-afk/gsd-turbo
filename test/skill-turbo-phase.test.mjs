@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { STEPS } from '../lib/phase-progress.mjs';
-import { GAP_PLAN_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
+import { ASK_RULE, GAP_PLAN_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
 
 test('turbo-phase skill: frontmatter, every step in order, the commands it drives', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
@@ -216,4 +216,20 @@ test('turbo-phase skill: deferred rows are committed before a stop; close canoni
   const p2 = section(s, 'close').split('\n').find((l) => l.startsWith('2. '));
   assert.match(p2, /`human_needed`.*point 5 of step \*\*uat\*\*/);
   assert.ok(section(s, 'Stale report').includes('not re-run'), 'the note says what was not run again');
+});
+
+test('turbo-phase skill (v0.3.3): every stop for the owner is asked with turbo-run ask; lane questions are delivered on the lane path; owner-chosen fixes run as a counted gap round; the review loop is flagged', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const early = s.slice(s.indexOf('### Stopping early'), s.indexOf('### Push and CI'));
+  for (const needle of [
+    'turbo-run ask N --question', '--option "<label>|<description>"', '--recommended <n>', 'turbo-run ask N --action',
+    '--about-review', 'owner question <plan id>-t<task number>', 'turbo-run lane-status N needs-owner', 'turbo-run lane-status N failed',
+  ]) assert.ok(early.includes(needle), needle);
+  assert.ok(early.includes(ASK_RULE), 'the ask rule verbatim, as the lanes get it');
+  const owner = s.slice(s.indexOf('### Owner questions'), s.indexOf('### Stale report'));
+  const lane = owner.slice(owner.indexOf('**Lane questions.**'));
+  for (const needle of ['turbo-run questions N --deliver', 'turbo-run questions N --delivered <id> --path lane', 'data', 'Owner-chosen fixes']) assert.ok(lane.includes(needle), needle);
+  const fixes = s.slice(s.indexOf('**Owner-chosen fixes.**'));
+  for (const needle of ['turbo-run phase-step N --attempt owner-gaps', 'turbo-run owner-gaps N --review', '--gap', 'Skill(skill="gsd-plan-phase", args="N --gaps")', 'args="N --gaps-only --no-transition"', 'no hand-made UAT row']) assert.ok(fixes.includes(needle), needle);
+  assert.ok(!/stop for the owner\*\* \("[^"]*\bWR-\d/.test(s), 'no finding codes in stop reasons');
 });

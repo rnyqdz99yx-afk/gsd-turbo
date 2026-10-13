@@ -64,7 +64,6 @@ test('render draws the run in plain words, in sections a blank line apart: verdi
     'What comes next:',
     '  quality checks → fixes → final check → acceptance → wrap-up → next phase',
     '  You can answer the question above ahead',
-    '  At acceptance you may be needed for live checks only you can do',
     '',
     'Phase steps:',
     '  ✓ freshness check',
@@ -78,7 +77,7 @@ test('render draws the run in plain words, in sections a blank line apart: verdi
     '  · acceptance',
     '  · wrap-up',
     '',
-    'Latest changes: 1 fix, 1 test change · the last 12m ago',
+    'Latest changes: 1 fix, 1 test change · latest 12m ago',
     '',
     'Supervisor running · phases 32–34',
   ]);
@@ -104,7 +103,6 @@ test('render in Russian is Russian throughout, no English but paths and commands
     'Что дальше:',
     '  проверки качества → исправления → финальная проверка → приёмка → завершение → следующая фаза',
     '  На вопрос выше можно ответить заранее',
-    '  На приёмке могут понадобиться вы: живые проверки, которые без вас не сделать',
     '',
     'Шаги фазы:',
     '  ✓ проверка актуальности',
@@ -212,9 +210,14 @@ test('one verdict, first match, that says whether the owner has to step in: the 
     assert.equal(bandStyle(v).color, color, `${kind}: the band takes the verdict's colour`);
   }
   // a red CI the verdict does not speak of is said under it: amber while the phase fixes it, red when it needs the owner
+  // review r1 M5: a red CI the phase fixes itself is said once, by Now; no second line under it
   const fixingUnder = render(view({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }));
-  assert.deepEqual(textNode(fixingUnder, 'CI red').props, { color: 'warning', wrap: 'wrap' });
-  assert.equal(paneLines(fixingUnder)[3], '  CI red — the phase fixes it itself (attempt 1 of 2), nothing needed from you');
+  assert.equal(paneLines(fixingUnder)[1], '  Now: fixing the red CI — attempt 1 of 2');
+  assert.equal(paneLines(fixingUnder).filter((l) => /CI red|red CI/.test(l)).length, 1, 'said once, by Now');
+  // no supervisor: nobody claims the phase fixes it (review r1 M6): Now tells what it does, the red CI needs the owner
+  const unsupervised = paneLines(render(view({ supervisor: null }, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 1, rounds: 2 } })));
+  assert.equal(unsupervised[1], '  Now: writing code for 2 plans at once');
+  assert.ok(!unsupervised.some((l) => l.includes('fixes it itself') || l.includes('fixing the red CI')), unsupervised.join('\n'));
   assert.equal(textNode(render(view({}, { status: 'needs-owner', push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' } })), 'CI red').props.color, 'error');
   assert.equal(paneLines(render(calm({}, { push: { outcome: 'pushed', sha: 'b2c3d4e', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }))).filter((l) => l.includes('CI red')).length, 1, 'said once: the verdict says it');
   assert.equal(verdict(view(RU, { status: 'needs-owner' })).text, 'остановилась — ждёт вашего ответа');
@@ -715,6 +718,8 @@ async function shell(name, { placed = [true] } = {}) {
     env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: '/home/dev/.claude', PATH: '/usr/bin' })[name] },
     process: { run: async (argv) => (runs.push(argv), { exitCode: 0, stdout: JSON.stringify(view()), stderr: '' }) },
     clock: {
+      // the prompt's bounded wait for an open (review r1 m3): never ends unless a test says so
+      sleep: () => new Promise(() => {}),
       every: (ms, fn) => {
         if (++starts === 1) throw new Error('clock unavailable');
         const t = { ms, fn, cancelled: false, cancel: () => { t.cancelled = true; } };
@@ -769,6 +774,8 @@ test('currentAction says what the running phase does now: a red CI it fixes firs
   assert.deepEqual(now(calm({}, { ...red, ci: { fixes: 1, rounds: 2 }, step: 'uat', agents: [at('turbo-uat')] })), { tone: 'warn', text: 'fixing the red CI — attempt 1 of 2' });
   assert.deepEqual(now(calm(RU, { ...red, ci: { fixes: 1, rounds: 2 } })), { tone: 'warn', text: 'чинит красный CI — попытка 1 из 2' });
   assert.deepEqual(now(calm(RU, { ...red, ci: { fixes: 2, rounds: 2 } })), { tone: 'warn', text: 'чинит красный CI — последняя попытка' });
+  // only while the supervisor runs (the one condition of the red-CI line, review r1 M6)
+  assert.equal(now(calm({ supervisor: null }, { ...red, ci: { fixes: 1, rounds: 2 } })).text, 'writing code for a plan');
   // a red CI the phase does not fix (no rounds): the verdict asks the owner; the phase goes on with what it does
   assert.equal(now(calm({}, { ...red, ci: { fixes: 0, rounds: 0 } })).text, 'writing code for a plan');
   const cases = [
@@ -826,16 +833,15 @@ test('phaseSteps: the /turbo-phase steps done, now and ahead; turbo switching GS
 test('whatNext: the steps ahead to the next phase or the end of the run, and when the owner is needed, from what turbo knows', () => {
   const next = (v) => whatNext(v, v.lanes[0]);
   const none = { tone: 'ok', text: 'Nothing needed from you now' };
-  const live = { tone: 'dim', text: 'At acceptance you may be needed for live checks only you can do' };
-  assert.deepEqual(next(calm({}, { step: 'fanout' })), { chain: 'fixes → final check → acceptance → wrap-up → next phase', needs: [none, live] });
+  // review r1 M7: no "you may be needed at acceptance" guess beside a green "nothing needed": the view does not know of owner-only items
+  assert.deepEqual(next(calm({}, { step: 'fanout' })), { chain: 'fixes → final check → acceptance → wrap-up → next phase', needs: [none] });
   assert.deepEqual(next(calm({ range: { from: '32', to: '32' } }, { step: 'close' })), { chain: 'end of the run', needs: [none] });
   assert.equal(next(calm({ range: { from: '30', to: null } }, { step: 'close' })).chain, 'next phase');
-  assert.equal(next(calm({}, { step: 'uat' })).needs.at(-1).text, live.text, 'acceptance now: still said');
   assert.equal(next(calm({}, { step: 'gates-off' })).chain, 'running plans → quality checks → fixes → final check → acceptance → wrap-up → next phase');
-  assert.deepEqual(next(calm(RU, { step: 'final-gate' })), { chain: 'приёмка → завершение → следующая фаза', needs: [{ tone: 'ok', text: 'От вас сейчас ничего не нужно' }, { tone: 'dim', text: 'На приёмке могут понадобиться вы: живые проверки, которые без вас не сделать' }] });
+  assert.deepEqual(next(calm(RU, { step: 'final-gate' })), { chain: 'приёмка → завершение → следующая фаза', needs: [{ tone: 'ok', text: 'От вас сейчас ничего не нужно' }] });
   // the owner's touchpoints: a held question, questions ahead, a stop without a question, a failure, full mode, the last CI attempt
   const q = view().questions[0];
-  const needs = (v) => next(v).needs.filter((n) => n.tone !== 'dim');
+  const needs = (v) => next(v).needs;
   assert.deepEqual(needs(view({}, { step: 'close' })), [{ tone: 'warn', text: 'You can answer the question above ahead' }]);
   assert.deepEqual(needs(view({ questions: [q, { ...q, id: 'q2' }] }, { step: 'close' })), [{ tone: 'warn', text: 'You can answer the 2 questions above ahead' }]);
   assert.deepEqual(needs(view({ questions: [{ ...q, stopped: true }, { ...q, id: 'q2' }] }, { status: 'needs-owner', step: 'close' })), [{ tone: 'bad', text: 'Needed from you: answer the question above — the phase waits for it' }, { tone: 'warn', text: 'You can answer the question above ahead' }]);
@@ -856,7 +862,7 @@ test('whatNext: the steps ahead to the next phase or the end of the run, and whe
 test('commitSummary counts the latest commits by kind in plain words, the largest first, and says how long ago the last was; never a subject', () => {
   const c = (subject, at = '2026-01-01T10:48:00.000Z') => ({ sha: 'a1b2c3d', at, subject });
   const commits = [c('fix(32): WR-15 keep the reason'), c('docs(phase-32): disposition ledger', '2026-01-01T10:00:00.000Z'), c('fix: two'), c('feat!: export'), c('Merge branch x'), c('chore: release'), c('test: quiet'), c('refactor: lanes')];
-  assert.deepEqual(commitSummary(view({ commits })), { kinds: '2 fixes, 2 other changes, 1 new feature, 1 code rework, 1 test change, 1 docs change', last: 'the last 12m ago' });
+  assert.deepEqual(commitSummary(view({ commits })), { kinds: '2 fixes, 2 other changes, 1 new feature, 1 code rework, 1 test change, 1 docs change', last: 'latest 12m ago' });
   assert.deepEqual(commitSummary(view({ ...RU, commits })), { kinds: '2 исправления, 2 служебных изменения, 1 новая возможность, 1 переделка кода, 1 правка тестов, 1 правка документов', last: 'последнее 12 мин назад' });
   assert.deepEqual(commitSummary(view({ ...RU, commits: Array.from({ length: 5 }, () => c('fix: x', '2026-01-01T10:59:30.000Z')) })), { kinds: '5 исправлений', last: 'последнее только что' });
   assert.deepEqual(commitSummary(view({ commits: [{ sha: 'a1b2c3d', subject: 'old view' }] })), { kinds: '1 other change', last: null }, 'no commit time: no age');
@@ -875,7 +881,6 @@ test('the pane draws now, the next steps and the owner, the phase steps and the 
     'What comes next:',
     '  fixes → final check → acceptance → wrap-up → next phase',
     '  Nothing needed from you now',
-    '  At acceptance you may be needed for live checks only you can do',
     '',
     'Phase steps:',
     '  ✓ freshness check',
@@ -889,7 +894,7 @@ test('the pane draws now, the next steps and the owner, the phase steps and the 
     '  · acceptance',
     '  · wrap-up',
     '',
-    'Latest changes: 1 fix, 1 test change · the last 12m ago',
+    'Latest changes: 1 fix, 1 test change · latest 12m ago',
     '',
     'Supervisor running · phases 32–34',
   ]);
@@ -897,7 +902,6 @@ test('the pane draws now, the next steps and the owner, the phase steps and the 
   assert.deepEqual(now.children.map((x) => [spanText(x), x.props]), [['Now: ', { bold: true }], ['fixing the red CI — attempt 1 of 2', { color: 'warning' }]]);
   assert.deepEqual(textNode(tree, 'What comes next').props, { bold: true });
   assert.equal(textNode(tree, 'Nothing needed').props.color, 'success');
-  assert.equal(textNode(tree, 'At acceptance').props.dimColor, true);
   assert.equal(textNode(tree, 'fixes →').props.wrap, 'wrap');
   assert.deepEqual(textNode(tree, '✓ discussion').children.map((x) => x.props), [{ color: 'success' }, { dimColor: true }]);
   assert.deepEqual(textNode(tree, '▶ quality').props, { bold: true });
@@ -921,14 +925,14 @@ test('the band says how to open the pane while it waits undrawn (a terminal unde
   assert.equal(bandLine(null, { paneWaiting: true }), null);
 });
 
-test('w1: a pane the owner closed by hand is never opened again by a prompt; /turbo-view opens it, and from then on a prompt may again', async () => {
+test('w1: a pane the owner closed by hand is never opened again by a prompt; /turbo-view opens it; only the owner\'s own prompt asks, once', async () => {
   const s = await shell('closed', { placed: [false, false] });
-  const prompt = async (text) => s.hooks['prompt.submit'](s.$, { text }, async (e) => ({ text: e.text }));
+  const prompt = async (text, kind = 'composer') => s.hooks['prompt.submit'](s.$, { text, origin: { kind } }, async (e) => ({ text: e.text }));
   const band = async () => spanText(await s.hooks['ui.render:AbovePrompt'](s.$, { component: 'AbovePrompt' }, async () => null));
   // the first read opened the pane by itself, and it waits undrawn
   assert.equal(s.opens.length, 1);
   assert.match(await band(), /open the pane: \/turbo-view$/);
-  const closed = await s.hooks['ui.close:turbo-view'](s.$, { id: PANE_ID, origin: 'person' }, async () => undefined);
+  const closed = await s.hooks['ui.close:turbo-view'](s.$, { id: PANE_ID, origin: { kind: 'person' } }, async () => undefined);
   assert.equal(closed, undefined);
   assert.doesNotMatch(await band(), /open the pane/, 'a pane closed by hand: no hint');
   assert.deepEqual(await prompt('hello'), { text: 'hello' }, 'the prompt goes on unchanged');
@@ -937,10 +941,42 @@ test('w1: a pane the owner closed by hand is never opened again by a prompt; /tu
   await s.settle();
   assert.equal(s.opens.length, 2, '/turbo-view opens it');
   assert.match(await band(), /open the pane/, 'still waiting (a host that places nothing): the hint is back');
+  // only the owner's own prompt asks (review r1 m1): a task notification, a peer or a scheduled prompt never opens it
+  for (const kind of ['task-notification', 'peer', 'scheduled-trigger', 'sdk']) await prompt('note', kind);
+  assert.equal(s.opens.length, 2);
   await prompt('again');
-  assert.equal(s.opens.length, 3, 'opened by the owner again: a prompt may retry');
-  // an open closed by the mod or an unload is not the owner's
-  await s.hooks['ui.close:turbo-view'](s.$, { id: PANE_ID, origin: 'unload' }, async () => undefined);
-  await prompt('once more');
-  assert.equal(s.opens.length, 4);
+  assert.equal(s.opens.length, 3, 'opened by the owner again: the first prompt asks');
+  // once per module life (review r1 m2): a requested open that still waits is not retried on every prompt
+  await prompt('and again');
+  assert.equal(s.opens.length, 3);
+  assert.match(await band(), /open the pane/, 'the hint stays: /turbo-view is the way');
+});
+
+test('the active form of every step is there for every /turbo-phase step, in both copies (the pane and lib/view.mjs) and both languages (review r1 m8)', async () => {
+  const { TEXT: pane } = await import('../mod/hooks/view-model.mjs');
+  const { TEXT: lib } = await import('../lib/view.mjs');
+  for (const lang of ['en', 'ru']) {
+    assert.deepEqual(Object.keys(pane[lang].now.step), [...STEPS], `pane ${lang}`);
+    assert.deepEqual(Object.keys(lib[lang].now.step), [...STEPS], `lib ${lang}`);
+  }
+});
+
+test('a close during the open is not overwritten, and a hung open never holds the prompt (review r1 m3, m4)', async () => {
+  // the open resolves only after the owner closed the pane: still closed, no hint
+  let release;
+  const s = await shell('race', { placed: [false] });
+  s.$.ui.open = () => new Promise((r) => { release = () => r({ isPlaced: false }); });
+  s.$.clock.sleep = () => new Promise(() => {});
+  const sent = s.hooks['prompt.submit'](s.$, { text: 'hi', origin: { kind: 'composer' } }, async (e) => ({ text: e.text }));
+  await s.settle();
+  await s.hooks['ui.close:turbo-view'](s.$, { id: PANE_ID, origin: { kind: 'person' } }, async () => undefined);
+  release();
+  assert.deepEqual(await sent, { text: 'hi' });
+  const band = spanText(await s.hooks['ui.render:AbovePrompt'](s.$, { component: 'AbovePrompt' }, async () => null));
+  assert.doesNotMatch(band, /open the pane/);
+  // an open that never settles: the prompt goes on after the clock's short wait
+  const t = await shell('hung', { placed: [false] });
+  t.$.ui.open = () => new Promise(() => {});
+  t.$.clock.sleep = async () => {};
+  assert.deepEqual(await t.hooks['prompt.submit'](t.$, { text: 'go', origin: { kind: 'composer' } }, async (e) => ({ text: e.text })), { text: 'go' });
 });

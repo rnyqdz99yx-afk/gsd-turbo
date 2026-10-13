@@ -386,14 +386,17 @@ test('w1: a pane the mod opens in a narrow terminal waits; the band says how to 
   const { clock, opens } = stub(on, { placed: [false, true] })
   await begin($, clock)
   expect(opens.length).toBe(1)
+  // a background task's notification is no request of the owner's: nothing opens
+  await $.prompt.submit({ text: 'task done', origin: { kind: 'task-notification' } } as never)
+  expect(opens.length).toBe(1)
   expect(await hinted($)).toBe(true)
-  const sent = await $.prompt.submit({ text: 'how is phase 32 going?' })
+  const sent = await $.prompt.submit({ text: 'how is phase 32 going?', origin: { kind: 'composer' } } as never)
   await clock.settle()
-  expect(sent).toEqual({ text: 'how is phase 32 going?' })
+  expect((sent as { text: string }).text).toBe('how is phase 32 going?')
   expect(opens.length).toBe(2)
   expect(await hinted($)).toBe(false)
   // once placed, later prompts open nothing
-  await $.prompt.submit({ text: 'and now?' })
+  await $.prompt.submit({ text: 'and now?', origin: { kind: 'composer' } } as never)
   expect(opens.length).toBe(2)
 })
 
@@ -405,4 +408,28 @@ test('w1: the hint goes once the terminal widens and the host places the waiting
   expect(await hinted($)).toBe(true)
   await clock.advance(3000)
   expect(await hinted($)).toBe(false)
+})
+
+// review r1 M1: the host stamps a close's origin as an object, { kind }; a plugin's own $.ui.close is kind 'plugin',
+// never the owner's, so the hint (and the next prompt's open) stay
+test('a close the host stamps as a plugin's (origin { kind: "plugin" }) is not the owner closing the pane', {
+  plugins: [{ name: 'closer', register: (on) => {
+    on('session.start', async ($, e, next) => {
+      await $.command.register({ name: 'shut', description: 'close the turbo pane' })
+      return next(e)
+    })
+    on('command.run', { command: 'shut' }, async ($) => {
+      await $.ui.close({ id: 'turbo-view' })
+      return {}
+    })
+  } }],
+}, async ($, on) => {
+  const seen: unknown[] = []
+  const { clock, opens } = stub(on, { placed: [false, true] })
+  on('ui.close', (_$, e) => (seen.push(e.origin), { value: undefined }) as never)
+  await begin($, clock)
+  await $.command.run({ command: 'shut', args: '' })
+  for (const o of seen) expect(o).toEqual({ kind: 'plugin' })
+  await $.prompt.submit({ text: 'hi', origin: { kind: 'composer' } } as never)
+  expect(opens.length).toBe(2)
 })

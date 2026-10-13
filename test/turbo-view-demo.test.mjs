@@ -85,7 +85,7 @@ test('the scripted run, read the way the mod reads it, raises the four toasts in
   assert.equal(bands[12], 'turbo · phase 32 done · ❓ 2 questions wait for you · CI ✓');
   // what the scripted run shows on its way: the fixing CI under the verdict, the question the phase waits for marked
   const at = (tick) => paneLines(render(demoView({ tick, startedAt: 0, now: tick * 3000 })));
-  assert.ok(at(8).includes('  CI red — the phase fixes it itself (attempt 1 of 2), nothing needed from you'), at(8).join('\n'));
+  assert.ok(!at(8).includes('  CI red — the phase fixes it itself (attempt 1 of 2), nothing needed from you'), 'said once, by Now');
   assert.equal(at(8)[1], '  Now: fixing the red CI — attempt 1 of 2');
   assert.equal(at(11).find((l) => l.startsWith('│ ')), '│ The phase waits for this answer');
   assert.equal(at(14)[0], 'Phase 32 done · 9 of 9 plans done · took 1h 12m · needs your answer (2)');

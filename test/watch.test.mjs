@@ -54,4 +54,5 @@ test('useColor: status --watch is coloured on a terminal only, and never with NO
   assert.equal(useColor({ isTTY: undefined, env: {} }), false);
   assert.equal(useColor({ isTTY: true, env: { NO_COLOR: '1' } }), false);
   assert.equal(useColor({ isTTY: true, env: { NO_COLOR: '' } }), true, 'an empty NO_COLOR is unset');
+  assert.equal(useColor({ isTTY: true, env: { TERM: 'dumb' } }), false, 'a dumb terminal draws no colour');
 });

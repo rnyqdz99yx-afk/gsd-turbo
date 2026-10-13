@@ -6,7 +6,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
-import { runPhaseCommand } from '../lib/cli-phase.mjs';
+import { laneRuns, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { readAnswers } from '../lib/questions.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
@@ -283,4 +283,13 @@ test('review 1: ask refuses --about-review with --action up front; a --option th
   const q = JSON.parse((await run(root, ['questions', '--open', '--json'])).text).find((x) => x.id === 'ask-1');
   assert.equal(q.options.length, 2);
   assert.equal(q.context, '--option');
+});
+
+test('laneRuns: only v0.3\'s lane commits in this checkout; slots lanes never do, so the owner\'s answer is committed by turbo-run answer (Stage 4 L1, L0 D14)', () => {
+  const root = project();
+  const file = path.join(root, '.planning', 'turbo', 'run', 'supervisor.json');
+  withLane(root);
+  assert.equal(laneRuns(root, { supervisorAlive: () => true }), true);
+  writeJsonAtomic(file, { lanesMode: 'slots', lanes: { 32: { key: '32', job: 'phase', phase: '32', slot: 1, slotPath: tmpDir('slot'), sessionId: '1a2b3c4d' } } });
+  assert.equal(laneRuns(root, { supervisorAlive: () => true }), false);
 });

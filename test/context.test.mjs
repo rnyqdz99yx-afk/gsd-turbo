@@ -168,3 +168,18 @@ test('turbo-run context prints the measured context, exit 0; unknown also exits 
   assert.equal(r.code, 1);
   assert.match(r.stderr, /usage: turbo-run context \[<phase>\] \[--json\]/);
 });
+
+test('slots mode: the phase\'s lane comes from supervisor.json lanes and its transcript from its slot (Stage 4 L1)', () => {
+  const f = setup();
+  const slot = path.join(path.dirname(f.root), 'my project.turbo', 'lane-1');
+  fs.mkdirSync(path.join(f.root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(f.root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({
+    lanesMode: 'slots',
+    lanes: {
+      3: { key: '3', job: 'phase', phase: '3', slot: 1, slotPath: slot, sessionId: 'abcd1234' },
+      'prep-4': { key: 'prep-4', job: 'prep', phase: '4', slot: 2, slotPath: `${slot}-2`, sessionId: 'eeee1111' },
+    },
+  }));
+  f.transcript(keyOf(slot), 'abcd1234-5678-90ab', [assistant(slot, usage(0, 0, 330000))]);
+  assert.deepEqual([measure(f).used, measure(f).source], [330000, 'lane']);
+});

@@ -212,6 +212,18 @@ GSD may mark a phase complete before turbo's gates and UAT finish: its execute-p
 
 A full test run ends every phase. From the moment every plan of the phase has a summary until the `execute` step is marked done, `turbo-run test-changed` runs the full suite (the phase-end rule, unless only Markdown, `docs/` or `.planning/` files changed since the last full green run), so GSD's regression gate sees all of it. The fan-out and the fixes in between run targeted tests, and the final gate runs the full suite again with `TURBO_FULL=1`.
 
+## Several lanes
+
+With `lanes.mode: "slots"` (the default) and doctor's full mode, the supervisor runs up to `max_lanes` phases at once, each in its own slot (see [Lane slots](#lane-slots)), and prep and annotate jobs in the slots the phases leave (at most `max_prep`).
+
+- **Which phases run together.** A phase starts when every phase it depends on is finished, its `Areas` (the ROADMAP annotation) do not overlap the `Areas` of a running phase, none of its `Gates` is held by a running phase or a lock, and a free slot that Claude Code trusts exists. A phase without annotation, or with low confidence, may touch any path, so it runs alone. Without a fresh annotation (`.planning/turbo/lanes.json`) only one phase lane runs. Among the ready phases, the one with the longest chain of phases waiting on it goes first.
+- **Shared resources.** Before a deploy, a packaged build or a live check, a lane takes a lock: `turbo-run lock <gate> <N> [--wait-seconds <s>]` (default 540; exit 0 taken, 3 still held after the wait and you are notified, 2 usage or an unknown gate) and `turbo-run unlock <gate> <N>`. The gates are `prod-deploy`, `owner-live`, `owner-signature`, `packaged-build` and your `lanes.gates`. A lane's locks are released when it ends; a lock nobody holds a lane for stays until you unlock it.
+- **When a lane fails.** Only that lane stops: you get one notification with the reason and `cd "<slot>" && claude` to look inside. Its slot keeps the work, and the phases that depend on it wait; the other lanes go on. `/turbo-autonomous resume <N>` tries it again in the same slot, and so does a new start. When every lane has stopped and nothing else can start, the supervisor halts. A slot Claude Code does not trust is never used: you get its trust line once.
+- **attend.** `turbo-run attend <N>` stops only lane N and prints `open: cd "<slot>" && claude`: the sitting runs there. The supervisor and the other lanes keep running. `turbo-run attend <N> --done` gives the phase back.
+- **stop and status.** `stop` stops every lane, prep and annotate session; the slots and their branches stay for review. `status` prints `lanes: <n> · questions: <n> · next: <what the next phase waits for>` and one block per lane.
+- **Plan only.** `turbo-run start --plan-only` (with the usual range flags; `/turbo-plan-milestone` runs it) starts no phase: only prep and lane markup jobs run in the slots, and the supervisor ends with one notification, «Milestone prepared», once none is due and none runs. A later `start` without the flag runs the phases. It needs `lanes.mode: "slots"` and full mode.
+- `lanes.mode: "checkout"` runs one lane in this checkout, exactly as v0.3 (also what a safe-mode supervisor does).
+
 ## Owner questions
 
 A plan's checkpoint tasks (`checkpoint:decision`, `checkpoint:human-verify`, `checkpoint:human-action`) are questions for you. turbo asks each once, with clickable choices, and your answer reaches the very agent that waits for it.
@@ -308,7 +320,10 @@ turbo's state stays in your checkout (the control root): `.planning/turbo/run/`,
 | Key | Default | Meaning |
 |---|---|---|
 | `lang` | `"en"` | Language of notifications, of the UAT owner request and of the live view: `en` or `ru` (`init --lang`). |
-| `max_lanes` | `3` | Reserved for stage 3 (parallel phases). Not used in v0.2, which runs one phase at a time. |
+| `max_lanes` | `3` | Phases (and prep and annotate jobs) that run at once, each in its own slot (`lanes.mode: "slots"`). |
+| `max_prep` | `null` | Prep and annotate jobs at once; `null` is `max_lanes`, `0` none. Ready phases always get the slots first. |
+| `merge_rounds` | `3` | Times a ready phase integrates again while `main` keeps moving, before you are asked. |
+| `lanes.gates` | `[]` | Your own shared resources (lower-case letters, digits and `-`), next to `prod-deploy`, `owner-live`, `owner-signature`, `packaged-build`. |
 | `max_executors` | `20` | Reserved for stage 4 (execution graph). Not used in v0.2. |
 | `lane_permission_mode` | `"bypassPermissions"` | `--permission-mode` of every background session. turbo reads a session that Claude Code lists as `blocked` as one that finished its turn, which assumes this default: with another mode, a session waiting on a permission prompt looks the same. |
 | `lane_model` | `""` | `--model` of every background session; empty uses your Claude Code default. |

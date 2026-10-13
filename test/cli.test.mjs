@@ -129,7 +129,8 @@ function fakeProject({
   fs.mkdirSync(bin, { recursive: true });
   fs.mkdirSync(path.join(core, 'bin'), { recursive: true });
   fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
-  if (config) fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify(config));
+  // Stage 4 L1: v0.3's tests run one lane in this checkout; a test that wants slots says lanes.mode itself
+  if (config) fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify(config.lanes ? config : { ...config, lanes: { mode: 'checkout' } }));
   fs.writeFileSync(path.join(core, 'VERSION'), '1.16.0');
   fs.writeFileSync(path.join(core, 'bin', 'gsd-tools.cjs'), `(${fakeGsd})();\n`);
   fs.writeFileSync(path.join(core, 'bin', 'behavior.json'), JSON.stringify({ configGet, contextWindow, phases }));
@@ -1266,4 +1267,122 @@ test('review 1 (MAJOR 1): resume drops the phase\'s lane questions not yet deliv
   const out = run(['resume', '4'], root);
   assert.match(out, /^dropped questions: ask-1 \(the restarted step asks again\)$/m);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(runDirOf(root), 'p4-questions.json'), 'utf8')), []);
+});
+
+// Stage 4 L1: a slots-mode run with a live daemon (a sleeper) and three lanes: phase 4 working, phase 5 stopped
+// (failed), prep of phase 6; slot directories next to the project, where slotsDir puts them by default.
+function slotsProject(t, { lang = 'en' } = {}) {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }, { number: '5', name: 'five', phase_complete: false }], config: { lang, notify: { desktop: false, telegram: false }, lanes: { mode: 'slots' } } });
+  const base = path.join(path.dirname(p.root), `${path.basename(p.root)}.turbo`);
+  const slot = (k) => {
+    const d = path.join(base, `lane-${k}`);
+    fs.mkdirSync(d, { recursive: true });
+    return d;
+  };
+  const child = sleeper(t);
+  const lane = (key, job, phase, k, sessionId, extra = {}) => ({ key, job, phase, slot: k, slotPath: slot(k), branch: job === 'phase' ? `turbo/p${phase}` : `turbo/prep-${phase}`, sessionId, launchedAt: ago(5), restarts: 0, notified: {}, mode: 'full', ...extra });
+  writeSup(p.root, {
+    lanesMode: 'slots', pid: child.pid, updatedAt: ago(0), finished: false, halted: false, poll_seconds: 20,
+    next: { phase: '6', why: 'deps', waitsFor: ['4'] },
+    lanes: {
+      4: lane('4', 'phase', '4', 1, 'abc111'),
+      5: lane('5', 'phase', '5', 2, 'abc222', { restarts: 1, halted: { why: 'failed', at: ago(1) } }),
+      'prep-6': lane('prep-6', 'prep', '6', 3, 'abc333'),
+    },
+  });
+  return { p, child, slot, env: { ...p.env, TURBO_LANE: '', TURBO_ATTEND_SETTLE_MS: '0' } };
+}
+
+test('status in slots mode: the summary line and one block per lane, in the owner\'s language (spec §8, D16)', (t) => {
+  const { p, slot, env } = slotsProject(t);
+  const text = run(['status'], p.root, env);
+  assert.match(text, /^supervisor: running pid \d+$/m);
+  assert.match(text, /^lanes: 3 · questions: 0 · next: phase 6 waits for phase 4$/m);
+  assert.ok(text.includes(`lane 4: phase 4 · slot 1 ${slot(1)} · session abc111 · restarts 0 · since `), text);
+  assert.match(text, /^ {2}watch: claude attach abc111$/m);
+  assert.match(text, /^ {2}stopped \(failed\): try again with turbo-run resume 5$/m);
+  assert.ok(text.includes(`lane prep-6: prep of phase 6 · slot 3 ${slot(3)} · session abc333`), text);
+  assert.ok(!/^lane: /m.test(text), 'no v0.3 lane line');
+  assert.equal(JSON.parse(run(['status', '--json'], p.root, env)).lanes['4'].slot, 1);
+  const ru = slotsProject(t, { lang: 'ru' });
+  assert.match(run(['status'], ru.p.root, ru.env), /^полосы: 3 · вопросы: 0 · следующая: фаза 6 ждёт фазу 4$/m);
+});
+
+test('stop in slots mode stops every lane, prep and annotate, and a lane session the daemon never recorded; slots stay (spec §8)', async (t) => {
+  const { p, child, slot, env } = slotsProject(t);
+  const name = (k) => laneSessionName(p.root, k);
+  p.setClaude({ agents: [
+    { id: 'abc111', name: name('4'), cwd: slot(1), state: 'working' },
+    { id: 'abc333', name: name('prep-6'), cwd: slot(3), state: 'working' },
+    { id: 'abc444', name: name('7'), cwd: slot(4), state: 'working' },
+    { id: 'other', name: 'someone-else', cwd: slot(1), state: 'working' },
+  ] });
+  const r = await runAsync(['stop'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(await exited(child), 'the supervisor is stopped');
+  assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop').map((a) => a[1]).sort(), ['abc111', 'abc222', 'abc333', 'abc444']);
+  assert.match(r.stdout, /^stopped$/m);
+  assert.match(r.stdout, /^their slots and branches stay for review$/m);
+  assert.ok(fs.existsSync(slot(1)));
+});
+
+test('attend N in slots mode stops only lane N, keeps the supervisor and the other lanes, and prints the slot to open (spec §8, D11)', async (t) => {
+  const { p, child, slot, env } = slotsProject(t);
+  const dir = path.join(slot(1), '.planning', 'phases', '04-four');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of ['04-01-PLAN.md', '04-01-SUMMARY.md', '04-02-PLAN.md']) fs.writeFileSync(path.join(dir, f), '# plan\n');
+  fs.writeFileSync(path.join(runDirOf(p.root), 'phase-p4.json'), JSON.stringify({ phase: '4', done: STEPS.slice(0, STEPS.indexOf('execute')), attempts: {} }));
+  p.setClaude({ agents: [
+    { id: 'abc111', name: laneSessionName(p.root, '4'), cwd: slot(1), state: 'working' },
+    { id: 'late', name: laneSessionName(p.root, '4'), cwd: slot(1), state: 'working' },
+    { id: 'abc333', name: laneSessionName(p.root, 'prep-6'), cwd: slot(3), state: 'working' },
+  ] });
+  let r = await runAsync(['attend', '4'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop').map((a) => a[1]).sort(), ['abc111', 'late']);
+  assert.equal(await exited(child, 300), false, 'the supervisor keeps the other lanes');
+  assert.equal(readSup(p.root).pid, child.pid);
+  assert.match(r.stdout, /^phase 4: attended in the owner's session; the other lanes keep running; nothing starts, relaunches or wakes phase 4 until turbo-run attend 4 --done$/m);
+  assert.ok(r.stdout.includes(`open: cd "${slot(1)}" && claude`), r.stdout);
+  assert.match(r.stdout, /^open plans: 04-02$/m);
+  assert.match(r.stdout, /^gates: turn off \(/m);
+  assert.ok(fs.existsSync(path.join(runDirOf(p.root), 'p4-attend.json')));
+  assert.match(run(['status'], p.root, env), new RegExp(`^ {2}attended in the owner's session: cd "${slot(1).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}" && claude \\(hand it back: turbo-run attend 4 --done\\)$`, 'm'));
+  r = await runAsync(['attend', '6'], p.root, env);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /phase 6 has no lane in this run \(lanes: 4, 5, prep-6\)/);
+});
+
+test('resume N in slots mode clears its stop and arms a relaunch of that lane only (spec §9)', async (t) => {
+  const { p, env } = slotsProject(t);
+  const r = await runAsync(['resume', '5'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  const sup = readSup(p.root);
+  assert.deepEqual([sup.lanes['5'].halted, sup.lanes['5'].forceRelaunch, sup.lanes['5'].restarts], [undefined, true, 0]);
+  assert.equal(sup.lanes['4'].forceRelaunch, undefined);
+  assert.deepEqual([sup.pid, sup.halted, sup.lanesMode], [null, false, 'slots']);
+  assert.match(run(['status'], p.root, env), /^ {2}relaunch pending \(resume\)$/m);
+});
+
+test('start in slots mode builds the slots before any supervisor; when none can be built it starts nothing (Stage 4 L1)', async () => {
+  const p = fakeProject({ config: { notify: { desktop: false, telegram: false }, lanes: { mode: 'slots' } } }); // not a git repository
+  const r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /^slots: .*nothing was started$/m);
+  assert.equal(readSup(p.root), null);
+});
+
+test('start --plan-only needs slots mode; a start without it clears a kept plan-only mark (Stage 4 L1, reconcile R10)', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: true }] });
+  let r = await runAsync(['start', '--plan-only'], p.root, p.env);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /^start --plan-only needs lanes\.mode slots \(this project runs lanes\.mode checkout\); nothing was started$/m);
+  assert.equal(readSup(p.root), null);
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  writeSup(p.root, { pid: null, finished: false, halted: true, planOnly: true, lane: null });
+  r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  const sup = await waitFor(() => { const s = readSup(p.root); return s?.finished && s.pid === null ? s : null; }, 15000);
+  assert.ok(sup, logOf(p.root));
+  assert.equal(sup.planOnly, undefined);
 });

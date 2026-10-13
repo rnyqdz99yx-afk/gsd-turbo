@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { AGENT, entry, projectDirFor, setMtime, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
+import { AGENT, AGENT2, DEFAULT_META, entry, projectDirFor, setMtime, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
+import { sessionTreeMtimeMs } from '../lib/transcripts.mjs';
 import { activityOf, answerWakePrompt, createLaneProbe, stallWakePrompt } from '../lib/wake.mjs';
 import { laneUserPrompt } from '../lib/lane-prompt.mjs';
 
@@ -81,4 +82,73 @@ test('v0.3.3: a wake for checkpoint answers and the lane\'s own question names b
   const u = laneUserPrompt({ phase: '2', mode: 'full', resume: true, turboRun: 'node x', laneAnswered: ['ask-1'] });
   assert.equal(u, "Resume phase 2. Run the turbo-phase skill with arguments: 2 --resume. Before its step loop, take the owner's answer to the question you asked: ask-1. Run node x questions 2 --deliver, do what the chosen option says, then run node x questions 2 --delivered ask-1 --path lane.");
   assert.ok(plain(u));
+});
+
+test('the probe\'s last write covers nested subagents: any transcript under the session\'s subagents tree (journal: a busy lane was woken twice; Review Focus 5)', () => {
+  const base = tmpDir('tree');
+  const root = path.join(base, 'app');
+  fs.mkdirSync(root);
+  const home = path.join(base, 'home');
+  const dir = projectDirFor(home, root);
+  writeJob(home, JOB, { sessionId: SID, cwd: root });
+  setMtime(writeSession(dir, SID, [entry.user('go', at('10:00'))]), new Date(at('10:00')));
+  setMtime(writeAgent(dir, SID, AGENT, [entry.agentUser(AGENT, 'task', at('10:01'))]), new Date(at('10:01')));
+  // a level-2 agent: the lane's agent list leaves it out (it reports to its parent)
+  const nested = writeAgent(dir, SID, AGENT2, [entry.agentUser(AGENT2, 'sub', at('10:02'))], { ...DEFAULT_META, spawnDepth: 2, parentAgentId: AGENT });
+  setMtime(nested, new Date(at('10:30')));
+  // and one a level deeper; meta files and other files are no transcript writes
+  const deeper = path.join(dir, SID, 'subagents', 'nested', 'agent-a1111111111111111.jsonl');
+  fs.mkdirSync(path.dirname(deeper), { recursive: true });
+  fs.writeFileSync(deeper, '{}\n');
+  setMtime(deeper, new Date(at('10:35')));
+  for (const meta of fs.readdirSync(path.join(dir, SID, 'subagents')).filter((n) => n.endsWith('.meta.json'))) setMtime(path.join(dir, SID, 'subagents', meta), new Date(at('10:01')));
+  fs.writeFileSync(path.join(dir, SID, 'subagents', 'notes.txt'), 'x'); // written now: not a transcript
+  const probe = createLaneProbe(root, { CLAUDE_CONFIG_DIR: home });
+  assert.equal(probe.activity(JOB, new Date(at('10:40')), 15 * 60000).lastMs, Date.parse(at('10:35')));
+  assert.equal(sessionTreeMtimeMs({ file: path.join(dir, `${SID}.jsonl`), sessionId: SID }), Date.parse(at('10:35')));
+  assert.equal(sessionTreeMtimeMs({ file: path.join(dir, 'missing.jsonl'), sessionId: 'missing' }), null);
+});
+
+test('the probe reads a lane that runs in another directory (its slot) when given that directory (Stage 4 L1)', () => {
+  const base = tmpDir('probe-slot');
+  const root = path.join(base, 'app');
+  const slot = path.join(base, 'app.turbo', 'lane-1');
+  fs.mkdirSync(root);
+  fs.mkdirSync(slot, { recursive: true });
+  const home = path.join(base, 'home');
+  const dir = projectDirFor(home, slot);
+  writeJob(home, JOB, { sessionId: SID, cwd: slot });
+  setMtime(writeSession(dir, SID, [entry.user('go', at('10:00')), entry.assistant({ ts: at('10:05'), text: 'ok' })]), new Date(at('10:05')));
+  const probe = createLaneProbe(root, { CLAUDE_CONFIG_DIR: home });
+  assert.equal(probe.session(JOB, slot), SID);
+  assert.equal(probe.activity(JOB, new Date(at('10:10')), 15 * 60000, slot).lastMs, Date.parse(at('10:05')));
+  assert.equal(probe.replied(JOB, Date.parse(at('10:01')), slot), true);
+});
+
+test('review I4: each lane keeps its own transcript cache across the other lanes\' reads', () => {
+  const base = tmpDir('probe-cache');
+  const root = path.join(base, 'app');
+  fs.mkdirSync(root);
+  const home = path.join(base, 'home');
+  const slots = ['lane-1', 'lane-2'].map((n) => path.join(base, 'app.turbo', n));
+  const jobs = ['1a2b3c4d', '5e6f7a8b'];
+  slots.forEach((slot, i) => {
+    fs.mkdirSync(slot, { recursive: true });
+    const sid = `${jobs[i]}-2222-4333-8444-555555555555`;
+    writeJob(home, jobs[i], { sessionId: sid, cwd: slot });
+    writeSession(projectDirFor(home, slot), sid, [entry.user('go', at('10:00'))]);
+  });
+  const seen = [];
+  const probe = createLaneProbe(root, { CLAUDE_CONFIG_DIR: home }, {
+    agentsOf: (opts) => {
+      seen.push({ main: opts.main.sessionId, cache: opts.cache });
+      opts.used[opts.main.sessionId] = { mark: opts.main.sessionId };
+      return { lastAt: at('10:00'), agents: [] };
+    },
+  });
+  const now = new Date(at('10:05'));
+  probe.activity(jobs[0], now, 60000, slots[0]);
+  probe.activity(jobs[1], now, 60000, slots[1]);
+  probe.activity(jobs[0], now, 60000, slots[0]);
+  assert.deepEqual(seen[2].cache, { [seen[0].main]: { mark: seen[0].main } }, 'lane 1 finds its own cache after lane 2 read');
 });

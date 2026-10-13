@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GAP_PLAN_RULE, RELEASE_RULE, laneSystemPrompt, laneUserPrompt } from '../lib/lane-prompt.mjs';
+import { GAP_PLAN_RULE, RELEASE_RULE, laneSystemPrompt, laneUserPrompt, lockRule } from '../lib/lane-prompt.mjs';
 
 test('system prompt carries rules, no double quotes or percent signs', () => {
   const s = laneSystemPrompt({ phase: '3', turboRun: 'node /h/.claude/turbo/bin/turbo-run.mjs', contextPct: 55, autonomy: 'standard' });
@@ -165,4 +165,14 @@ test('v0.3.3: every stop for the owner is asked through turbo-run ask in plain w
     assert.ok(!s.includes('"') && !s.includes('%'));
     assert.equal(s.includes('lane-status 3 needs-owner'), mode === 'full', 'the checkpoint exception is full mode\'s only');
   }
+});
+
+test('slot lanes get the lock rule for one-off actions on shared resources; checkout lanes do not (Stage 4 L1)', () => {
+  const rule = lockRule({ phase: '34', turboRun: 'node x' });
+  assert.match(rule, /run node x lock <gate> 34 with the Bash timeout at 600000 ms, do the action, then run node x unlock <gate> 34 at once, also when the action failed\./);
+  assert.match(rule, /Exit 3 means another phase holds it and the owner was told: run the lock once more; a second exit 3 stops you for the owner/);
+  assert.ok(!rule.includes('"') && !rule.includes('%') && !rule.startsWith('-'));
+  const base = { phase: '34', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode: 'full' };
+  assert.ok(laneSystemPrompt({ ...base, slots: true }).endsWith(rule));
+  assert.ok(!laneSystemPrompt(base).includes('lock <gate>'));
 });

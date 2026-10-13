@@ -319,3 +319,16 @@ test('integration: a job session gets the lane temp dir in jobPrompts (the TMP r
   assert.equal(typeof seen[0].tmpDir, 'string');
   assert.equal(seen[0].tmpDir, h.launched.find((l) => l.name.includes('prep')).tmpDir);
 });
+
+test('integration (reconcile R12): an annotate job that needs the owner is notified as the pseudo-phase annotate (titled Lane markup), not "- (annotate)"', async () => {
+  const h = lanesHarness({ phases: [P('1'), P('2')], jobs: (options, hh) => hh.jobList, finish: () => ({ outcome: 'needs-owner', reason: 'the markup needs you' }) });
+  h.jobList = [{ kind: 'annotate', phase: null }];
+  let s = await tick(freshLanes(), h.ctx);
+  h.jobList = [];
+  writeLaneStatus(h.root, 'annotate', 'annotated', { at: h.at() });
+  h.agentOf('annotate').state = 'blocked';
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  const note = h.notes.find((x) => x.key === 'laneNeedsOwner');
+  assert.equal(note?.vars.phase, 'annotate', JSON.stringify(h.notes));
+});

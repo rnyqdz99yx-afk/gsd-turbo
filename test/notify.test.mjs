@@ -314,3 +314,19 @@ test('msg renders milestonePrepared in en and ru (Stage 4 L1, reconcile R10)', (
   assert.equal(msg('en', 'milestonePrepared', {}).title, 'Milestone prepared');
   assert.equal(msg('ru', 'milestonePrepared', {}).title, 'Майлстоун подготовлен');
 });
+
+test('integration (reconcile R12): every owner notification of the annotate pseudo-phase is titled Lane markup / Разметка полос, never phase annotate', () => {
+  const keys = ['questionsReady', 'laneNeedsOwner', 'laneStalled', 'laneBlocked'];
+  for (const key of keys) {
+    const vars = { phase: 'annotate', n: 1, list: 'Can phases 3 and 4 run together?', reason: 'the markup needs you', minutes: 30, wakes: 2, id: 'abc' };
+    const en = msg('en', key, vars).title;
+    const ru = msg('ru', key, vars).title;
+    assert.match(en, /^Lane markup\b/, `${key}: ${en}`);
+    assert.ok(ru.startsWith('Разметка полос'), `${key}: ${ru}`);
+    assert.doesNotMatch(`${en} ${ru}`, /annotate/i, key);
+  }
+  assert.equal(msg('en', 'questionsReady', { phase: 'annotate', n: 2, list: 'x' }).title, 'Lane markup: needs your answer (2)');
+  assert.equal(msg('ru', 'laneNeedsOwner', { phase: 'annotate', reason: 'x' }).title, 'Разметка полос ждёт вас');
+  // a real phase keeps its words
+  assert.equal(msg('en', 'questionsReady', { phase: '3', n: 1, list: 'x' }).title, 'Phase 3: needs your answer (1)');
+});

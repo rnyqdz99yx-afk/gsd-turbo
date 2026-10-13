@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { gitIn, mainProject, slotFixture } from './helpers/slots.mjs';
-import { SlotRefused, depsFile, freeSlot, jobBranch, listSlots, prepareSlot, readSlotRecord, releaseSlot, removeSlot, setupSlots, slotForPhase, slotPath } from '../lib/slots.mjs';
+import { SlotRefused, depsFile, freeSlot, jobBranch, listSlots, prepareSlot, readSlotRecord, releaseSlot, removeSlot, setupSlots, slotForPhase, slotPath, sweepRemoving } from '../lib/slots.mjs';
 import { trustState, untrustSlot } from '../lib/trust.mjs';
 
 const refused = (fn, code, re) => assert.throws(fn, (e) => e instanceof SlotRefused && e.code === code && (!re || re.test(e.message)), `${code} ${re ?? ''}`);
@@ -149,7 +149,7 @@ test('free and trusted for a job; remove only a free slot, with its trust; links
   assert.equal(fs.existsSync(s2), false);
   assert.equal(fs.readFileSync(path.join(outside, 'keep.js'), 'utf8'), 'x');
   assert.equal(trustState(s2, { file: t.claudeJson }), 'untrusted');
-  assert.deepEqual(removeSlot(p.root, t.config, 2, t.deps), { k: 2, path: s2, removed: false, why: 'missing', untrust: null });
+  assert.deepEqual(removeSlot(p.root, t.config, 2, t.deps), { k: 2, path: s2, removed: false, why: 'missing', untrust: null, leftover: null });
   const foreign = path.join(t.dir, 'lane-3');
   fs.mkdirSync(foreign);
   fs.writeFileSync(path.join(foreign, 'x'), 'x');
@@ -198,4 +198,21 @@ test('remove refuses any work main lacks: a branch of any name, a stash, a detac
   keeps();
   gitIn(s1, 'checkout', '-q', '--detach', 'origin/main');
   assert.equal(removeSlot(p.root, t.config, 1, t.deps).removed, true);
+});
+
+test('remove moves the slot aside first: a held file refuses with nothing changed; a partial delete leaves lane-<k>.removing-<ts>, which the next setup or remove deletes (I4)', () => {
+  const { p, t, s2 } = ready();
+  const fail = () => { throw Object.assign(new Error('resource busy'), { code: 'EBUSY' }); };
+  refused(() => removeSlot(p.root, t.config, 2, { ...t.deps, rename: fail }), 'held', /EBUSY/);
+  assert.deepEqual([fs.existsSync(path.join(s2, '.git')), trustState(s2, { file: t.claudeJson })], [true, 'trusted']);
+  const r = removeSlot(p.root, t.config, 2, { ...t.deps, rm: fail });
+  assert.deepEqual([r.removed, r.untrust.status, fs.existsSync(s2)], [true, 'removed', false]);
+  assert.match(path.basename(r.leftover), /^lane-2\.removing-\d+$/);
+  assert.equal(fs.existsSync(r.leftover), true);
+  assert.deepEqual(listSlots(p.root, t.config, t.deps).map((s) => [s.k, s.state]), [[1, 'free'], [2, 'missing']], 'a leftover is never a foreign slot');
+  assert.deepEqual(sweepRemoving(p.root, t.config, { rm: fail }), { removed: [], kept: [{ path: r.leftover, why: 'EBUSY' }] });
+  const again = setupSlots(p.root, t.config, t.deps);
+  assert.deepEqual(again.swept, { removed: [r.leftover], kept: [] });
+  assert.equal(fs.existsSync(r.leftover), false);
+  assert.deepEqual(again.slots.map((s) => s.action), ['kept', 'created']);
 });

@@ -935,15 +935,15 @@ git commit -q -m "feat(lanes): the control root keeps turbo's state for commands
 **Interfaces:**
 - Consumes: `dirKey`, `slotRecordFile` (Task 3); `lanesSettings` (Task 1); `trustSlot`, `trustState`, `trustKey` (Task 2); `DEFAULTS`, `deepMerge`; `readJson`, `writeJsonAtomic`, `ensureDir`.
 - Produces (in `lib/slots.mjs`):
-  - `SLOT_RE`, `SETTINGS_LOCAL = '.claude/settings.local.json'`, `COPIED_GIT_CONFIG`; `class SlotRefused extends Error` with `.code` (`'mode' | 'layout' | 'inside' | 'settings' | 'copy' | 'detached' | 'missing' | 'foreign' | 'broken' | 'busy' | 'dirty' | 'install' | 'link' | 'unmerged'`);
+  - `SLOT_RE`, `SETTINGS_LOCAL = '.claude/settings.local.json'`, `COPIED_GIT_CONFIG`; `class SlotRefused extends Error` with `.code` (`'mode' | 'layout' | 'inside' | 'settings' | 'copy' | 'detached' | 'missing' | 'foreign' | 'broken' | 'busy' | 'dirty' | 'install' | 'link' | 'unmerged' | 'held'`);
   - `slotGit(env) → (dir, args, { ok, timeout }) → string | null`;
   - `maxLanes(config) → number`; `slotsDir(root, config) → string`; `slotPath(root, config, k) → string`;
   - `readSlotRecord(slot) → SlotRecord | null`;
   - `listSlots(root, config, deps) → Slot[]`, `Slot = { k, path, state: 'missing'|'free'|'busy'|'dirty'|'foreign'|'broken', record, dirty: string[], why? }`;
   - `mainBranch(root, deps) → string`; `maskRegExp(mask) → RegExp`; `copyPlan(root, config, deps) → { files, notIgnored }`;
-  - `setupSlots(root, config, deps) → { dir, slots: Array<{ k, path, action: 'created'|'kept'|'refused', why, trust }>, backup }`;
+  - `setupSlots(root, config, deps) → { dir, slots: Array<{ k, path, action: 'created'|'kept'|'refused', why, trust }>, backup, swept }` (`swept`: what `sweepRemoving` returned);
   - private, used by Task 5: `gitOf`, `ours`, `slotInfo`, `slotNumbers`, `blocking`, `checkedCopies`, `refreshSlot`, `writeSlotRecord`, `ignoreLine`, `describeJob`, `isObj`, `errLine`, `refuse`.
-- `deps` everywhere: `{ git?, env?, now?, claudeJson?, trustWrite?, trust?, config?, run?, log? }`.
+- `deps` everywhere: `{ git?, env?, now?, claudeJson?, trustWrite?, trust?, config?, run?, log?, rename?, rm? }` (`rename`, `rm`: removeSlot's and sweepRemoving's file operations, injected by tests).
 - Produces (tests): `mainProject({ ignore, files })`, `slotFixture(root, { max, lanes })`.
 
 - [ ] **Step 1: Write the helpers and the failing tests**
@@ -1431,7 +1431,8 @@ git commit -q -m "feat(lanes): turbo slots: local clones with the ignored files 
   - `releaseSlot(root, slot, { outcome = 'merged', now, config }) → SlotRecord`;
   - `slotForPhase(root, config, phase, { kind = 'phase' }) → { k, path, record } | null`;
   - `freeSlot(root, config, deps) → Slot | null` (free and trusted);
-  - `removeSlot(root, config, k, deps) → { k, path, removed, why, untrust }`.
+  - `removeSlot(root, config, k, deps) → { k, path, removed, why, untrust, leftover }`: refuses `unmerged` for any local branch `--no-merged` origin/<main>, a non-empty stash or a detached HEAD commit origin/<main> lacks; renames `lane-<k>` to `lane-<k>.removing-<ms>` first (a failed rename refuses `held`, nothing changed), then untrusts, then deletes; `leftover` is the renamed directory when the delete stopped halfway, else null;
+  - `REMOVING_RE`, `sweepRemoving(root, config, { rm }) → { removed: string[], kept: Array<{ path, why }> }`: deletes the `*.removing-*` leftovers again (lanes setup and lanes remove call it); `listSlots` never counts them.
 
 - [ ] **Step 1: Write the failing tests**
 

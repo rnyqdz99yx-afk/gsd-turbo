@@ -146,3 +146,19 @@ test('a file that changes while turbo writes it: read again and the change kept;
   assert.equal(read(d.file).projects[trustKey(d.slot)], undefined);
   assert.deepEqual(leftovers(d), []);
 });
+
+test('a file Claude Code writes while turbo waits to rename is never overwritten: checked before every rename attempt (I1)', () => {
+  const c = claudeJson();
+  let fails = 1;
+  const rename = (a, b) => {
+    if (fails-- > 0) {
+      // Claude Code writes its config while Windows refuses turbo's rename
+      fs.writeFileSync(c.file, JSON.stringify({ ...read(c.file), numStartups: 9 }));
+      throw Object.assign(new Error('held'), { code: 'EPERM' });
+    }
+    fs.renameSync(a, b);
+  };
+  assert.equal(trustSlot(c.slot, opts(c, { rename })).status, 'trusted');
+  assert.deepEqual([read(c.file).numStartups, read(c.file).projects[trustKey(c.slot)]], [9, { hasTrustDialogAccepted: true }]);
+  assert.deepEqual(leftovers(c), []);
+});

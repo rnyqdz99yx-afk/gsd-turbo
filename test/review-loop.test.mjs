@@ -133,3 +133,21 @@ test('reviewVersions: the REVIEW.md of each commit, oldest first, and an uncommi
   assert.deepEqual(reviewVersions(plain, '7'), [versions[0]]);
   assert.deepEqual(reviewVersions(plain, '8'), []);
 });
+
+test('review 1: ownerGapsText names the CLI flags; reviewVersions follows the REVIEW.md through a renamed phase directory', () => {
+  assert.throws(() => ownerGapsText({ review: null, verification: null, codes: [], numbers: [] }), /--review <code>,… and\/or --gap <n>,…/);
+  const root = tmpGitRepo();
+  const git = (...a) => execFileSync('git', a, { cwd: root, stdio: 'pipe' });
+  const old = path.join(root, '.planning', 'phases', '07-old');
+  fs.mkdirSync(old, { recursive: true });
+  const v1 = review([['WR-01', 'Edge one', 'src/sync.js:1']]);
+  const v2 = review([['WR-01', 'Edge two', 'src/sync.js:2']]);
+  fs.writeFileSync(path.join(old, '07-REVIEW.md'), v1);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'one');
+  git('mv', '.planning/phases/07-old', '.planning/phases/07-sync');
+  fs.writeFileSync(path.join(root, '.planning', 'phases', '07-sync', '07-REVIEW.md'), v2);
+  git('add', '-A');
+  git('commit', '-q', '-m', 'two');
+  assert.deepEqual(reviewVersions(root, '7'), [v1, v2]);
+});

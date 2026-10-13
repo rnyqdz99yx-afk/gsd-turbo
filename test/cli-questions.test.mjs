@@ -274,3 +274,13 @@ test('review 1 (MAJOR 3): turbo-run ask takes the phase\'s own plan ids as plan 
   r = await run(root, ['ask', '32', '--question', 'It takes 10-20 minutes; what next?', '--option', 'Fix|a', '--option', 'Go|b', '--recommended', '1']);
   assert.equal(r.code, 0, r.text);
 });
+
+test('review 1: ask refuses --about-review with --action up front; a --option that is another flag\'s value is no option', async () => {
+  const root = project();
+  assert.equal((await run(root, ['ask', '32', '--action', 'Plug the phone in.', '--about-review'])).code, 2);
+  const r = await run(root, [...ASK, '--context', '--option']);
+  assert.equal(r.code, 0, r.text);
+  const q = JSON.parse((await run(root, ['questions', '--open', '--json'])).text).find((x) => x.id === 'ask-1');
+  assert.equal(q.options.length, 2);
+  assert.equal(q.context, '--option');
+});

@@ -1371,3 +1371,18 @@ test('start in slots mode builds the slots before any supervisor; when none can 
   assert.match(r.stderr, /^slots: .*nothing was started$/m);
   assert.equal(readSup(p.root), null);
 });
+
+test('start --plan-only needs slots mode; a start without it clears a kept plan-only mark (Stage 4 L1, reconcile R10)', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: true }] });
+  let r = await runAsync(['start', '--plan-only'], p.root, p.env);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /^start --plan-only needs lanes\.mode slots \(this project runs lanes\.mode checkout\); nothing was started$/m);
+  assert.equal(readSup(p.root), null);
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  writeSup(p.root, { pid: null, finished: false, halted: true, planOnly: true, lane: null });
+  r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  const sup = await waitFor(() => { const s = readSup(p.root); return s?.finished && s.pid === null ? s : null; }, 15000);
+  assert.ok(sup, logOf(p.root));
+  assert.equal(sup.planOnly, undefined);
+});

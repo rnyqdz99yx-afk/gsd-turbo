@@ -309,3 +309,8 @@ test('msg renders gateWait in en and ru (Stage 4 L1)', () => {
   assert.deepEqual(msg('en', 'gateWait', v), { title: 'Phase 4 waits for prod-deploy', body: 'Phase 3 holds the shared resource prod-deploy; phase 4 waited 9 min for it. Its lane tries once more, then asks you. To free it by hand: turbo-run unlock prod-deploy 3' });
   assert.deepEqual(msg('ru', 'gateWait', v), { title: 'Фаза 4 ждёт prod-deploy', body: 'Общий ресурс prod-deploy занят фазой 3; фаза 4 ждала его 9 мин. Её полоса попробует ещё раз, затем спросит вас. Освободить вручную: turbo-run unlock prod-deploy 3' });
 });
+
+test('msg renders milestonePrepared in en and ru (Stage 4 L1, reconcile R10)', () => {
+  assert.equal(msg('en', 'milestonePrepared', {}).title, 'Milestone prepared');
+  assert.equal(msg('ru', 'milestonePrepared', {}).title, 'Майлстоун подготовлен');
+});

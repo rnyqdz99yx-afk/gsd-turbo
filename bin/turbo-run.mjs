@@ -222,7 +222,7 @@ function statusOpts(root, config) {
 // the lane line names the hold instead of a session to watch.
 function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en' } = {}) {
   const finished = sup.range ? ' · range finished' : ' · milestone finished';
-  out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
+  out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.planOnly ? ' · plan only' : ''}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
   if (sup.range && rangeLine) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
   if (sup.lanes) return printLanes(sup, { attended, questions, lang });
@@ -355,14 +355,20 @@ function logTail(root, lines = 10) {
 }
 
 // requested: rangeFlags' result (undefined keeps the range of a run that has not finished).
-async function start(root, requested = undefined) {
+async function start(root, requested = undefined, { planOnly = false } = {}) {
   const config = runtimeConfig(loadConfig(root)); // a corrupt config fails here, not inside the detached daemon
+  // reconcile R10: /turbo-plan-milestone runs start --plan-only: prep and lane markup jobs in slots, no phase
+  if (planOnly && lanesSettings(config.lanes).mode !== 'slots') die(`start --plan-only needs lanes.mode slots (this project runs lanes.mode ${lanesSettings(config.lanes).mode}); nothing was started`);
   fullEntries(config.test?.full, root); // an invalid test.full list too, not at every test gate of the lanes
   const running = () => { const sup = readJson(supPath(root), null); return supAlive(sup, config.poll_seconds) ? sup : null; };
   const already = (sup) => {
     // range flags never change a run that is going: the owner stops it first
     if (requested !== undefined) {
       process.stderr.write(`a run of ${sup.range ? `phases ${rangeLabel(sup.range)}` : 'the whole milestone'} is going (supervisor pid ${sup.pid}); nothing was changed: run turbo-run stop first, then start with the new range\n`);
+      return 1;
+    }
+    if (planOnly && !sup.planOnly) {
+      process.stderr.write(`a run of the phases is going (supervisor pid ${sup.pid}); nothing was changed: run turbo-run stop first, then start --plan-only\n`);
       return 1;
     }
     out(`already running (pid ${sup.pid})`);
@@ -383,6 +389,7 @@ async function start(root, requested = undefined) {
   for (const w of r.warnings ?? []) out(`warn ${w}`);
   // spec §4 (Stage 4 L1): slots mode builds the missing slots and their trust before the daemon starts (L0 setupSlots)
   if (lanesSettings(config.lanes).mode === 'slots') {
+    if (r.mode !== 'full' && planOnly) die('start --plan-only needs full mode (doctor: safe); nothing was started');
     if (r.mode !== 'full') out('warn lanes.mode slots needs full mode (doctor: safe): one lane runs in this checkout');
     else {
       let res;
@@ -403,7 +410,14 @@ async function start(root, requested = undefined) {
   if (range) out(`range: phases ${rangeLabel(range)}${kept ? ' (kept from the previous run)' : ''}`);
   // a forgotten sitting holds every lane of the daemon about to start: say so, never let it look like a run
   printAttended(attendedPhases(root));
-  const rangeArgs = [...(range?.from ? ['--from', range.from] : []), ...(range?.to ? ['--to', range.to] : [])];
+  const rangeArgs = [...(range?.from ? ['--from', range.from] : []), ...(range?.to ? ['--to', range.to] : []), ...(planOnly ? ['--plan-only'] : [])];
+  // reconcile R10: a later start without --plan-only clears a kept plan-only mark (a daemon restart keeps it)
+  const stored = readJson(supPath(root), null);
+  if (!planOnly && stored?.planOnly) {
+    const { planOnly: _was, ...rest } = stored;
+    writeJsonAtomic(supPath(root), rest);
+  }
+  if (planOnly) out('plan only: prep and lane markup jobs run in the slots; no phase runs');
   ensureDir(logsDir(root));
   const fd = fs.openSync(path.join(logsDir(root), 'supervisor.log'), 'a');
   const spawnedAt = Date.now();
@@ -465,7 +479,7 @@ function leaseSleep(root, log) {
   };
 }
 
-async function daemon(root, mode = 'safe', range = null) {
+async function daemon(root, mode = 'safe', range = null, { planOnly: asked = false } = {}) {
   const ctx = await makeCtx(root, mode);
   const poll = ctx.config.poll_seconds;
   const lock = acquireLock(root, poll);
@@ -479,18 +493,25 @@ async function daemon(root, mode = 'safe', range = null) {
     const prev = readJson(supPath(root), null);
     // poll_seconds: this daemon's own poll, for the heartbeat window of status, stop and start;
     // range: the phases this run may start (no key: the whole milestone)
-    const base = { finished: false, halted: false, poll_seconds: poll, ...(range ? { range } : {}) };
+    // reconcile R10: --plan-only, or kept from the run this daemon takes over (start without it clears the mark)
+    const planOnly = asked || Boolean(prev && !prev.finished && prev.planOnly);
+    const base = { finished: false, halted: false, poll_seconds: poll, ...(range ? { range } : {}), ...(planOnly ? { planOnly: true } : {}) };
     let initial;
     if (ctx.lanes === 'slots') initial = { lanesMode: 'slots', lanes: resumableLanes(prev, range, ctx), ...base };
     else {
       if (lanesSettings(ctx.config.lanes).mode === 'slots') ctx.deps.log(`lanes.mode slots needs full mode (doctor: ${mode}); one lane runs in this checkout`);
       if (prev?.lanes && Object.keys(prev.lanes).length && !prev.finished) ctx.deps.log(`slots-mode lanes are recorded (${Object.keys(prev.lanes).join(', ')}); checkout mode does not resume them (their sessions and slots kept)`);
       initial = { lane: resumableLane(prev, range, ctx.deps.log), ...base };
+      if (planOnly) {
+        // a plan-only run needs slots: never run phases in this checkout instead
+        ctx.deps.log(`plan-only run needs lanes.mode slots and full mode (doctor: ${mode}); nothing runs`);
+        initial = { ...initial, lane: null, halted: true };
+      }
     }
     // pid on disk before the first tick, so status and a second start see this daemon at once
     writeJsonAtomic(supPath(root), { ...initial, pid: process.pid, updatedAt: new Date().toISOString() });
     final = await runDaemon({ ctx, statePath: supPath(root), initial, intervalMs: poll * 1000, sleep: leaseSleep(root, ctx.deps.log) });
-    ctx.deps.log(`daemon exit${final.finished ? (final.range ? ': range finished' : ': milestone finished') : final.halted ? ': halted' : ''}`);
+    ctx.deps.log(`daemon exit${final.finished ? (final.planOnly ? ': milestone prepared' : final.range ? ': range finished' : ': milestone finished') : final.halted ? ': halted' : ''}`);
   } catch (e) {
     const text = String(e?.message ?? e);
     ctx.deps.log(`daemon fatal: ${text.replace(/\s*\r?\n\s*/g, ' ')}`);
@@ -911,11 +932,11 @@ async function main() {
     }
     case 'start': {
       if (!root) die('no .planning directory found');
-      return start(root, rangeFlags(args));
+      return start(root, rangeFlags(args), { planOnly: args.includes('--plan-only') });
     }
     case 'daemon': {
       if (!root) die('no .planning directory found');
-      return daemon(root, flag(args, '--mode', 'safe'), rangeFlags(args) ?? null);
+      return daemon(root, flag(args, '--mode', 'safe'), rangeFlags(args) ?? null, { planOnly: args.includes('--plan-only') });
     }
     case 'status': {
       if (!root) die('no .planning directory found');

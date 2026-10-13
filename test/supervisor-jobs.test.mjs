@@ -177,3 +177,32 @@ test('while a merge hold exists no new phase lane starts; jobs may (reconcile R5
   s = await tick(s, h.ctx);
   assert.deepEqual(Object.keys(s.lanes), ['1', '2', 'prep-3']);
 });
+
+test('start --plan-only: no phase lane, only prep and annotate jobs; the run ends with milestonePrepared once nothing is due and no job runs (reconcile R10)', async () => {
+  const h = lanesHarness({
+    phases: [P('1'), P('2')],
+    lanes: annotated({ 1: A('a/**'), 2: A('b/**') }),
+    jobs: (options, hh) => hh.jobList,
+    finish: (lane, hh) => { hh.release(lane.slot, 'merged'); return { outcome: 'merged' }; },
+  });
+  h.jobList = [{ kind: 'prep', phase: '1' }, { kind: 'prep', phase: '2' }];
+  let s = await tick({ ...freshLanes(), planOnly: true }, h.ctx);
+  assert.deepEqual(Object.keys(s.lanes), ['prep-1', 'prep-2'], 'phases 1 and 2 are ready, yet no phase lane starts');
+  assert.equal(s.next, null);
+  // both preps end and are merged; pendingJobs has nothing more
+  for (const n of ['1', '2']) {
+    writeLaneStatus(h.root, n, 'prepped', { at: h.at() });
+    h.agentOf(`prep-${n}`).state = 'blocked';
+  }
+  h.jobList = [];
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(s.lanes, {});
+  assert.deepEqual([s.finished, s.halted, s.planOnly], [true, false, true]);
+  assert.deepEqual(h.notes.map((x) => x.key), ['milestonePrepared']);
+  assert.ok(h.logs.includes('milestone prepared: no prep or annotate job is due and none runs'), h.logs.join('\n'));
+  // without the job module there is nothing to prepare: it ends at once
+  const bare = lanesHarness({ phases: [P('1')] });
+  const b = await tick({ ...freshLanes(), planOnly: true }, bare.ctx);
+  assert.deepEqual([Object.keys(b.lanes), b.finished, bare.notes.map((x) => x.key)], [[], true, ['milestonePrepared']]);
+});

@@ -234,7 +234,7 @@ test('turbo-phase skill: one verifier pass per uat step — every UAT write firs
   assert.ok(settle > 0 && settle < complete && complete < stale && stale < verify, p5);
   assert.ok(p5.includes('core.autocrlf'), 'the reason is named');
   const proc = section(s, 'Stale report');
-  for (const n of ['one pass', 'Never revert', 'keep the commit', '`verifier-only`']) assert.ok(proc.includes(n), n);
+  for (const n of ['One pass per step', 'Never revert', 'keep the commit', '`verifier-only`']) assert.ok(proc.includes(n), n);
   // close: the owner request is current before the done record (a resume removed it)
   const close = section(s, 'close');
   const owner = close.indexOf('turbo-run uat owner-request N');

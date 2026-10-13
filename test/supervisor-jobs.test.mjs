@@ -307,3 +307,15 @@ test('integration: a job that failed in the supervisor (its session failed, or i
   assert.equal(readJobStatus(h.root, { kind: 'annotate', phase: null })?.reason, 'the analysis was refused twice');
   assert.equal(readJobStatus(h.root, { kind: 'annotate', phase: null })?.status, 'failed');
 });
+
+test('integration: a job session gets the lane temp dir in jobPrompts (the TMP rule of its system prompt)', async () => {
+  const h = lanesHarness({ phases: [P('1'), P('2')], jobs: (options, hh) => hh.jobList });
+  const seen = [];
+  const prompts = h.ctx.deps.jobPrompts;
+  h.ctx.deps.jobPrompts = (a) => { seen.push(a.lane); return prompts(a); };
+  h.jobList = [{ kind: 'prep', phase: '2' }];
+  await tick(freshLanes(), h.ctx);
+  assert.equal(seen.length, 1);
+  assert.equal(typeof seen[0].tmpDir, 'string');
+  assert.equal(seen[0].tmpDir, h.launched.find((l) => l.name.includes('prep')).tmpDir);
+});

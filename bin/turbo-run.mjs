@@ -23,10 +23,10 @@ import { ownerRequestFiles } from '../lib/uat.mjs';
 import { clearAttempts, nextStep, readProgress } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
-import { buildView, formatView } from '../lib/view.mjs';
+import { buildView, formatView, openQuestions } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
-import { readQuestions, refreshQuestions } from '../lib/questions.mjs';
+import { deliveryState, readQuestions, refreshQuestions } from '../lib/questions.mjs';
 import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -765,6 +765,8 @@ async function main() {
       if (!sup) out('supervisor: not running (never started)');
       else printStatus(sup, running, { attended });
       for (const f of ownerRequests) out(`owner request: ${f}`);
+      // v0.3.3: the questions a phase stopped for, in the owner's words
+      for (const q of openQuestions(root).filter((x) => x.stopped)) out(`owner question: phase ${q.phase} — ${String(q.question).replace(/\s+/g, ' ')} (answer: /turbo-autonomous answer)`);
       printAttended(attended);
       printLeftovers(leftovers);
       return 0;
@@ -792,6 +794,8 @@ async function main() {
       const id = normalizePhaseId(phase);
       writeLaneStatus(root, id, status, { reason: flag(args, '--reason') });
       out(`lane ${id}: ${status}`);
+      // v0.3.3 (D8): a stop for the owner reaches them as a question card only through turbo-run ask
+      if (status === 'needs-owner' && !deliveryState(root, id).waiting.length) process.stderr.write(`hint: no owner question waits for phase ${id}, so the owner gets only this reason: ask with turbo-run ask ${id} --question <plain words> --option <label>|<description> (2 to 4) --recommended <n>, or --action <the owner's one step>\n`);
       return 0;
     }
     case 'notify': {

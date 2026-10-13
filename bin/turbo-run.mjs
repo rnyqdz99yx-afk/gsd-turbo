@@ -209,7 +209,8 @@ function printStatus(sup, running, { rangeLine = true, attended = [] } = {}) {
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
   if (sup.lane?.forceRelaunch) {
     // a resumed lane: its recorded session belongs to the run before the resume and is replaced at the next check
-    out(`lane: phase ${sup.lane.phase} · relaunch pending (resume) · replaces session ${sup.lane.sessionId} at the supervisor's next check · mode ${sup.lane.mode || 'safe'}`);
+    const when = running ? "at the supervisor's next check" : 'once a supervisor runs: turbo-run start';
+    out(`lane: phase ${sup.lane.phase} · relaunch pending (resume) · replaces session ${sup.lane.sessionId} ${when} · mode ${sup.lane.mode || 'safe'}`);
   } else if (sup.lane) {
     const held = attended.map((a) => a.phase).join(', ');
     const next = held ? `held: phase ${held} attended in the owner's session; no lane runs until turbo-run attend <phase> --done` : `watch: claude attach ${sup.lane.sessionId}`;

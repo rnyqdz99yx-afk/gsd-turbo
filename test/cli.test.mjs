@@ -1229,6 +1229,9 @@ test('lane-status N needs-owner with no owner question waiting hints at turbo-ru
   r = laneStatus('owner question ask-1');
   assert.equal(r.stderr, '');
   assert.match(run(['status'], root), /^owner question: phase 4 — The fixes are in\. What next\? \(answer: \/turbo-autonomous answer\)$/m);
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lang: 'ru' }));
+  assert.match(run(['status'], root), /^вопрос к вам: фаза 4 — The fixes are in\. What next\? \(ответить: \/turbo-autonomous answer\)$/m);
 });
 
 test('review 1 (MAJOR 1): resume drops the phase\'s lane questions not yet delivered, so a stale one never blocks or answers the restarted step', () => {

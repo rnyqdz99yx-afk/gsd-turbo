@@ -1,13 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 import { readAnswers } from '../lib/questions.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
+import { readLaneStatus } from '../lib/run-status.mjs';
 
 const AG = 'a0123456789abcdef';
 function project(root = tmpDir('cliq')) {
@@ -192,4 +194,74 @@ test('during an attend sitting turbo-run answer commits the answer itself, also 
   await run(root, ['questions', '32']);
   const r = await run(root, ['answer', '32', '32-09-t2', '--option', '1', '--by', 'session']);
   assert.match(r.text, /^answered 32-09-t2: Clerk, session, \S+ · committed$/);
+});
+
+// v0.3.3: turbo-run ask (D2, D7) and owner-gaps (D6)
+const ruConfig = (root) => writeJsonAtomic(path.join(root, '.planning', 'turbo', 'config.json'), { lang: 'ru' });
+const ASK = ['ask', '32', '--question', 'Исправления готовы, живая проверка ещё не запускалась. Что дальше?', '--context', 'Ревью нашло новые мелочи в коде остановки.',
+  '--option', 'Сначала исправить|Фаза исправит замечания ревью и потом запустит живую проверку.', '--option', 'Сразу живая проверка|Замечания останутся до проверки.', '--recommended', '2'];
+
+test('turbo-run ask: the lane\'s question becomes an open owner question and the lane\'s needs-owner record; --json; a refusal exits 1 and writes nothing', async () => {
+  const root = project();
+  ruConfig(root);
+  let r = await run(root, ASK);
+  assert.equal(r.code, 0, r.text);
+  assert.equal(r.lines[0], 'asked: ask-1 waits for the owner; now end your turn (the lane status is needs-owner)');
+  const [q] = JSON.parse((await run(root, ['questions', '--open', '--json'])).text).filter((x) => x.id === 'ask-1');
+  assert.deepEqual(q.options.map((o) => [o.label, o.recommended]), [['Сразу живая проверка', true], ['Сначала исправить', false]]);
+  assert.equal(q.context, 'Ревью нашло новые мелочи в коде остановки.');
+  assert.equal(readLaneStatus(root, '32').reason, 'owner question ask-1');
+  r = await run(root, ['ask', '32', '--action', 'Подключите телефон к компьютеру.', '--json']);
+  assert.equal(JSON.parse(r.text).question.id, 'ask-2');
+  assert.deepEqual(JSON.parse(r.text).superseded, ['ask-1']);
+  r = await run(root, ['ask', '32', '--question', 'Fix WR-01 first?', '--option', 'a|b', '--option', 'c|d', '--recommended', '1']);
+  assert.equal(r.code, 1);
+  assert.match(r.text, /^ERR turbo-run ask: the question holds the finding code WR-01/);
+  assert.equal(readLaneStatus(root, '32').reason, 'owner question ask-2', 'nothing written');
+  assert.equal((await run(root, ['ask', '32', '--question', 'Что дальше?', '--option', 'нет разделителя', '--option', 'a|b', '--recommended', '1'])).code, 2);
+  assert.equal((await run(root, ['ask', '32'])).code, 2);
+});
+
+test('turbo-run ask --about-review: a review that keeps finding edges in the same code adds the plain sentence and the live-check option', async () => {
+  const root = tmpGitRepo();
+  project(root);
+  ruConfig(root);
+  const file = path.join(root, '.planning', 'phases', '32-auth', '32-REVIEW.md');
+  const rev = (title, file2 = 'src/stop.js') => `---\nstatus: issues_found\n---\n\n### WR-01: ${title}\n\n**File:** \`${file2}:10\`\n**Issue:** x\n`;
+  const git = (...a) => execFileSync('git', a, { cwd: root, stdio: 'pipe' });
+  for (const t of ['Stop waits forever', 'Stop races the flush', 'Flush drops the last item']) {
+    fs.writeFileSync(file, rev(t));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'review');
+  }
+  let r = await run(root, [...ASK, '--about-review']);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /^review loop: 3 reviews in a row found new edges in the same code \(src\/stop\.js\); added the sentence and the option «Хватит шлифовать — живая проверка»$/m);
+  const q = JSON.parse((await run(root, ['questions', '--open', '--json'])).text).find((x) => x.id === 'ask-1');
+  assert.match(q.context, /^Ревью в третий раз подряд находит новые крайние случаи в том же коде: .* Ревью нашло новые мелочи в коде остановки\.$/);
+  assert.deepEqual(q.options.map((o) => o.label), ['Сразу живая проверка', 'Сначала исправить', 'Хватит шлифовать — живая проверка']);
+  fs.writeFileSync(file, rev('Bad header', 'src/http.js'));
+  r = await run(root, [...ASK, '--about-review']);
+  assert.match(r.text, /^review loop: none \(1 review round\)$/m);
+  assert.equal(JSON.parse((await run(root, ['questions', '--open', '--json'])).text).find((x) => x.id === 'ask-2').options.length, 2);
+});
+
+test('turbo-run questions --deliver lists an answered lane question for the lane itself; --delivered --path lane; owner-gaps prints the planner paragraph', async () => {
+  const root = project();
+  ruConfig(root);
+  await run(root, ASK);
+  await run(root, ['answer', '32', 'ask-1', '--option', '2', '--by', 'pane']);
+  let r = await run(root, ['questions', '32', '--deliver']);
+  assert.match(r.text, /^ask-1 · your own question \(take it yourself, no agent\)\n {2}message: The owner's answer to the question you asked \(ask-1\): option 2, Сначала исправить — /);
+  r = await run(root, ['questions', '32', '--delivered', 'ask-1', '--path', 'lane']);
+  assert.equal(r.text, 'ask-1: delivered (lane)');
+  fs.writeFileSync(path.join(root, '.planning', 'phases', '32-auth', '32-REVIEW.md'), '### WR-01: Stop waits forever\n\n**File:** `src/stop.js:3`\n**Issue:** the timer is never cleared.\n');
+  r = await run(root, ['owner-gaps', '32', '--review', 'WR-01']);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /^Owner-chosen gaps: .* 1\. Code review finding WR-01 \(warning\) in src\/stop\.js: Stop waits forever\. \*\*Issue:\*\* the timer is never cleared\.$/);
+  r = await run(root, ['owner-gaps', '32', '--review', 'WR-07']);
+  assert.equal(r.code, 1);
+  assert.match(r.text, /^ERR turbo-run owner-gaps: no finding WR-07 in REVIEW\.md/);
+  assert.equal((await run(root, ['owner-gaps', '32'])).code, 1);
+  assert.equal((await run(root, ['owner-gaps', '32', '--gap', 'x'])).code, 2);
 });

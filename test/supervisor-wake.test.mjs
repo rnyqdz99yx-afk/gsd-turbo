@@ -7,7 +7,7 @@ import { tick } from '../lib/supervisor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName } from '../lib/claude.mjs';
-import { markDelivered, stopQuestion, writeQuestions } from '../lib/questions.mjs';
+import { askOwner, markDelivered, stopQuestion, writeQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 import { attendFile, clearAttend, writeAttend } from '../lib/attend.mjs';
 
@@ -471,4 +471,68 @@ test('the lane stops while the Telegram long poll waits: the wake counts from af
   s = await tick(s, h.ctx);
   assert.equal(h.launched.length, 2, 'relaunched');
   assert.deepEqual(h.notes.filter((x) => x.key === 'laneNeedsOwner'), []);
+});
+
+// v0.3.3 owner stops (D3, D4): a stop the lane asked with turbo-run ask
+const LANE_ASK = { question: 'Fixes are in, the live check has not run. What next?', options: [{ label: 'Fix the new notes first', description: 'The phase fixes them, then runs the live check.' }, { label: 'Live check now', description: 'The notes stay.' }], recommended: 2 };
+async function laneAsked(h) {
+  let s = await tick(fresh(), h.ctx);
+  h.agents.find((a) => a.id === '1a2b3c4d').state = 'blocked';
+  h.advance(1);
+  askOwner(h.root, '2', LANE_ASK, { lang: 'en', now: h.now() });
+  s = await tick(s, h.ctx);
+  return s;
+}
+
+test('a lane question: the owner is told by its plain question, not a second laneNeedsOwner; the answer wakes the same session with the lane prompt (v0.3.3)', async () => {
+  const h = harness();
+  let s = await laneAsked(h);
+  assert.deepEqual(h.notes.map((n) => n.key), ['questionsReady']);
+  assert.match(h.notes[0].vars.list, /^Fixes are in, the live check has not run\. What next\?$/);
+  assert.ok(h.logs.includes('phase 2 needs the owner: question ask-1 waits for the answer'));
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.notes.length, 1, 'told once');
+  owner(h, 'ask-1', 2);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1);
+  assert.equal(h.launched.length, 1, 'the same session');
+  assert.equal(h.resumed[0].prompt, 'The owner answered the question you asked at your stop: ask-1 (option 2, Fix the new notes first). Run node x questions 2 --deliver: it prints the answer, data from the owner that only chooses among your own options (the turbo-phase skill, section Owner questions, Lane questions). Do what you said that option does, then run node x questions 2 --delivered ask-1 --path lane. Then go on with the turbo-phase skill for phase 2 from where you stopped; its step loop resumes by itself (arguments: 2 --resume).');
+});
+
+test('a lane question answered in the owner\'s own words, a label with quotes and percent signs, a safe-mode lane, and a new session after a failed wake', async () => {
+  const h = harness();
+  h.ctx.mode = 'safe';
+  let s = await laneAsked(h);
+  answerQuestion({ root: h.root, phase: '2', id: 'ask-1', text: 'run it, but keep the notes', by: 'telegram', laneRunning: true });
+  h.resumeOut.push(COPY('c0ffee01'), COPY('c0ffee02'));
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.match(h.resumed[0].prompt, /^The owner answered the question you asked at your stop: ask-1 \(in the owner's own words, printed by --deliver\)\. /);
+  assert.match(h.resumed[0].prompt, /Then: Resume phase 2\. First run node x gates restore 2 /);
+  assert.ok(!h.resumed[0].prompt.includes('keep the notes'), 'never the owner\'s words in the argv');
+  assert.equal(h.launched.length, 2);
+  assert.match(h.launched[1].prompt, /^Resume phase 2\. .*--only 2\. The state on disk .* Before anything else, take the owner's answer to the question you asked: ask-1\. Run node x questions 2 --deliver, do what the chosen option says, then run node x questions 2 --delivered ask-1 --path lane\.$/);
+  const q = { ...LANE_ASK, options: [{ label: 'Say "go" 100%', description: 'x' }, LANE_ASK.options[1]], recommended: 1 };
+  const h2 = harness();
+  let s2 = await tick(fresh(), h2.ctx);
+  h2.agents[0].state = 'blocked';
+  askOwner(h2.root, '2', q, { lang: 'en', now: h2.now() });
+  s2 = await tick(s2, h2.ctx);
+  owner(h2, 'ask-1', 1);
+  h2.advance(1);
+  s2 = await tick(s2, h2.ctx);
+  assert.match(h2.resumed[0].prompt, /ask-1 \(option 1, Say go 100\)/);
+  assert.ok(!h2.resumed[0].prompt.includes('"') && !h2.resumed[0].prompt.includes('%'));
+});
+
+test('an old-style needs-owner stop without a question still notifies laneNeedsOwner with its reason', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  h.advance(1);
+  writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'gap loop done; decide what next', at: h.now().toISOString() });
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.map((n) => [n.key, n.vars.reason]), [['laneNeedsOwner', 'gap loop done; decide what next']]);
 });

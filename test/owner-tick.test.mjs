@@ -59,3 +59,14 @@ test('questionsReady names each question by its own plan and task, never by the 
   await ownerTick(ctx, NOW, {});
   assert.equal(notes[0].vars.list, '32.1A-07b T12: Ship it?');
 });
+
+test('a lane question (no plan, no header) is listed by its plain question alone, whole when it is the only one; several are cut to 80 characters each (v0.3.3, D3)', async () => {
+  const { root, ctx, notes } = project();
+  const long = `${'The fixes are in and the live check has not run yet. '.repeat(4)}What next?`;
+  writeQuestions(root, '3', [Q('ask-1', { plan: null, task: null, header: '', question: long, stopped: true, source: 'lane' })]);
+  await ownerTick(ctx, NOW, {});
+  assert.equal(notes[0].vars.list, long);
+  writeQuestions(root, '4', [Q('ask-1', { phase: '4', plan: null, task: null, header: '', question: long, stopped: true, source: 'lane' }), Q('04-01-t2', { phase: '4', plan: '04-01', question: long })]);
+  await ownerTick(ctx, NOW, {});
+  assert.equal(notes[1].vars.list, `${long.slice(0, 80)}; 04-01 T2: ${long.slice(0, 80)}`);
+});

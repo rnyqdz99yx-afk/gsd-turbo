@@ -28,9 +28,10 @@ import { quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
 import { deliveryState, dropLaneQuestions, readQuestions, refreshQuestions } from '../lib/questions.mjs';
 import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
+import { runLanesCommand } from '../lib/cli-lanes.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|questions|answer|agent-tail> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|questions|answer|agent-tail> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
@@ -838,6 +839,11 @@ async function main() {
         die(`phase ${id} is not attended: nothing to hand back (${marks ? `attended: phase ${marks}` : 'no phase is attended'}); nothing was changed. To give phase ${id} back to its lane without a sitting: turbo-run resume ${id} --start`);
       }
       return resumePhase(root, id, true);
+    }
+    case 'lanes': {
+      // spec §4, §4.1 (Stage 4 L0): the slots of this project: setup, trust, remove
+      if (!root) die('no .planning directory found');
+      return runLanesCommand(args, { root });
     }
     case 'context': {
       // a lane decides on this (paused-context at or above its stop percentage): anything it cannot measure

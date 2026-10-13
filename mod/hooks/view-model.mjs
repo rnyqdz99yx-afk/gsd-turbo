@@ -104,13 +104,13 @@ const VIEW_WORDS = {
     need: {
       none: 'Nothing needed from you now', held: 'Needed from you: answer the question above — the phase waits for it', ahead: (n) => `You can answer ${n === 1 ? 'the question' : `the ${n} questions`} above ahead`,
       decide: 'Needed from you: the phase waits for your decision — the reason is above', failed: 'Needed from you: the phase stopped by a failure and will not go on by itself', fullMode: 'Needed from you: its final checks need full mode',
-      ciLast: 'If the last CI attempt fails, the phase will ask you', live: 'At acceptance you may be needed for live checks only you can do',
+      ciLast: 'If the last CI attempt fails, the phase will ask you',
     },
     kind: {
       feat: (n) => `${n} new ${n === 1 ? 'feature' : 'features'}`, fix: (n) => `${n} ${n === 1 ? 'fix' : 'fixes'}`, refactor: (n) => `${n} ${n === 1 ? 'code rework' : 'code reworks'}`,
       test: (n) => `${n} test ${n === 1 ? 'change' : 'changes'}`, docs: (n) => `${n} docs ${n === 1 ? 'change' : 'changes'}`, other: (n) => `${n} other ${n === 1 ? 'change' : 'changes'}`,
     },
-    lastAgo: (ago) => `the last ${ago}`,
+    lastAgo: (ago) => `latest ${ago}`,
   },
   ru: {
     ...WORDS.ru,
@@ -166,7 +166,7 @@ const VIEW_WORDS = {
     need: {
       none: 'От вас сейчас ничего не нужно', held: 'Нужны вы: ответить на вопрос выше — фаза ждёт его', ahead: (n) => (n === 1 ? 'На вопрос выше можно ответить заранее' : `На вопросы выше (${n}) можно ответить заранее`),
       decide: 'Нужны вы: фаза ждёт вашего решения — причина выше', failed: 'Нужны вы: фаза остановилась из-за сбоя и сама не продолжит', fullMode: 'Нужны вы: финальным проверкам нужен полный режим',
-      ciLast: 'Если последняя попытка починить CI не выйдет, фаза спросит вас', live: 'На приёмке могут понадобиться вы: живые проверки, которые без вас не сделать',
+      ciLast: 'Если последняя попытка починить CI не выйдет, фаза спросит вас',
     },
     kind: {
       feat: (n) => `${n} ${ruPlural(n, 'новая возможность', 'новые возможности', 'новых возможностей')}`, fix: (n) => `${n} ${ruPlural(n, 'исправление', 'исправления', 'исправлений')}`, refactor: (n) => `${n} ${ruPlural(n, 'переделка кода', 'переделки кода', 'переделок кода')}`,
@@ -371,6 +371,9 @@ function ciFixing(lane) {
   return { n: Math.min(Math.max(1, fixes), m), m, last: fixes >= m };
 }
 
+// A red CI the running phase fixes itself while the supervisor runs: the one condition Now and the red-CI line use.
+const selfFixing = (view, lane) => (view?.supervisor?.running ? ciFixing(lane) : null);
+
 // A red CI the phase fixes itself, in words: the attempt, or at the bound the last one (the owner may be asked next).
 const ciWords = (t, fix) => (fix.last ? t.verdict.ciLast : t.verdict.ciFixing(fix.n, fix.m));
 
@@ -507,12 +510,13 @@ function runSection(t, view, v, columns) {
     const why = laneReason(lane.reason);
     const sign = lastSign(lane);
     // a red CI the verdict does not speak of (an answer waits, the phase stopped) is said under it all the same
-    const fixing = live ? ciFixing(lane) : null;
-    const red = lane.push?.ci === 'red' && !(i === 0 && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
+    // a red CI the phase fixes itself is said by Now (nowRow); one that needs the owner, here unless the verdict says it
+    const fixing = selfFixing(view, lane);
+    const red = lane.push?.ci === 'red' && !fixing && !(i === 0 && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
     const under = [
       nowRow(t, view, lane),
       sign ? text(toned(live && lane.quiet ? 'warn' : 'dim', { wrap: 'truncate-end' }), t.life(since(t, sign, view.at) ?? '-')) : null,
-      red ? text(toned(fixing ? 'warn' : 'bad', { wrap: 'wrap' }), fixing ? ciWords(t, fixing) : t.verdict.ciRed(asked)) : null,
+      red ? text(toned('bad', { wrap: 'wrap' }), t.verdict.ciRed(asked)) : null,
       why ? text(toned(STOPPED.has(lane.status) ? 'bad' : 'dim', { wrap: 'wrap' }), `${t.reason}: ${cut(why, 200)}`) : null,
       ...working.map((a) => agentRow(t, a, view.at, live, columns)),
       finished ? text(TONES.dim, t.helpersDone(finished, working.length > 0)) : null,
@@ -555,7 +559,7 @@ function questionCard(t, view, q, field) {
 const NOW_ORDER = ['gsd-code-fixer', 'gsd-debugger', 'gsd-code-reviewer', 'gsd-security-auditor', 'gsd-nyquist-auditor', 'gsd-integration-checker', 'gsd-verifier', 'turbo-uat', 'gsd-executor', 'gsd-planner', 'gsd-plan-checker', 'gsd-phase-researcher'];
 function nowOf(t, view, lane) {
   if (!lane || laneForm(view, lane) !== 'running') return null;
-  const fix = ciFixing(lane);
+  const fix = selfFixing(view, lane);
   if (fix) return { tone: 'warn', text: fix.last ? t.now.ciLast : t.now.ciFix(fix.n, fix.m) };
   const plain = (s) => ({ tone: 'plain', text: s });
   const working = list(lane.agents).filter((a) => a.state === 'running');
@@ -593,8 +597,8 @@ export function phaseSteps(lane) {
 
 // What comes next (D4): the steps ahead joined with arrows, to the next phase or the end of the run; then when the
 // owner is needed, from what turbo knows: the question the phase waits for, or a stop for a decision without one, a
-// failure, full mode, the questions that can be answered ahead, the last CI attempt; else nothing needed; and while
-// acceptance is ahead, the live checks only the owner can do. null for a phase done or no lane.
+// failure, full mode, the questions that can be answered ahead, the last CI attempt; else nothing needed. null for a
+// phase done or no lane.
 // { chain, needs: [{ tone, text }] }.
 function nextOf(t, view, lane) {
   if (!lane || lane.status === 'done') return null;
@@ -609,9 +613,9 @@ function nextOf(t, view, lane) {
   if (lane.status === 'failed') need('bad', t.need.failed);
   if (lane.held === 'fullMode') need('bad', t.need.fullMode);
   if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
-  if (ciFixing(lane)?.last) need('warn', t.need.ciLast);
+  if (selfFixing(view, lane)?.last) need('warn', t.need.ciLast);
+  // the view knows no owner-only acceptance items ahead of time: no guess about them here (review r1)
   if (!needs.length) need('ok', t.need.none);
-  if (phaseSteps(lane).some((s) => s.step === 'uat' && s.state !== 'done')) need('dim', t.need.live);
   return { chain: [...ahead, last ? t.runEnd : t.nextPhase].join(' → '), needs };
 }
 

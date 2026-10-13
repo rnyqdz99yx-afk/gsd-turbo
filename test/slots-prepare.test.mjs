@@ -156,3 +156,25 @@ test('free and trusted for a job; remove only a free slot, with its trust; links
   refused(() => removeSlot(p.root, t.config, 3, t.deps), 'foreign');
   assert.equal(fs.existsSync(path.join(foreign, 'x')), true);
 });
+
+test('a failed job\'s commits are never reset or deleted: prepare of the same phase and of another phase refuses unmerged (C1)', () => {
+  const { p, t, s1 } = ready();
+  prepareSlot(p.root, 1, { kind: 'phase', phase: '3' }, t.deps);
+  fs.writeFileSync(path.join(s1, 'work.js'), 'x');
+  gitIn(s1, 'add', 'work.js');
+  gitIn(s1, 'commit', '-q', '-m', 'work');
+  const work = head(s1);
+  releaseSlot(p.root, 1, { outcome: 'failed', config: t.config });
+  assert.equal(listSlots(p.root, t.config, t.deps)[0].state, 'free', 'committed work leaves the tree clean');
+  refused(() => prepareSlot(p.root, 1, { kind: 'phase', phase: '3' }, t.deps), 'unmerged', /turbo\/p3/);
+  assert.deepEqual([branchOf(s1), head(s1), gitIn(s1, 'rev-parse', 'turbo/p3')], ['turbo/p3', work, work]);
+  refused(() => prepareSlot(p.root, 1, { kind: 'phase', phase: '4' }, t.deps), 'unmerged', /turbo\/p3/);
+  assert.deepEqual([branchOf(s1), gitIn(s1, 'rev-parse', 'turbo/p3')], ['turbo/p3', work]);
+  assert.equal(readSlotRecord(s1).job.outcome, 'failed');
+  // once main has the work, the next job goes ahead and the old branch is deleted with -d
+  p.git('fetch', '-q', s1, 'turbo/p3');
+  p.git('merge', '-q', '--ff-only', 'FETCH_HEAD');
+  const r = prepareSlot(p.root, 1, { kind: 'phase', phase: '4' }, t.deps);
+  assert.deepEqual([r.branch, head(s1)], ['turbo/p4', work]);
+  assert.equal(gitIn(s1, 'branch', '--list', 'turbo/p3'), '');
+});

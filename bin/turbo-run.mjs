@@ -26,7 +26,7 @@ import { measureContext } from '../lib/context.mjs';
 import { buildView, formatView, openQuestions } from '../lib/view.mjs';
 import { quietOnClosedPipe, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
-import { deliveryState, readQuestions, refreshQuestions } from '../lib/questions.mjs';
+import { deliveryState, dropLaneQuestions, readQuestions, refreshQuestions } from '../lib/questions.mjs';
 import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -582,6 +582,13 @@ async function resumePhase(root, id, andStart) {
   clearAttend(root, id);
   // the owner's resume gives turbo-phase's bounded rounds a fresh budget; the steps done stay done
   clearAttempts(root, id);
+  // review 1: the restarted step asks again; a lane question left open would block its wakes or answer another step
+  try {
+    const dropped = dropLaneQuestions(root, id);
+    if (dropped.length) out(`dropped questions: ${dropped.join(', ')} (the restarted step asks again)`);
+  } catch (err) {
+    process.stderr.write(`warn: the lane questions of phase ${id} were not dropped (${String(err?.message ?? err).split(/\r?\n/)[0]})\n`);
+  }
   // the questions as the plans are now, before any supervisor tick notifies them: a sitting may have finished plans
   // whose questions (a released human-action stop, never answered there) would otherwise be announced again
   if (openPlans(root, id) !== null) {

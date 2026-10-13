@@ -5,7 +5,7 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { gitIn } from './helpers/slots.mjs';
 import { finishPhase, laneOf, laneProject, mergeCtx, reportReady } from './helpers/lane-merge.mjs';
-import { mergeFollowUp, mergeHolds, mergeReady, mergeState } from '../lib/merge.mjs';
+import { mergeFollowUp, mergeHolds, mergePlanningOnly, mergeReady, mergeState } from '../lib/merge.mjs';
 import { setMergeHold } from '../lib/integrate.mjs';
 import { STEPS, completeStep, readProgress } from '../lib/phase-progress.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
@@ -153,4 +153,51 @@ test('L1\'s plugin loader accepts lib/merge.mjs', async () => {
   const { loadLanePlugins } = await import('../lib/lane-plugins.mjs');
   const plugins = await loadLanePlugins({ importer: async (href) => (href.endsWith('/merge.mjs') ? import(href) : Promise.reject(Object.assign(new Error(`Cannot find module '${href.split('/').pop()}'`), { code: 'ERR_MODULE_NOT_FOUND' }))) });
   assert.deepEqual([plugins.mergeReady, plugins.mergeFollowUp, plugins.mergeState, plugins.mergeHolds], [mergeReady, mergeFollowUp, mergeState, mergeHolds]);
+});
+
+const prepLane = (p) => ({ key: 'prep-4', job: 'prep', phase: '4', slot: 1, slotPath: p.slot, branch: 'turbo/prep-4' });
+// reconcile R9: L3 passes its allowedFor(job); this predicate stands in for it
+const onlyPhase4 = { allowed: (f) => f.startsWith('.planning/phases/04-') };
+
+test('mergePlanningOnly: a prep branch that touches only its phase directory merges even after main moved; a repeat is a no-op', async () => {
+  const p = laneProject({ job: { kind: 'prep', phase: '4' } });
+  p.writeSlot('.planning/phases/04-next/04-CONTEXT.md', '# Context\n');
+  const tip = p.commitSlot('docs(04): context');
+  p.writeMain('src/other.js', 'export const other = 1;\n');
+  p.commitMain('feat: elsewhere');
+  const m = mergeCtx(p);
+  const r = await mergePlanningOnly(m.ctx, prepLane(p), onlyPhase4);
+  assert.deepEqual([r.outcome, r.sha], ['merged', p.inMain('rev-parse', 'HEAD')]);
+  assert.equal(p.inMain('log', '-1', '--format=%s'), 'Merge prep 4 (turbo lane 1)');
+  assert.equal(p.inMain('rev-parse', 'HEAD^2'), tip);
+  assert.deepEqual(await mergePlanningOnly(m.ctx, prepLane(p), onlyPhase4), { outcome: 'merged', reason: 'already in main', sha: r.sha });
+  assert.equal(p.inMain('rev-list', '--merges', '--count', 'HEAD'), '1');
+  assert.equal(readSlotRecord(p.slot).job.state, 'active', 'L3 releases the slot itself');
+});
+
+test('mergePlanningOnly refuses a branch that touched anything else, needs the owner on a conflict, waits for a dirty main; main stays as it was', async () => {
+  const p = laneProject({ job: { kind: 'prep', phase: '4' } });
+  p.writeSlot('.planning/phases/04-next/04-CONTEXT.md', '# Context\n');
+  p.writeSlot('src/app.js', 'export const app = 9;\n');
+  p.commitSlot('docs(04): context and a code edit');
+  const m = mergeCtx(p);
+  const head = p.inMain('rev-parse', 'HEAD');
+  let r = await mergePlanningOnly(m.ctx, prepLane(p), onlyPhase4);
+  assert.deepEqual(r, { outcome: 'refused', reason: 'the branch turbo/prep-4 changes files it may not: src/app.js; nothing was merged' });
+  assert.equal(p.inMain('rev-parse', 'HEAD'), head);
+
+  const q = laneProject({ job: { kind: 'prep', phase: '4' } });
+  q.writeSlot('.planning/phases/04-next/04-CONTEXT.md', '# Context: lane\n');
+  q.commitSlot('docs(04): context');
+  q.writeMain('.planning/phases/04-next/04-CONTEXT.md', '# Context: by hand\n');
+  q.commitMain('docs(04): by hand');
+  const mq = mergeCtx(q);
+  r = await mergePlanningOnly(mq.ctx, prepLane(q), onlyPhase4);
+  assert.equal(r.outcome, 'needs-owner');
+  assert.match(r.reason, /^merging turbo\/prep-4 into main failed: .+; nothing was merged$/);
+  assert.equal(fs.existsSync(path.join(q.root, '.git', 'MERGE_HEAD')), false);
+  assert.equal(q.inMain('status', '--porcelain', '--untracked-files=no'), '');
+  q.writeMain('src/app.js', 'dirty\n');
+  r = await mergePlanningOnly(mq.ctx, prepLane(q), onlyPhase4);
+  assert.deepEqual(r, { outcome: 'wait', reason: 'the main checkout has uncommitted changes: src/app.js' });
 });

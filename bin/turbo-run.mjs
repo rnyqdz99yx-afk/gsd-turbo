@@ -5,7 +5,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '../lib/paths.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, pushSettings } from '../lib/config.mjs';
+import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, laneGates, pushSettings } from '../lib/config.mjs';
+import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
 import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { createGit } from '../lib/push.mjs';
@@ -31,11 +32,11 @@ import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, o
 import { runLanesCommand } from '../lib/cli-lanes.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|questions|answer|agent-tail> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|questions|answer|agent-tail> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy', '--mode', '--from', '--to', '--only']);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const START_USAGE = 'usage: turbo-run start [--from <phase>] [--to <phase>] | start --only <phase> | start --all';
@@ -844,6 +845,43 @@ async function main() {
       // spec §4, §4.1 (Stage 4 L0): the slots of this project: setup, trust, remove
       if (!root) die('no .planning directory found');
       return runLanesCommand(args, { root });
+    }
+    case 'lock':
+    case 'unlock': {
+      // spec §5 (Stage 4 L1, D13): one-off locks on shared resources; a lane runs them from its slot, and the lock
+      // files live in the control root (locksDir)
+      const LOCK_USAGE = 'usage: turbo-run lock <gate> <phase> [--wait-seconds <s>] | turbo-run unlock <gate> <phase>';
+      if (!root) die('no .planning directory found');
+      const [gate, phase] = pos;
+      if (!gate || !phase || !PHASE_ID.test(phase)) die(LOCK_USAGE, 2);
+      const config = runtimeConfig(loadConfig(root));
+      const known = laneGates(config);
+      if (!known.includes(gate)) die(`unknown gate ${gate} (known: ${known.join(', ')}; add your own in lanes.gates)\n${LOCK_USAGE}`, 2);
+      const id = normalizePhaseId(phase);
+      if (cmd === 'unlock') {
+        const r = releaseGate(root, gate, id);
+        if (r.released) out(`unlocked ${gate}`);
+        else if (r.why === 'not-held') out(`${gate} is not locked`);
+        else {
+          process.stderr.write(`gate ${gate} is held by phase ${r.holder}, not ${id}; nothing changed\n`);
+          return 1;
+        }
+        return 0;
+      }
+      const raw = flag(args, '--wait-seconds', '540');
+      const seconds = /^\d+$/.test(raw) ? Number(raw) : NaN;
+      if (!(seconds >= 0 && seconds <= 86400)) die(`--wait-seconds takes a whole number of seconds from 0 to 86400\n${LOCK_USAGE}`, 2);
+      const r = await acquireGate(root, gate, id, { waitMs: seconds * 1000, declaredBy: (g) => gateDeclaredBy(readJson(supPath(root), null), g, id) });
+      if (r.acquired) {
+        out(r.already ? `${gate} is already held by phase ${id}` : `locked ${gate} for phase ${id}`);
+        return 0;
+      }
+      const h = r.holder;
+      process.stderr.write(`gate ${gate} is held by phase ${h.phase ?? 'unknown'} since ${h.at ?? 'unknown'} (${h.by === 'lane' ? 'declared by its lane' : 'lock'}); waited ${seconds} s\n`);
+      try {
+        await notify(config, msg(config.lang, 'gateWait', { phase: id, gate, holder: h.phase ?? '?', minutes: Math.round(seconds / 60) }));
+      } catch { /* best-effort: the lane sees exit 3 */ }
+      return 3;
     }
     case 'context': {
       // a lane decides on this (paused-context at or above its stop percentage): anything it cannot measure

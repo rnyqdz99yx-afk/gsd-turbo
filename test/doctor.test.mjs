@@ -4,6 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { doctor, supportsMods } from '../lib/doctor.mjs';
+import { mainProject, slotFixture } from './helpers/slots.mjs';
+import { setupSlots, slotPath } from '../lib/slots.mjs';
+import { trustLine, untrustSlot } from '../lib/trust.mjs';
 
 function env() {
   const home = tmpDir('home');
@@ -261,4 +264,43 @@ test('answer.telegram on while Telegram answers cannot work is a warning naming 
   assert.deepEqual(group.warnings, ['answer.telegram is on, but Telegram answers are off: TURBO_TELEGRAM_CHAT is not the id of a private chat (a positive number without a leading zero; a group or an @name cannot answer)']);
   assert.ok(!JSON.stringify(group).includes(token) && !JSON.stringify(group).includes('@owner'));
   assert.deepEqual(run({ TURBO_TELEGRAM_TOKEN: token, TURBO_TELEGRAM_CHAT: '4242' }).warnings, []);
+});
+
+test('doctor: lane slots, their trust and dependencies, and GSD\'s branching strategy (Stage 4); none of them changes the mode', () => {
+  const e = env();
+  const check = (r, name) => r.checks.find((c) => c.name === name);
+  // a project without slots: a passing check that says so; GSD's value unreadable: a warning
+  const plain = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.291'), claudeBin: BIN });
+  assert.equal(plain.mode, 'full');
+  assert.deepEqual([check(plain, 'lane-slots').ok, check(plain, 'lane-slots').warn], [true, true]);
+  assert.match(check(plain, 'lane-slots').detail, /^no slots yet in .*: turbo-run lanes setup \(start creates them\)$/);
+  assert.deepEqual([check(plain, 'git-branching').ok, check(plain, 'git-branching').warn], [true, true]);
+
+  const p = mainProject({ files: { 'package.json': '{"name":"app","private":true}\n', 'package-lock.json': '{"lockfileVersion":3}\n' } });
+  const t = slotFixture(p.root);
+  fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ max_lanes: 2, lanes: { dir: t.dir } }));
+  setupSlots(p.root, t.config, t.deps);
+  const branching = (v) => (cmd, args) => (args.includes('git.branching_strategy') ? `${v}\n` : execOk('2.1.291')(cmd, args));
+  const run = (v = 'none') => doctor({ root: p.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: branching(v), claudeBin: BIN, claudeJson: t.claudeJson, slotDeps: t.deps });
+  let r = run();
+  assert.equal(r.mode, 'full', JSON.stringify(r.checks));
+  assert.deepEqual([check(r, 'git-branching').ok, check(r, 'git-branching').detail], [true, 'none']);
+  assert.deepEqual([check(r, 'lane-slots').ok, check(r, 'lane-slots').detail], [true, `2 slot(s) in ${t.dir}`]);
+  assert.deepEqual([check(r, 'lane-trust').ok, check(r, 'lane-trust').detail], [true, '2 slot(s) trusted']);
+  assert.deepEqual([check(r, 'lane-deps').ok, check(r, 'lane-deps').warn, check(r, 'lane-deps').detail], [true, true, 'installs at the next job: lane-1 ., lane-2 .']);
+  r = run('phase');
+  assert.equal(check(r, 'git-branching').ok, false);
+  assert.match(check(r, 'git-branching').detail, /^git\.branching_strategy is phase: .*gsd-tools config-set git\.branching_strategy none$/);
+  assert.equal(r.mode, 'full');
+  const s1 = slotPath(p.root, t.config, 1);
+  untrustSlot(s1, { file: t.claudeJson });
+  fs.appendFileSync(path.join(s1, 'README.md'), 'x\n');
+  r = run();
+  assert.deepEqual([check(r, 'lane-slots').ok, check(r, 'lane-slots').detail], [false, 'lane-1 dirty (1 changed path)']);
+  assert.deepEqual([check(r, 'lane-trust').ok, check(r, 'lane-trust').detail], [false, trustLine(s1)]);
+  assert.equal(r.mode, 'full');
+  fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lanes: { mode: 'checkout' } }));
+  r = run('phase');
+  assert.deepEqual([check(r, 'lane-slots').ok, check(r, 'lane-slots').detail], [true, 'lanes.mode checkout: one lane in this checkout, no slots']);
+  assert.deepEqual([check(r, 'git-branching'), check(r, 'lane-trust'), check(r, 'lane-deps')], [undefined, undefined, undefined]);
 });

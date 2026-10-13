@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gitIn, mainProject, slotFixture } from './helpers/slots.mjs';
 import { controlRoot, dirKey, localRemotePath } from '../lib/paths.mjs';
-import { SlotRefused, listSlots, maskRegExp, readSlotRecord, setupSlots, slotPath, slotsDir } from '../lib/slots.mjs';
+import { SlotRefused, installBash, listSlots, maskRegExp, readSlotRecord, runInstall, setupSlots, slotPath, slotsDir } from '../lib/slots.mjs';
 import { trustLine, trustState } from '../lib/trust.mjs';
 
 const refused = (fn, code, re) => assert.throws(fn, (e) => e instanceof SlotRefused && e.code === code && (!re || re.test(e.message)), `${code} ${re ?? ''}`);
@@ -106,4 +106,19 @@ test('a directory in a slot\'s place that is not a slot of this project is never
   assert.match(r.slots[0].why, /exists and is not slot 1 of this project/);
   assert.equal(fs.readFileSync(path.join(t.dir, 'lane-1', 'notes.txt'), 'utf8'), 'mine');
   assert.deepEqual(listSlots(p.root, t.config, t.deps).map((s) => [s.k, s.state]), [[1, 'foreign'], [2, 'free']]);
+});
+
+test('the install shell on Windows: Git Bash by its absolute path; a WSL bash ahead of it in PATH is refused with a clear message (M9)', () => {
+  const env = { PATH: String.raw`C:\Windows\System32;C:\Program Files\Git\bin` };
+  const cwd = String.raw`C:\Users\dev\app`;
+  const gitBash = String.raw`C:\Program Files\Git\bin\bash.exe`;
+  const wsl = installBash({ env, platform: 'win32', cwd, exists: (f) => /bash\.exe$/i.test(f) });
+  assert.equal(wsl.bash, null);
+  assert.ok(wsl.refused.startsWith(String.raw`C:\Windows\System32\bash.exe is WSL's bash`), wsl.refused);
+  const r = runInstall('npm ci', { cwd, platform: 'win32', env, exists: (f) => /bash\.exe$/i.test(f) });
+  assert.equal(r.code, 1);
+  assert.match(r.tail, /WSL/);
+  assert.deepEqual(installBash({ env, platform: 'win32', cwd, exists: (f) => f === gitBash }), { bash: gitBash, refused: null });
+  assert.deepEqual(installBash({ env: { PATH: '' }, platform: 'win32', cwd, exists: () => false }), { bash: null, refused: null });
+  assert.deepEqual(installBash({ platform: 'linux' }), { bash: 'bash', refused: null });
 });

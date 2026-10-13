@@ -290,7 +290,7 @@ test('the supervisor pushes the requested head once: fetch, ancestor check, scan
   assert.equal(r.remoteHead(), sha);
   const rec = readJson(recordFile(r.root, '3'));
   assert.deepEqual([rec.outcome, rec.sha, rec.branch, rec.remote, rec.at, rec.lastPush.ci], ['pushed', sha, 'main', 'origin', NOW.toISOString(), { state: 'none', reason: 'push.ci is none' }]);
-  assert.deepEqual(calls.map(sub), ['symbolic-ref', 'merge-base', 'config', 'fetch', 'merge-base', 'log', 'log', 'log', 'push']);
+  assert.deepEqual(calls.map(sub), ['symbolic-ref', 'merge-base', 'config', 'fetch', 'merge-base', 'merge-base', 'log', 'log', 'log', 'push']);
   const push = calls.at(-1);
   // config cannot widen the push: no mirror, no tags that follow, no submodule pushes
   assert.deepEqual(push, ['-c', 'remote.origin.mirror=false', 'push', '--quiet', '--no-follow-tags', '--no-recurse-submodules', 'origin', `${sha}:refs/heads/main`]);
@@ -375,7 +375,8 @@ test('a requested commit the remote branch already points at (pushed by hand): a
   const rec = readJson(recordFile(r.root, '3'));
   assert.deepEqual([rec.requestId, rec.outcome, rec.already, rec.sha, rec.lastPush], [req.id, 'pushed', true, sha, undefined]);
   assert.ok(!calls.some((a) => ['push', 'log'].includes(sub(a))), 'nothing scanned, nothing pushed');
-  assert.deepEqual(readJson(recordFile(r.root, '2')), other, 'the other phase keeps its CI watch');
+  const kept = readJson(recordFile(r.root, '2')).lastPush;
+  assert.deepEqual([kept.sha, kept.ci.state], [other.lastPush.sha, 'pending'], 'the other phase keeps its CI watch');
   assert.deepEqual(notes, []);
   assert.equal(describeRecord(rec).code, 0);
 });

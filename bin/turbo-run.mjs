@@ -34,13 +34,14 @@ import { listSlots, maxLanes, prepareSlot, releaseSlot, setupSlots, slotForPhase
 import { trustLine, trustState } from '../lib/trust.mjs';
 import { laneForPhase, laneLabel, lanesSummary, setupLines, supervisorLanes } from '../lib/lanes-state.mjs';
 import { loadLanePlugins } from '../lib/lane-plugins.mjs';
+import { jobLaneStatus } from '../lib/cli-jobs.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|questions|answer|agent-tail> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds']);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax']);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
 const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
@@ -989,8 +990,11 @@ async function main() {
       return code;
     }
     case 'lane-status': {
-      const [phase, status] = pos;
       if (!root) die('no .planning directory found');
+      // spec §6 (L3): the prep and annotate jobs' own statuses
+      if (args.includes('--job') || pos[0] === 'annotate') return jobLaneStatus(args, { root, out, err: (l) => process.stderr.write(`${l}
+`) });
+      const [phase, status] = pos;
       if (!phase || !PHASE_ID.test(phase) || !LANE_STATUSES.includes(status)) die(`lane-status <phase> <${LANE_STATUSES.join('|')}> [--reason <text>]`);
       const id = normalizePhaseId(phase);
       writeLaneStatus(root, id, status, { reason: flag(args, '--reason') });

@@ -681,7 +681,7 @@ test('paths: ancestors on Windows and POSIX, the turbo-run location from CLAUDE_
   assert.equal(firstLine('\n  invalid turbo config x\n    at y'), 'invalid turbo config x');
 });
 
-test('the mod is a plugin whose hooks module loads in plain Node and registers its four hooks; its version follows package.json', async () => {
+test('the mod is a plugin whose hooks module loads in plain Node and registers its six hooks; its version follows package.json', async () => {
   const plugin = JSON.parse(fs.readFileSync('mod/.claude-plugin/plugin.json', 'utf8'));
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
   assert.deepEqual([plugin.name, plugin.version], ['turbo-view', pkg.version]);
@@ -692,12 +692,12 @@ test('the mod is a plugin whose hooks module loads in plain Node and registers i
     hooks.push([event, typeof matcher === 'function' ? null : matcher]);
     return { catch() {} };
   });
-  assert.deepEqual(hooks, [['session.start', null], ['command.run', { command: 'turbo-view' }], ['ui.render', { component: 'AbovePrompt' }], ['ui.render', { component: 'Pane', requestId: PANE_ID }]]);
+  assert.deepEqual(hooks, [['session.start', null], ['command.run', { command: 'turbo-view' }], ['ui.render', { component: 'AbovePrompt' }], ['prompt.submit', null], ['ui.close', { id: PANE_ID }], ['ui.render', { component: 'Pane', requestId: PANE_ID }]]);
 });
 
 // The mod shell driven in plain Node through a fake $, for what the claude plugin test kit cannot stub: a $.clock.every
 // that fails (mock.clock owns clock.every). Each call loads a fresh copy of the module (its state is module-level).
-async function shell(name) {
+async function shell(name, { placed = [true] } = {}) {
   const { register } = await import(`../mod/hooks/register.mjs?${name}`);
   const hooks = {};
   register((event, a, b) => {
@@ -708,6 +708,7 @@ async function shell(name) {
   const timers = [];
   const runs = [];
   let starts = 0;
+  const opens = [];
   const $ = {
     session: { cwd: async () => '/work', surfaces: async () => ['terminal'] },
     fs: { exists: async (p) => ['/work/.planning', '/work/.planning/turbo', BIN, '/usr/bin/node'].includes(p) },
@@ -721,7 +722,7 @@ async function shell(name) {
         return t;
       },
     },
-    ui: { open: async () => ({ isPlaced: true }), toast() {}, log() {}, invalidate() {}, resolve: () => ({ Box: (p) => p, Text: (p) => p }) },
+    ui: { open: async (o) => (opens.push(o), { isPlaced: placed[Math.min(opens.length - 1, placed.length - 1)] }), panes: async () => (opens.length ? [{ id: 'turbo-view', isPlaced: placed[Math.min(opens.length - 1, placed.length - 1)] }] : []), toast() {}, log() {}, invalidate() {}, resolve: () => ({ Box: (p) => p, Text: (p) => p }) },
     command: { register: async () => {} },
   };
   const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
@@ -729,7 +730,7 @@ async function shell(name) {
   // the first band draw starts the reads (session.start alone spawns nothing)
   await hooks['ui.render:AbovePrompt']($, { component: 'AbovePrompt' }, async () => null);
   await settle();
-  return { hooks, $, timers, runs, settle, live: () => timers.filter((t) => !t.cancelled) };
+  return { hooks, $, timers, runs, opens, settle, live: () => timers.filter((t) => !t.cancelled) };
 }
 
 test('a clock that failed to start at the first read is started by the next band draw, and the view keeps reading', async () => {
@@ -918,4 +919,28 @@ test('the band says how to open the pane while it waits undrawn (a terminal unde
   assert.equal(bandLine(view(), { paneWaiting: false }), bandLine(view()));
   assert.equal(bandLine(view(), { error: 'x', paneWaiting: true }), 'turbo · ⚠️ x');
   assert.equal(bandLine(null, { paneWaiting: true }), null);
+});
+
+test('w1: a pane the owner closed by hand is never opened again by a prompt; /turbo-view opens it, and from then on a prompt may again', async () => {
+  const s = await shell('closed', { placed: [false, false] });
+  const prompt = async (text) => s.hooks['prompt.submit'](s.$, { text }, async (e) => ({ text: e.text }));
+  const band = async () => spanText(await s.hooks['ui.render:AbovePrompt'](s.$, { component: 'AbovePrompt' }, async () => null));
+  // the first read opened the pane by itself, and it waits undrawn
+  assert.equal(s.opens.length, 1);
+  assert.match(await band(), /open the pane: \/turbo-view$/);
+  const closed = await s.hooks['ui.close:turbo-view'](s.$, { id: PANE_ID, origin: 'person' }, async () => undefined);
+  assert.equal(closed, undefined);
+  assert.doesNotMatch(await band(), /open the pane/, 'a pane closed by hand: no hint');
+  assert.deepEqual(await prompt('hello'), { text: 'hello' }, 'the prompt goes on unchanged');
+  assert.equal(s.opens.length, 1, 'never reopened unasked');
+  await s.hooks['command.run:turbo-view'](s.$, { command: 'turbo-view', args: '' });
+  await s.settle();
+  assert.equal(s.opens.length, 2, '/turbo-view opens it');
+  assert.match(await band(), /open the pane/, 'still waiting (a host that places nothing): the hint is back');
+  await prompt('again');
+  assert.equal(s.opens.length, 3, 'opened by the owner again: a prompt may retry');
+  // an open closed by the mod or an unload is not the owner's
+  await s.hooks['ui.close:turbo-view'](s.$, { id: PANE_ID, origin: 'unload' }, async () => undefined);
+  await prompt('once more');
+  assert.equal(s.opens.length, 4);
 });

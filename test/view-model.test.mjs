@@ -1189,3 +1189,63 @@ test('toasts with lanes: only phase lanes speak; a slot lane that left is done o
   const all = toastsFor(p3, { ...p3, lanes: [] }).concat(toastsFor(ann, { ...ann, lanes: [] }));
   assert.ok(!all.join('\n').includes('null'), all.join('\n'));
 });
+
+// Review fixes (L4 final review)
+test('review C1: a slot lane released while running says nothing, also when seen is carried across reads as register.mjs carries it', () => {
+  const p3 = lanes3({ questions: [] }, { agents: [agent()] });
+  const [l32, l33, prep] = p3.lanes;
+  const carry = (...views) => views.reduce((acc, v) => { const r = diffViews(acc.prev, v, acc.seen); return { prev: v, seen: r.seen, toasts: r.toasts }; }, { prev: null, seen: undefined, toasts: [] });
+  assert.deepEqual(carry(p3, p3, { ...p3, lanes: [l32, prep] }).toasts, []);
+  const ready = { ...p3, lanes: [l32, { ...l33, status: 'ready' }, prep] };
+  assert.deepEqual(carry(p3, p3, ready, { ...p3, lanes: [l32, prep] }).toasts, ['Phase 33 done']);
+});
+
+test('review I1 (reconcile R12): the annotate card is "lane markup", in the pane, the toast and both languages; its lane opens', () => {
+  const ann = { key: 'annotate', job: 'annotate', phase: null, step: null };
+  const q = { id: 'm1', phase: 'annotate', plan: null, task: null, kind: 'decision', question: 'Remove the relaxed dependencies?', options: [{ label: 'Remove all', recommended: true }, { label: 'Leave as is' }], allowOther: true, state: 'open', rev: 1 };
+  const v = lanes3({ questions: [q] }, { agents: [agent()] }, {}, ann);
+  const l = lines(v);
+  assert.ok(l.includes('│ Remove the relaxed dependencies? (lane markup)'), l.join('\n'));
+  assert.ok(!l.join('\n').includes('annotate'), l.join('\n'));
+  const i = l.indexOf('Lane 3 — working out which phases can run together · 4m');
+  assert.ok(i > 0 && l[i + 1].startsWith('  '), 'the markup lane opens where its question is');
+  assert.ok(lines({ ...v, ...RU }).includes('│ Remove the relaxed dependencies? (разметка полос)'));
+  assert.deepEqual(toastsFor({ ...v, questions: [] }, v), ['New question (lane markup): “Remove the relaxed dependencies?”']);
+  assert.deepEqual(toastsFor({ ...v, ...RU, questions: [] }, { ...v, ...RU }), ['Новый вопрос (разметка полос): «Remove the relaxed dependencies?»']);
+});
+
+test('review I2: a lane the supervisor stopped alone says so, opens, sets the verdict and what is needed', () => {
+  const v = lanes3({ questions: [] }, { agents: [agent()] }, { halted: { why: 'missing', at: '2026-01-01T10:50:00.000Z' } });
+  const l = lines(v);
+  assert.equal(l[0], 'Run — a lane stopped — the other lanes go on');
+  const i = l.indexOf('Phase 33 · lane 2 stopped — the other lanes go on · step: quality checks · 2 of 4 plans done · 24m');
+  assert.ok(i > 0 && l[i + 1].startsWith('  '), l.join('\n'));
+  assert.ok(l.includes('  Needed from you: a stopped lane waits for you to resume it'), l.join('\n'));
+  assert.ok(lines({ ...v, ...RU }).includes('Фаза 33 · полоса 2 остановилась — остальные полосы идут дальше · шаг: проверки качества · 2 из 4 планов готово · 24 мин'));
+  assert.equal(bandLine({ ...v, lanes: v.lanes.slice(0, 2) }), 'turbo · phase 32: running plans 5/9 · phase 33 stopped — the other lanes go on · CI ✓');
+});
+
+test('review I3: a lane that finished and is being merged is calm: its own words, one line, never silent', () => {
+  const v = lanes3({ questions: [] }, { agents: [agent()] }, { status: 'ready', step: null, quiet: true, agents: [] });
+  const l = lines(v);
+  assert.equal(l[0], 'Run — all fine');
+  const i = l.indexOf('Phase 33 · lane 2 done — being merged into the main branch · 2 of 4 plans done · 24m');
+  assert.ok(i > 0 && !l[i + 1].startsWith('  '), l.join('\n'));
+  assert.ok(lines({ ...v, ...RU }).includes('Фаза 33 · полоса 2 готова — вливается в основную ветку · 2 из 4 планов готово · 24 мин'));
+  const prepped = lanes3({ questions: [] }, { agents: [agent()] }, {}, { status: 'prepped', step: null });
+  assert.ok(lines(prepped).includes('Phase 35 · lane 3 done — being merged into the main branch · 3m'), lines(prepped).join('\n'));
+});
+
+test('review M8: a lone prep lane draws no phase chain and no phase steps, only what is needed from the owner', () => {
+  const l = lines(view({}, { key: 'prep-35', job: 'prep', slot: 1, phase: '35', step: 'discuss', plans: null }));
+  assert.equal(l[0], 'Phase 35 · lane 1 — getting ready ahead: discussion · 1h 12m · needs your answer (1)');
+  assert.ok(!l.includes('Phase steps:'), l.join('\n'));
+  const i = l.indexOf('What comes next:');
+  assert.deepEqual(l.slice(i, i + 3), ['What comes next:', '  You can answer the question above ahead', '']);
+});
+
+test('review M3: more than three phases waited for end with …; a gate wait without a gate says nothing', () => {
+  const s = (next) => runSummary(lanes3({ questions: [], next }));
+  assert.equal(s({ phase: '36', why: 'deps', waitsFor: ['31', '32', '33', '34'] }), '3 lanes · next: phase 36 waits for phases 31, 32, 33, …');
+  assert.equal(s({ phase: '36', why: 'gates', waitsFor: [], gate: null }), '3 lanes');
+});

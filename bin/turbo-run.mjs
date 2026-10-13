@@ -298,7 +298,8 @@ async function makeCtx(root, mode = 'safe') {
       lanes: createLaneProbe(root),
       fingerprint: fingerprint(root),
       // Stage 4 (D11): while two or more lanes run, every notification ends with the run's summary line
-      notify: (key, vars) => notify(config, withRunLine(msg(config.lang, key, vars), runLineFor(root, config))),
+      // (a phaseDone tells of a lane still in supervisor.json: its line leaves that lane out, review I5)
+      notify: (key, vars) => notify(config, withRunLine(msg(config.lang, key, vars), runLineFor(root, config, { leaving: key === 'phaseDone' ? vars?.phase : null }))),
       now: () => new Date(),
       log: (line) => {
         try { fs.appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* logging is best-effort */ }

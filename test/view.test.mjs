@@ -626,3 +626,41 @@ test('the run line under every notification while two or more lanes run (Stage 4
   fs.writeFileSync(path.join(runDirOf(legacy.root), 'supervisor.json'), '{ broken');
   assert.equal(runLineFor(legacy.root, null, { env: legacy.env, now: NOW }), null);
 });
+
+// Review fixes (L4 final review)
+test('review I4, M4: a hand-edited slotPath that is not a path never throws; next only while the supervisor runs', () => {
+  const { root, env, sup } = slotsProject();
+  const odd = { ...sup, lanes: { ...sup.lanes, 33: { ...sup.lanes[33], slotPath: 5 }, 'prep-35': { ...sup.lanes['prep-35'], slotPath: true } } };
+  const v = buildView({ root, sup: odd, running: true, env, now: NOW, commits: COMMITS });
+  assert.deepEqual(v.lanes.map((l) => l.key), ['32', '33', 'prep-35']);
+  assert.deepEqual(buildView({ root, sup, running: false, env, now: NOW, commits: COMMITS, agents: false }).next, null, 'a stopped supervisor schedules nothing');
+});
+
+test('review: lanes that stopped alone or finished their turn draw the same in the text as in the pane', async () => {
+  const pane = await import('../mod/hooks/view-model.mjs');
+  const views = [
+    textLanes({ questions: [] }, { halted: { why: 'missing', at: at('10:50') } }),
+    textLanes({ questions: [] }, { status: 'ready', step: null, quiet: true }),
+    textLanes({ questions: [] }, {}, { status: 'prepped', step: null }),
+    textLanes({ questions: [], lanes: textLanes().lanes.slice(0, 2) }, { halted: { why: 'missing', at: at('10:50') } }),
+    textView({ questions: [] }, { key: 'prep-35', job: 'prep', slot: 1, phase: '35', step: 'discuss', plans: null }),
+    textView({ questions: [] }, { halted: { why: 'missing', at: at('10:50') } }),
+  ];
+  for (const lang of ['en', 'ru']) {
+    for (const v of views) {
+      const view = { ...v, ui: { lang, refreshSeconds: 3, utcOffsetMinutes: -new Date(at('10:10')).getTimezoneOffset() } };
+      assert.equal(formatView(view), pane.paneLines(pane.render(view)).join('\n'), `${lang}: ${JSON.stringify(v.lanes.map((l) => [l.key, l.status]))}`);
+    }
+  }
+  const q = { id: 'm1', phase: 'annotate', question: 'Remove the relaxed dependencies?', options: [{ label: 'Remove all' }] };
+  assert.ok(formatView(textLanes({ questions: [q] }, {}, { key: 'annotate', job: 'annotate', phase: null, step: null })).split('\n').includes('  Remove the relaxed dependencies? (lane markup)'));
+});
+
+test('review I5: the run line of a notification leaves out the lane that is leaving, and is not built with fewer than two lanes', async () => {
+  const { runLineFor } = await import('../lib/view.mjs');
+  const { root, env, sup } = slotsProject();
+  writeJsonAtomic(path.join(runDirOf(root), 'supervisor.json'), sup);
+  assert.equal(runLineFor(root, {}, { env, now: NOW, leaving: '33' }), '2 lanes · next: phase 34 waits for phase 32');
+  writeJsonAtomic(path.join(runDirOf(root), 'supervisor.json'), { ...sup, lanes: { 32: sup.lanes[32], 33: sup.lanes[33] } });
+  assert.equal(runLineFor(root, {}, { env, now: NOW, leaving: '33' }), null);
+});

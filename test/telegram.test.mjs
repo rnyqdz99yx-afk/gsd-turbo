@@ -784,3 +784,17 @@ test('a question card names the lane its phase runs in (Stage 4 D10); without la
   await telegramTick(ctx, NOW);
   assert.equal(bot.sent()[0].body.text.split('\n')[0], 'Phase 3 · plan 03-01, task 2', 'a v0.3 lane has no slot');
 });
+
+test('review I1, M1: the markup card is titled Lane markup / Разметка полос; a question asked in a prep lane names that lane', async () => {
+  for (const [lang, markup, prep] of [['en', 'Lane markup', 'Phase 3 · lane 4 · plan 03-01, task 2'], ['ru', 'Разметка полос', 'Фаза 3 · полоса 4 · план 03-01, задача 2']]) {
+    const { root, ctx, bot } = project();
+    ctx.config = ON({ lang });
+    fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanes: { 'prep-3': { key: 'prep-3', job: 'prep', phase: '3', slot: 4, slotPath: path.join(path.dirname(root), 'app.turbo', 'lane-4'), sessionId: null } } }));
+    writeQuestions(root, '3', [Q('03-01-t2')]);
+    writeQuestions(root, 'annotate', [Q('relax-1', { phase: 'annotate', plan: null, task: null })]);
+    await telegramTick(ctx, NOW);
+    const titles = bot.sent().map((m) => m.body.text.split('\n')[0]).sort();
+    assert.deepEqual(titles, [markup, prep].sort());
+  }
+});

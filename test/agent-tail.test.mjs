@@ -109,3 +109,10 @@ test('agent-tail finds an agent of a slot lane whose session is not known yet: t
   const r = agentTail({ root, agentId: AGENT, env });
   assert.ok(r && r.transcript.startsWith(sdir), r?.transcript);
 });
+
+test('review I4: a hand-edited slotPath that is not a path is skipped, never thrown on', () => {
+  const { root, env } = setup();
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanes: { 4: { key: '4', job: 'phase', phase: '4', slot: 2, slotPath: 5, sessionId: 'abcd1234' } } }));
+  assert.equal(agentTail({ root, agentId: AGENT, env }), null);
+});

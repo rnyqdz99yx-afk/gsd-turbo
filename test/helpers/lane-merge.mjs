@@ -5,6 +5,8 @@ import { ISOLATED, gitIn, mainProject, slotFixture } from './slots.mjs';
 import { prepareSlot, setupSlots, slotGit } from '../../lib/slots.mjs';
 import { writeLaneStatus } from '../../lib/run-status.mjs';
 import { integrateMain, readyRecord } from '../../lib/integrate.mjs';
+import { createGit } from '../../lib/push.mjs';
+import { pushSettings } from '../../lib/config.mjs';
 
 export const PHASE_DIR = '.planning/phases/03-demo';
 const put = (dir, rel, text) => {
@@ -77,3 +79,59 @@ export function reportReady(p, { reason = 'integrated' } = {}) {
 
 // The supervisor.json lane entry of phase 3 in slot 1 (L0's Interfaces: owned by L1).
 export const laneOf = (p) => ({ key: '3', job: 'phase', phase: '3', slot: 1, slotPath: p.slot, branch: 'turbo/p3', sessionId: null, launchedAt: '2026-10-13T12:00:00.000Z', restarts: 0, notified: {}, mode: 'full' });
+
+const fpOf = (text) => ({
+  files: [...text.matchAll(/^ {2}- (.+?)\r?$/gm)].map((m) => m[1]),
+  digest: /^covered_digest: "?([^"\r\n]+)"?\r?$/m.exec(text)?.[1] ?? null,
+  status: /^status: (\w+)\r?$/m.exec(text)?.[1] ?? null,
+});
+
+// gsd-tools as lib/merge.mjs calls it (deps.gsd), on the files of cwd: GSD 1.16's verification.fingerprint (--raw),
+// verification status and phase.complete (which refuses a stale or not-passed report, then marks ROADMAP and STATE).
+// fail: { '<first two args>': '<stderr line>' } makes that call fail as gsdText reports it.
+export function fakeGsd({ calls = [], fail = {} } = {}) {
+  return (args, { cwd }) => {
+    calls.push(args.join(' '));
+    const key = args.slice(0, 2).join(' ');
+    if (fail[key]) throw new Error(`gsd-tools ${key} failed: ${fail[key]}`);
+    const status = (dir) => {
+      const name = fs.readdirSync(dir).find((n) => n.endsWith('-VERIFICATION.md'));
+      if (!name) return 'missing';
+      const v = fpOf(fs.readFileSync(path.join(dir, name), 'utf8'));
+      return v.digest === fakeDigest(cwd, v.files, dir) ? v.status : 'stale';
+    };
+    if (key === 'query verification.fingerprint') return `${fakeDigest(cwd, args.slice(3).filter((a) => a !== '--raw'), args[2])}\n`;
+    if (key === 'verification status') return JSON.stringify({ status: status(args[2]) });
+    if (key === 'query phase.complete') {
+      const s = status(path.join(cwd, ...PHASE_DIR.split('/')));
+      if (s !== 'passed') throw new Error(`gsd-tools query phase.complete failed: Error: Phase ${args[2]} verification is incomplete: ${s === 'stale' ? 'Verification is stale' : `status ${s}`}`);
+      fs.appendFileSync(path.join(cwd, '.planning', 'ROADMAP.md'), `- [x] Phase ${args[2]} complete\n`);
+      fs.writeFileSync(path.join(cwd, '.planning', 'STATE.md'), `# State\n\nStatus: Phase ${args[2]} complete\n`);
+      return JSON.stringify({ completed_phase: args[2], roadmap_updated: true, state_updated: true, requirements_updated: false, warnings: [] });
+    }
+    throw new Error(`fake gsd-tools: unexpected call ${args.join(' ')}`);
+  };
+}
+
+// The supervisor's ctx for lib/merge.mjs: isolated git, the fake gsd-tools, no state-sync, recorded notifications.
+export function mergeCtx(p, { push = { mode: 'off' }, lang = 'en', merge_rounds, gsd, now = '2026-10-13T13:00:00.000Z' } = {}) {
+  const notes = [];
+  const logs = [];
+  const calls = [];
+  const config = { ...p.config, lang, push: pushSettings(push), ...(merge_rounds === undefined ? {} : { merge_rounds }) };
+  const ctx = {
+    root: p.root,
+    config,
+    deps: {
+      log: (line) => logs.push(line),
+      notify: async (key, vars) => { notes.push([key, vars]); },
+      now: () => new Date(now),
+      gitAt: p.git,
+      git: createGit(p.root, { env: ISOLATED }),
+      gsd: gsd || fakeGsd({ calls }),
+      stateSync: () => ({ synced: false, reason: 'test' }),
+      mergeLockWaitMs: 200,
+    },
+  };
+  return { ctx, notes, logs, calls };
+}

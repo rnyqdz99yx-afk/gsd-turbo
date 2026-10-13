@@ -117,7 +117,7 @@ test('review 1 (MAJOR 2): phase-step N --done close refuses unless VERIFICATION.
   const root = project();
   const dir = path.join(root, '.planning', 'phases', '03-demo');
   fs.mkdirSync(dir, { recursive: true });
-  for (const s of STEPS.slice(0, -1)) completeStep(root, '3', s);
+  for (const s of STEPS.slice(0, STEPS.indexOf('close'))) completeStep(root, '3', s);
   const lines = [];
   const close = () => runPhaseCommand('phase-step', ['3', '--done', 'close'], { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) });
   assert.equal(await close(), 1);
@@ -141,7 +141,7 @@ test('review 2: the close check reads YAML inline comments as GSD does: status: 
   const root = project();
   const dir = path.join(root, '.planning', 'phases', '03-demo');
   fs.mkdirSync(dir, { recursive: true });
-  for (const s of STEPS.slice(0, -1)) completeStep(root, '3', s);
+  for (const s of STEPS.slice(0, STEPS.indexOf('close'))) completeStep(root, '3', s);
   const lines = [];
   const close = () => runPhaseCommand('phase-step', ['3', '--done', 'close'], { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) });
   fs.writeFileSync(path.join(dir, '03-VERIFICATION.md'), '---\nstatus: "passed # not a comment"\n---\n');

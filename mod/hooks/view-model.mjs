@@ -34,11 +34,11 @@ const ruPlural = (n, one, few, many) => {
 // holds the two equal).
 export const WORDS = {
   en: {
-    step: { freshness: 'freshness check', discuss: 'discussion', prologue: 'planning prep', plan: 'planning', 'gates-off': 'execution prep', execute: 'running plans', restore: 'restoring settings', fanout: 'quality checks', fix: 'fixes', 'final-gate': 'final check', uat: 'acceptance', close: 'wrap-up', ci: 'CI check' },
+    step: { freshness: 'freshness check', discuss: 'discussion', prologue: 'planning prep', plan: 'planning', 'gates-off': 'execution prep', execute: 'running plans', restore: 'restoring settings', fanout: 'quality checks', fix: 'fixes', 'final-gate': 'final check', uat: 'acceptance', close: 'wrap-up', integrate: 'merge into main', ci: 'CI check' },
     agent: { 'gsd-executor': 'Executor', 'gsd-verifier': 'Verifier', 'gsd-code-reviewer': 'Reviewer', 'gsd-code-fixer': 'Fixer', 'gsd-planner': 'Planner', 'gsd-plan-checker': 'Plan checker', 'gsd-phase-researcher': 'Researcher', 'gsd-security-auditor': 'Security auditor', 'gsd-nyquist-auditor': 'Test auditor', 'gsd-integration-checker': 'Integration checker', 'gsd-debugger': 'Debugger', 'turbo-uat': 'Acceptance tester', 'general-purpose': 'Helper', Explore: 'Scout' },
   },
   ru: {
-    step: { freshness: 'проверка актуальности', discuss: 'обсуждение', prologue: 'подготовка к планированию', plan: 'планирование', 'gates-off': 'подготовка к выполнению', execute: 'выполняются планы', restore: 'восстановление настроек', fanout: 'проверки качества', fix: 'исправления', 'final-gate': 'финальная проверка', uat: 'приёмка', close: 'завершение', ci: 'проверка CI' },
+    step: { freshness: 'проверка актуальности', discuss: 'обсуждение', prologue: 'подготовка к планированию', plan: 'планирование', 'gates-off': 'подготовка к выполнению', execute: 'выполняются планы', restore: 'восстановление настроек', fanout: 'проверки качества', fix: 'исправления', 'final-gate': 'финальная проверка', uat: 'приёмка', close: 'завершение', integrate: 'слияние с основной веткой', ci: 'проверка CI' },
     // all masculine, so «… молчит — возможно, завис» agrees with each
     agent: { 'gsd-executor': 'Исполнитель', 'gsd-verifier': 'Проверяющий', 'gsd-code-reviewer': 'Ревьюер', 'gsd-code-fixer': 'Исправляющий', 'gsd-planner': 'Планировщик', 'gsd-plan-checker': 'Контролёр плана', 'gsd-phase-researcher': 'Исследователь', 'gsd-security-auditor': 'Аудитор безопасности', 'gsd-nyquist-auditor': 'Аудитор тестов', 'gsd-integration-checker': 'Контролёр связей', 'gsd-debugger': 'Отладчик', 'turbo-uat': 'Приёмщик', 'general-purpose': 'Помощник', Explore: 'Разведчик' },
   },
@@ -93,7 +93,7 @@ const VIEW_WORDS = {
       ciFix: (n, m) => `fixing the red CI — attempt ${n} of ${m}`, ciLast: 'fixing the red CI — the last attempt', ciWait: 'waiting for CI',
       executors: (n) => (n > 1 ? `writing code for ${n} plans at once` : 'writing code for a plan'), helpers: (n) => `${n} ${n === 1 ? 'helper' : 'helpers'} at work`,
       agent: { 'gsd-code-fixer': 'fixing what the review found', 'gsd-debugger': 'looking for the cause of a failure', 'gsd-code-reviewer': 'reviewing the code', 'gsd-security-auditor': 'checking security', 'gsd-nyquist-auditor': 'checking the tests cover the work', 'gsd-integration-checker': 'checking the parts fit together', 'gsd-verifier': 'checking the phase reached its goal', 'turbo-uat': 'acceptance: checking the items itself', 'gsd-planner': 'writing the plans', 'gsd-plan-checker': 'checking the plans', 'gsd-phase-researcher': 'researching how to build the phase' },
-      step: { freshness: 'checking the plans are still current', discuss: 'thinking the phase through', prologue: 'preparing the planning', plan: 'planning', 'gates-off': 'preparing to run the plans', execute: 'running the plans', restore: 'restoring settings', fanout: 'starting the quality checks', fix: 'fixing what the checks found', 'final-gate': 'running the final tests', uat: 'acceptance', close: 'wrapping up the phase' },
+      step: { freshness: 'checking the plans are still current', discuss: 'thinking the phase through', prologue: 'preparing the planning', plan: 'planning', 'gates-off': 'preparing to run the plans', execute: 'running the plans', restore: 'restoring settings', fanout: 'starting the quality checks', fix: 'fixing what the checks found', 'final-gate': 'running the final tests', uat: 'acceptance', close: 'wrapping up the phase', integrate: 'merging the phase into the main branch' },
     },
     stepsHead: 'Phase steps:',
     stepNow: (s) => `${s} — now`,
@@ -155,7 +155,7 @@ const VIEW_WORDS = {
       ciFix: (n, m) => `чинит красный CI — попытка ${n} из ${m}`, ciLast: 'чинит красный CI — последняя попытка', ciWait: 'ждёт результат CI',
       executors: (n) => (n > 1 ? `пишет код по ${n} планам сразу` : 'пишет код по плану'), helpers: (n) => `работают помощники: ${n}`,
       agent: { 'gsd-code-fixer': 'исправляет найденное ревью', 'gsd-debugger': 'ищет причину сбоя', 'gsd-code-reviewer': 'идёт ревью кода', 'gsd-security-auditor': 'проверяет безопасность', 'gsd-nyquist-auditor': 'проверяет, хватает ли тестов', 'gsd-integration-checker': 'проверяет, как части работают вместе', 'gsd-verifier': 'проверяет, достигнута ли цель фазы', 'turbo-uat': 'приёмка: проверяет пункты сама', 'gsd-planner': 'пишет планы', 'gsd-plan-checker': 'проверяет планы', 'gsd-phase-researcher': 'изучает, как сделать фазу' },
-      step: { freshness: 'проверяет, не устарели ли планы', discuss: 'обдумывает фазу', prologue: 'готовит планирование', plan: 'планирует', 'gates-off': 'готовится выполнять планы', execute: 'выполняет планы', restore: 'возвращает настройки', fanout: 'запускает проверки качества', fix: 'исправляет найденное проверками', 'final-gate': 'гоняет финальные тесты', uat: 'приёмка', close: 'завершает фазу' },
+      step: { freshness: 'проверяет, не устарели ли планы', discuss: 'обдумывает фазу', prologue: 'готовит планирование', plan: 'планирует', 'gates-off': 'готовится выполнять планы', execute: 'выполняет планы', restore: 'возвращает настройки', fanout: 'запускает проверки качества', fix: 'исправляет найденное проверками', 'final-gate': 'гоняет финальные тесты', uat: 'приёмка', close: 'завершает фазу', integrate: 'вливает фазу в основную ветку' },
     },
     stepsHead: 'Шаги фазы:',
     stepNow: (s) => `${s} — сейчас`,
@@ -582,9 +582,10 @@ function nowRow(t, view, lane) {
 
 // The /turbo-phase steps in order: lib/phase-progress.mjs STEPS, carried here since the mod imports nothing
 // (test/view-model.test.mjs holds the two equal). gates-off and restore are turbo switching GSD's own gates around the
-// plans: listed only while the lane is at one.
-export const STEPS = Object.freeze(['freshness', 'discuss', 'prologue', 'plan', 'gates-off', 'execute', 'restore', 'fanout', 'fix', 'final-gate', 'uat', 'close']);
-const GATE_STEPS = new Set(['gates-off', 'restore']);
+// plans, integrate is a slot lane's merge into main (Stage 4 §7.1; it passes at once outside a slot): listed only while
+// the lane is at one.
+export const STEPS = Object.freeze(['freshness', 'discuss', 'prologue', 'plan', 'gates-off', 'execute', 'restore', 'fanout', 'fix', 'final-gate', 'uat', 'close', 'integrate']);
+const GATE_STEPS = new Set(['gates-off', 'restore', 'integrate']);
 
 // The lane's steps, each { step, state: 'done' | 'now' | 'ahead' }, from its step alone (completeStep keeps them in
 // order); a step turbo does not know is the only one; none for a phase done or no lane.

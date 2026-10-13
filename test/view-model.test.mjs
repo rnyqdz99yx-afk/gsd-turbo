@@ -295,7 +295,7 @@ test("a phase stopped for a question: the reason loses /turbo-phase's `owner que
 });
 
 test('every /turbo-phase step and the usual helper types are named in words in both languages; an unknown one shows as written', () => {
-  const steps = ['freshness', 'discuss', 'prologue', 'plan', 'gates-off', 'execute', 'restore', 'fanout', 'fix', 'final-gate', 'uat', 'close', 'ci'];
+  const steps = ['freshness', 'discuss', 'prologue', 'plan', 'gates-off', 'execute', 'restore', 'fanout', 'fix', 'final-gate', 'uat', 'close', 'integrate', 'ci'];
   for (const lang of ['en', 'ru']) {
     assert.deepEqual(Object.keys(WORDS[lang].step), steps, lang);
     for (const s of steps) assert.ok(bandLine(view({ ui: { lang } }, { step: s })).includes(`: ${WORDS[lang].step[s]} 5/9`), `${lang} ${s}`);
@@ -807,7 +807,7 @@ test('currentAction says what the running phase does now: a red CI it fixes firs
   const steps = {
     freshness: ['checking the plans are still current', 'проверяет, не устарели ли планы'], discuss: ['thinking the phase through', 'обдумывает фазу'], prologue: ['preparing the planning', 'готовит планирование'], plan: ['planning', 'планирует'],
     'gates-off': ['preparing to run the plans', 'готовится выполнять планы'], execute: ['running the plans', 'выполняет планы'], restore: ['restoring settings', 'возвращает настройки'], fanout: ['starting the quality checks', 'запускает проверки качества'],
-    fix: ['fixing what the checks found', 'исправляет найденное проверками'], 'final-gate': ['running the final tests', 'гоняет финальные тесты'], uat: ['acceptance', 'приёмка'], close: ['wrapping up the phase', 'завершает фазу'],
+    fix: ['fixing what the checks found', 'исправляет найденное проверками'], 'final-gate': ['running the final tests', 'гоняет финальные тесты'], uat: ['acceptance', 'приёмка'], close: ['wrapping up the phase', 'завершает фазу'], integrate: ['merging the phase into the main branch', 'вливает фазу в основную ветку'],
   };
   for (const s of STEPS) {
     assert.equal(now(calm({}, { agents: [], step: s })).text, steps[s][0], s);

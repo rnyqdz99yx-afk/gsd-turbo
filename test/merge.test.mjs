@@ -11,6 +11,12 @@ import { setMergeHold } from '../lib/integrate.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
 import { readInbox } from '../lib/inbox.mjs';
 import { readQuestions } from '../lib/questions.mjs';
+import { tmpDir } from './helpers/tmp.mjs';
+import { ISOLATED, gitIn } from './helpers/slots.mjs';
+import { PHASE_DIR, fakeDigest, fakeGsd } from './helpers/lane-merge.mjs';
+import { quietCommits, restampDigest, verificationFingerprint, mergeFile } from '../lib/merge.mjs';
+import { readJson, writeJsonAtomic } from '../lib/fsx.mjs';
+import { requestFile } from '../lib/push.mjs';
 
 const mergeOf = (p) => p.inMain('rev-list', '--merges', '-n', '1', 'HEAD');
 
@@ -148,4 +154,124 @@ test('a held merge lock or no ready record: wait, nothing changes', async () => 
   assert.match(r.reason, /^main is busy: another turbo-run holds the merge lock/);
   fs.rmSync(mergeLockFile(p.root));
   assert.equal(mergeState(p.root, '3'), null);
+});
+
+const VERIFICATION = `${PHASE_DIR}/03-VERIFICATION.md`;
+const readMain = (p, rel) => fs.readFileSync(path.join(p.root, ...rel.split('/')), 'utf8');
+
+test('verificationFingerprint reads a block or a flow list, quoted or not, LF or CRLF; restampDigest rewrites exactly one line', () => {
+  const block = '---\nstatus: passed\ncovered_files:\n  - src/a.js\n  - ".planning/phases/03-demo/03-01-SUMMARY.md"\ncovered_digest: "v3:sha256:old"\n---\n# body\ncovered_digest: not frontmatter\n';
+  assert.deepEqual(verificationFingerprint(block), { files: ['src/a.js', '.planning/phases/03-demo/03-01-SUMMARY.md'], digest: 'v3:sha256:old' });
+  assert.deepEqual(verificationFingerprint(block.replace(/\n/g, '\r\n')), { files: ['src/a.js', '.planning/phases/03-demo/03-01-SUMMARY.md'], digest: 'v3:sha256:old' });
+  assert.deepEqual(verificationFingerprint("---\ncovered_files: [src/a.js, 'src/b.js']\ncovered_digest: v3:sha256:x\n---\n"), { files: ['src/a.js', 'src/b.js'], digest: 'v3:sha256:x' });
+  assert.equal(verificationFingerprint('---\nstatus: passed\n---\n'), null, 'a legacy report without a fingerprint');
+  assert.equal(verificationFingerprint('# no frontmatter\n'), null);
+  assert.equal(restampDigest(block, 'v3:sha256:new'), block.replace('"v3:sha256:old"', '"v3:sha256:new"'));
+  const crlf = block.replace(/\n/g, '\r\n');
+  assert.equal(restampDigest(crlf, 'v3:sha256:new'), crlf.replace('"v3:sha256:old"', '"v3:sha256:new"'));
+  assert.equal(restampDigest('---\ncovered_digest: a\ncovered_digest: b\n---\n', 'v3:sha256:n'), null);
+  assert.equal(restampDigest('---\nstatus: passed\n---\n', 'v3:sha256:n'), null);
+});
+
+test('quietCommits answers state-sync\'s commit itself and passes every other call on', () => {
+  const seen = [];
+  const gsd = quietCommits((args) => { seen.push(args[0]); return { ok: true }; });
+  assert.deepEqual(gsd(['commit', 'docs: x', '--files', '.planning/STATE.md']), { committed: false, skipped: true, reason: 'the turbo merge commits it' });
+  assert.deepEqual(gsd(['state', 'patch', '{}']), { ok: true });
+  assert.deepEqual(seen, ['state']);
+});
+
+test('after the merge: phase.complete in main and one commit with ROADMAP and STATE; nothing re-stamped when the bytes agree', async () => {
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  const m = mergeCtx(p);
+  const before = fs.readFileSync(path.join(p.slot, ...VERIFICATION.split('/')), 'utf8');
+  const r = await mergeReady(m.ctx, laneOf(p));
+  assert.equal(r.outcome, 'merged', r.reason);
+  assert.equal(p.inMain('log', '-1', '--format=%s'), 'docs(phase-3): complete phase (turbo merge)');
+  assert.equal(p.inMain('rev-parse', 'HEAD^'), mergeOf(p), 'one commit after the merge');
+  assert.deepEqual(p.inMain('show', '--name-only', '--format=', 'HEAD').split('\n').filter(Boolean).sort(), ['.planning/ROADMAP.md', '.planning/STATE.md']);
+  assert.match(readMain(p, '.planning/ROADMAP.md'), /- \[x\] Phase 3 complete/);
+  assert.equal(readMain(p, VERIFICATION), before);
+  assert.deepEqual(m.calls.filter((c) => !c.startsWith('query verification.fingerprint')), ['query phase.complete 3']);
+  assert.equal(p.inMain('status', '--porcelain', '--untracked-files=no'), '');
+  const st = mergeState(p.root, '3');
+  assert.deepEqual([st.completed, st.completeSha, st.finalSha, st.pushRequestId], [true, r.sha, r.sha, null]);
+});
+
+test('S3: core.autocrlf=true in main, LF in the slot: equal blobs, the digest re-stamped over main\'s bytes, phase.complete passes, one commit (Review Focus 3)', async () => {
+  const p = laneProject();
+  finishPhase(p);
+  p.inMain('config', 'core.autocrlf', 'true');
+  reportReady(p);
+  const m = mergeCtx(p);
+  const r = await mergeReady(m.ctx, laneOf(p));
+  assert.equal(r.outcome, 'merged', r.reason);
+  assert.match(readMain(p, 'src/feature.js'), /\r\n$/, 'the main checkout wrote CRLF');
+  const fp = verificationFingerprint(readMain(p, VERIFICATION));
+  assert.equal(fp.digest, fakeDigest(p.root, fp.files, path.join(p.root, ...PHASE_DIR.split('/'))));
+  assert.deepEqual(p.inMain('show', '--name-only', '--format=', 'HEAD').split('\n').filter(Boolean).sort(), ['.planning/ROADMAP.md', '.planning/STATE.md', VERIFICATION]);
+  assert.equal(p.inMain('status', '--porcelain', '--untracked-files=no'), '');
+});
+
+test('phase.complete fails: the merge stays, a re-stamp is committed alone, the phase waits for the owner with GSD\'s error', async () => {
+  const p = laneProject();
+  finishPhase(p);
+  p.inMain('config', 'core.autocrlf', 'true');
+  reportReady(p);
+  const calls = [];
+  const m = mergeCtx(p, { gsd: fakeGsd({ calls, fail: { 'query phase.complete': 'Error: Phase 3 cannot be completed: 1 plan(s) have no completion record' } }) });
+  const r = await mergeReady(m.ctx, laneOf(p));
+  assert.equal(r.outcome, 'needs-owner');
+  assert.equal(r.reason, 'phase.complete failed after the merge of phase 3: gsd-tools query phase.complete failed: Error: Phase 3 cannot be completed: 1 plan(s) have no completion record; the merge stays');
+  assert.equal(p.inMain('rev-list', '--merges', '--count', 'HEAD'), '1');
+  assert.equal(p.inMain('log', '-1', '--format=%s'), 'docs(phase-3): re-stamp verification after the merge (turbo merge)');
+  assert.equal(p.inMain('status', '--porcelain', '--untracked-files=no'), '');
+  // L1's mergeStep notifies the owner of a needs-owner outcome; L2 sends nothing itself
+  assert.deepEqual([readLaneStatus(p.root, '3').status, m.notes.length], ['needs-owner', 0]);
+  assert.equal(mergeState(p.root, '3').completed, undefined);
+});
+
+test('a restart after the merge: no second merge commit; a covered file changed in main meanwhile goes to the owner (Review Focus 2)', async () => {
+  const crashAfterMerge = (p) => {
+    const rec = readLaneStatus(p.root, '3');
+    p.inMain('fetch', '-q', p.slot, 'refs/heads/turbo/p3');
+    p.inMain('merge', '--no-ff', '-q', '-m', 'Merge phase 3 (turbo lane 1)', rec.head);
+    writeJsonAtomic(mergeFile(p.root, '3'), { v: 1, phase: '3', state: 'merging', readyAt: rec.at, laneHead: rec.head, base: rec.base, slot: 1, branch: 'turbo/p3', mergeSha: p.inMain('rev-parse', 'HEAD'), rounds: 0 });
+  };
+  const clean = laneProject();
+  finishPhase(clean);
+  reportReady(clean);
+  crashAfterMerge(clean);
+  const r = await mergeReady(mergeCtx(clean).ctx, laneOf(clean));
+  assert.equal(r.outcome, 'merged', r.reason);
+  assert.equal(clean.inMain('rev-list', '--merges', '--count', 'HEAD'), '1');
+  assert.equal(clean.inMain('log', '-1', '--format=%s'), 'docs(phase-3): complete phase (turbo merge)');
+
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  crashAfterMerge(p);
+  p.writeMain('src/feature.js', 'export const feature = 2;\n');
+  p.commitMain('fix: by hand in main');
+  const m = mergeCtx(p);
+  const owner = await mergeReady(m.ctx, laneOf(p));
+  assert.equal(owner.outcome, 'needs-owner');
+  assert.equal(owner.reason, 'the merged tree differs from what phase 3\'s verification covered: src/feature.js; the merge stays');
+  assert.equal(p.inMain('rev-list', '--merges', '--count', 'HEAD'), '1');
+  assert.ok(!m.calls.includes('query phase.complete 3'));
+});
+
+test('push on: the supervisor files the push request for main at the head after the complete commit', async () => {
+  process.env.CLAUDE_CONFIG_DIR = tmpDir('home');
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  const m = mergeCtx(p, { push: { mode: 'after-phase', ci: 'none' } });
+  const r = await mergeReady(m.ctx, laneOf(p));
+  assert.equal(r.outcome, 'merged', r.reason);
+  const req = readJson(requestFile(p.root, '3'), null);
+  assert.deepEqual([req.branch, req.head, req.phase], ['main', r.sha, '3']);
+  assert.equal(mergeState(p.root, '3').pushRequestId, req.id);
 });

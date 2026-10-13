@@ -128,6 +128,8 @@ test('describeRecord: one line and exit code per outcome', () => {
     [pushed({ state: 'superseded', runs: [] }), 1, 'pushed fffffff to origin/main · CI superseded by a later push'],
     [pushed({ state: 'cancelled', runs: [{ id: 3, name: 'CI', status: 'completed', conclusion: 'cancelled' }] }), 1, 'pushed fffffff to origin/main · CI cancelled (CI cancelled): nothing was tested'],
     [{ outcome: 'refused', findings: [{ file: 'logs/x.log', kind: 'forbidden name *.log' }] }, 1, 'refused: logs/x.log (forbidden name *.log); nothing was pushed'],
+    // the requested commit was already on the remote branch (pushed by hand meanwhile): nothing to push, exit 0
+    [{ ...pushed({ state: 'red', runs: red }), requestId: 'q', already: true }, 0, 'already pushed: fffffff is on origin/main; nothing to push'],
     [{ outcome: 'diverged', remote: 'origin', branch: 'main' }, 1, 'diverged: origin/main has commits this checkout does not have; nothing was pushed'],
     [{ outcome: 'failed', reason: 'HEAD is detached; turbo pushes a branch only' }, 1, 'failed: HEAD is detached; turbo pushes a branch only'],
   ];

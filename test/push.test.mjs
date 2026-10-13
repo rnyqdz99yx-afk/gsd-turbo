@@ -331,6 +331,37 @@ test('a remote branch that is not an ancestor of HEAD: nothing pushed, pushDiver
   assert.ok(!calls.some((a) => sub(a) === 'push'));
 });
 
+test('a requested commit someone already pushed (the remote moved past it): already pushed, nothing scanned, pushed or notified', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes, logs } = supervisorCtx(r);
+  // turbo's own earlier push and its CI watch
+  r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  const earlier = readJson(recordFile(r.root, '3')).lastPush;
+  // the lane asks for its next commit; before the supervisor gets to it, the owner pushes it and one more by hand
+  const asked = r.commit('src/b.mjs', 'export const b = 2;\n');
+  const req = ask(r, ctx.config.push).request;
+  const later = r.commit('src/c.mjs', 'export const c = 3;\n');
+  r.sh('push', '-q', 'origin', 'main');
+  r.sh('reset', '-q', '--hard', asked);
+  calls.length = 0;
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), later);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.deepEqual([rec.requestId, rec.outcome, rec.already, rec.sha, rec.branch], [req.id, 'pushed', true, asked, 'main']);
+  assert.deepEqual(rec.lastPush, earlier, "the CI watch of turbo's last push is carried over");
+  assert.ok(!calls.some((a) => ['push', 'log'].includes(sub(a))), 'nothing scanned, nothing pushed');
+  assert.deepEqual(notes, []);
+  assert.match(logs.at(-1), new RegExp(`^push p3: already pushed ${asked.slice(0, 7)}`));
+  assert.deepEqual(describeRecord(rec), { code: 0, line: `already pushed: ${asked.slice(0, 7)} is on origin/main; nothing to push` });
+  // handled: the next tick does nothing, and asking again for the same head keeps the request
+  calls.length = 0;
+  await pushTick(ctx, NOW);
+  assert.ok(!calls.some((a) => sub(a) === 'fetch'));
+  assert.equal(ask(r, ctx.config.push).request.id, req.id);
+});
+
 test('a file name or a branch name that carries a secret is masked in the record, the log and the notification', async () => {
   const r = pushRepo();
   const { ctx, notes } = supervisorCtx(r);

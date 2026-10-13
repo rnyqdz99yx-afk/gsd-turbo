@@ -233,6 +233,7 @@ git commit -q -m "feat(lanes): lanes.mode, dir, copy, install and trust_write co
   - `trustSlot(dir, { file, platform, write = true, run = {}, lang, now, sleep, rename, read }) → { status: 'already'|'trusted'|'manual', key, backup?, why?, line? }`;
   - `untrustSlot(dir, { same options }) → { status: 'absent'|'removed'|'manual', key, backup?, why?, line? }`.
   - `run` is the per-command object: `run.backup` holds the one backup this command run wrote.
+  - `KEEP_BACKUPS = 5`: after its backup, a write keeps only the 5 newest `<file>.turbo-bak-<stamp>[-<n>]` files and removes `<file>.turbo-tmp-<pid>` files of dead pids; a `file` that is a symlink is written at its real target.
 
 - [ ] **Step 1: Write the failing tests**
 

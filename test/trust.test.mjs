@@ -162,3 +162,30 @@ test('a file Claude Code writes while turbo waits to rename is never overwritten
   assert.deepEqual([read(c.file).numStartups, read(c.file).projects[trustKey(c.slot)]], [9, { hasTrustDialogAccepted: true }]);
   assert.deepEqual(leftovers(c), []);
 });
+
+test('a config that is a link (dotfiles) is written at its real target; the link stays a link (M6)', (t) => {
+  const c = claudeJson();
+  const real = path.join(tmpDir('dots'), 'claude.json');
+  fs.renameSync(c.file, real);
+  try {
+    fs.symlinkSync(real, c.file, 'file');
+  } catch (err) {
+    if (err.code === 'EPERM') return t.skip('no right to create a file link here');
+    throw err;
+  }
+  assert.equal(trustSlot(c.slot, opts(c)).status, 'trusted');
+  assert.equal(fs.lstatSync(c.file).isSymbolicLink(), true);
+  assert.deepEqual(read(real).projects[trustKey(c.slot)], { hasTrustDialogAccepted: true });
+  assert.deepEqual([leftovers(c), fs.readdirSync(path.dirname(real)).filter((n) => n.includes('.turbo-tmp-'))], [[], []]);
+});
+
+test('backups: the 5 newest of turbo\'s exact name pattern are kept, nothing else touched; temporary files of dead processes go (M7)', () => {
+  const c = claudeJson();
+  for (const s of ['20261008T120000Z', '20261009T120000Z', '20261010T120000Z', '20261011T120000Z', '20261012T120000Z', '20261012T120000Z-1']) fs.writeFileSync(path.join(c.home, `.claude.json.turbo-bak-${s}`), 'old');
+  fs.writeFileSync(path.join(c.home, '.claude.json.turbo-bak-mine'), 'keep');
+  fs.writeFileSync(path.join(c.home, '.claude.json.turbo-tmp-99999999'), 'stale');
+  fs.writeFileSync(path.join(c.home, `.claude.json.turbo-tmp-${process.ppid}`), 'live');
+  assert.equal(trustSlot(c.slot, opts(c)).status, 'trusted');
+  assert.deepEqual(backups(c), ['20261010T120000Z', '20261011T120000Z', '20261012T120000Z', '20261012T120000Z-1', '20261013T120000Z', 'mine'].map((s) => `.claude.json.turbo-bak-${s}`));
+  assert.deepEqual(leftovers(c), [`.claude.json.turbo-tmp-${process.ppid}`]);
+});

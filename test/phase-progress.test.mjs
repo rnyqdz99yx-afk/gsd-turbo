@@ -151,3 +151,13 @@ test('review 2: the close check reads YAML inline comments as GSD does: status: 
   fs.writeFileSync(path.join(dir, '03-VERIFICATION.md'), '---\nstatus: passed  # ok\n---\n');
   assert.equal(await close(), 0, lines.at(-1));
 });
+
+test('activePhase in slots mode: no lane works in the main checkout while lanes run; with none, the newest unfinished run (Stage 4 L1)', () => {
+  const root = project();
+  completeStep(root, '4', 'freshness', { now: new Date('2026-01-02T00:00:00Z') });
+  const sup = path.join(root, '.planning', 'turbo', 'run', 'supervisor.json');
+  writeJsonAtomic(sup, { lanesMode: 'slots', lanes: { 7: { key: '7', job: 'phase', phase: '7', slot: 1, slotPath: path.join(root, '..', 'elsewhere') } } });
+  assert.equal(activePhase(root), null);
+  writeJsonAtomic(sup, { lanesMode: 'slots', lanes: {} });
+  assert.equal(activePhase(root), '4');
+});

@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
 import { laneSessionName, projectHash } from '../lib/claude.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
+import { askOwner } from '../lib/questions.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
 const run = (args, cwd, env = process.env, nodeArgs = []) => execFileSync(process.execPath, [...nodeArgs, CLI, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1213,4 +1214,19 @@ test('attend stops a lane session the killed supervisor registers after the firs
   assert.equal(r.code, 0, r.stderr);
   assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop'), [['stop', 'abc123'], ['stop', 'late01']]);
   assert.match(r.stdout, /^stopped late lane session late01 \(started by the stopped supervisor\)$/m);
+});
+
+test('lane-status N needs-owner with no owner question waiting hints at turbo-run ask and still records; status lists the questions the phases wait for (v0.3.3)', () => {
+  const root = tmpDir('cli');
+  fs.mkdirSync(path.join(root, '.planning'));
+  const laneStatus = (reason) => spawnSync(process.execPath, [CLI, 'lane-status', '4', 'needs-owner', '--reason', reason], { cwd: root, encoding: 'utf8' });
+  let r = laneStatus('decide what next');
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout.trim(), 'lane 4: needs-owner');
+  assert.match(r.stderr, /^hint: no owner question waits for phase 4, so the owner gets only this reason: ask with turbo-run ask 4 /);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(runDirOf(root), 'p4.json'), 'utf8')).reason, 'decide what next');
+  askOwner(root, '4', { question: 'The fixes are in. What next?', options: [{ label: 'Fix first', description: 'a' }, { label: 'Live check', description: 'b' }], recommended: 2 }, { lang: 'en' });
+  r = laneStatus('owner question ask-1');
+  assert.equal(r.stderr, '');
+  assert.match(run(['status'], root), /^owner question: phase 4 — The fixes are in\. What next\? \(answer: \/turbo-autonomous answer\)$/m);
 });

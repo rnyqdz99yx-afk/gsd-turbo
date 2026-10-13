@@ -20,19 +20,23 @@ const MIN = 60000;
 // turbo-run as this one argument, with --by pane (check compares it with what the fake recorded).
 export const PROBE = 'a" --by telegram "b \\';
 
+// The demo project's commits, as a project writes them (conventional commits, its own jargon): the pane counts them by
+// kind and never shows a subject.
+const COMMITS = ['feat(32): export page lists every chat', 'fix(32): WR-07 the stop reason is kept', 'docs(phase-32): export ledger'];
+
 // The scripted run's texts, synthetic, in the language the demo runs in.
 const TEXT = {
   en: {
     q1: 'Deploy phase 32 after green CI?', ctx1: 'Users see the change once it is deployed; Stop keeps the phase waiting.', yes: 'Yes, by the gate', stop: 'Stop',
     q2: 'Does the export page look right?', accept: 'Accept if the checks pass', show: 'Stop and show me',
     round: (n) => `Demo, round ${n}`, again: 'The questions are open again; the earlier answers were recorded.',
-    commits: ['feat: export page lists every chat', 'fix: the stop reason is kept', 'test: export of an empty chat'],
+    commits: COMMITS,
   },
   ru: {
     q1: 'Деплой фазы 32 после зелёного CI?', ctx1: 'После деплоя изменения увидят пользователи; «Стоп» оставит фазу ждать.', yes: 'Да, по гейту', stop: 'Стоп',
     q2: 'Страница экспорта выглядит верно?', accept: 'Принять, если проверки прошли', show: 'Остановиться и показать мне',
     round: (n) => `Демо, круг ${n}`, again: 'Вопросы снова открыты, прежние ответы записаны.',
-    commits: ['экспорт: страница показывает все чаты', 'исправлено: причина остановки сохраняется', 'тесты: экспорт пустого чата'],
+    commits: COMMITS,
   },
 };
 
@@ -167,16 +171,18 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
   return [
     `turbo-view visual check — demo in ${dir}`,
     '',
-    'Open it in Claude Code (2.1.290 or newer), in a terminal at least 144 columns wide:',
+    'Open it in Claude Code (2.1.290 or newer), in a terminal at least 144 columns wide (point 8 checks a narrower one):',
     // TURBO_VIEW_BIN is set for that one claude only: a later claude in the same window must run the real turbo-run
     `  bash / Git Bash:  (cd "${project}" && TURBO_VIEW_BIN="${self}" claude --plugin-dir "${mod}")`,
     `  PowerShell:       Push-Location "${win(project)}"; try { $env:TURBO_VIEW_BIN = "${win(self)}"; claude --plugin-dir "${win(mod)}" } finally { Remove-Item Env:TURBO_VIEW_BIN; Pop-Location }`,
     'Accept the trust prompt for the demo folder. Then check:',
     '  1. Within 3 s the pane opens by itself on the right and reads as below (the times grow every 3 s): the verdict',
-    '     line first (its phase in bold, plans done and time dim, "needs your answer" in amber), the last activity dim,',
-    '     the helpers at work, the silent one amber with ⚠️, the finished ones as one dim count; the question in a',
-    '     rounded amber card that says it can be answered ahead, bold, its context dim, the recommended option ★ in the',
-    '     accent colour, Other… on its own row; then the latest changes with their age and the supervisor, dim:',
+    '     line first (its phase in bold, plans done and time dim, "needs your answer" in amber), what the phase does',
+    '     now, the last activity dim, the helpers at work, the silent one amber with ⚠️, the finished ones as one dim',
+    '     count; the question in a rounded amber card that says it can be answered ahead, bold, its context dim, the',
+    '     recommended option ★ in the accent colour, Other… on its own row; then what comes next and when you are',
+    '     needed (green when nothing is), the phase steps (done dim with a green ✓, the current one bold, the rest dim),',
+    '     the latest changes counted by kind with the age of the last, and the supervisor, dim:',
     ...pane,
     `  2. The band above the prompt reads "${bandLine(first)}", in amber.`,
     '  3. Over the next 40 s, these toasts; from read 7 an amber line says CI is red and the phase fixes it itself; at',
@@ -196,7 +202,8 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
     `     Then, in another terminal, run:  node "${self}" check "${project}"`,
     '     It prints "ok: the answer arrived as one argument, by pane" when the text reached turbo-run unchanged.',
     '  7. Close the pane (Ctrl+X then X): it does not come back by itself; /turbo-view opens it again.',
-    '  8. In a new session in a terminal narrower than 110 columns the pane does not open by itself; /turbo-view opens it.',
+    '  8. In a new session in a terminal narrower than 144 columns the pane does not open by itself: the band ends with',
+    `     "${wordsFor(first).paneHint}". Type any message: the pane opens with it (/turbo-view opens it too).`,
     `For the ${lang === 'ru' ? 'English' : 'Russian'} texts run this script again with --lang ${lang === 'ru' ? 'en' : 'ru'}. When done, exit Claude Code and delete the demo folder.`,
   ].join('\n');
 }

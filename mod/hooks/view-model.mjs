@@ -864,7 +864,8 @@ export function refreshMs(view, foreground) {
 }
 
 // The mod opens the pane by itself only while there is something live to watch; Claude Code places such a pane
-// from 144 columns (110 once the person opened it), and /turbo-view opens it at any width.
+// from 144 columns (110 once the person opened it), and /turbo-view or the owner's next prompt (register.mjs
+// askAgain) opens it at any width.
 export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || list(view?.questions).length);
 
 // The argv of S1's single answer arbiter (spec §5.3) for a press in the pane: option is the 1-based option number,

@@ -935,7 +935,7 @@ git commit -q -m "feat(lanes): the control root keeps turbo's state for commands
 **Interfaces:**
 - Consumes: `dirKey`, `slotRecordFile` (Task 3); `lanesSettings` (Task 1); `trustSlot`, `trustState`, `trustKey` (Task 2); `DEFAULTS`, `deepMerge`; `readJson`, `writeJsonAtomic`, `ensureDir`.
 - Produces (in `lib/slots.mjs`):
-  - `SLOT_RE`, `SETTINGS_LOCAL = '.claude/settings.local.json'`, `COPIED_GIT_CONFIG`; `class SlotRefused extends Error` with `.code` (`'mode' | 'layout' | 'inside' | 'settings' | 'copy' | 'detached' | 'missing' | 'foreign' | 'broken' | 'busy' | 'dirty' | 'install' | 'link' | 'unmerged' | 'held'`);
+  - `SLOT_RE`, `SETTINGS_LOCAL = '.claude/settings.local.json'`, `COPIED_GIT_CONFIG`; `class SlotRefused extends Error` with `.code` (`'mode' | 'layout' | 'inside' | 'settings' | 'copy' | 'detached' | 'missing' | 'foreign' | 'broken' | 'busy' | 'dirty' | 'install' | 'link' | 'unmerged' | 'held' | 'git'`; `settings`: the main checkout's settings.local.json is tracked or not a JSON object; `git`: a git call of prepare or remove failed);
   - `slotGit(env) → (dir, args, { ok, timeout }) → string | null`;
   - `maxLanes(config) → number`; `slotsDir(root, config) → string`; `slotPath(root, config, k) → string`;
   - `readSlotRecord(slot) → SlotRecord | null`;
@@ -1426,7 +1426,7 @@ git commit -q -m "feat(lanes): turbo slots: local clones with the ignored files 
 - Produces (in `lib/slots.mjs`):
   - `JOB_KINDS = ['phase', 'prep', 'annotate']`, `JOB_OUTCOMES = ['merged', 'failed', 'abandoned']`, `LOCKFILES`, `INSTALL_TIMEOUT_MS`;
   - `jobBranch(job) → 'turbo/p<N>' | 'turbo/prep-<N>' | 'turbo/annotate'`;
-  - `prepareSlot(root, slot, job, deps) → { k, path, branch, base: { branch, sha }, deps: Array<{ dir, lockfile, command, action: 'installed'|'unchanged'|'none' }>, record }`; `slot` is `k`, a slot path or a `Slot`; `job = { kind, phase, branch? }`;
+  - `prepareSlot(root, slot, job, deps) → { k, path, branch, base: { branch, sha }, deps: Array<{ dir, lockfile, command, action: 'installed'|'unchanged'|'none' }>, record }`; `slot` is `k`, a slot path or a `Slot`; `job = { kind, phase, branch? }`; refusals up to the fetch and the unmerged check (state, `link` for a node_modules link in any directory of test.full, checked on every prepare, `copy`, `git`, `unmerged`) change nothing; a later `git` or `install` refusal leaves the slot on the new branch, cleaned, with no job recorded (free; the next prepare starts over);
   - `depsFile(slot)`, `depsPlan(slot, config) → Array<{ dir, cwd, lockfile, command, sha256, action: 'install'|'unchanged'|'none' }>`, `ensureDeps(slot, config, { run, now })`, `runInstall(command, { cwd, timeout }) → { code, tail }`;
   - `releaseSlot(root, slot, { outcome = 'merged', now, config }) → SlotRecord`;
   - `slotForPhase(root, config, phase, { kind = 'phase' }) → { k, path, record } | null`;

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { gitIn, mainProject, slotFixture } from './helpers/slots.mjs';
-import { SlotRefused, depsFile, freeSlot, jobBranch, listSlots, prepareSlot, readSlotRecord, releaseSlot, removeSlot, setupSlots, slotForPhase, slotPath, sweepRemoving } from '../lib/slots.mjs';
+import { ISOLATED, gitIn, mainProject, slotFixture } from './helpers/slots.mjs';
+import { SlotRefused, slotGit, depsFile, freeSlot, jobBranch, listSlots, prepareSlot, readSlotRecord, releaseSlot, removeSlot, setupSlots, slotForPhase, slotPath, sweepRemoving } from '../lib/slots.mjs';
 import { trustState, untrustSlot } from '../lib/trust.mjs';
 
 const refused = (fn, code, re) => assert.throws(fn, (e) => e instanceof SlotRefused && e.code === code && (!re || re.test(e.message)), `${code} ${re ?? ''}`);
@@ -215,4 +215,26 @@ test('remove moves the slot aside first: a held file refuses with nothing change
   assert.deepEqual(again.swept, { removed: [r.leftover], kept: [] });
   assert.equal(fs.existsSync(r.leftover), false);
   assert.deepEqual(again.slots.map((s) => s.action), ['kept', 'created']);
+});
+
+test('a linked node_modules refuses every prepare before fetch and clean, install needed or not; a git failure is SlotRefused git; a failed install leaves the slot free on the new branch (M1, M2)', () => {
+  const { p, t, s1 } = ready({ files: LOCK });
+  prepareSlot(p.root, 1, { kind: 'phase', phase: '3' }, t.deps);
+  releaseSlot(p.root, 1, { config: t.config });
+  fs.mkdirSync(path.join(s1, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(s1, 'dist', 'app.js'), 'x');
+  fs.rmSync(path.join(s1, 'node_modules'), { recursive: true });
+  const outside = tmpDir('outside');
+  fs.symlinkSync(outside, path.join(s1, 'node_modules'), 'junction');
+  refused(() => prepareSlot(p.root, 1, { kind: 'phase', phase: '4' }, t.deps), 'link', /node_modules is a link/);
+  assert.deepEqual([branchOf(s1), fs.existsSync(path.join(s1, 'dist', 'app.js')), t.calls.length], ['turbo/p3', true, 1], 'nothing cleaned, nothing installed');
+  fs.rmSync(path.join(s1, 'node_modules'), { recursive: true });
+  const real = slotGit(ISOLATED);
+  const noFetch = { ...t.deps, git: (dir, args, o) => (args[0] === 'fetch' ? real(dir, ['fetch', '-q', 'no-such-remote']) : real(dir, args, o)) };
+  refused(() => prepareSlot(p.root, 1, { kind: 'phase', phase: '4' }, noFetch), 'git', /git fetch in .* failed/);
+  assert.equal(branchOf(s1), 'turbo/p3');
+  const failing = { ...t.deps, run: () => ({ code: 1, tail: 'npm ERR! network' }) };
+  fs.rmSync(depsFile(s1));
+  refused(() => prepareSlot(p.root, 1, { kind: 'phase', phase: '4' }, failing), 'install');
+  assert.deepEqual([branchOf(s1), readSlotRecord(s1).job.phase, listSlots(p.root, t.config, t.deps)[0].state], ['turbo/p4', '3', 'free'], 'no job recorded: the next prepare starts over');
 });

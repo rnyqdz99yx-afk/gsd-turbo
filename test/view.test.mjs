@@ -607,3 +607,22 @@ test('with several lanes formatView is the pane in plain lines too: summary, blo
   const E = '\x1b';
   assert.equal(formatView(textLanes(), { color: true }).split('\n')[0], `${E}[33mRun — needs your answer (1)${E}[0m`, 'the verdict in its colour on top');
 });
+
+test('the run line under every notification while two or more lanes run (Stage 4 D11)', async () => {
+  const { runLineFor, withRunLine } = await import('../lib/view.mjs');
+  assert.deepEqual(withRunLine({ title: 'Phase 33 done', body: 'Moving on.' }, '3 lanes · next: phase 34 waits for phase 32'), { title: 'Phase 33 done', body: 'Moving on.\n3 lanes · next: phase 34 waits for phase 32' });
+  assert.deepEqual(withRunLine({ title: 't', body: '' }, 'x'), { title: 't', body: 'x' });
+  assert.deepEqual(withRunLine({ title: 't', body: 'b' }, null), { title: 't', body: 'b' });
+  const { root, env, sup } = slotsProject();
+  writeJsonAtomic(path.join(runDirOf(root), 'supervisor.json'), sup);
+  assert.equal(runLineFor(root, { lang: 'ru' }, { env, now: NOW }), '3 полосы · следующая: фаза 34 ждёт фазу 32');
+  writeJsonAtomic(path.join(runDirOf(root), 'p32-questions.json'), [{ id: 'q1', phase: '32', question: 'Deploy?', options: [], state: 'open' }]);
+  assert.equal(runLineFor(root, {}, { env, now: NOW }), '3 lanes · 1 question · next: phase 34 waits for phase 32');
+  assert.equal(fs.existsSync(path.join(runDirOf(root), 'view-cache.json')), false, 'no transcript read, no cache written');
+  const legacy = laneProject();
+  writeJsonAtomic(path.join(runDirOf(legacy.root), 'supervisor.json'), legacy.sup);
+  assert.equal(runLineFor(legacy.root, {}, { env: legacy.env, now: NOW }), null, 'one lane: nothing added');
+  assert.equal(runLineFor(path.join(legacy.root, 'missing'), {}, { env: legacy.env, now: NOW }), null);
+  fs.writeFileSync(path.join(runDirOf(legacy.root), 'supervisor.json'), '{ broken');
+  assert.equal(runLineFor(legacy.root, null, { env: legacy.env, now: NOW }), null);
+});

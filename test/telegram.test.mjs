@@ -765,3 +765,22 @@ for (const lang of ['en', 'ru']) {
     assert.doesNotMatch(said, /03-01-t\d|\d{4}-\d{2}-\d{2}T|standing-rule|, (session|pane|telegram),/);
   });
 }
+
+test('a question card names the lane its phase runs in (Stage 4 D10); without lanes the title stays as it was', async () => {
+  for (const [lang, title] of [['en', 'Phase 3 · lane 2 · plan 03-01, task 2'], ['ru', 'Фаза 3 · полоса 2 · план 03-01, задача 2']]) {
+    const { root, ctx, bot } = project();
+    ctx.config = ON({ lang });
+    fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanes: { 3: { key: '3', job: 'phase', phase: '3', slot: 2, slotPath: path.join(path.dirname(root), 'app.turbo', 'lane-2'), sessionId: null } } }));
+    writeQuestions(root, '3', [Q('03-01-t2')]);
+    await telegramTick(ctx, NOW);
+    assert.equal(bot.sent()[0].body.text.split('\n')[0], title);
+    assert.equal(readTelegramState(root).sent['3:03-01-t2'].title, title);
+  }
+  const { root, ctx, bot } = project();
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lane: { phase: '3', sessionId: 'old111' } }));
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  await telegramTick(ctx, NOW);
+  assert.equal(bot.sent()[0].body.text.split('\n')[0], 'Phase 3 · plan 03-01, task 2', 'a v0.3 lane has no slot');
+});

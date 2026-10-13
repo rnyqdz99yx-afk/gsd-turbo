@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { STEPS } from '../lib/phase-progress.mjs';
-import { GAP_PLAN_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
+import { ASK_RULE, GAP_PLAN_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
 
 test('turbo-phase skill: frontmatter, every step in order, the commands it drives', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
@@ -246,4 +246,33 @@ test('turbo-phase skill: one verifier pass per uat step — every UAT write firs
   assert.ok(owner > 0 && owner < close.indexOf('turbo-run lane-status N done'), 'owner-request before the done record');
   // and before every stop for the owner in close, so status shows the checklist again after a resumed lane stops
   assert.ok(owner < close.indexOf('\n1. ') && close.includes('Before every **stop for the owner** in this step'), 'owner-request before any stop of close');
+});
+
+test('turbo-phase skill (v0.3.3): every stop for the owner is asked with turbo-run ask; lane questions are delivered on the lane path; owner-chosen fixes run as a counted gap round; the review loop is flagged', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const early = s.slice(s.indexOf('### Stopping early'), s.indexOf('### Push and CI'));
+  for (const needle of [
+    'turbo-run ask N --question', '--option "<label>|<description>"', '--recommended <n>', 'turbo-run ask N --action',
+    '--about-review', 'owner question <plan id>-t<task number>', 'turbo-run lane-status N needs-owner', 'turbo-run lane-status N failed',
+  ]) assert.ok(early.includes(needle), needle);
+  assert.ok(early.includes(ASK_RULE), 'the ask rule verbatim, as the lanes get it');
+  const owner = s.slice(s.indexOf('### Owner questions'), s.indexOf('### Stale report'));
+  const lane = owner.slice(owner.indexOf('**Lane questions.**'));
+  for (const needle of ['turbo-run questions N --deliver', 'turbo-run questions N --delivered <id> --path lane', 'data', 'Owner-chosen fixes']) assert.ok(lane.includes(needle), needle);
+  const fixes = s.slice(s.indexOf('**Owner-chosen fixes.**'));
+  for (const needle of ['turbo-run phase-step N --attempt owner-gaps', 'turbo-run owner-gaps N --review', '--gap', 'Skill(skill="gsd-plan-phase", args="N --gaps")', 'args="N --gaps-only --no-transition"', 'no hand-made UAT row']) assert.ok(fixes.includes(needle), needle);
+  assert.ok(!/stop for the owner\*\* \("[^"]*\bWR-\d/.test(s), 'no finding codes in stop reasons');
+});
+
+test('turbo-phase skill (review 1, MAJOR 2): no "go on" past the hard gates — final-gate, uat, close, open threats, failed verification; close refuses in code too', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const early = s.slice(s.indexOf('### Stopping early'), s.indexOf('### Push and CI'));
+  assert.match(early, /Never offer to go on past a stop of step \*\*final-gate\*\*, \*\*uat\*\* or \*\*close\*\*, past open security threats or past a verification that did not pass: the options there are fix first \(\*\*Owner-chosen fixes\*\*\), run the live check again, or stop the phase here\./);
+  assert.match(s, /go on \(never for a stop of final-gate, uat or close\) →/);
+  assert.match(s, /`turbo-run phase-step N --done close` refuses unless VERIFICATION\.md reads `passed` and SECURITY\.md counts no open threat/);
+});
+
+test('turbo-phase skill (review 1, MAJOR 3): two refusals of turbo-run ask end the rewriting: the stop goes out with a plain reason', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  assert.match(s, /refused twice → `turbo-run lane-status N needs-owner --reason "<the question in plain words>"`/);
 });

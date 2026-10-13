@@ -11,7 +11,9 @@ import { answerQuestion } from '../lib/answers.mjs';
 import {
   CLASSES, answersRel, buildQuestion, classifyQuestions, deliveryState, dynamicQuestion, liveAnswer, lockFile, markDelivered,
   questionId, questionsFile, readAnswers, readQuestions, refreshQuestions, stopQuestion, withPhaseLock, writeAnswers, writeQuestions,
+  askOwner, dropLaneQuestions, jargonIn, laneQuestion,
 } from '../lib/questions.mjs';
+import { readLaneStatus } from '../lib/run-status.mjs';
 
 const cpOf = (text) => parseCheckpoints(text)[0];
 
@@ -300,4 +302,130 @@ test('a rename of the answers .gitignore that Windows refuses a few times is ret
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /^warn: \.planning\/turbo\/answers\/\.gitignore not written \(.*operation not permitted.*\); the answer is written all the same$/);
   assert.deepEqual(fs.readdirSync(path.join(root, '.planning', 'turbo', 'run')).filter((n) => n.startsWith('answers-gitignore')), []);
+});
+
+// v0.3.3 owner stops: a lane's own question (D1, D2)
+const RU_Q = 'Исправления готовы, живая проверка ещё не запускалась. Что делать дальше?';
+const RU_OPTS = [
+  { label: 'Сначала исправить замечания', description: 'Фаза исправит три новых замечания ревью и потом запустит проверку.' },
+  { label: 'Сразу живая проверка', description: 'Замечания останутся; проверка покажет, мешают ли они.' },
+];
+
+test('a lane question: options in the given order with the recommended one moved first and marked, caps and masking like buildQuestion', () => {
+  const q = laneQuestion({ phase: '32', id: 'ask-1', question: RU_Q, context: 'Ревью нашло новые мелочи.', options: RU_OPTS, recommended: 2, lang: 'ru' });
+  assert.deepEqual([q.id, q.phase, q.plan, q.task, q.kind, q.class, q.classified, q.stopped, q.state, q.agentId, q.source, q.rev, q.allowOther, q.header], ['ask-1', '32', null, null, 'decision', 'decision', true, true, 'open', null, 'lane', 1, true, '']);
+  assert.deepEqual(q.options.map((o) => [o.label, o.recommended, o.signal, o.defer]), [['Сразу живая проверка', true, 'Сразу живая проверка', false], ['Сначала исправить замечания', false, 'Сначала исправить замечания', false]]);
+  assert.equal(q.question, RU_Q);
+  const long = laneQuestion({ phase: '32', id: 'ask-2', question: 'я'.repeat(400), context: `ключ ghp_${'a1B2'.repeat(9)} ${'ж'.repeat(700)}`, options: [{ label: 'д'.repeat(100), description: 'о'.repeat(300) }, RU_OPTS[1]], recommended: 1, lang: 'ru' });
+  assert.equal([...long.question].length, 300);
+  assert.equal([...long.context].length, 600);
+  assert.ok(!long.context.includes('a1B2a1B2'), 'masked');
+  assert.equal([...long.options[0].label].length, 80);
+  assert.equal([...long.options[0].description].length, 200);
+});
+
+test('a lane question is refused without 2-4 options, a recommended one, a question, or with a bare label', () => {
+  const base = { phase: '32', id: 'ask-1', question: RU_Q, options: RU_OPTS, recommended: 1, lang: 'ru' };
+  assert.throws(() => laneQuestion({ ...base, options: RU_OPTS.slice(0, 1) }), /2 to 4 options/);
+  assert.throws(() => laneQuestion({ ...base, options: [...RU_OPTS, ...RU_OPTS, RU_OPTS[0]] }), /2 to 4 options/);
+  assert.throws(() => laneQuestion({ ...base, recommended: null }), /--recommended/);
+  assert.throws(() => laneQuestion({ ...base, recommended: 3 }), /--recommended/);
+  assert.throws(() => laneQuestion({ ...base, question: '  ' }), /--question/);
+  assert.throws(() => laneQuestion({ ...base, options: [{ label: '', description: 'x' }, RU_OPTS[1]] }), /label/);
+});
+
+test('owner text with turbo\'s or GSD\'s ids is refused; a Russian owner gets no bare English question', () => {
+  const base = { phase: '32', id: 'ask-1', question: RU_Q, options: RU_OPTS, recommended: 1, lang: 'ru', planIds: ['32-46', '32-01'] };
+  const bad = [
+    ['Исправить WR-01..03 сначала?', /finding code WR-01/],
+    ['Закрыть G-32-22?', /finding code G-32-22/],
+    ['Закрыть LOOP8-WR-01?', /finding code LOOP8-WR-01/],
+    ['Закрыть CR-2?', /finding code CR-2/],
+    ['План 32-46 готов, что дальше?', /plan id 32-46/],
+    ['Задача 32-01-t2 ждёт?', /question id 32-01-t2/],
+    ['Ответ на ask-3 устарел?', /question id ask-3/],
+    ['Коммит 7b65341 отправлен?', /commit hash 7b65341/],
+    ['Поправить REVIEW.md?', /file name REVIEW\.md/],
+    ['Поправить 32-REVIEW.md?', /file name 32-REVIEW\.md/],
+    ['Поправить sync.js?', /file name sync\.js/],
+    ['Поправить код в src/stop/flush?', /path src\/stop\/flush/],
+  ];
+  for (const [question, re] of bad) assert.throws(() => laneQuestion({ ...base, question }), re, question);
+  assert.throws(() => laneQuestion({ ...base, options: [{ label: 'Фикс', description: 'Правка 32-01-t2' }, RU_OPTS[1]] }), /question id 32-01-t2/);
+  const fine = ['5-10 минут', 'с 10:00-12:00', 'страница 3-14', 'версия 1.2-10', '10-20 минут', 'после COVID-19', 'хеш SHA-256', 'дата ISO-8601', 'по RFC-7231', 'на Node.js и Next.js', 'слово decade12 и facade1', '2026-10-13', 'UTF-8', 'CI зелёный', '32-47 (не план этой фазы)'];
+  for (const t of fine) assert.doesNotThrow(() => laneQuestion({ ...base, question: 'Проверка: ' + t + '. Дальше?' }), t);
+  assert.throws(() => laneQuestion({ ...base, question: 'gap loop 8 done; fix review warnings first?' }), /the question has no Russian word/);
+  assert.throws(() => laneQuestion({ ...base, context: 'the review found edges' }), /the context has no Russian word/);
+  assert.throws(() => laneQuestion({ ...base, options: [{ label: 'Fix first', description: 'Сначала исправить' }, RU_OPTS[1]] }), /option 1 has no Russian word/);
+  assert.throws(() => laneQuestion({ phase: '32', id: 'ask-1', action: 'plug the phone in', lang: 'ru' }), /the question has no Russian word/, 'the action itself, not turbo\'s prefix');
+  assert.doesNotThrow(() => laneQuestion({ ...base, options: [{ label: 'OK — 42', description: 'Сразу' }, RU_OPTS[1]] }), 'an option with a Russian description');
+  assert.doesNotThrow(() => laneQuestion({ ...base, lang: 'en', question: 'The fixes are in; what next?', options: [{ label: 'Fix first', description: 'x' }, { label: 'Live check', description: 'y' }] }));
+});
+
+test('an owner-only action is a card with turbo\'s two options in the owner\'s language: done, or later', () => {
+  const ru = laneQuestion({ phase: '32', id: 'ask-1', action: 'Подключите телефон к компьютеру и разблокируйте его.', lang: 'ru' });
+  assert.deepEqual([ru.kind, ru.class, ru.allowOther], ['human-action', 'owner-only', true]);
+  assert.equal(ru.question, 'Нужно от вас: Подключите телефон к компьютеру и разблокируйте его.');
+  assert.deepEqual(ru.options.map((o) => [o.label, o.recommended]), [['Сделано', false], ['Сделаю позже', false]]);
+  const en = laneQuestion({ phase: '32', id: 'ask-1', action: 'Plug the phone in.', lang: 'en' });
+  assert.deepEqual(en.options.map((o) => o.label), ['Done', 'I will do it later']);
+  assert.throws(() => laneQuestion({ phase: '32', id: 'ask-1', action: 'x', options: RU_OPTS, recommended: 1, lang: 'en' }), /--action takes no --option/);
+});
+
+test('askOwner: the next ask id after the questions and the answers file, the older open lane question superseded, the needs-owner record written', () => {
+  const root = tmpDir('ask');
+  fs.mkdirSync(path.join(root, '.planning'));
+  writeAnswers(root, '32', [{ id: 'ask-4', option: 1, label: 'x', answer: 'x', by: 'session', at: '2026-01-01T00:00:00.000Z' }]);
+  const now = new Date('2026-02-01T00:00:00Z');
+  const first = askOwner(root, '32', { question: RU_Q, options: RU_OPTS, recommended: 1 }, { lang: 'ru', now });
+  assert.equal(first.question.id, 'ask-5');
+  assert.deepEqual(first.superseded, []);
+  assert.deepEqual(readLaneStatus(root, '32'), { phase: '32', status: 'needs-owner', reason: 'owner question ask-5', sessionId: '', at: now.toISOString() });
+  const second = askOwner(root, '32', { action: 'Подтвердите вход кодом из СМС.' }, { lang: 'ru', now });
+  assert.equal(second.question.id, 'ask-6');
+  assert.deepEqual(second.superseded, ['ask-5']);
+  assert.deepEqual(readQuestions(root, '32').map((q) => q.id), ['ask-6']);
+  assert.throws(() => askOwner(root, '32', { question: 'plain english only', options: RU_OPTS, recommended: 1 }, { lang: 'ru', now }), /no Russian word/);
+  assert.deepEqual(readQuestions(root, '32').map((q) => q.id), ['ask-6'], 'a refusal writes nothing');
+});
+
+test('a lane question survives refreshQuestions until delivered; once answered it is ready without an agent and is delivered on the lane path only', () => {
+  const root = tmpDir('askd');
+  writePhase(root, '32-auth', { '32-09-PLAN.md': DECISION_PLAN });
+  refreshQuestions(root, '32');
+  askOwner(root, '32', { question: RU_Q, options: RU_OPTS, recommended: 1 }, { lang: 'ru' });
+  assert.deepEqual(refreshQuestions(root, '32').map((q) => q.id), ['32-09-t2', 'ask-1']);
+  assert.deepEqual(deliveryState(root, '32').waiting.map((q) => q.id), ['ask-1']);
+  answerQuestion({ root, phase: '32', id: 'ask-1', option: 2, by: 'pane', laneRunning: true });
+  assert.equal(refreshQuestions(root, '32').find((q) => q.id === 'ask-1').state, 'answered');
+  assert.deepEqual(deliveryState(root, '32').ready.map((q) => q.id), ['ask-1']);
+  assert.throws(() => markDelivered(root, '32', 'ask-1', 'same-agent'), /lane question ask-1 is delivered on the lane path/);
+  assert.throws(() => markDelivered(root, '32', '32-09-t2', 'lane'), /only a lane question/);
+  assert.equal(markDelivered(root, '32', 'ask-1', 'lane').delivery.path, 'lane');
+  assert.deepEqual(refreshQuestions(root, '32').map((q) => q.id), ['32-09-t2'], 'delivered: gone from the questions, kept in the answers');
+  assert.equal(readAnswers(root, '32').at(-1).id, 'ask-1');
+});
+
+test('review 1 (MAJOR 1): dropLaneQuestions removes the lane questions not yet delivered, checkpoints stay; deliveryState with ask counts only the named lane question', () => {
+  const root = tmpDir('askdrop');
+  writePhase(root, '32-auth', { '32-09-PLAN.md': DECISION_PLAN });
+  refreshQuestions(root, '32');
+  askOwner(root, '32', { action: 'Plug the phone in.' }, { lang: 'en' });
+  assert.deepEqual(deliveryState(root, '32', { ask: 'ask-9' }).waiting, []);
+  assert.deepEqual(deliveryState(root, '32', { ask: 'ask-1' }).waiting.map((q) => q.id), ['ask-1']);
+  assert.deepEqual(deliveryState(root, '32').waiting.map((q) => q.id), ['ask-1'], 'without ask: as before');
+  assert.deepEqual(dropLaneQuestions(root, '32'), ['ask-1']);
+  assert.deepEqual(readQuestions(root, '32').map((q) => q.id), ['32-09-t2']);
+  assert.deepEqual(dropLaneQuestions(root, '32'), []);
+});
+
+test('review 2: «and/or», «on/off», «yes/no», «read/write», CI/CD, dates and URLs are plain; real paths are refused', () => {
+  const base = { phase: '32', id: 'ask-1', question: RU_Q, options: RU_OPTS, recommended: 1, lang: 'ru' };
+  for (const t of ['и and/or', 'режим on/off', 'ответ yes/no', 'права read/write', 'CI/CD', '13/10/2026', 'страница https://example.com/login', 'адрес http://localhost:3000/a/b.js']) {
+    assert.equal(jargonIn(t), null, t);
+    assert.doesNotThrow(() => laneQuestion({ phase: '32', id: 'ask-1', action: `Войдите: ${t}`, lang: 'en' }), t);
+  }
+  for (const [t, re] of [['файл lib/foo.mjs', /lib\/foo\.mjs|foo\.mjs/], ['файл src/a/b.ts', /src\/a\/b\.ts|b\.ts/], ['запустите ./x', /path \.\/x/], ['в ../tools/run', /path \.\.\/tools\/run/], ['папка src/a/b', /path src\/a\/b/], ['папка lib/my_util', /path lib\/my_util/]]) {
+    assert.throws(() => laneQuestion({ ...base, question: `Проверить ${t}?` }), re, t);
+  }
 });

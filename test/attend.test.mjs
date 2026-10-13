@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
-import { deliveryState, markDelivered, readQuestions, refreshQuestions, stopQuestion } from '../lib/questions.mjs';
+import { askOwner, deliveryState, markDelivered, readQuestions, refreshQuestions, stopQuestion } from '../lib/questions.mjs';
 import { answerQuestion, preAnswerText } from '../lib/answers.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 import { attendFile, attendGates, attendedPhases, clearAttend, openPlans, releaseStops, sweepLateLanes, writeAttend } from '../lib/attend.mjs';
@@ -121,4 +121,12 @@ test('sweepLateLanes keeps to its window by the clock: slow session lists eat in
   });
   assert.deepEqual([lists, slept], [2, [1000, 1000]]);
   assert.ok(clock <= 5000 + 2000, `ended at ${clock} ms: within the window plus the last list`);
+});
+
+test('releaseStops leaves a lane\'s own question alone: it belongs to no agent, and the owner answers it in the sitting or after (v0.3.3)', () => {
+  const root = tmpDir('att-lane');
+  writePhase(root, '32-auth', { '32-09-PLAN.md': DECISION_PLAN });
+  askOwner(root, '32', { action: 'Plug the phone in.' }, { lang: 'en' });
+  assert.deepEqual(releaseStops(root, '32'), []);
+  assert.deepEqual(deliveryState(root, '32').waiting.map((q) => q.id), ['ask-1']);
 });

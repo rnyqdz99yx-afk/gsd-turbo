@@ -38,7 +38,7 @@ const round = (root, step, rounds) => gapRound(root, '3', step, { config: { ...D
 
 test('gap_rounds: 1 by default; a whole number of 0 or more, a digit string too; anything else is the default (Review Focus 4)', () => {
   assert.equal(DEFAULTS.gap_rounds, 1);
-  assert.deepEqual(GAP_STEPS, ['execute', 'uat']);
+  assert.deepEqual(GAP_STEPS, ['execute', 'uat', 'owner-gaps']);
   const cases = [[3, 3], ['3', 3], [' 2 ', 2], [0, 0], ['0', 0], [undefined, 1], [null, 1], [-1, 1], [2.5, 1], ['x', 1], ['', 1], [true, 1], ['-2', 1]];
   for (const [v, want] of cases) assert.equal(gapRounds({ gap_rounds: v }), want, JSON.stringify(v));
   assert.equal(gapRounds(undefined), 1);
@@ -230,4 +230,20 @@ test('a gap round is resumed again only after one more of its plans got a SUMMAR
   assert.deepEqual([r.n, r.go, r.resumed], [1, true, ['03-03']]);
   r = round(q.root, 'uat', 3);
   assert.deepEqual([r.n, r.go, r.reason], [2, false, 'round 1 was resumed and its gap plans 03-03 still have no SUMMARY: their execution does not finish']);
+});
+
+test('owner-gaps rounds (v0.3.3, D6): the owner chose them, so no evidence is compared; gap_rounds still bounds them across sessions; phase-step prints them like the others', async () => {
+  const p = project({ config: { gap_rounds: 2 } });
+  assert.ok(GAP_STEPS.includes('owner-gaps'));
+  let r = round(p.root, 'owner-gaps', 2);
+  assert.deepEqual([r.n, r.max, r.go, r.reason], [1, 2, true, '']);
+  r = round(p.root, 'owner-gaps', 2);
+  assert.deepEqual([r.n, r.go], [2, true], 'no report and nothing changed: still the owner\'s round');
+  r = round(p.root, 'owner-gaps', 2);
+  assert.deepEqual([r.n, r.go, r.reason], [3, false, 'the gap_rounds budget of 2 is used up across sessions']);
+  assert.equal(readProgress(p.root, '3').attempts['owner-gaps'], 3);
+  clearAttempts(p.root, '3');
+  const lines = [];
+  assert.equal(await runPhaseCommand('phase-step', ['3', '--attempt', 'owner-gaps'], { root: p.root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) }), 0);
+  assert.equal(lines.at(-1), 'attempt owner-gaps 1 of 2: go');
 });

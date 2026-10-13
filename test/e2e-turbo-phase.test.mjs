@@ -146,7 +146,8 @@ test('a scripted /turbo-phase run drives every deterministic step and leaves GSD
   }
   await done('uat');
 
-  // close, through the real CLI entry
+  // close, through the real CLI entry; verify-work turned human_needed into passed (G12)
+  write(`${dir}/03-VERIFICATION.md`, '---\nstatus: passed\n---\n');
   assert.match(execFileSync(process.execPath, [BIN, 'phase-step', '3', '--done', 'close', '--project', root], { encoding: 'utf8' }), /next none/);
   execFileSync(process.execPath, [BIN, 'lane-status', '3', 'done', '--reason', 'e2e', '--project', root]);
   assert.equal(readLaneStatus(root, '3').status, 'done');

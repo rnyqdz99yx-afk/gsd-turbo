@@ -72,3 +72,13 @@ test('the lane probe tells whether the lane session itself answered after a time
   assert.equal(probe.replied(JOB, woken), true);
   assert.equal(probe.replied('ffffffff', woken), false);
 });
+
+test('v0.3.3: a wake for checkpoint answers and the lane\'s own question names both; a new full session takes the lane\'s own one itself', () => {
+  const p = answerWakePrompt({ phase: '32', turboRun: 'node x', ids: ['32-09-t2'], lane: [{ id: 'ask-2', option: 1, label: 'Go -on' }] });
+  assert.match(p, /^The owner answered the questions phase 32 stopped for: 32-09-t2\. Deliver them first: .* The owner answered the question you asked at your stop: ask-2 \(option 1, Go -on\)\. .*--delivered ask-2 --path lane\. Then go on with the turbo-phase skill for phase 32 /);
+  assert.ok(plain(p));
+  assert.equal(answerWakePrompt({ phase: '32', turboRun: 'node x', ids: ['32-09-t2'] }), answerWakePrompt({ phase: '32', turboRun: 'node x', ids: ['32-09-t2'], lane: [], mode: 'full' }), 'a checkpoint wake is unchanged');
+  const u = laneUserPrompt({ phase: '2', mode: 'full', resume: true, turboRun: 'node x', laneAnswered: ['ask-1'] });
+  assert.equal(u, "Resume phase 2. Run the turbo-phase skill with arguments: 2 --resume. Before its step loop, take the owner's answer to the question you asked: ask-1. Run node x questions 2 --deliver, do what the chosen option says, then run node x questions 2 --delivered ask-1 --path lane.");
+  assert.ok(plain(u));
+});

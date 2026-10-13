@@ -25,6 +25,10 @@ let live = false; // an interactive session started (a -p run never reads)
 let started = false;
 let attached = true; // a surface is attached: only then the mod opens the pane and shows toasts
 let opened = false; // the pane was opened once in this module's life; the clock never reopens a closed pane
+// The mod's own open of the pane waits undrawn: Claude Code places a pane nobody asked for only from 144 columns (110
+// for one the person opened before). The band says how to open it, and the owner's next prompt opens it (askAgain).
+let waiting = false;
+let closedByOwner = false; // the owner closed the pane by hand: never opened again unasked
 // The "Other…" field (view-model.mjs): every read redraws the pane, so what is typed is kept here and drawn back.
 let field = NO_FIELD;
 const sending = new Set(); // questions with an answer on its way
@@ -144,17 +148,41 @@ async function refresh($, force) {
   if (attached && !opened && shouldAutoOpen(view)) {
     opened = true;
     try {
-      await $.ui.open({ id: PANE_ID, title: PANE_TITLE });
+      waiting = (await $.ui.open({ id: PANE_ID, title: PANE_TITLE }))?.isPlaced === false;
     } catch (err) {
       $.ui.log(`turbo-view: pane not opened: ${firstLine(err?.message ?? err)}`);
     }
-  }
+  } else if (waiting) await checkPlaced($);
   await keepClock($, attached);
   $.ui.invalidate('ui.render');
   if (again) {
     again = false;
     await refresh($, false);
   }
+}
+
+// A waiting pane is placed once the terminal widens to the floor: the band stops saying how to open it.
+async function checkPlaced($) {
+  try {
+    const pane = (await $.ui.panes()).find((p) => p.id === PANE_ID);
+    waiting = Boolean(pane && !pane.isPlaced);
+  } catch {
+    // the panes cannot be read: the hint stays until the pane opens
+  }
+}
+
+// The owner's own prompt counts as asking (Claude Code places such an open at any width): a pane the mod opened that
+// waits undrawn is opened again here, once, and never after the owner closed it by hand. The prompt goes on unchanged
+// whatever the open does.
+async function askAgain($) {
+  if (!live || !waiting || closedByOwner) return;
+  waiting = false;
+  try {
+    waiting = (await $.ui.open({ id: PANE_ID, title: PANE_TITLE }))?.isPlaced === false;
+  } catch (err) {
+    $.ui.log(`turbo-view: pane not opened: ${firstLine(err?.message ?? err)}`);
+  }
+  $.ui.invalidate('ui.render');
 }
 
 // The time now for an answer's toast; NaN (no time shown) when the clock cannot be read.
@@ -248,8 +276,9 @@ export function register(on) {
     if (!root) await locate($);
     if (!root) return { text: 'turbo-view: no .planning/turbo/ in this directory or above it' };
     opened = true;
+    closedByOwner = false;
     try {
-      await $.ui.open({ id: PANE_ID, title: PANE_TITLE, focus: true });
+      waiting = (await $.ui.open({ id: PANE_ID, title: PANE_TITLE, focus: true }))?.isPlaced === false;
     } catch (err) {
       // Claude Code names the mod in the message already: "turbo-view: $.ui.open: <reason>"
       $.ui.toast(wordsFor(view).paneNotOpened(firstLine(err?.message ?? err).replace(/^turbo-view: /, '')), { timeoutMs: TOAST_MS });
@@ -263,13 +292,32 @@ export function register(on) {
     // the first draw starts the reads; after that, a clock that failed to start is tried again on every draw
     if (live && !started) void refresh($, false);
     else if (live && !timer) void keepClock($);
-    const line = bandLine(view, { error });
+    const line = bandLine(view, { error, paneWaiting: waiting });
     if (!line) return next(e);
     const { Box, Text } = $.ui.resolve(e);
     // one colour, the verdict's: green all fine, amber an answer waits or a phase is silent, red stopped or CI red
     const mine = Text({ children: [line], wrap: 'truncate-end', ...bandStyle(view, { error }) });
     const theirs = await next(e);
     return theirs ? Box({ flexDirection: 'column', children: [mine, theirs] }) : mine;
+  });
+
+  // w1: the owner's prompt opens a pane that waits undrawn; the prompt itself is passed on as it came
+  on('prompt.submit', async ($, e, next) => {
+    try {
+      await askAgain($);
+    } catch {
+      // never in the prompt's way
+    }
+    return next(e);
+  });
+
+  // a pane the owner closes by hand stays closed: neither the clock nor a prompt opens it again; /turbo-view does
+  on('ui.close', { id: PANE_ID }, async ($, e, next) => {
+    if (e.origin === 'person') {
+      closedByOwner = true;
+      waiting = false;
+    }
+    return next(e);
   });
 
   // the pane: view-model.mjs render's tree (sections, question cards, colours), the field drawn with what was typed,

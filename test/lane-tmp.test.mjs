@@ -93,9 +93,10 @@ test('a stale directory a leftover stand still works in is never partly deleted'
   const repo = tmpGitRepo();
   const dir = laneTmpDir(repo, '3');
   fill(dir);
-  const stand = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: path.join(dir, 'stand'), stdio: 'ignore', windowsHide: true });
+  const stand = spawn(process.execPath, ['-e', 'process.stdout.write("up"); setInterval(() => {}, 1000)'], { cwd: path.join(dir, 'stand'), stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
   t.after(() => { try { stand.kill(); } catch { /* gone */ } });
-  await new Promise((resolve) => stand.once('spawn', resolve));
+  // 'spawn' fires when CreateProcess returns; the child opens its cwd only while it initialises: wait until it runs
+  await new Promise((resolve) => stand.stdout.once('data', resolve));
   const logs = [];
   assert.equal(prepareLaneTmp(repo, '3', (l) => logs.push(l)), dir);
   if (process.platform === 'win32') {

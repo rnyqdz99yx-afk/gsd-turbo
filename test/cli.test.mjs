@@ -49,9 +49,10 @@ function fakeClaude() {
   const fs = require('fs');
   const path = require('path');
   const args = process.argv.slice(2);
-  fs.appendFileSync(path.join(__dirname, 'claude-argv.jsonl'), JSON.stringify(args) + '\n');
-  // the calling session's ids a launched lane sees (none expected)
+  // the calling session's ids a launched lane sees (none expected); written before argv, so a test that waits for
+  // the call in claude-argv.jsonl always finds this line too
   if (args[0] === '--bg') fs.appendFileSync(path.join(__dirname, 'claude-env.jsonl'), JSON.stringify({ sid: process.env.CLAUDE_CODE_SESSION_ID ?? null, job: process.env.CLAUDE_JOB_DIR ?? null }) + '\n');
+  fs.appendFileSync(path.join(__dirname, 'claude-argv.jsonl'), JSON.stringify(args) + '\n');
   const b = JSON.parse(fs.readFileSync(path.join(__dirname, 'behavior.json'), 'utf8'));
   const [cmd, id = ''] = args;
   if (cmd === '--version') console.log(`${b.version} (Claude Code)`);

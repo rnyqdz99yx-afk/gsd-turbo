@@ -35,13 +35,14 @@ import { trustLine, trustState } from '../lib/trust.mjs';
 import { laneForPhase, laneLabel, lanesSummary, setupLines, supervisorLanes } from '../lib/lanes-state.mjs';
 import { loadLanePlugins } from '../lib/lane-plugins.mjs';
 import { IntegrateRefused, readyRecord } from '../lib/integrate.mjs';
+import { jobLaneStatus, runAnnotateCommand } from '../lib/cli-jobs.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds']);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax']);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
 const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
@@ -989,9 +990,17 @@ async function main() {
       printLeftovers(gatesLeftovers(root));
       return code;
     }
+    case 'annotate': {
+      // spec §6.2 (L3): the markup session's brief and apply
+      return runAnnotateCommand(args, { root, out, err: (l) => process.stderr.write(`${l}
+`) });
+    }
     case 'lane-status': {
-      const [phase, status] = pos;
       if (!root) die('no .planning directory found');
+      // spec §6 (L3): the prep and annotate jobs' own statuses
+      if (args.includes('--job') || pos[0] === 'annotate') return jobLaneStatus(args, { root, out, err: (l) => process.stderr.write(`${l}
+`) });
+      const [phase, status] = pos;
       if (!phase || !PHASE_ID.test(phase) || !LANE_STATUSES.includes(status)) die(`lane-status <phase> <${LANE_STATUSES.join('|')}> [--reason <text>] [--base <sha>]`);
       const id = normalizePhaseId(phase);
       // Stage 4 §7.1 p.4: ready carries what the supervisor's merge checks (lib/integrate.mjs readyRecord)

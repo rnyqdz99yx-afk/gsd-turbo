@@ -252,6 +252,16 @@ Some plans need you while they run: a device to connect, a login, an app to quit
 
 `turbo-run attend` refuses to run inside a lane.
 
+## Prep and lane markup
+
+In `lanes.mode: "slots"` the supervisor prepares future phases while others run, and marks up the ROADMAP so that independent phases can run at the same time (spec §6).
+
+- **Prep.** Every unfinished phase of the run's range without a `CONTEXT.md` gets a prep job: a background session `/turbo-prep <N>` in a free slot on `turbo/prep-<N>`. It runs `/turbo-phase`'s freshness, discuss (assumptions mode, recommended answers) and prologue steps and stops before plan; `turbo-run lane-status <N> prepped --job prep` refuses anything outside `.planning/phases/<N>-*`. The supervisor merges the branch without tests. At most `max_prep` run at once (default `max_lanes`), and phase lanes always come first. A failed prep is not retried: the phase's lane does the same work itself.
+- **Markup.** After prep, one annotate job runs the `turbo-lane-analyst` agent over the ROADMAP, each unfinished phase's CONTEXT, RESEARCH and plans, and the code, then `turbo-run annotate apply` writes, right after each phase's `**Depends on**:` line, `**Areas**:` (path masks the phase may touch), `**Gates**:` (`prod-deploy`, `owner-live`, `owner-signature`, `packaged-build`, plus `lanes.gates`) and `**Parallel with**:` (informative), and `.planning/turbo/lanes.json`, which the scheduler reads. A phase without markup, or with `confidence: low`, counts as touching everything.
+- **Freshness.** `lanes.json` keeps a digest of the ROADMAP's scheduling text (each phase's heading, Goal, Depends on and Requirements). Completing a phase does not change it; adding or removing a phase or editing a dependency does, and only the phases whose section changed are marked up again.
+- **Dependencies.** The analyst may propose to drop a `Depends on` that is only wording or imaginary. With `autonomy: max` turbo applies it (`Depends on` rewritten as `Phase 3, Phase 4`) and writes a decision record to `.planning/decisions/` (when that directory exists) or `.planning/turbo/DECISIONS.md`: what was, what is, why, how to roll back. With `standard` you get one question card (remove all / leave as is / your own words for some); nothing waits for it.
+- **Commands.** `/turbo-plan-milestone [range]` prepares and marks up the milestone without running any phase (`turbo-run start --plan-only`), and ends by itself. `/turbo-new-milestone` runs `/gsd-new-milestone`, then `/turbo-plan-milestone`. `/turbo-autonomous` does the same first steps by itself when a milestone has no markup.
+
 ## GSD settings turbo writes
 
 turbo writes only these documented keys to `.planning/config.json`, always through `gsd-tools config-set` (a restore may then check out the file's committed bytes when they mean the same configuration):

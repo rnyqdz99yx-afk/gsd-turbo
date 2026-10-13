@@ -228,8 +228,10 @@ test('lanes (Stage 4 L0): defaults, a valid hand-edited value, and every invalid
   assert.deepEqual(lanesSettings(), DEFAULTS.lanes);
   assert.deepEqual(
     lanesSettings({ mode: 'checkout', dir: ' ../slots ', copy: [' config/*.env ', '**/.npmrc'], install: ' pnpm install --offline ', trust_write: false, gates: ['packaged-build'] }),
-    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false },
+    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false, gates: ['packaged-build'] },
   );
+  // a key of a later sub-project (L1's lanes.gates) passes through unchecked (I2)
+  assert.deepEqual(lanesSettings({ gates: { full: true } }).gates, { full: true });
   const cases = [
     [null, /lanes: must be an object/],
     [{ mode: 'worktree' }, /lanes\.mode: must be one of slots, checkout/],

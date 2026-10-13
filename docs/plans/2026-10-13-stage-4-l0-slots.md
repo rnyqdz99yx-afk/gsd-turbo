@@ -116,7 +116,7 @@ What this plan consumes, by exact name (it re-implements none of it):
 
 **Interfaces:**
 - Consumes: `DEFAULTS`, `loadConfig`, the private `isObj` of `lib/config.mjs`.
-- Produces: `DEFAULTS.lanes = { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true }`; `LANE_MODES = ['slots', 'checkout']`; `lanesSettings(raw = DEFAULTS.lanes) → { mode, dir, copy, install, trust_write }` (trimmed strings) or throws `invalid turbo config lanes.<key>: <why>`. Keys it does not know (L1's `lanes.gates`) pass through untouched in the config and are not returned.
+- Produces: `DEFAULTS.lanes = { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true }`; `LANE_MODES = ['slots', 'checkout']`; `lanesSettings(raw = DEFAULTS.lanes) → { ...raw, mode, dir, copy, install, trust_write }` (trimmed strings) or throws `invalid turbo config lanes.<key>: <why>`. Keys it does not know (L1's `lanes.gates`) pass through unchecked: they stay in the config and are returned as they are.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -135,7 +135,7 @@ test('lanes (Stage 4 L0): defaults, a valid hand-edited value, and every invalid
   assert.deepEqual(lanesSettings(), DEFAULTS.lanes);
   assert.deepEqual(
     lanesSettings({ mode: 'checkout', dir: ' ../slots ', copy: [' config/*.env ', '**/.npmrc'], install: ' pnpm install --offline ', trust_write: false, gates: ['packaged-build'] }),
-    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false },
+    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false, gates: ['packaged-build'] },
   );
   const cases = [
     [null, /lanes: must be an object/],
@@ -181,7 +181,7 @@ Right after the closing brace of `export function pushSettings`, add:
 export const LANE_MODES = Object.freeze(['slots', 'checkout']);
 
 // lanes.* (spec §4, §10, Stage 4 L0), checked where slots are built or read: a typo must never widen what turbo copies
-// or where it clones. Keys of later sub-projects (lanes.gates) are left to them.
+// or where it clones. Keys of later sub-projects (lanes.gates) pass through unchecked, left to them.
 export function lanesSettings(raw = DEFAULTS.lanes) {
   if (!isObj(raw)) throw new Error('invalid turbo config lanes: must be an object');
   const bad = (key, why) => new Error(`invalid turbo config lanes.${key}: ${why}`);
@@ -198,7 +198,7 @@ export function lanesSettings(raw = DEFAULTS.lanes) {
   }
   if (typeof l.install !== 'string') throw bad('install', 'must be a command string (empty: by the lockfile)');
   if (typeof l.trust_write !== 'boolean') throw bad('trust_write', 'must be true or false');
-  return { mode: l.mode, dir: l.dir.trim(), copy, install: l.install.trim(), trust_write: l.trust_write };
+  return { ...raw, mode: l.mode, dir: l.dir.trim(), copy, install: l.install.trim(), trust_write: l.trust_write };
 }
 ```
 

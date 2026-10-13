@@ -1138,7 +1138,7 @@ export const SETTINGS_LOCAL = '.claude/settings.local.json';
 // The main checkout's local git settings a slot takes before its first checkout: the same identity, signing and line
 // endings (S3: other line endings break the verification fingerprint). An absolute core.hooksPath names the main
 // checkout's own hooks directory and is skipped.
-export const COPIED_GIT_CONFIG = Object.freeze(['user.name', 'user.email', 'user.signingkey', 'commit.gpgsign', 'gpg.format', 'core.autocrlf', 'core.eol', 'core.safecrlf', 'core.hooksPath']);
+export const COPIED_GIT_CONFIG = Object.freeze(['user.name', 'user.email', 'user.signingkey', 'commit.gpgsign', 'gpg.format', 'core.autocrlf', 'core.eol', 'core.safecrlf', 'core.hooksPath', 'core.longpaths', 'core.symlinks']);
 const GIT_TIMEOUT_MS = 120000;
 const CLONE_TIMEOUT_MS = 600000;
 const EXCLUDE_BEGIN = '# gsd-turbo slot files: begin';

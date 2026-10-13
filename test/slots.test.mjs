@@ -25,6 +25,8 @@ test('setup clones each slot next to the project, copies the ignored files lanes
   p.write('.env', 'A=1\n');
   p.write('api/.env', 'B=2\n');
   p.write('.claude/settings.local.json', JSON.stringify({ permissions: { allow: ['Bash(ls)'] } }));
+  p.git('config', '--local', 'core.longpaths', 'true');
+  p.git('config', '--local', 'core.symlinks', 'true');
   const t = slotFixture(p.root);
   assert.equal(slotsDir(p.root, t.config), t.dir);
   const r = setupSlots(p.root, t.config, t.deps);
@@ -39,6 +41,7 @@ test('setup clones each slot next to the project, copies the ignored files lanes
     assert.equal(gitIn(s, 'status', '--porcelain', '--untracked-files=all'), '', 'copies never show');
     assert.equal(dirKey(localRemotePath(gitIn(s, 'config', '--get', 'remote.origin.url'))), dirKey(p.root));
     assert.deepEqual([gitIn(s, 'config', '--local', '--get', 'core.autocrlf'), gitIn(s, 'config', '--local', '--get', 'user.name')], ['false', 'test']);
+    assert.deepEqual(['core.longpaths', 'core.symlinks'].map((key) => gitIn(s, 'config', '--local', '--get', key)), ['true', 'true'], 'M5');
     assert.equal(gitIn(s, 'rev-parse', 'HEAD'), p.git('rev-parse', 'HEAD'));
     const rec = readSlotRecord(s);
     assert.deepEqual([rec.v, rec.k, rec.path, rec.job, rec.copied, rec.createdAt], [1, k, s, null, ['.env', 'api/.env'], '2026-10-13T12:00:00.000Z']);

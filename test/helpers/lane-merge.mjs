@@ -3,6 +3,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { ISOLATED, gitIn, mainProject, slotFixture } from './slots.mjs';
 import { prepareSlot, setupSlots, slotGit } from '../../lib/slots.mjs';
+import { writeLaneStatus } from '../../lib/run-status.mjs';
+import { integrateMain, readyRecord } from '../../lib/integrate.mjs';
 
 export const PHASE_DIR = '.planning/phases/03-demo';
 const put = (dir, rel, text) => {
@@ -60,3 +62,18 @@ export function finishPhase(p, { code = { 'src/feature.js': 'export const featur
   p.writeSlot(`${PHASE_DIR}/03-VERIFICATION.md`, ['---', 'phase: 03-demo', 'status: passed', 'score: 2/2 must-haves verified', 'covered_files:', ...files.map((f) => `  - ${f}`), `covered_digest: "${digest}"`, '---', '', '# Verification', ''].join('\n'));
   return p.commitSlot('feat(03): demo');
 }
+
+// The lane's end of §7.1, as turbo-run integrate 3 and turbo-run lane-status 3 ready --base <sha> do it. Each ready
+// record gets its own time a second apart: the merge decides once per record (decision D5), keyed by its at.
+let readyCount = 0;
+export function reportReady(p, { reason = 'integrated' } = {}) {
+  const r = integrateMain(p.slot, '3', { git: p.git });
+  if (r.state === 'conflicts') throw new Error(`conflicts: ${r.conflicts.join(', ')}`);
+  readyCount += 1;
+  const at = new Date(Date.parse('2026-10-13T12:00:00.000Z') + readyCount * 1000).toISOString();
+  writeLaneStatus(p.slot, '3', 'ready', { reason, at, fields: readyRecord(p.slot, '3', { base: r.base, git: p.git }) });
+  return r;
+}
+
+// The supervisor.json lane entry of phase 3 in slot 1 (L0's Interfaces: owned by L1).
+export const laneOf = (p) => ({ key: '3', job: 'phase', phase: '3', slot: 1, slotPath: p.slot, branch: 'turbo/p3', sessionId: null, launchedAt: '2026-10-13T12:00:00.000Z', restarts: 0, notified: {}, mode: 'full' });

@@ -11,7 +11,7 @@ import { answerQuestion } from '../lib/answers.mjs';
 import {
   CLASSES, answersRel, buildQuestion, classifyQuestions, deliveryState, dynamicQuestion, liveAnswer, lockFile, markDelivered,
   questionId, questionsFile, readAnswers, readQuestions, refreshQuestions, stopQuestion, withPhaseLock, writeAnswers, writeQuestions,
-  askOwner, dropLaneQuestions, laneQuestion,
+  askOwner, dropLaneQuestions, jargonIn, laneQuestion,
 } from '../lib/questions.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
 
@@ -348,7 +348,7 @@ test('owner text with turbo\'s or GSD\'s ids is refused; a Russian owner gets no
     ['Поправить REVIEW.md?', /file name REVIEW\.md/],
     ['Поправить 32-REVIEW.md?', /file name 32-REVIEW\.md/],
     ['Поправить sync.js?', /file name sync\.js/],
-    ['Поправить код в src/stop?', /path src\/stop/],
+    ['Поправить код в src/stop/flush?', /path src\/stop\/flush/],
   ];
   for (const [question, re] of bad) assert.throws(() => laneQuestion({ ...base, question }), re, question);
   assert.throws(() => laneQuestion({ ...base, options: [{ label: 'Фикс', description: 'Правка 32-01-t2' }, RU_OPTS[1]] }), /question id 32-01-t2/);
@@ -417,4 +417,15 @@ test('review 1 (MAJOR 1): dropLaneQuestions removes the lane questions not yet d
   assert.deepEqual(dropLaneQuestions(root, '32'), ['ask-1']);
   assert.deepEqual(readQuestions(root, '32').map((q) => q.id), ['32-09-t2']);
   assert.deepEqual(dropLaneQuestions(root, '32'), []);
+});
+
+test('review 2: «and/or», «on/off», «yes/no», «read/write», CI/CD, dates and URLs are plain; real paths are refused', () => {
+  const base = { phase: '32', id: 'ask-1', question: RU_Q, options: RU_OPTS, recommended: 1, lang: 'ru' };
+  for (const t of ['и and/or', 'режим on/off', 'ответ yes/no', 'права read/write', 'CI/CD', '13/10/2026', 'страница https://example.com/login', 'адрес http://localhost:3000/a/b.js']) {
+    assert.equal(jargonIn(t), null, t);
+    assert.doesNotThrow(() => laneQuestion({ phase: '32', id: 'ask-1', action: `Войдите: ${t}`, lang: 'en' }), t);
+  }
+  for (const [t, re] of [['файл lib/foo.mjs', /lib\/foo\.mjs|foo\.mjs/], ['файл src/a/b.ts', /src\/a\/b\.ts|b\.ts/], ['запустите ./x', /path \.\/x/], ['в ../tools/run', /path \.\.\/tools\/run/], ['папка src/a/b', /path src\/a\/b/], ['папка lib/my_util', /path lib\/my_util/]]) {
+    assert.throws(() => laneQuestion({ ...base, question: `Проверить ${t}?` }), re, t);
+  }
 });

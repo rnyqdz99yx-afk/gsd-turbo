@@ -40,8 +40,8 @@ test('the needs-owner notice gives the reason, never a claim that the rest of th
   const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
   assert.deepEqual(holes(msg('ru', 'laneNeedsOwner', keep)), holes(msg('en', 'laneNeedsOwner', keep)));
   const vars = { phase: '2', reason: '1 item needs your sign-off' };
-  assert.deepEqual(msg('en', 'laneNeedsOwner', vars), { title: 'Phase 2 stopped — needs your answer', body: 'Reason: 1 item needs your sign-off. Details: /turbo-autonomous status' });
-  assert.deepEqual(msg('ru', 'laneNeedsOwner', vars), { title: 'Фаза 2 остановилась — нужен ваш ответ', body: 'Причина: 1 item needs your sign-off. Подробности: /turbo-autonomous status' });
+  assert.deepEqual(msg('en', 'laneNeedsOwner', vars), { title: 'Phase 2 stopped — needs your answer', body: 'Phase 2 waits for you: 1 item needs your sign-off. Details: /turbo-autonomous status' });
+  assert.deepEqual(msg('ru', 'laneNeedsOwner', vars), { title: 'Фаза 2 остановилась — нужен ваш ответ', body: 'Фаза 2 ждёт вас: 1 item needs your sign-off. Подробности: /turbo-autonomous status' });
 });
 
 test('inferStatus full mode: done needs the fresh done record; human_needed is not needs-owner', () => {

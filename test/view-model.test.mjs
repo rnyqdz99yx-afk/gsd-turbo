@@ -251,6 +251,8 @@ test("a phase stopped for a question: the reason loses /turbo-phase's `owner que
   const stopped = (reason) => view({}, { status: 'needs-owner', reason, agents: [] });
   assert.deepEqual(lines(stopped('owner question 32-09-t3')).slice(1, 3), ['  last activity 20s ago', '']);
   assert.deepEqual(toastsFor(view(), stopped('owner question 32-09-t3')), ['Phase 32 stopped — needs your answer']);
+  assert.deepEqual(lines(stopped('owner question ask-3')).slice(1, 3), ['  last activity 20s ago', ''], 'a lane question (v0.3.3)');
+  assert.deepEqual(toastsFor(view(), stopped('owner question ask-3')), ['Phase 32 stopped — needs your answer']);
   const locked = 'owner question 32-09-t3: app.exe holds release/app.exe; quit the app';
   assert.equal(lines(stopped(locked))[2], '  Reason: app.exe holds release/app.exe; quit the app');
   assert.deepEqual(toastsFor(view(RU), view(RU, { status: 'needs-owner', reason: locked })), ['Фаза 32 остановилась — нужен ваш ответ: app.exe holds release/app.exe; quit the app']);

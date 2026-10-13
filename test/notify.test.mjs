@@ -262,15 +262,16 @@ test('a needs-owner reason in words: no `owner question <id>`, no question or se
   const says = (lang, reason) => msg(lang, 'laneNeedsOwner', { phase: '32', reason }).body;
   assert.equal(says('en', 'owner question 32-09-t3'), 'Details: /turbo-autonomous status', 'the title says a question waits');
   assert.equal(says('ru', 'owner question 32-09-t3'), 'Подробности: /turbo-autonomous status');
-  assert.equal(says('ru', 'owner question 32-09-t3: app.exe locked by app.exe (PID 42): quit the app.'), 'Причина: app.exe locked by app.exe (PID 42): quit the app. Подробности: /turbo-autonomous status');
-  assert.equal(says('en', 'Owner question 32-09-t3 the deploy needs a key'), 'Reason: the deploy needs a key. Details: /turbo-autonomous status');
-  assert.equal(says('en', 'owner question about the deploy'), 'Reason: owner question about the deploy. Details: /turbo-autonomous status', 'no id: kept as written');
-  assert.equal(says('en', 'human verification'), 'Reason: it needs your manual check. Details: /turbo-autonomous status');
-  assert.equal(says('ru', 'human verification'), 'Причина: нужна ваша ручная проверка. Подробности: /turbo-autonomous status');
+  assert.equal(says('ru', 'owner question ask-3'), 'Подробности: /turbo-autonomous status', 'a lane question (v0.3.3): the card says it');
+  assert.equal(says('ru', 'owner question 32-09-t3: app.exe locked by app.exe (PID 42): quit the app.'), 'Фаза 32 ждёт вас: app.exe locked by app.exe (PID 42): quit the app. Подробности: /turbo-autonomous status');
+  assert.equal(says('en', 'Owner question 32-09-t3 the deploy needs a key'), 'Phase 32 waits for you: the deploy needs a key. Details: /turbo-autonomous status');
+  assert.equal(says('en', 'owner question about the deploy'), 'Phase 32 waits for you: owner question about the deploy. Details: /turbo-autonomous status', 'no id: kept as written');
+  assert.equal(says('en', 'human verification'), 'Phase 32 waits for you: it needs your manual check. Details: /turbo-autonomous status');
+  assert.equal(says('ru', 'human verification'), 'Фаза 32 ждёт вас: нужна ваша ручная проверка. Подробности: /turbo-autonomous status');
   const undelivered = 'the answers to 02-01-t2, 02-01-t4 did not reach session 1a2b3c4d (claude stop failed: timed out)';
-  assert.equal(says('en', undelivered), "Reason: your answers did not reach the phase's session (claude stop failed: timed out). Details: /turbo-autonomous status");
-  assert.equal(says('ru', undelivered), 'Причина: ваши ответы не дошли до сессии фазы (claude stop failed: timed out). Подробности: /turbo-autonomous status');
-  assert.equal(says('en', 'a\u001b[2Jb‮c'), 'Reason: abc. Details: /turbo-autonomous status', 'a repository string is cleaned');
+  assert.equal(says('en', undelivered), "Phase 32 waits for you: your answers did not reach the phase's session (claude stop failed: timed out). Details: /turbo-autonomous status");
+  assert.equal(says('ru', undelivered), 'Фаза 32 ждёт вас: ваши ответы не дошли до сессии фазы (claude stop failed: timed out). Подробности: /turbo-autonomous status');
+  assert.equal(says('en', 'a\u001b[2Jb‮c'), 'Phase 32 waits for you: abc. Details: /turbo-autonomous status', 'a repository string is cleaned');
 });
 
 test('a session id shows only inside the command that needs it', () => {

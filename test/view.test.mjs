@@ -252,6 +252,8 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
     'Супервизор работает · фазы 32–…',
   ].join('\n'));
   assert.equal(ru({ questions: [] }, { status: 'failed', reason: 'tests fail after 3 fix rounds' }).split('\n').slice(0, 3).join('\n'), 'Фаза 32 остановилась из-за сбоя · шаг: выполнение планов · 5 из 9 планов готово · 1 ч 11 мин\n  последнее действие 1 мин назад\n  Причина: tests fail after 3 fix rounds');
+  // v0.3.3: a lane question's stop shows no reason line: its card says it
+  assert.ok(!ru({ questions: [] }, { status: 'needs-owner', reason: 'owner question ask-3' }).includes('Причина'));
   // after turbo-run stop: never "running", never "stuck", the time frozen at the last activity
   assert.equal(ru({ questions: [], at: at('15:00'), supervisor: { running: false, pid: null, finished: false, halted: false } }, { quiet: true }).split('\n')[0], 'Фаза 32 остановлена на шаге: выполнение планов · 5 из 9 планов готово · 1 ч 11 мин · супервизор не работает');
   assert.equal(ru({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }).split('\n')[0], 'Фаза 32 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин · CI красный — фаза чинит сама (попытка 1 из 2), от вас ничего не нужно');

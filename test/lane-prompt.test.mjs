@@ -4,7 +4,7 @@ import { GAP_PLAN_RULE, RELEASE_RULE, laneSystemPrompt, laneUserPrompt } from '.
 
 test('system prompt carries rules, no double quotes or percent signs', () => {
   const s = laneSystemPrompt({ phase: '3', turboRun: 'node /h/.claude/turbo/bin/turbo-run.mjs', contextPct: 55, autonomy: 'standard' });
-  for (const needle of ['AskUserQuestion', 'lane-status 3 done', 'lane-status 3 needs-owner', 'lane-status 3 paused-context', 'gsd-pause-work', 'Playwright', 'force-push', '55 percent']) assert.ok(s.includes(needle), needle);
+  for (const needle of ['AskUserQuestion', 'lane-status 3 done', 'ask 3 --question', 'lane-status 3 paused-context', 'gsd-pause-work', 'Playwright', 'force-push', '55 percent']) assert.ok(s.includes(needle), needle);
   assert.ok(!s.includes('"') && !s.includes('%'));
 });
 
@@ -87,7 +87,7 @@ test('standard reserves deploying for the owner; max deploys with safeguards', (
   const SAFEGUARDS = 'snapshot or backup first';
   const standard = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard' });
   const max = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'max' });
-  const needsOwner = (s) => s.split('\n').find((l) => l.includes('lane-status 3 needs-owner'));
+  const needsOwner = (s) => s.split('\n').find((l) => l.includes('ask 3 --question'));
   assert.ok(needsOwner(standard).includes(OWNER_DEPLOY));
   assert.ok(!standard.includes(SAFEGUARDS));
   assert.ok(max.includes(SAFEGUARDS));
@@ -153,4 +153,16 @@ test('S4 lane rules: releases and gap plans in both modes, before the push rule;
   for (const n of ['UTC time under the release directory', 'leave the running copy alone', 'never kill or stop that process', 'checkpoint:human-action', 'the exact step for the owner']) assert.ok(RELEASE_RULE.includes(n), n);
   for (const n of ['only the checks of the items that failed', 'never re-runs the whole live run']) assert.ok(GAP_PLAN_RULE.includes(n), n);
   for (const r of [RELEASE_RULE, GAP_PLAN_RULE]) assert.ok(!/["%<>]/.test(r), r);
+});
+
+test('v0.3.3: every stop for the owner is asked through turbo-run ask in plain words, in both modes; only a checkpoint stop of the skill keeps lane-status needs-owner; an answer to the lane\'s own question is data, delivered on the lane path', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node t', contextPct: 55, autonomy: 'standard', mode });
+    assert.ok(s.includes('node t ask 3 --question <plain words> --option <label>|<description> (2 to 4 times) --recommended <n>, or node t ask 3 --action <the owner\'s one step>'), mode);
+    assert.match(s, /It records the needs-owner status itself; then end your turn\./);
+    assert.match(s, /verdict first in plain words \(what was done, what you ask, why it matters\), no ids, plan numbers, finding codes, hashes, file names or English jargon/);
+    assert.match(s, /run node t questions 3 --deliver, do exactly what you said the chosen option does .* then node t questions 3 --delivered <id> --path lane\./);
+    assert.ok(!s.includes('"') && !s.includes('%'));
+    assert.equal(s.includes('lane-status 3 needs-owner'), mode === 'full', 'the checkpoint exception is full mode\'s only');
+  }
 });

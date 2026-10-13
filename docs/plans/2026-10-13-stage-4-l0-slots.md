@@ -116,7 +116,7 @@ What this plan consumes, by exact name (it re-implements none of it):
 
 **Interfaces:**
 - Consumes: `DEFAULTS`, `loadConfig`, the private `isObj` of `lib/config.mjs`.
-- Produces: `DEFAULTS.lanes = { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true }`; `LANE_MODES = ['slots', 'checkout']`; `lanesSettings(raw = DEFAULTS.lanes) → { mode, dir, copy, install, trust_write }` (trimmed strings) or throws `invalid turbo config lanes.<key>: <why>`. Keys it does not know (L1's `lanes.gates`) pass through untouched in the config and are not returned.
+- Produces: `DEFAULTS.lanes = { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true }`; `LANE_MODES = ['slots', 'checkout']`; `lanesSettings(raw = DEFAULTS.lanes) → { ...raw, mode, dir, copy, install, trust_write }` (trimmed strings) or throws `invalid turbo config lanes.<key>: <why>`. Keys it does not know (L1's `lanes.gates`) pass through unchecked: they stay in the config and are returned as they are.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -135,7 +135,7 @@ test('lanes (Stage 4 L0): defaults, a valid hand-edited value, and every invalid
   assert.deepEqual(lanesSettings(), DEFAULTS.lanes);
   assert.deepEqual(
     lanesSettings({ mode: 'checkout', dir: ' ../slots ', copy: [' config/*.env ', '**/.npmrc'], install: ' pnpm install --offline ', trust_write: false, gates: ['packaged-build'] }),
-    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false },
+    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false, gates: ['packaged-build'] },
   );
   const cases = [
     [null, /lanes: must be an object/],
@@ -181,7 +181,7 @@ Right after the closing brace of `export function pushSettings`, add:
 export const LANE_MODES = Object.freeze(['slots', 'checkout']);
 
 // lanes.* (spec §4, §10, Stage 4 L0), checked where slots are built or read: a typo must never widen what turbo copies
-// or where it clones. Keys of later sub-projects (lanes.gates) are left to them.
+// or where it clones. Keys of later sub-projects (lanes.gates) pass through unchecked, left to them.
 export function lanesSettings(raw = DEFAULTS.lanes) {
   if (!isObj(raw)) throw new Error('invalid turbo config lanes: must be an object');
   const bad = (key, why) => new Error(`invalid turbo config lanes.${key}: ${why}`);
@@ -198,7 +198,7 @@ export function lanesSettings(raw = DEFAULTS.lanes) {
   }
   if (typeof l.install !== 'string') throw bad('install', 'must be a command string (empty: by the lockfile)');
   if (typeof l.trust_write !== 'boolean') throw bad('trust_write', 'must be true or false');
-  return { mode: l.mode, dir: l.dir.trim(), copy, install: l.install.trim(), trust_write: l.trust_write };
+  return { ...raw, mode: l.mode, dir: l.dir.trim(), copy, install: l.install.trim(), trust_write: l.trust_write };
 }
 ```
 
@@ -233,6 +233,7 @@ git commit -q -m "feat(lanes): lanes.mode, dir, copy, install and trust_write co
   - `trustSlot(dir, { file, platform, write = true, run = {}, lang, now, sleep, rename, read }) → { status: 'already'|'trusted'|'manual', key, backup?, why?, line? }`;
   - `untrustSlot(dir, { same options }) → { status: 'absent'|'removed'|'manual', key, backup?, why?, line? }`.
   - `run` is the per-command object: `run.backup` holds the one backup this command run wrote.
+  - `KEEP_BACKUPS = 5`: after its backup, a write keeps only the 5 newest `<file>.turbo-bak-<stamp>[-<n>]` files and removes `<file>.turbo-tmp-<pid>` files of dead pids; a `file` that is a symlink is written at its real target.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -935,15 +936,15 @@ git commit -q -m "feat(lanes): the control root keeps turbo's state for commands
 **Interfaces:**
 - Consumes: `dirKey`, `slotRecordFile` (Task 3); `lanesSettings` (Task 1); `trustSlot`, `trustState`, `trustKey` (Task 2); `DEFAULTS`, `deepMerge`; `readJson`, `writeJsonAtomic`, `ensureDir`.
 - Produces (in `lib/slots.mjs`):
-  - `SLOT_RE`, `SETTINGS_LOCAL = '.claude/settings.local.json'`, `COPIED_GIT_CONFIG`; `class SlotRefused extends Error` with `.code` (`'mode' | 'layout' | 'inside' | 'settings' | 'copy' | 'detached' | 'missing' | 'foreign' | 'broken' | 'busy' | 'dirty' | 'install' | 'link' | 'unmerged'`);
+  - `SLOT_RE`, `SETTINGS_LOCAL = '.claude/settings.local.json'`, `COPIED_GIT_CONFIG`; `class SlotRefused extends Error` with `.code` (`'mode' | 'layout' | 'inside' | 'settings' | 'copy' | 'detached' | 'missing' | 'foreign' | 'broken' | 'busy' | 'dirty' | 'install' | 'link' | 'unmerged' | 'held' | 'git'`; `settings`: the main checkout's settings.local.json is tracked or not a JSON object; `git`: a git call of prepare or remove failed);
   - `slotGit(env) → (dir, args, { ok, timeout }) → string | null`;
   - `maxLanes(config) → number`; `slotsDir(root, config) → string`; `slotPath(root, config, k) → string`;
   - `readSlotRecord(slot) → SlotRecord | null`;
   - `listSlots(root, config, deps) → Slot[]`, `Slot = { k, path, state: 'missing'|'free'|'busy'|'dirty'|'foreign'|'broken', record, dirty: string[], why? }`;
   - `mainBranch(root, deps) → string`; `maskRegExp(mask) → RegExp`; `copyPlan(root, config, deps) → { files, notIgnored }`;
-  - `setupSlots(root, config, deps) → { dir, slots: Array<{ k, path, action: 'created'|'kept'|'refused', why, trust }>, backup }`;
+  - `setupSlots(root, config, deps) → { dir, slots: Array<{ k, path, action: 'created'|'kept'|'refused', why, trust }>, backup, swept }` (`swept`: what `sweepRemoving` returned);
   - private, used by Task 5: `gitOf`, `ours`, `slotInfo`, `slotNumbers`, `blocking`, `checkedCopies`, `refreshSlot`, `writeSlotRecord`, `ignoreLine`, `describeJob`, `isObj`, `errLine`, `refuse`.
-- `deps` everywhere: `{ git?, env?, now?, claudeJson?, trustWrite?, trust?, config?, run?, log? }`.
+- `deps` everywhere: `{ git?, env?, now?, claudeJson?, trustWrite?, trust?, config?, run?, log?, rename?, rm? }` (`rename`, `rm`: removeSlot's and sweepRemoving's file operations, injected by tests).
 - Produces (tests): `mainProject({ ignore, files })`, `slotFixture(root, { max, lanes })`.
 
 - [ ] **Step 1: Write the helpers and the failing tests**
@@ -1138,7 +1139,7 @@ export const SETTINGS_LOCAL = '.claude/settings.local.json';
 // The main checkout's local git settings a slot takes before its first checkout: the same identity, signing and line
 // endings (S3: other line endings break the verification fingerprint). An absolute core.hooksPath names the main
 // checkout's own hooks directory and is skipped.
-export const COPIED_GIT_CONFIG = Object.freeze(['user.name', 'user.email', 'user.signingkey', 'commit.gpgsign', 'gpg.format', 'core.autocrlf', 'core.eol', 'core.safecrlf', 'core.hooksPath']);
+export const COPIED_GIT_CONFIG = Object.freeze(['user.name', 'user.email', 'user.signingkey', 'commit.gpgsign', 'gpg.format', 'core.autocrlf', 'core.eol', 'core.safecrlf', 'core.hooksPath', 'core.longpaths', 'core.symlinks']);
 const GIT_TIMEOUT_MS = 120000;
 const CLONE_TIMEOUT_MS = 600000;
 const EXCLUDE_BEGIN = '# gsd-turbo slot files: begin';
@@ -1426,12 +1427,13 @@ git commit -q -m "feat(lanes): turbo slots: local clones with the ignored files 
 - Produces (in `lib/slots.mjs`):
   - `JOB_KINDS = ['phase', 'prep', 'annotate']`, `JOB_OUTCOMES = ['merged', 'failed', 'abandoned']`, `LOCKFILES`, `INSTALL_TIMEOUT_MS`;
   - `jobBranch(job) → 'turbo/p<N>' | 'turbo/prep-<N>' | 'turbo/annotate'`;
-  - `prepareSlot(root, slot, job, deps) → { k, path, branch, base: { branch, sha }, deps: Array<{ dir, lockfile, command, action: 'installed'|'unchanged'|'none' }>, record }`; `slot` is `k`, a slot path or a `Slot`; `job = { kind, phase, branch? }`;
-  - `depsFile(slot)`, `depsPlan(slot, config) → Array<{ dir, cwd, lockfile, command, sha256, action: 'install'|'unchanged'|'none' }>`, `ensureDeps(slot, config, { run, now })`, `runInstall(command, { cwd, timeout }) → { code, tail }`;
+  - `prepareSlot(root, slot, job, deps) → { k, path, branch, base: { branch, sha }, deps: Array<{ dir, lockfile, command, action: 'installed'|'unchanged'|'none' }>, record }`; `slot` is `k`, a slot path or a `Slot`; `job = { kind, phase, branch? }`; refusals up to the fetch and the unmerged check (state, `link` for a node_modules link in any directory of test.full, checked on every prepare, `copy`, `git`, `unmerged`) change nothing; a later `git` or `install` refusal leaves the slot on the new branch, cleaned, with no job recorded (free; the next prepare starts over);
+  - `depsFile(slot)`, `depsPlan(slot, config) → Array<{ dir, cwd, lockfile, command, sha256, action: 'install'|'unchanged'|'none' }>`, `ensureDeps(slot, config, { run, now })`, `runInstall(command, { cwd, timeout, env, platform, exists }) → { code, tail }`; `installBash({ env, platform, cwd, exists }) → { bash, refused }` (on Windows the first `bash.exe` in PATH by absolute path; WSL's `System32\bash.exe` is refused: runInstall returns code 1 with that message);
   - `releaseSlot(root, slot, { outcome = 'merged', now, config }) → SlotRecord`;
   - `slotForPhase(root, config, phase, { kind = 'phase' }) → { k, path, record } | null`;
   - `freeSlot(root, config, deps) → Slot | null` (free and trusted);
-  - `removeSlot(root, config, k, deps) → { k, path, removed, why, untrust }`.
+  - `removeSlot(root, config, k, deps) → { k, path, removed, why, untrust, leftover }`: refuses `unmerged` for any local branch `--no-merged` origin/<main>, a non-empty stash or a detached HEAD commit origin/<main> lacks; renames `lane-<k>` to `lane-<k>.removing-<ms>` first (a failed rename refuses `held`, nothing changed), then untrusts, then deletes; `leftover` is the renamed directory when the delete stopped halfway, else null;
+  - `REMOVING_RE`, `sweepRemoving(root, config, { rm }) → { removed: string[], kept: Array<{ path, why }> }`: deletes the `*.removing-*` leftovers again (lanes setup and lanes remove call it); `listSlots` never counts them.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1883,8 +1885,8 @@ git commit -q -m "feat(lanes): prepare, release, find and remove slots; install 
 **Interfaces:**
 - Consumes: `stateRoot`, `locksDir` (Task 3); `commitPaths` (`lib/gates.mjs`); `answersRel`, `ANSWERS_IGNORE_REL`; `fakeSlot`, `gitIn` (Task 3 helper); `DECISION_PLAN`, `writePhase`.
 - Produces:
-  - `lib/questions.mjs`: `withFileLock(file, fn, { waitMs, staleMs, platform, locked })` (`locked: () => Error`); `withPhaseLock` unchanged in signature and behaviour;
-  - `lib/merge-lock.mjs`: `MERGE_LOCK_WAIT_MS = 30000`, `MERGE_LOCK_STALE_MS = 1800000`, `class MergeLocked extends Error`, `mergeLockFile(root) → <control>/.planning/turbo/locks/merge`, `withMergeLock(root, fn, { waitMs, staleMs, platform }) → fn's result`;
+  - `lib/questions.mjs`: `withFileLock(file, fn, { waitMs, staleMs, platform, locked, alive })` (`locked: () => Error`; `alive: (token) => boolean`, optional: a lock whose owner is alive is never taken over, however old); `withPhaseLock` unchanged in signature and behaviour;
+  - `lib/merge-lock.mjs`: `MERGE_LOCK_WAIT_MS = 30000`, `MERGE_LOCK_STALE_MS = 1800000`, `class MergeLocked extends Error`, `mergeLockFile(root) → <control>/.planning/turbo/locks/merge`, `pidAlive(pid) → boolean`, `withMergeLock(root, fn, { waitMs, staleMs, platform, alive = pidAlive }) → fn's result`. A stale merge lock is taken over only when the pid in its token is dead (`process.kill(pid, 0)` throws ESRCH) **and** it is older than `staleMs`; a live owner keeps it regardless of age. **L2 must NOT hold `locks/merge` while pushing or waiting for CI**: only around the merge and its commits;
   - `lib/answers.mjs`: `commitAnswerPaths(root, paths, message, { lock = true, waitMs }) → { committed, reason? }`, `commitPendingAnswers(root, { lock = false, message }) → { committed, reason? }`.
 
 - [ ] **Step 1: Write the failing tests**

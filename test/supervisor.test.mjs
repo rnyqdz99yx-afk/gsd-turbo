@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { tick, runDaemon, resumableLane } from '../lib/supervisor.mjs';
+import { tick, runDaemon, resumableLane, placeOf, wakePrompt } from '../lib/supervisor.mjs';
+import { answerWakePrompt, stallWakePrompt } from '../lib/wake.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus, readLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName, parseAgents, projectHash } from '../lib/claude.mjs';
@@ -963,4 +964,23 @@ test('the lent heartbeat writes nothing once the daemon lost its lease, and answ
   let sleeps = 0;
   await runDaemon({ ctx: h.ctx, statePath, intervalMs: 1, sleep: async () => { if (++sleeps > 3) throw new Error('runaway daemon'); } });
   assert.deepEqual([answer, written], [false, false]);
+});
+
+test('placeOf: v0.3\'s lane runs in this checkout as phase <N>; a slot lane in its slot, with the control root for its session (Stage 4 L1)', () => {
+  const ctx = { root: path.resolve('/home/dev/app') };
+  const slot = path.resolve('/home/dev/app.turbo/lane-2');
+  assert.deepEqual(placeOf(ctx, { phase: '3' }), { key: '3', job: 'phase', phase: '3', cwd: ctx.root, controlRoot: null });
+  assert.deepEqual(placeOf(ctx, { key: '34', job: 'phase', phase: '34', slotPath: slot }), { key: '34', job: 'phase', phase: '34', cwd: slot, controlRoot: ctx.root });
+  assert.deepEqual(placeOf(ctx, { key: 'prep-4', job: 'prep', phase: '4', slotPath: slot }), { key: 'prep-4', job: 'prep', phase: '4', cwd: slot, controlRoot: ctx.root });
+  assert.deepEqual(placeOf(ctx, { key: 'annotate', job: 'annotate', phase: null, slotPath: slot }), { key: 'annotate', job: 'annotate', phase: null, cwd: slot, controlRoot: ctx.root });
+});
+
+test('wakePrompt: a phase lane gets v0.3\'s wake prompts; a job lane asks the job module, with the wake (Stage 4 L1)', () => {
+  const ctx = { root: path.resolve('/home/dev/app'), turboRun: 'node x', deps: { jobPrompts: ({ lane, resume, wake }) => ({ prompt: `${lane.key} ${resume} ${wake.kind}`, systemPrompt: 's' }) } };
+  assert.equal(wakePrompt(ctx, { phase: '3', mode: 'full' }, { kind: 'stall', minutes: 16 }), stallWakePrompt({ phase: '3', turboRun: 'node x', mode: 'full', minutes: 16 }));
+  assert.equal(wakePrompt(ctx, { phase: '3' }, { kind: 'stall', minutes: 16 }), stallWakePrompt({ phase: '3', turboRun: 'node x', mode: undefined, minutes: 16 }));
+  assert.equal(wakePrompt(ctx, { phase: '3', mode: 'full' }, { kind: 'answers', ids: ['03-01-t2'], lane: [] }), answerWakePrompt({ phase: '3', turboRun: 'node x', ids: ['03-01-t2'], lane: [], mode: 'full' }));
+  const prep = { key: 'prep-4', job: 'prep', phase: '4', slotPath: path.resolve('/home/dev/app.turbo/lane-1') };
+  assert.equal(wakePrompt(ctx, prep, { kind: 'stall', minutes: 16 }), 'prep-4 true stall');
+  assert.throws(() => wakePrompt({ ...ctx, deps: {} }, prep, { kind: 'stall', minutes: 1 }), /^Error: no prep\/annotate support \(lib\/prep\.mjs\) for lane prep-4$/);
 });

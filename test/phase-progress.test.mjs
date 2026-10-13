@@ -136,3 +136,18 @@ test('review 1 (MAJOR 2): phase-step N --done close refuses unless VERIFICATION.
   assert.equal(await close(), 0);
   assert.match(lines.at(-1), /next none/);
 });
+
+test('review 2: the close check reads YAML inline comments as GSD does: status: passed  # ok and threats_open: 0 # none open close; a # inside quotes stays', async () => {
+  const root = project();
+  const dir = path.join(root, '.planning', 'phases', '03-demo');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const s of STEPS.slice(0, -1)) completeStep(root, '3', s);
+  const lines = [];
+  const close = () => runPhaseCommand('phase-step', ['3', '--done', 'close'], { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) });
+  fs.writeFileSync(path.join(dir, '03-VERIFICATION.md'), '---\nstatus: "passed # not a comment"\n---\n');
+  fs.writeFileSync(path.join(dir, '03-SECURITY.md'), '---\nthreats_open: 0 # none open\n---\n');
+  assert.equal(await close(), 1);
+  assert.match(lines.at(-1), /status is passed # not a comment, not passed$/);
+  fs.writeFileSync(path.join(dir, '03-VERIFICATION.md'), '---\nstatus: passed  # ok\n---\n');
+  assert.equal(await close(), 0, lines.at(-1));
+});

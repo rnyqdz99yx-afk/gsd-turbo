@@ -773,7 +773,8 @@ async function main() {
       else printStatus(sup, running, { attended });
       for (const f of ownerRequests) out(`owner request: ${f}`);
       // v0.3.3: the questions a phase stopped for, in the owner's words
-      for (const q of openQuestions(root).filter((x) => x.stopped)) out(`owner question: phase ${q.phase} — ${String(q.question).replace(/\s+/g, ' ')} (answer: /turbo-autonomous answer)`);
+      const said = config.lang === 'ru' ? ['вопрос к вам: фаза', 'ответить'] : ['owner question: phase', 'answer'];
+      for (const q of openQuestions(root).filter((x) => x.stopped)) out(`${said[0]} ${q.phase} — ${String(q.question).replace(/\s+/g, ' ')} (${said[1]}: /turbo-autonomous answer)`);
       printAttended(attended);
       printLeftovers(leftovers);
       return 0;

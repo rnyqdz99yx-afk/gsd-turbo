@@ -89,7 +89,7 @@ test('a refused push or a CI timeout goes to the owner and keeps the slot; the l
   const id = mergeState(p.root, '3').pushRequestId;
   writeJsonAtomic(recordFile(p.root, '3'), { requestId: id, phase: '3', remote: 'origin', at: 'x', outcome: 'refused', branch: 'main', sha, findings: [{ file: 'a.log', kind: 'forbidden name *.log' }] });
   let r = await mergeFollowUp(m.ctx, laneOf(p));
-  assert.deepEqual(r, { outcome: 'needs-owner', reason: 'refused: a.log (forbidden name *.log); nothing was pushed' });
+  assert.deepEqual(r, { outcome: 'needs-owner', reason: 'refused: a.log (forbidden name *.log); nothing was pushed', notified: true }, 'the push work told the owner already (pushRefused)');
   const written = readLaneStatus(p.root, '3');
   assert.equal(written.status, 'needs-owner');
   // L1's followUpStep keeps the lane at needs-owner while this lasts and notifies once per reason: the same answer again
@@ -99,6 +99,7 @@ test('a refused push or a CI timeout goes to the owner and keeps the slot; the l
   r = await mergeFollowUp(m.ctx, laneOf(p));
   assert.equal(r.outcome, 'needs-owner');
   assert.match(r.reason, /CI timeout/);
+  assert.equal(r.notified, true, 'the push work told the owner already (ciTimeout)');
   assert.equal(readSlotRecord(p.slot).job.state, 'active');
 });
 

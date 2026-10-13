@@ -332,3 +332,22 @@ test('integration (reconcile R12): an annotate job that needs the owner is notif
   const note = h.notes.find((x) => x.key === 'laneNeedsOwner');
   assert.equal(note?.vars.phase, 'annotate', JSON.stringify(h.notes));
 });
+
+test('integration: a refused or diverged push or a CI timeout after the merge is told to the owner once, by the push work; followUpStep does not notify again, but does for its other needs-owner reasons', async () => {
+  const follow = [
+    { outcome: 'needs-owner', reason: 'refused: a.log (forbidden name *.log); nothing was pushed', notified: true },
+    { outcome: 'needs-owner', reason: 'diverged: origin/main has commits this checkout does not have; nothing was pushed', notified: true },
+    { outcome: 'needs-owner', reason: 'pushed abc · CI timeout: no result within push.ci_timeout_minutes', notified: true },
+    { outcome: 'needs-owner', reason: 'something else needs you' },
+    { outcome: 'released' },
+  ];
+  const h = lanesHarness({ phases: [P('1')], followUp: () => follow.shift(), merge: mergeFrom([{ outcome: 'merged' }]) });
+  let s = await tick(freshLanes(), h.ctx);
+  writeLaneStatus(h.root, '1', 'ready', { at: h.at() });
+  h.agentOf('1').state = 'blocked';
+  s = await tick(s, h.ctx);
+  for (let i = 0; i < 5; i++) s = await tick(s, h.ctx);
+  assert.deepEqual(h.notes.filter((x) => x.key === 'laneNeedsOwner').map((x) => x.vars.reason), ['something else needs you']);
+  assert.ok(h.logs.some((l) => l.includes('diverged') && l.includes('the push work told the owner')), h.logs.join('\n'));
+  assert.deepEqual(s.lanes, {});
+});

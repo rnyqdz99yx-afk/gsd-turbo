@@ -4,8 +4,8 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey } from '../lib/paths.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, laneGates, pushSettings } from '../lib/config.mjs';
+import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
+import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
 import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
@@ -15,7 +15,7 @@ import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.
 import { createClaude, resolveBin, laneSessionName, sessionFreeEnv } from '../lib/claude.mjs';
 import { loadPhases, normalizePhaseId } from '../lib/gsd.mjs';
 import { doctor } from '../lib/doctor.mjs';
-import { runDaemon, resumableLane } from '../lib/supervisor.mjs';
+import { runDaemon, resumableLane, resumableLanes } from '../lib/supervisor.mjs';
 import { comparePhase, inRange, rangeLabel } from '../lib/scheduler.mjs';
 import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
@@ -30,6 +30,10 @@ import { createLaneProbe } from '../lib/wake.mjs';
 import { deliveryState, dropLaneQuestions, readQuestions, refreshQuestions } from '../lib/questions.mjs';
 import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 import { runLanesCommand } from '../lib/cli-lanes.mjs';
+import { listSlots, maxLanes, prepareSlot, releaseSlot, setupSlots, slotForPhase, slotsDir } from '../lib/slots.mjs';
+import { trustLine, trustState } from '../lib/trust.mjs';
+import { laneForPhase, laneLabel, lanesSummary, setupLines, supervisorLanes } from '../lib/lanes-state.mjs';
+import { loadLanePlugins } from '../lib/lane-plugins.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|questions|answer|agent-tail> [args]';
@@ -37,6 +41,8 @@ const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds']);
+// D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
+const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const START_USAGE = 'usage: turbo-run start [--from <phase>] [--to <phase>] | start --only <phase> | start --all';
@@ -115,14 +121,19 @@ const clampPoll = (x) => Math.min(3600, Math.max(5, Number(x) || 20));
 const clampInt = (x, min, fallback) => { const n = Math.floor(Number(x)); return Number.isFinite(n) ? Math.max(min, n) : fallback; };
 // Numeric keys the daemon loop and the liveness checks depend on, kept sane.
 function runtimeConfig(config) {
-  return {
+  const c = {
     ...config,
     poll_seconds: clampPoll(config.poll_seconds),
     max_restarts_without_progress: clampInt(config.max_restarts_without_progress, 1, DEFAULTS.max_restarts_without_progress),
     blocked_minutes_before_notify: clampInt(config.blocked_minutes_before_notify, 1, DEFAULTS.blocked_minutes_before_notify),
     // push.* checked where start, status and the daemon load the config: a typo stops them with one line
     push: pushSettings(config.push),
+    // Stage 4 L1: merge_rounds, lanes.gates and max_prep the same way
+    merge_rounds: mergeRounds(config),
   };
+  laneGates(c);
+  maxPrep(c, maxLanes(c));
+  return c;
 }
 // stop/resume must work even when the config is broken.
 function pollOf(root) {
@@ -202,13 +213,19 @@ function clearDaemonPid(root, state) {
   } catch { /* best-effort */ }
 }
 
+// What status prints next to the lanes: the attended phases, the open questions, the owner's language.
+function statusOpts(root, config) {
+  return { attended: attendedPhases(root), questions: openQuestions(root).length, lang: config?.lang === 'ru' ? 'ru' : 'en' };
+}
+
 // rangeLine false: the caller printed the range line already. attended: attendedPhases; a mark holds every lane, so
 // the lane line names the hold instead of a session to watch.
-function printStatus(sup, running, { rangeLine = true, attended = [] } = {}) {
+function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en' } = {}) {
   const finished = sup.range ? ' · range finished' : ' · milestone finished';
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
   if (sup.range && rangeLine) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
+  if (sup.lanes) return printLanes(sup, { attended, questions, lang });
   if (sup.lane?.forceRelaunch) {
     // a resumed lane: its recorded session belongs to the run before the resume and is replaced at the next check
     const when = running ? "at the supervisor's next check" : 'once a supervisor runs: turbo-run start';
@@ -220,16 +237,32 @@ function printStatus(sup, running, { rangeLine = true, attended = [] } = {}) {
   }
 }
 
+// spec §8 (D16): the summary line, then one block per lane: what it runs, where, and what to do next.
+function printLanes(sup, { attended, questions, lang }) {
+  const held = new Set(attended.map((a) => a.phase));
+  const lanes = supervisorLanes(sup);
+  out(lanesSummary({ lanes: lanes.length, questions, next: sup.next || null }, lang));
+  for (const l of lanes) {
+    out(`lane ${l.key}: ${laneLabel(l)} · slot ${l.slot} ${l.slotPath} · session ${l.sessionId || 'none yet'} · restarts ${l.restarts ?? 0} · since ${l.launchedAt || '-'}`);
+    if (l.job === 'phase' && held.has(l.phase)) out(`  attended in the owner's session: cd "${l.slotPath}" && claude (hand it back: turbo-run attend ${l.phase} --done)`);
+    else if (l.halted) out(`  stopped (${l.halted.why}): try again with turbo-run resume ${l.phase}`);
+    else if (l.forceRelaunch) out('  relaunch pending (resume)');
+    else if (!l.sessionId) out('  launch pending');
+    else out(`  watch: claude attach ${l.sessionId}`);
+  }
+}
+
 // spec §8 (S4): the phases the owner runs in their own session; while any is marked, no lane runs.
 function printAttended(attended) {
   for (const a of attended) out(`attended: phase ${a.phase}${a.at ? ` since ${a.at}` : ''} in the owner's session (hand it back: turbo-run attend ${a.phase} --done)`);
 }
 
 function fingerprint(root) {
-  return (phase) => {
+  // cwd: where the phase's lane works (its slot in Stage 4): its HEAD and its plans' summaries
+  return (phase, cwd = root) => {
     let head = '';
-    try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' }).trim(); } catch { /* not a repo, or git hung */ }
-    const dir = path.join(root, '.planning', 'phases');
+    try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' }).trim(); } catch { /* not a repo, or git hung */ }
+    const dir = path.join(cwd, '.planning', 'phases');
     const raw = String(phase.number);
     const prefixes = [`${raw.replace(/^\d+/, (n) => n.padStart(2, '0'))}-`, `${raw}-`];
     let summaries = 0;
@@ -240,14 +273,18 @@ function fingerprint(root) {
   };
 }
 
-function makeCtx(root, mode = 'safe') {
+// D2: slots mode needs lanes.mode slots and doctor's full mode; anything else is v0.3's single lane in this checkout.
+async function makeCtx(root, mode = 'safe') {
   const config = runtimeConfig(loadConfig(root));
   const core = gsdCoreDir(root);
   const claude = createClaude({ bin: resolveBin() });
   ensureDir(logsDir(root));
   const logFile = path.join(logsDir(root), 'supervisor.log');
-  return {
+  const slots = lanesSettings(config.lanes).mode === 'slots' && mode === 'full';
+  const plugins = slots ? await loadLanePlugins() : null;
+  const ctx = {
     root, config, mode: mode === 'full' ? 'full' : 'safe', turboRun: `node ${shQuote(SELF.replace(/\\/g, '/'))}`,
+    ...(slots ? { lanes: 'slots' } : {}),
     deps: {
       loadPhases: () => {
         if (!core) throw new Error('gsd-core not found');
@@ -257,7 +294,7 @@ function makeCtx(root, mode = 'safe') {
       // the supervisor's push and CI work (spec §6, S2); unused while push.mode is off
       git: createGit(root),
       gh: createGh(root),
-      // the lane's transcripts, read-only: the session id a wake resumes, and the lane's activity (spec §5.5)
+      // the lanes' transcripts, read-only: the session id a wake resumes, and a lane's activity (spec §5.5)
       lanes: createLaneProbe(root),
       fingerprint: fingerprint(root),
       notify: (key, vars) => notify(config, msg(config.lang, key, vars)),
@@ -268,6 +305,35 @@ function makeCtx(root, mode = 'safe') {
       // probed right before a launch: a lease revoked mid-tick (stop, resume, another start) launches nothing
       leaseHeld: () => !lostLease(root),
     },
+  };
+  if (plugins) {
+    Object.assign(ctx.deps, {
+      slots: slotDeps(root, config),
+      mergeReady: plugins.mergeReady,
+      // reconcile R5: the merge is two calls (mergeReady, then mergeFollowUp); mergeHolds keeps new phase lanes back
+      mergeFollowUp: plugins.mergeFollowUp,
+      mergeState: plugins.mergeState,
+      mergeHolds: plugins.mergeHolds,
+      pendingJobs: plugins.pendingJobs,
+      jobPrompts: plugins.jobPrompts,
+      finishJob: plugins.finishJob,
+      lanesFile: () => (plugins.readLanesFile ? plugins.readLanesFile(root) : null),
+    });
+  }
+  return ctx;
+}
+
+// The supervisor's view of L0's slots (Contracts: ctx.deps.slots). free: the first free slot Claude Code trusts,
+// leaving out the ones the supervisor skips for a while (D10).
+function slotDeps(root, config) {
+  const trusted = (slot) => trustState(slot.path) === 'trusted';
+  return {
+    list: () => listSlots(root, config),
+    free: ({ skip = [] } = {}) => listSlots(root, config).find((x) => x.state === 'free' && !skip.includes(x.k) && trusted(x)) || null,
+    untrusted: () => listSlots(root, config).filter((x) => x.state === 'free' && !trusted(x)).map((x) => ({ k: x.k, path: x.path, line: trustLine(x.path, config.lang) })),
+    prepare: (slot, job) => prepareSlot(root, slot, job),
+    release: (k, outcome) => releaseSlot(root, k, { outcome, config }),
+    forJob: (phase, kind) => slotForPhase(root, config, phase, { kind }),
   };
 }
 
@@ -300,9 +366,9 @@ async function start(root, requested = undefined) {
       return 1;
     }
     out(`already running (pid ${sup.pid})`);
-    const attended = attendedPhases(root);
-    printStatus(sup, true, { attended });
-    printAttended(attended);
+    const opts = statusOpts(root, config);
+    printStatus(sup, true, opts);
+    printAttended(opts.attended);
     return 0;
   };
   let sup = running();
@@ -315,6 +381,20 @@ async function start(root, requested = undefined) {
   }
   for (const c of r.checks.filter((x) => !x.ok || x.warn)) out(`warn ${c.name} ${c.detail}`);
   for (const w of r.warnings ?? []) out(`warn ${w}`);
+  // spec §4 (Stage 4 L1): slots mode builds the missing slots and their trust before the daemon starts (L0 setupSlots)
+  if (lanesSettings(config.lanes).mode === 'slots') {
+    if (r.mode !== 'full') out('warn lanes.mode slots needs full mode (doctor: safe): one lane runs in this checkout');
+    else {
+      let res;
+      try {
+        res = setupSlots(root, config);
+      } catch (e) {
+        die(`slots: ${String(e?.message ?? e).split(/\r?\n/)[0]}; nothing was started`);
+      }
+      for (const line of setupLines(res)) out(line);
+      if (!res.slots.some((x) => x.action !== 'refused')) die('slots: no slot could be built (see the lines above); nothing was started');
+    }
+  }
   // doctor takes seconds: another start may have launched a daemon meanwhile
   sup = running();
   if (sup) return already(sup);
@@ -345,7 +425,7 @@ async function start(root, requested = undefined) {
     // another start won the lock: this start's daemon exited, the winner runs with its own range
     const label = (x) => (x?.from || x?.to ? `phases ${rangeLabel(x)}` : 'the whole milestone');
     out(`another start launched supervisor pid ${last.pid} first (${label(last.range)}); this start's supervisor exited`);
-    printStatus(last, true, { rangeLine: false, attended: attendedPhases(root) });
+    printStatus(last, true, { ...statusOpts(root, config), rangeLine: false });
     if (requested !== undefined && label(range) !== label(last.range)) {
       process.stderr.write(`the running range is ${label(last.range)}, not ${label(range)}: run turbo-run stop first, then start with the new range\n`);
       return 1;
@@ -354,7 +434,7 @@ async function start(root, requested = undefined) {
   }
   if (ended && last && last.pid == null && Date.parse(last.updatedAt) >= spawnedAt && (last.finished || last.halted)) {
     out(`supervisor pid ${child.pid} ran and exited`);
-    printStatus(last, false, { rangeLine: !range, attended: attendedPhases(root) });
+    printStatus(last, false, { ...statusOpts(root, config), rangeLine: !range });
     return last.finished ? 0 : 1;
   }
   const what = ended ? `exited at once (${ended})` : `did not report within ${START_CONFIRM_MS / 1000} s; check: turbo-run status`;
@@ -386,7 +466,7 @@ function leaseSleep(root, log) {
 }
 
 async function daemon(root, mode = 'safe', range = null) {
-  const ctx = makeCtx(root, mode);
+  const ctx = await makeCtx(root, mode);
   const poll = ctx.config.poll_seconds;
   const lock = acquireLock(root, poll);
   if (!lock.ok) { out(`already running${lock.pid ? ` (pid ${lock.pid})` : ''}`); return 0; }
@@ -399,7 +479,14 @@ async function daemon(root, mode = 'safe', range = null) {
     const prev = readJson(supPath(root), null);
     // poll_seconds: this daemon's own poll, for the heartbeat window of status, stop and start;
     // range: the phases this run may start (no key: the whole milestone)
-    const initial = { lane: resumableLane(prev, range, ctx.deps.log), finished: false, halted: false, poll_seconds: poll, ...(range ? { range } : {}) };
+    const base = { finished: false, halted: false, poll_seconds: poll, ...(range ? { range } : {}) };
+    let initial;
+    if (ctx.lanes === 'slots') initial = { lanesMode: 'slots', lanes: resumableLanes(prev, range, ctx), ...base };
+    else {
+      if (lanesSettings(ctx.config.lanes).mode === 'slots') ctx.deps.log(`lanes.mode slots needs full mode (doctor: ${mode}); one lane runs in this checkout`);
+      if (prev?.lanes && Object.keys(prev.lanes).length && !prev.finished) ctx.deps.log(`slots-mode lanes are recorded (${Object.keys(prev.lanes).join(', ')}); checkout mode does not resume them (their sessions and slots kept)`);
+      initial = { lane: resumableLane(prev, range, ctx.deps.log), ...base };
+    }
     // pid on disk before the first tick, so status and a second start see this daemon at once
     writeJsonAtomic(supPath(root), { ...initial, pid: process.pid, updatedAt: new Date().toISOString() });
     final = await runDaemon({ ctx, statePath: supPath(root), initial, intervalMs: poll * 1000, sleep: leaseSleep(root, ctx.deps.log) });
@@ -443,11 +530,20 @@ function stopDaemon(root, sup) {
   if (sup?.pid != null) writeJsonAtomic(supPath(root), { ...readJson(supPath(root), sup), pid: null });
 }
 
-// Lane sessions of this checkout: a lane name of this project (any phase) started in it.
-function projectLaneAgents(agents, root) {
+// Where this project's lane sessions run: this checkout, every recorded lane's slot, and the slots directory (a lane the
+// stopped daemon never recorded). A broken config leaves the recorded slots only.
+function laneWhere(root, sups) {
+  const dirs = new Set([dirKey(root)]);
+  for (const sup of sups) for (const l of supervisorLanes(sup, root)) if (l.slotPath) dirs.add(dirKey(l.slotPath));
+  let base = null;
+  try { base = dirKey(slotsDir(root, loadConfig(root))); } catch { /* broken config */ }
+  return { dirs, base };
+}
+
+// Lane sessions of this project: a lane name of this project (any key) started in one of its lane directories.
+function projectLaneAgents(agents, root, where = { dirs: new Set([dirKey(root)]), base: null }) {
   const prefix = laneSessionName(root, '');
-  const home = dirKey(root);
-  return agents.filter((a) => String(a.name).startsWith(prefix) && Boolean(a.cwd) && dirKey(a.cwd) === home);
+  return agents.filter((a) => String(a.name).startsWith(prefix) && Boolean(a.cwd) && (where.dirs.has(dirKey(a.cwd)) || (where.base !== null && dirKey(a.cwd).startsWith(`${where.base}/`))));
 }
 
 // A phase stopped by the owner or a crashed lane can leave GSD's gates or docs commits off; they stay off until
@@ -467,13 +563,13 @@ function stopLanes(root, before) {
   const warn = (line) => process.stderr.write(`warn: ${line}\n`);
   const list = () => { try { return claude.list(); } catch (e) { return e; } };
   let ok = true;
-  const ids = new Set([before?.lane?.sessionId, after?.lane?.sessionId].filter(Boolean));
+  const ids = new Set([...supervisorLanes(before, root), ...supervisorLanes(after, root)].map((l) => l.sessionId).filter(Boolean));
   const agents = list();
   if (agents instanceof Error) {
     warn(`cannot list sessions (${agents.message}); lane sessions missing from supervisor.json were not checked`);
     ok = false;
   } else {
-    for (const a of projectLaneAgents(agents, root)) if (isAgentAlive(a)) ids.add(a.id);
+    for (const a of projectLaneAgents(agents, root, laneWhere(root, [before, after]))) if (isAgentAlive(a)) ids.add(a.id);
   }
   const failed = new Map();
   for (const id of ids) {
@@ -494,6 +590,8 @@ function stopLanes(root, before) {
   }
   if (!ok) return 1;
   out('stopped');
+  // spec §8: stop never touches the slots: their work and their branches stay for review
+  if ([before, after].some((x) => x?.lanes && Object.keys(x.lanes).length)) out('their slots and branches stay for review');
   return 0;
 }
 
@@ -584,6 +682,8 @@ async function resumePhase(root, id, andStart) {
   // a live daemon (for example one waiting for the owner) rewrites supervisor.json every
   // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
   stopDaemon(root, readJson(supPath(root), null));
+  // the phase's own files: in its lane's slot (Stage 4), else in this checkout
+  const phaseRoot = laneForPhase(readJson(supPath(root), null), root, id)?.slotPath || root;
   fs.rmSync(path.join(runDir(root), `p${id}.json`), { force: true });
   // the resume answers the phase's owner request; the lane writes it again (uat owner-request) when anything is still
   // open. The .notified mark stays: a checklist already sent is not sent again.
@@ -600,15 +700,24 @@ async function resumePhase(root, id, andStart) {
   }
   // the questions as the plans are now, before any supervisor tick notifies them: a sitting may have finished plans
   // whose questions (a released human-action stop, never answered there) would otherwise be announced again
-  if (openPlans(root, id) !== null) {
+  if (openPlans(phaseRoot, id) !== null) {
     try {
-      refreshQuestions(root, id, { lang: loadConfig(root).lang, warn: (line) => process.stderr.write(`warn: ${line}\n`) });
+      refreshQuestions(phaseRoot, id, { lang: loadConfig(root).lang, warn: (line) => process.stderr.write(`warn: ${line}\n`) });
     } catch (err) {
       process.stderr.write(`warn: the questions of phase ${id} were not rebuilt (${String(err?.message ?? err).split(/\r?\n/)[0]}); the lane rebuilds them\n`);
     }
   }
   const sup = readJson(supPath(root), null);
-  if (sup) {
+  if (sup?.lanes) {
+    // spec §9: only lane N is armed again (its stop cleared); the other lanes keep their state
+    const lanes = { ...sup.lanes };
+    if (lanes[id]) {
+      const lane = { ...lanes[id], notified: {}, restarts: 0, forceRelaunch: true };
+      delete lane.halted;
+      lanes[id] = lane;
+    }
+    writeJsonAtomic(supPath(root), { ...sup, pid: null, finished: false, halted: false, lanes });
+  } else if (sup) {
     const lane = sup.lane && String(sup.lane.phase) === id ? { ...sup.lane, notified: {}, restarts: 0, forceRelaunch: true } : sup.lane || null;
     writeJsonAtomic(supPath(root), { ...sup, pid: null, finished: false, halted: false, lane });
   }
@@ -633,6 +742,9 @@ function attendSettleMs() {
 // daemon until attend N --done or resume N clears it; then every lane session of this checkout stops (claude stop
 // keeps the conversation). The checkpoints the lane stopped at are asked ahead again.
 async function attend(root, id) {
+  const current = readJson(supPath(root), null);
+  // spec §8 (D11): in slots mode only lane N stops; the supervisor and the other lanes go on
+  if (current?.lanes) return attendLane(root, id, current);
   const plans = openPlans(root, id);
   if (plans === null) die(`no single phase directory for phase ${id} under .planning/phases: nothing to attend`);
   if (!plans.length) die(`phase ${id} has no plan without a summary: nothing to attend. For owner-only UAT items run /gsd-verify-work ${id}, then /turbo-autonomous resume ${id}`);
@@ -666,10 +778,59 @@ async function attend(root, id) {
   return code;
 }
 
+// spec §8 (D11): the owner takes phase N's remaining plans into a session in its slot. The mark goes first: from its next
+// tick the daemon holds lane N and stops any session of it that still appears; then lane N's sessions stop (claude stop
+// keeps the conversation). The daemon and the other lanes are left alone. Refusals change nothing.
+async function attendLane(root, id, sup) {
+  const lane = laneForPhase(sup, root, id);
+  const keys = supervisorLanes(sup, root).map((l) => l.key).join(', ');
+  if (!lane) die(`phase ${id} has no lane in this run${keys ? ` (lanes: ${keys})` : ''}: attend takes over a running lane (turbo-run status names them); nothing was stopped`);
+  const plans = openPlans(lane.slotPath, id);
+  if (plans === null) die(`no single phase directory for phase ${id} under ${path.join(lane.slotPath, '.planning', 'phases')}: nothing to attend`);
+  if (!plans.length) die(`phase ${id} has no plan without a summary: nothing to attend. For owner-only UAT items run /gsd-verify-work ${id} in ${lane.slotPath}, then /turbo-autonomous resume ${id}`);
+  const gates = attendGates({ mode: lane.mode, next: nextStep(readProgress(root, id)) });
+  if (gates.refuse) die(`phase ${id} is not ready to attend: ${gates.refuse}; nothing was stopped`);
+  writeAttend(root, id, { sessionId: lane.sessionId || null });
+  const claude = createClaude();
+  const warn = (line) => process.stderr.write(`warn: ${line}\n`);
+  let code = 0;
+  const ids = new Set([lane.sessionId].filter(Boolean));
+  const name = laneSessionName(root, lane.key);
+  try {
+    for (const a of claude.list()) if (a.name === name && a.cwd && dirKey(a.cwd) === dirKey(lane.slotPath) && isAgentAlive(a)) ids.add(a.id);
+  } catch (e) {
+    warn(`cannot list sessions (${e.message}); only the recorded session of phase ${id} was stopped`);
+    code = 1;
+  }
+  for (const x of ids) {
+    try {
+      claude.stop(x);
+    } catch (e) {
+      let alive = true;
+      try { alive = isAgentAlive(claude.list().find((a) => a.id === x)); } catch { /* unknown: alive */ }
+      if (alive) {
+        warn(`lane session ${x} not stopped: ${e.message}`);
+        code = 1;
+      }
+    }
+  }
+  const released = releaseStops(root, id);
+  out(`phase ${id}: attended in the owner's session; the other lanes keep running; nothing starts, relaunches or wakes phase ${id} until turbo-run attend ${id} --done`);
+  out(`open: cd "${lane.slotPath}" && claude`);
+  out(`open plans: ${plans.join(', ')}`);
+  out(`gates: ${gates.gates === 'off' ? 'turn off' : 'keep on'} (${gates.why})`);
+  if (released.length) out(`released stops: ${released.join(', ')} (asked ahead again)`);
+  const delivered = readQuestions(root, id).filter((q) => q.stopped && q.state === 'delivered').map((q) => q.id);
+  if (delivered.length) out(`already delivered: ${delivered.join(', ')} (the stopped session took these answers; a checkpoint reached again is asked in this session)`);
+  if (code !== 0) process.stderr.write(`a lane session did not stop (see the warnings above): stop it with claude stop <id> before anything runs in ${lane.slotPath}\n`);
+  return code;
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   // attend's --done takes no value (phase-step's does): it never hides a --project after it
-  const root = projectArg(cmd === 'attend' ? args.filter((a) => a !== '--done') : args);
+  const found = projectArg(cmd === 'attend' ? args.filter((a) => a !== '--done') : args);
+  const root = found && OWNER_COMMANDS.has(cmd) ? stateRoot(found) : found;
   const pos = positional(args);
   if (PHASE_COMMANDS.has(cmd)) {
     if (!root) die('no .planning directory found');
@@ -781,7 +942,7 @@ async function main() {
       const attended = attendedPhases(root); // spec §8: phases the owner runs in their session; no lane runs meanwhile
       if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ownerRequests, gatesOff: leftovers.gates, attended }, null, 2)); return 0; }
       if (!sup) out('supervisor: not running (never started)');
-      else printStatus(sup, running, { attended });
+      else printStatus(sup, running, { ...statusOpts(root, config), attended });
       for (const f of ownerRequests) out(`owner request: ${f}`);
       // v0.3.3: the questions a phase stopped for, in the owner's words
       const said = config.lang === 'ru' ? ['вопрос к вам: фаза', 'ответить'] : ['owner question: phase', 'answer'];

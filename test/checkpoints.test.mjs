@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN } from './helpers/plans.mjs';
+import { ACTION_PLAN, DECISION_PLAN, OWNER_ACTION_PLAN, OWNER_CONTEXT_PLAN, OWNER_DECISION_PLAN, OWNER_VERIFY_PLAN, VERIFY_PLAN } from './helpers/plans.mjs';
 import { CHECKPOINT_KINDS, parseCheckpoints, quotedSignal } from '../lib/checkpoints.mjs';
 
 // three backticks, built so this file holds no fence of its own
@@ -89,4 +89,27 @@ test('a command in a fenced block of a field stays in the question, as inline co
 test('a line that starts with inline code in three backticks is no fence: a backtick fence\'s info string never holds a backtick', () => {
   const plan = VERIFY_PLAN.replace('Sidebar, header and content area.', `Sidebar, header and content area.\n${FENCE}npm run build${FENCE} must pass.`);
   assert.deepEqual(parseCheckpoints(plan).map((c) => [c.task, c.kind]), [[3, 'human-verify']]);
+});
+
+test('a tag named in inline code is no element: the field is the real one, never a cut across the action (owner cards)', () => {
+  const [v] = parseCheckpoints(OWNER_VERIFY_PLAN);
+  assert.match(v.whatBuilt, /^\*\*Что получилось:\*\* проверил пакет библиотеки картинок/);
+  assert.ok(!v.whatBuilt.includes('</action>') && !v.whatBuilt.includes('summary to the owner'));
+  assert.match(v.action, /Present the `<what-built>` summary to the owner/, 'the action keeps its inline code');
+  const [a] = parseCheckpoints(OWNER_ACTION_PLAN);
+  assert.match(a.instructions, /^\*\*Что получилось:\*\* пробная сборка готова/);
+  assert.ok(!a.instructions.includes('</action>'));
+  assert.equal(parseCheckpoints('<tasks>\n<task type="checkpoint:human-verify">\n<action>Show `<what-built>` then ``<how-to-verify>``.</action>\n</task>\n</tasks>')[0].whatBuilt, '');
+  // an unpaired backtick before a field's end tag hides no tag (review 1)
+  const [u] = parseCheckpoints('<tasks>\n<task type="checkpoint:human-verify"><what-built>Готово, ключ `K</what-built><how-to-verify>Открой `страницу` галереи</how-to-verify></task>\n</tasks>');
+  assert.deepEqual([u.whatBuilt, u.howToVerify], ['Готово, ключ `K', 'Открой `страницу` галереи']);
+});
+
+test('the task name (never an option\'s name) and the fields\' raw lines for the owner cards; CRLF reads the same', () => {
+  const [d] = parseCheckpoints(OWNER_DECISION_PLAN);
+  assert.equal(d.name, 'Task 2: Владелец выбирает, где хранить превью картинок');
+  assert.equal(parseCheckpoints(DECISION_PLAN)[0].name, '', 'a checkpoint without <name>: none, not the first option\'s');
+  const [c] = parseCheckpoints(OWNER_CONTEXT_PLAN);
+  assert.match(c.raw.context, /^\s*Executor preparation, before presenting; no file changes:\n\s+- Run verify 1/);
+  assert.deepEqual(parseCheckpoints(OWNER_CONTEXT_PLAN.replace(/\n/g, '\r\n')), parseCheckpoints(OWNER_CONTEXT_PLAN));
 });

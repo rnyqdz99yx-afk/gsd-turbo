@@ -1883,8 +1883,8 @@ git commit -q -m "feat(lanes): prepare, release, find and remove slots; install 
 **Interfaces:**
 - Consumes: `stateRoot`, `locksDir` (Task 3); `commitPaths` (`lib/gates.mjs`); `answersRel`, `ANSWERS_IGNORE_REL`; `fakeSlot`, `gitIn` (Task 3 helper); `DECISION_PLAN`, `writePhase`.
 - Produces:
-  - `lib/questions.mjs`: `withFileLock(file, fn, { waitMs, staleMs, platform, locked })` (`locked: () => Error`); `withPhaseLock` unchanged in signature and behaviour;
-  - `lib/merge-lock.mjs`: `MERGE_LOCK_WAIT_MS = 30000`, `MERGE_LOCK_STALE_MS = 1800000`, `class MergeLocked extends Error`, `mergeLockFile(root) → <control>/.planning/turbo/locks/merge`, `withMergeLock(root, fn, { waitMs, staleMs, platform }) → fn's result`;
+  - `lib/questions.mjs`: `withFileLock(file, fn, { waitMs, staleMs, platform, locked, alive })` (`locked: () => Error`; `alive: (token) => boolean`, optional: a lock whose owner is alive is never taken over, however old); `withPhaseLock` unchanged in signature and behaviour;
+  - `lib/merge-lock.mjs`: `MERGE_LOCK_WAIT_MS = 30000`, `MERGE_LOCK_STALE_MS = 1800000`, `class MergeLocked extends Error`, `mergeLockFile(root) → <control>/.planning/turbo/locks/merge`, `pidAlive(pid) → boolean`, `withMergeLock(root, fn, { waitMs, staleMs, platform, alive = pidAlive }) → fn's result`. A stale merge lock is taken over only when the pid in its token is dead (`process.kill(pid, 0)` throws ESRCH) **and** it is older than `staleMs`; a live owner keeps it regardless of age. **L2 must NOT hold `locks/merge` while pushing or waiting for CI**: only around the merge and its commits;
   - `lib/answers.mjs`: `commitAnswerPaths(root, paths, message, { lock = true, waitMs }) → { committed, reason? }`, `commitPendingAnswers(root, { lock = false, message }) → { committed, reason? }`.
 
 - [ ] **Step 1: Write the failing tests**

@@ -55,3 +55,25 @@ test('withMergeLock: one writer at a time; a lock a crash left is taken over aft
   assert.equal(withMergeLock(control, () => 'taken over', { waitMs: 30 }), 'taken over');
   assert.equal(withPhaseLock(control, '32', () => 'phase'), 'phase');
 });
+
+test('withMergeLock: a live owner never loses the lock, however old; a dead owner\'s lock goes only after its time (I3)', () => {
+  const { control } = lane();
+  fs.mkdirSync(path.dirname(mergeLockFile(control)), { recursive: true });
+  const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  fs.writeFileSync(mergeLockFile(control), '4242-11111111-2222-3333-4444-555555555555');
+  fs.utimesSync(mergeLockFile(control), old, old);
+  const seen = [];
+  const live = (pid) => (seen.push(pid), true);
+  assert.throws(() => withMergeLock(control, () => 'no', { waitMs: 30, alive: live }), (e) => e instanceof MergeLocked);
+  assert.equal(seen[0], 4242, 'the owner pid is read from the lock token');
+  assert.equal(fs.existsSync(mergeLockFile(control)), true);
+  // the default check: this test's own process is alive
+  fs.writeFileSync(mergeLockFile(control), `${process.pid}-11111111-2222-3333-4444-555555555555`);
+  fs.utimesSync(mergeLockFile(control), old, old);
+  assert.throws(() => withMergeLock(control, () => 'no', { waitMs: 30 }), (e) => e instanceof MergeLocked);
+  // a dead owner, but a fresh lock: still waited on
+  fs.writeFileSync(mergeLockFile(control), '4242-11111111-2222-3333-4444-555555555555');
+  assert.throws(() => withMergeLock(control, () => 'no', { waitMs: 30, alive: () => false }), (e) => e instanceof MergeLocked);
+  fs.utimesSync(mergeLockFile(control), old, old);
+  assert.equal(withMergeLock(control, () => 'taken over', { waitMs: 30, alive: () => false }), 'taken over');
+});

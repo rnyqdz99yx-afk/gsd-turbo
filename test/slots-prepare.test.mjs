@@ -139,7 +139,7 @@ test('free and trusted for a job; remove only a free slot, with its trust; links
   gitIn(s2, 'commit', '-q', '-m', 'work');
   releaseSlot(p.root, 2, { outcome: 'failed', config: t.config });
   refused(() => removeSlot(p.root, t.config, 2, t.deps), 'unmerged', /turbo\/p3/);
-  gitIn(s2, 'checkout', '-q', '--detach');
+  gitIn(s2, 'checkout', '-q', '--detach', 'origin/main');
   gitIn(s2, 'branch', '-q', '-D', 'turbo/p3');
   const outside = tmpDir('outside');
   fs.writeFileSync(path.join(outside, 'keep.js'), 'x');
@@ -177,4 +177,25 @@ test('a failed job\'s commits are never reset or deleted: prepare of the same ph
   const r = prepareSlot(p.root, 1, { kind: 'phase', phase: '4' }, t.deps);
   assert.deepEqual([r.branch, head(s1)], ['turbo/p4', work]);
   assert.equal(gitIn(s1, 'branch', '--list', 'turbo/p3'), '');
+});
+
+test('remove refuses any work main lacks: a branch of any name, a stash, a detached HEAD commit; nothing removed (I5)', () => {
+  const { p, t, s1 } = ready();
+  const keeps = () => assert.equal(fs.existsSync(path.join(s1, '.git')), true);
+  gitIn(s1, 'checkout', '-q', '-b', 'feature');
+  gitIn(s1, 'commit', '-q', '--allow-empty', '-m', 'feature work');
+  gitIn(s1, 'checkout', '-q', '--detach', 'origin/main');
+  refused(() => removeSlot(p.root, t.config, 1, t.deps), 'unmerged', /feature/);
+  keeps();
+  gitIn(s1, 'branch', '-q', '-D', 'feature');
+  fs.appendFileSync(path.join(s1, 'README.md'), 'stashed\n');
+  gitIn(s1, 'stash', '-q');
+  refused(() => removeSlot(p.root, t.config, 1, t.deps), 'unmerged', /stash/);
+  keeps();
+  gitIn(s1, 'stash', 'drop', '-q');
+  gitIn(s1, 'commit', '-q', '--allow-empty', '-m', 'detached work');
+  refused(() => removeSlot(p.root, t.config, 1, t.deps), 'unmerged', /detached HEAD/);
+  keeps();
+  gitIn(s1, 'checkout', '-q', '--detach', 'origin/main');
+  assert.equal(removeSlot(p.root, t.config, 1, t.deps).removed, true);
 });

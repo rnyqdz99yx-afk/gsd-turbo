@@ -17,8 +17,11 @@ const branchOf = (job) => (job.kind === 'phase' ? `turbo/p${job.phase}` : job.ki
 // A slots-mode supervisor context with every outside dependency faked: claude sessions, slots (in memory, with real
 // empty directories), L2's merge, L3's jobs and annotation. Nothing reaches git, a real claude or the network.
 // h.trust[k] = false: slot k is not trusted; h.refuse[k] = why: its preparation throws; h.launchFail(opts, cwd) → why.
-// merge(lane, h), jobs(options, h), finish(lane, h): the fakes of mergeReady, pendingJobs and finishJob (null: absent).
-export function lanesHarness({ phases, slots = 3, maxLanes = 3, lanes = null, merge = null, jobs = null, finish = null } = {}) {
+// merge(lane, h), followUp(lane, h), jobs(options, h), finish(lane, h): the fakes of mergeReady, mergeFollowUp,
+// pendingJobs and finishJob (null: absent). Reconcile R5: L2's merge is two calls; h.mergeStates[N] is what
+// mergeState(root, N) returns and h.holds what mergeHolds(root) returns. Without followUp, a merge harness releases
+// at the first follow-up, as L2 does after a green CI (or with push off).
+export function lanesHarness({ phases, slots = 3, maxLanes = 3, lanes = null, merge = null, followUp = null, jobs = null, finish = null } = {}) {
   const base = tmpDir('lanes');
   const root = path.join(base, 'app');
   fs.mkdirSync(path.join(root, '.planning'), { recursive: true });
@@ -28,7 +31,7 @@ export function lanesHarness({ phases, slots = 3, maxLanes = 3, lanes = null, me
   const h = {
     root, phases, annotation: lanes,
     agents: [], launched: [], removed: [], stopped: [], resumed: [], notes: [], logs: [], events: [],
-    merges: [], finishes: [], released: [], prepared: [],
+    merges: [], followUps: [], finishes: [], released: [], prepared: [], mergeStates: {}, holds: [],
     trust: {}, refuse: {}, fp: 'A', launchFail: () => null,
     advance(min) { clock += min * 60000; },
     at() { return new Date(clock).toISOString(); },
@@ -74,7 +77,8 @@ export function lanesHarness({ phases, slots = 3, maxLanes = 3, lanes = null, me
         },
         resume: (id, prompt, cwd) => {
           h.resumed.push({ id, prompt, cwd });
-          return `note: woke session ${id}`;
+          // parseResume reads ids of 6+ characters: the transcript session id of job s<n> (s<n>-0000-…)
+          return `note: woke session ${id}-0000-4000-8000-000000000000`;
         },
       },
       lanes: { session: (id) => id, activity: () => ({ lastMs: clock, active: 0 }), replied: () => false },
@@ -99,7 +103,19 @@ export function lanesHarness({ phases, slots = 3, maxLanes = 3, lanes = null, me
         },
       },
       mergeReady: merge ? async (ctx, lane) => { h.merges.push(lane.key); h.events.push(`merge ${lane.key}`); return merge(lane, h); } : null,
-      pendingJobs: jobs ? async (ctx, phases2, options) => jobs(options, h) : null,
+      mergeFollowUp: merge ? async (ctx, lane) => {
+        h.followUps.push(lane.key);
+        const r = followUp ? followUp(lane, h) : { outcome: 'released' };
+        if (r.outcome === 'released') {
+          h.release(lane.slot, 'merged');
+          h.mergeStates[lane.phase] = { state: 'released' };
+        }
+        return r;
+      } : null,
+      mergeState: merge ? (root2, phase) => h.mergeStates[phase] ?? null : null,
+      mergeHolds: merge ? () => h.holds : null,
+      // reconcile R7: pendingJobs({ root, config, lanes, range, mode, failed }, phases)
+      pendingJobs: jobs ? async (options) => jobs(options, h) : null,
       jobPrompts: ({ lane, resume, wake }) => ({ prompt: `${wake ? `Wake ${wake.kind}` : resume ? 'Resume' : 'Run'} ${lane.job} ${lane.phase ?? ''}`.trim(), systemPrompt: `job ${lane.key}` }),
       finishJob: finish ? async (ctx, lane) => { h.finishes.push(lane.key); return finish(lane, h); } : null,
       lanesFile: () => h.annotation,

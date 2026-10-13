@@ -85,3 +85,9 @@ test('setupLines: what start prints after building the slots (L0 setupSlots resu
     'backup: C:\\Users\\dev\\.claude.json.turbo-bak-20261013T120000Z',
   ]);
 });
+
+test('nextLine: a merge hold keeps the next phase waiting (reconcile R5)', () => {
+  assert.equal(nextLine({ phase: '36', why: 'merge', waitsFor: ['34'] }), 'phase 36 waits for the merge of phase 34');
+  assert.equal(nextLine({ phase: '36', why: 'merge', waitsFor: ['34', '35'] }, 'ru'), 'фаза 36 ждёт слияния фаз 34, 35');
+  assert.equal(nextLine({ phase: '36', why: 'merge', waitsFor: [] }), null);
+});

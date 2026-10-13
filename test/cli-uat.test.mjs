@@ -213,3 +213,48 @@ test('uat defer: --rulings defers the owner-ruled rows, numbers confirm the othe
   assert.equal(await p.run('defer', '3'), 2, 'neither --rulings nor numbers');
   assert.equal(await p.run('defer', '3', '7', '11'), 2, 'a second number list is never ignored');
 });
+
+// GSD's uat.complete-session compares the working UAT file with its blob at HEAD byte for byte (only updated: aside):
+// a checkout with core.autocrlf=true has CRLF in the working copy and LF in the blob, so every call wrote and committed
+// a new updated: line and made VERIFICATION.md stale again. uat settle gives the working copy the blob's LF.
+test('uat settle: a CRLF working copy of an LF blob gets the committed bytes and a clean git status; nothing else is touched', async () => {
+  const p = project();
+  const g = (...a) => execFileSync('git', a, { cwd: p.root, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(p.root, '.git', 'no-global-config'), GIT_CONFIG_NOSYSTEM: '1' } });
+  const uatFile = path.join(p.dir, '03-UAT.md');
+  const rel = '.planning/phases/03-demo/03-UAT.md';
+  // not committed yet: nothing to compare with
+  assert.equal(await p.run('settle', '3'), 0);
+  assert.equal(p.lines.at(-1), `nothing to settle (${rel})`);
+  g('add', '-A');
+  g('commit', '-q', '-m', 'uat');
+  g('config', 'core.autocrlf', 'true');
+  // a checkout with core.autocrlf=true: the same content with CRLF
+  fs.writeFileSync(uatFile, UAT.replace(/\n/g, '\r\n'));
+  assert.equal(await p.run('settle', '3', '--json'), 0);
+  assert.deepEqual(JSON.parse(p.lines.at(-1)), { file: rel, settled: true, clean: true });
+  assert.equal(fs.readFileSync(uatFile, 'utf8'), UAT);
+  assert.equal(g('status', '--porcelain', '--', rel), '', 'git sees the file clean');
+  assert.equal(g('diff', '--cached', '--name-only'), '', 'nothing staged');
+  // an LF working copy is left alone
+  assert.equal(await p.run('settle', '3'), 0);
+  assert.equal(p.lines.at(-1), `nothing to settle (${rel})`);
+  // a real change waiting for its commit keeps its content, gets LF and is not staged
+  const changed = UAT.replace('result: pass', 'result: issue');
+  fs.writeFileSync(uatFile, changed.replace(/\n/g, '\r\n'));
+  assert.equal(await p.run('settle', '3'), 0);
+  assert.equal(p.lines.at(-1), `settled: ${rel} has the committed line endings (LF); its own changes wait for their commit`);
+  assert.equal(fs.readFileSync(uatFile, 'utf8'), changed);
+  assert.equal(g('diff', '--cached', '--name-only'), '');
+  assert.match(g('status', '--porcelain', '--', rel), /^ M /);
+});
+
+test('uat settle: a blob committed with CRLF is left as it is', async () => {
+  const p = project(UAT.replace(/\n/g, '\r\n'));
+  const g = (...a) => execFileSync('git', a, { cwd: p.root, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(p.root, '.git', 'no-global-config'), GIT_CONFIG_NOSYSTEM: '1' } });
+  g('add', '-A');
+  g('commit', '-q', '-m', 'uat');
+  const uatFile = path.join(p.dir, '03-UAT.md');
+  assert.equal(await p.run('settle', '3'), 0);
+  assert.equal(p.lines.at(-1), 'nothing to settle (.planning/phases/03-demo/03-UAT.md)');
+  assert.equal(fs.readFileSync(uatFile, 'utf8'), UAT.replace(/\n/g, '\r\n'));
+});

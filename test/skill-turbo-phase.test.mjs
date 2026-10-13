@@ -217,3 +217,26 @@ test('turbo-phase skill: deferred rows are committed before a stop; close canoni
   assert.match(p2, /`human_needed`.*point 5 of step \*\*uat\*\*/);
   assert.ok(section(s, 'Stale report').includes('not re-run'), 'the note says what was not run again');
 });
+
+test('turbo-phase skill: one verifier pass per uat step — every UAT write first (settle, complete-session), then one Stale report; a legitimate edit is never reverted to keep the report fresh', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const uat = section(s, 'uat');
+  const line = (n) => uat.split('\n').find((l) => l.startsWith(`${n}. `));
+  // point 1: a report stale only from UAT writes, which said human_needed, is refreshed once at point 5, not here
+  const p1 = line(1);
+  for (const n of ['turbo-run staleness N --verification --json', '`reported`', '`human_needed`', 'point 5']) assert.ok(p1.includes(n), n);
+  // point 5: settle, complete the session, then the one Stale report, then verify-work
+  const p5 = line(5);
+  const settle = p5.indexOf('turbo-run uat settle N');
+  const complete = p5.indexOf('uat.complete-session');
+  const stale = p5.indexOf('**Stale report**', complete);
+  const verify = p5.indexOf('Skill(skill="gsd-verify-work"');
+  assert.ok(settle > 0 && settle < complete && complete < stale && stale < verify, p5);
+  assert.ok(p5.includes('core.autocrlf'), 'the reason is named');
+  const proc = section(s, 'Stale report');
+  for (const n of ['one pass', 'Never revert', 'keep the commit', '`verifier-only`']) assert.ok(proc.includes(n), n);
+  // close: the owner request is current before the done record (a resume removed it)
+  const close = section(s, 'close');
+  const owner = close.indexOf('turbo-run uat owner-request N');
+  assert.ok(owner > 0 && owner < close.indexOf('turbo-run lane-status N done'), 'owner-request before the done record');
+});

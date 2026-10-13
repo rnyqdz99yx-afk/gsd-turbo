@@ -424,7 +424,7 @@ test('verificationRoute: only planning files changed since the report → verifi
   r.write('.planning/turbo/run/p3.json', '{}');
   const ok = verificationRoute({ root: r.root, phaseDir });
   assert.deepEqual({ ...ok, planning: ok.planning.sort() }, {
-    route: 'verifier-only', report: `${dir}/03-VERIFICATION.md`, since, review, code: [],
+    route: 'verifier-only', report: `${dir}/03-VERIFICATION.md`, reported: 'human_needed', since, review, code: [],
     planning: ['.planning/STATE.md', `${dir}/03-UAT.md`, '.planning/turbo/run/p3.json'].sort(),
     note: `regression gate and code review not re-run: counted from the code review at ${review.slice(0, 12)}`,
   });
@@ -440,6 +440,9 @@ test('verificationRoute: only planning files changed since the report → verifi
   // a renamed file counts on both sides
   r.g('mv', 'src/a.js', 'src/b.js');
   assert.deepEqual(verificationRoute({ root: r.root, phaseDir }).code.sort(), ['src/a.js', 'src/b.js']);
+  // reported: the status the report's frontmatter holds, quoted or not, whatever the line endings
+  r.write(`${dir}/03-VERIFICATION.md`, '---\r\nphase: 03-demo\r\nstatus: "passed"\r\n---\r\n\r\nstatus: human_needed\r\n');
+  assert.equal(verificationRoute({ root: r.root, phaseDir }).reported, 'passed');
 });
 
 test('verificationRoute: no report or a report never committed → full; the CLI prints the route', async () => {
@@ -449,10 +452,12 @@ test('verificationRoute: no report or a report never committed → full; the CLI
   const phaseDir = path.join(r.root, dir);
   r.write(`${dir}/03-UAT.md`, 'uat\n');
   r.commit('uat');
-  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }), { route: 'full', report: null, since: null, review: null, code: [], planning: [], reason: 'no verification report' });
+  assert.deepEqual(verificationRoute({ root: r.root, phaseDir }), { route: 'full', report: null, reported: null, since: null, review: null, code: [], planning: [], reason: 'no verification report' });
   r.write(`${dir}/03-VERIFICATION.md`, 'v\n');
   const loose = verificationRoute({ root: r.root, phaseDir });
   assert.deepEqual([loose.route, loose.reason], ['full', 'the verification report is not committed']);
+  // a report without a readable frontmatter status names none
+  assert.equal(loose.reported, null);
   // GSD's code review is off in this project: no REVIEW.md is expected
   r.write('.planning/config.json', JSON.stringify({ workflow: { code_review: false } }));
   r.commit('verify');
@@ -460,7 +465,7 @@ test('verificationRoute: no report or a report never committed → full; the CLI
   const lines = [];
   const run = (...a) => runPhaseCommand('staleness', a, { root: r.root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { planIndex: () => [] } });
   assert.equal(await run('3', '--verification', '--json'), 0);
-  assert.equal(JSON.parse(lines.at(-1)).route, 'verifier-only');
+  assert.deepEqual([JSON.parse(lines.at(-1)).route, JSON.parse(lines.at(-1)).reported], ['verifier-only', null]);
   assert.equal(await run('3', '--verification'), 0);
   assert.match(lines.at(-1), /^verifier-only: no code changed since the report's commit [0-9a-f]{12} \(1 planning file\(s\) changed\); regression gate and code review not re-run; no code review on record$/);
   r.write('lib/x.mjs', 'x\n');

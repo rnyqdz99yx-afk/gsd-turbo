@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { A, P, annotated, freshLanes, lanesHarness } from './helpers/lanes.mjs';
 import { resumableLanes, tick } from '../lib/supervisor.mjs';
-import { writeLaneStatus } from '../lib/run-status.mjs';
+import { readJobStatus, writeJobStatus, writeLaneStatus } from '../lib/run-status.mjs';
 import { acquireGate, heldGates } from '../lib/gate-locks.mjs';
 import { inboxWakePrompt } from '../lib/wake.mjs';
 
@@ -278,4 +278,32 @@ test('review I7: a follow-up needs-owner (L2 wrote the lane record needs-owner) 
     s = await tick(s, h.ctx);
   }
   assert.deepEqual(h.notes.map((x) => x.key), ['laneNeedsOwner']);
+});
+
+// ---- Stage 4 integration ----
+
+test('integration: a job that failed in the supervisor (its session failed, or it could not launch) has its record failed, so the next start does not queue it again (L3 D12)', async () => {
+  const h = lanesHarness({ phases: [P('1'), P('2'), P('3')], jobs: (options, hh) => hh.jobList });
+  h.jobList = [{ kind: 'prep', phase: '2' }];
+  let s = await tick(freshLanes(), h.ctx);
+  assert.deepEqual(Object.keys(s.lanes), ['1', 'prep-2']);
+  h.jobList = [];
+  h.agentOf('prep-2').state = 'failed';
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(s.jobsFailed['prep-2'].why, 'failed');
+  assert.equal(readJobStatus(h.root, { kind: 'prep', phase: '2' })?.status, 'failed');
+  // a record that says failed already (the session's own) keeps its reason
+  writeJobStatus(h.root, { kind: 'annotate', phase: null }, 'failed', { reason: 'the analysis was refused twice' });
+  h.jobList = [{ kind: 'annotate', phase: null }];
+  h.launchFail = () => 'claude --bg failed: boom';
+  for (let i = 0; i < 10 && !s.jobsFailed?.annotate; i++) {
+    h.advance(1);
+    s = await tick(s, h.ctx);
+    h.jobList = [];
+  }
+  assert.ok(s.jobsFailed?.annotate, h.logs.slice(-5).join('\n'));
+  assert.equal(s.lanes.annotate, undefined);
+  assert.equal(readJobStatus(h.root, { kind: 'annotate', phase: null })?.reason, 'the analysis was refused twice');
+  assert.equal(readJobStatus(h.root, { kind: 'annotate', phase: null })?.status, 'failed');
 });

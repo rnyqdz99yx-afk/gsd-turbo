@@ -29,6 +29,9 @@ let opened = false; // the pane was opened once in this module's life; the clock
 // for one the person opened before). The band says how to open it, and the owner's next prompt opens it (askAgain).
 let waiting = false;
 let closedByOwner = false; // the owner closed the pane by hand: never opened again unasked
+let askedOnce = false; // the owner's prompt opened it once in this module's life: never retried on every prompt
+// How long the owner's prompt waits for that open at most: a hung open never holds the prompt.
+const ASK_WAIT_MS = 1500;
 // The "Other…" field (view-model.mjs): every read redraws the pane, so what is typed is kept here and drawn back.
 let field = NO_FIELD;
 const sending = new Set(); // questions with an answer on its way
@@ -148,7 +151,9 @@ async function refresh($, force) {
   if (attached && !opened && shouldAutoOpen(view)) {
     opened = true;
     try {
-      waiting = (await $.ui.open({ id: PANE_ID, title: PANE_TITLE }))?.isPlaced === false;
+      const r = await $.ui.open({ id: PANE_ID, title: PANE_TITLE });
+      // a close by the owner while the open ran stands
+      waiting = !closedByOwner && r?.isPlaced === false;
     } catch (err) {
       $.ui.log(`turbo-view: pane not opened: ${firstLine(err?.message ?? err)}`);
     }
@@ -172,13 +177,14 @@ async function checkPlaced($) {
 }
 
 // The owner's own prompt counts as asking (Claude Code places such an open at any width): a pane the mod opened that
-// waits undrawn is opened again here, once, and never after the owner closed it by hand. The prompt goes on unchanged
-// whatever the open does.
+// waits undrawn is opened again here, once per module life, and never after the owner closed it by hand. The prompt
+// goes on unchanged whatever the open does.
 async function askAgain($) {
-  if (!live || !waiting || closedByOwner) return;
-  waiting = false;
+  if (!live || !waiting || closedByOwner || askedOnce) return;
+  askedOnce = true;
   try {
-    waiting = (await $.ui.open({ id: PANE_ID, title: PANE_TITLE }))?.isPlaced === false;
+    const r = await $.ui.open({ id: PANE_ID, title: PANE_TITLE });
+    waiting = !closedByOwner && r?.isPlaced === false;
   } catch (err) {
     $.ui.log(`turbo-view: pane not opened: ${firstLine(err?.message ?? err)}`);
   }
@@ -301,19 +307,22 @@ export function register(on) {
     return theirs ? Box({ flexDirection: 'column', children: [mine, theirs] }) : mine;
   });
 
-  // w1: the owner's prompt opens a pane that waits undrawn; the prompt itself is passed on as it came
+  // w1: the owner's own prompt (typed or queued at the prompt: origin composer; never a task notification, a peer, a
+  // schedule or the SDK) opens a pane that waits undrawn. The prompt waits ASK_WAIT_MS at most, then goes on as it came.
   on('prompt.submit', async ($, e, next) => {
-    try {
-      await askAgain($);
-    } catch {
-      // never in the prompt's way
+    if (e.origin?.kind === 'composer') {
+      try {
+        await Promise.race([askAgain($), $.clock.sleep(ASK_WAIT_MS)]);
+      } catch {
+        // never in the prompt's way
+      }
     }
     return next(e);
   });
 
   // a pane the owner closes by hand stays closed: neither the clock nor a prompt opens it again; /turbo-view does
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
-    if (e.origin === 'person') {
+    if (e.origin?.kind === 'person') {
       closedByOwner = true;
       waiting = false;
     }

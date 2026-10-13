@@ -7,7 +7,7 @@ import { tick } from '../lib/supervisor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName } from '../lib/claude.mjs';
-import { askOwner, markDelivered, stopQuestion, writeQuestions } from '../lib/questions.mjs';
+import { askOwner, markDelivered, readQuestions, stopQuestion, writeQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 import { attendFile, clearAttend, writeAttend } from '../lib/attend.mjs';
 
@@ -535,4 +535,29 @@ test('an old-style needs-owner stop without a question still notifies laneNeedsO
   writeLaneStatus(h.root, '2', 'needs-owner', { reason: 'gap loop done; decide what next', at: h.now().toISOString() });
   s = await tick(s, h.ctx);
   assert.deepEqual(h.notes.map((n) => [n.key, n.vars.reason]), [['laneNeedsOwner', 'gap loop done; decide what next']]);
+});
+
+test('review 1 (MAJOR 1): a stale open lane question the current needs-owner record does not name neither blocks the wake for a checkpoint answer nor silences the notice', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  askOwner(h.root, '2', LANE_ASK, { lang: 'en', now: h.now() });
+  writeQuestions(h.root, '2', [...readQuestions(h.root, '2'), STOP_Q()]);
+  stopForOwner(h);
+  s = await tick(s, h.ctx);
+  assert.ok(h.notes.some((n) => n.key === 'laneNeedsOwner'), 'the checkpoint stop is told');
+  owner(h, '02-01-t2', 1);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1, 'the stale ask-1 does not block the wake');
+  assert.ok(!h.resumed[0].prompt.includes('ask-1'));
+});
+
+test('review 1 (MAJOR 1): a fresh start of a phase drops its lane questions not yet delivered: the step asks again', async () => {
+  const h = harness();
+  fs.mkdirSync(path.join(h.root, '.planning', 'turbo', 'run'), { recursive: true });
+  askOwner(h.root, '2', LANE_ASK, { lang: 'en', now: h.now() });
+  fs.rmSync(path.join(h.root, '.planning', 'turbo', 'run', 'p2.json'));
+  await tick(fresh(), h.ctx);
+  assert.deepEqual(readQuestions(h.root, '2'), []);
+  assert.ok(h.logs.includes('phase 2: dropped its questions ask-1 (the restarted step asks again)'));
 });

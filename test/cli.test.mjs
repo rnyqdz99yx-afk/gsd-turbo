@@ -1230,3 +1230,12 @@ test('lane-status N needs-owner with no owner question waiting hints at turbo-ru
   assert.equal(r.stderr, '');
   assert.match(run(['status'], root), /^owner question: phase 4 — The fixes are in\. What next\? \(answer: \/turbo-autonomous answer\)$/m);
 });
+
+test('review 1 (MAJOR 1): resume drops the phase\'s lane questions not yet delivered, so a stale one never blocks or answers the restarted step', () => {
+  const root = tmpDir('cli');
+  fs.mkdirSync(path.join(root, '.planning'));
+  askOwner(root, '4', { action: 'Plug the phone in.' }, { lang: 'en' });
+  const out = run(['resume', '4'], root);
+  assert.match(out, /^dropped questions: ask-1 \(the restarted step asks again\)$/m);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(runDirOf(root), 'p4-questions.json'), 'utf8')), []);
+});

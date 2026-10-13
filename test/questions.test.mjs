@@ -11,7 +11,7 @@ import { answerQuestion } from '../lib/answers.mjs';
 import {
   CLASSES, answersRel, buildQuestion, classifyQuestions, deliveryState, dynamicQuestion, liveAnswer, lockFile, markDelivered,
   questionId, questionsFile, readAnswers, readQuestions, refreshQuestions, stopQuestion, withPhaseLock, writeAnswers, writeQuestions,
-  askOwner, laneQuestion,
+  askOwner, dropLaneQuestions, laneQuestion,
 } from '../lib/questions.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
 
@@ -393,4 +393,17 @@ test('a lane question survives refreshQuestions until delivered; once answered i
   assert.equal(markDelivered(root, '32', 'ask-1', 'lane').delivery.path, 'lane');
   assert.deepEqual(refreshQuestions(root, '32').map((q) => q.id), ['32-09-t2'], 'delivered: gone from the questions, kept in the answers');
   assert.equal(readAnswers(root, '32').at(-1).id, 'ask-1');
+});
+
+test('review 1 (MAJOR 1): dropLaneQuestions removes the lane questions not yet delivered, checkpoints stay; deliveryState with ask counts only the named lane question', () => {
+  const root = tmpDir('askdrop');
+  writePhase(root, '32-auth', { '32-09-PLAN.md': DECISION_PLAN });
+  refreshQuestions(root, '32');
+  askOwner(root, '32', { action: 'Plug the phone in.' }, { lang: 'en' });
+  assert.deepEqual(deliveryState(root, '32', { ask: 'ask-9' }).waiting, []);
+  assert.deepEqual(deliveryState(root, '32', { ask: 'ask-1' }).waiting.map((q) => q.id), ['ask-1']);
+  assert.deepEqual(deliveryState(root, '32').waiting.map((q) => q.id), ['ask-1'], 'without ask: as before');
+  assert.deepEqual(dropLaneQuestions(root, '32'), ['ask-1']);
+  assert.deepEqual(readQuestions(root, '32').map((q) => q.id), ['32-09-t2']);
+  assert.deepEqual(dropLaneQuestions(root, '32'), []);
 });

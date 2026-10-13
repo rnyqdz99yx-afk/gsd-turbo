@@ -54,3 +54,15 @@ test('in a slot the step waits for the supervisor: next integrate, and the lane 
   completeStep(control, '3', 'integrate', { note: 'merged' });
   assert.match((await step(slot, '3')).lines.at(-1), /^phase 3: next none/);
 });
+
+// review I6: phase-step N run in the control root (the owner's recovery command) never passes a slot lane's integrate
+test('in the control root, a phase whose job runs in a slot keeps its step integrate for the supervisor', async () => {
+  const { laneProject } = await import('./helpers/lane-merge.mjs');
+  const p = laneProject();
+  // the project's own config names where its slots are, as turbo-run lanes setup reads it
+  p.writeMain('.planning/turbo/config.json', `${JSON.stringify({ max_lanes: 1, lanes: p.config.lanes })}\n`);
+  closable(p.root);
+  completeStep(p.root, '3', 'close');
+  const r = await step(p.root, '3');
+  assert.match(r.lines.at(-1), /^phase 3: next integrate/);
+});

@@ -201,3 +201,25 @@ test('mergePlanningOnly refuses a branch that touched anything else, needs the o
   r = await mergePlanningOnly(mq.ctx, prepLane(q), onlyPhase4);
   assert.deepEqual(r, { outcome: 'wait', reason: 'the main checkout has uncommitted changes: src/app.js' });
 });
+
+// review I5: after a failed push, the owner's own push request (a new id) that holds the merge is followed
+test('a later push request for the phase that holds the merge decides after a failed one', async () => {
+  const { p, m, sha } = await merged({ push: { mode: 'after-phase', ci: 'github' } });
+  const id = mergeState(p.root, '3').pushRequestId;
+  writeJsonAtomic(recordFile(p.root, '3'), { requestId: id, phase: '3', remote: 'origin', at: 'x', outcome: 'failed', branch: 'main', sha, reason: 'network down' });
+  assert.equal((await mergeFollowUp(m.ctx, laneOf(p))).outcome, 'needs-owner');
+  ciRecord(p, sha, 'pending', { requestId: 'owner-retry' });
+  assert.equal((await mergeFollowUp(m.ctx, laneOf(p))).outcome, 'wait');
+  ciRecord(p, sha, 'green', { requestId: 'owner-retry' });
+  assert.equal((await mergeFollowUp(m.ctx, laneOf(p))).outcome, 'released');
+});
+
+// review I7: the release's own bookkeeping comes before the slot's release, so a stop in between never leaves a hold
+test('the hold, the step and the lane record are settled before the slot is released', async () => {
+  const { p, m } = await merged();
+  setMergeHold(p.slot, '3');
+  const seen = [];
+  const ctx = { ...m.ctx, deps: { ...m.ctx.deps, releaseSlot: () => { seen.push([mergeHolds(p.root).length, readLaneStatus(p.root, '3').status, readProgress(p.root, '3').done.includes('integrate')]); throw new Error('stopped here'); } } };
+  await assert.rejects(mergeFollowUp(ctx, laneOf(p)), /stopped here/);
+  assert.deepEqual(seen, [[0, 'done', true]]);
+});

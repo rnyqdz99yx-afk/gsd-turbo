@@ -77,7 +77,9 @@ test('more than merge_rounds in a row: a card for the owner instead; the owner\'
   reportReady(p);
   move(2);
   const r = await mergeReady(m.ctx, laneOf(p));
-  assert.equal(r.outcome, 'needs-owner');
+  // review I2: the card reaches the owner through the question channel; needs-owner would make L1 notify again
+  assert.equal(r.outcome, 'wait');
+  assert.equal(mergeState(p.root, '3').state, 'needs-owner');
   assert.match(r.reason, /^the main branch moved 1 times in a row before phase 3 could be merged; owner question ask-1$/);
   const q = readQuestions(p.root, '3').find((x) => x.id === 'ask-1');
   assert.equal(q.options.length, 2);
@@ -228,8 +230,10 @@ test('phase.complete fails: the merge stays, a re-stamp is committed alone, the 
   assert.equal(p.inMain('rev-list', '--merges', '--count', 'HEAD'), '1');
   assert.equal(p.inMain('log', '-1', '--format=%s'), 'docs(phase-3): re-stamp verification after the merge (turbo merge)');
   assert.equal(p.inMain('status', '--porcelain', '--untracked-files=no'), '');
-  // L1's mergeStep notifies the owner of a needs-owner outcome; L2 sends nothing itself
-  assert.deepEqual([readLaneStatus(p.root, '3').status, m.notes.length], ['needs-owner', 0]);
+  // L1's mergeStep notifies the owner of a needs-owner outcome; L2 sends nothing itself, and (review I1) keeps the ready
+  // record, so L1's lane status does not tell the owner a second time; the next call waits
+  assert.deepEqual([readLaneStatus(p.root, '3').status, m.notes.length], ['ready', 0]);
+  assert.equal((await mergeReady(m.ctx, laneOf(p))).outcome, 'wait');
   assert.equal(mergeState(p.root, '3').completed, undefined);
 });
 
@@ -274,4 +278,71 @@ test('push on: the supervisor files the push request for main at the head after 
   const req = readJson(requestFile(p.root, '3'), null);
   assert.deepEqual([req.branch, req.head, req.phase], ['main', r.sha, '3']);
   assert.equal(mergeState(p.root, '3').pushRequestId, req.id);
+});
+
+// review I3: a crash after phase.complete wrote its files and before the commit; or phase.complete failing half-way
+test('a restart finds the supervisor\'s own uncommitted planning edits: they are redone, not a dirty main; a half-written phase.complete is undone', async () => {
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  const rec = readLaneStatus(p.root, '3');
+  p.inMain('fetch', '-q', p.slot, 'refs/heads/turbo/p3');
+  p.inMain('merge', '--no-ff', '-q', '-m', 'Merge phase 3 (turbo lane 1)', rec.head);
+  writeJsonAtomic(mergeFile(p.root, '3'), { v: 1, phase: '3', state: 'merging', readyAt: rec.at, laneHead: rec.head, base: rec.base, slot: 1, branch: 'turbo/p3', mergeSha: p.inMain('rev-parse', 'HEAD'), rounds: 0 });
+  p.writeMain('.planning/ROADMAP.md', '# Roadmap\n- [x] Phase 3 complete\n');
+  p.writeMain('.planning/STATE.md', '# State\n\nStatus: Phase 3 complete\n');
+  const m = mergeCtx(p);
+  const r = await mergeReady(m.ctx, laneOf(p));
+  assert.equal(r.outcome, 'merged', r.reason);
+  assert.equal(p.inMain('log', '-1', '--format=%s'), 'docs(phase-3): complete phase (turbo merge)');
+  assert.equal((readMain(p, '.planning/ROADMAP.md').match(/Phase 3 complete/g) || []).length, 1);
+  assert.equal(p.inMain('status', '--porcelain', '--untracked-files=no'), '');
+
+  const q = laneProject();
+  finishPhase(q);
+  reportReady(q);
+  const half = fakeGsd();
+  const gsd = (args, o) => {
+    if (args[1] === 'phase.complete') {
+      fs.writeFileSync(path.join(o.cwd, '.planning', 'STATE.md'), 'half written\n');
+      throw new Error('gsd-tools query phase.complete failed: Error: disk full');
+    }
+    return half(args, o);
+  };
+  const out = await mergeReady(mergeCtx(q, { gsd }).ctx, laneOf(q));
+  assert.equal(out.outcome, 'needs-owner');
+  assert.equal(q.inMain('status', '--porcelain', '--untracked-files=no'), '', 'the main checkout stays clean for the other lanes');
+});
+
+// review I4: the D9 path after the supervisor's own re-stamp was committed (S3) is not a verification mismatch
+test('a restart after the complete commit with a re-stamped report: no mismatch, no second phase.complete', async () => {
+  const p = laneProject();
+  finishPhase(p);
+  p.inMain('config', 'core.autocrlf', 'true');
+  reportReady(p);
+  const m = mergeCtx(p);
+  const first = await mergeReady(m.ctx, laneOf(p));
+  assert.equal(first.outcome, 'merged', first.reason);
+  // the crash came between the complete commit and the merge record's last save
+  const st = mergeState(p.root, '3');
+  writeJsonAtomic(mergeFile(p.root, '3'), { ...st, state: 'merging', completed: undefined, completeSha: undefined });
+  const again = await mergeReady(m.ctx, laneOf(p));
+  assert.equal(again.outcome, 'merged', again.reason);
+  assert.equal(again.sha, first.sha);
+  assert.equal(m.calls.filter((c) => c === 'query phase.complete 3').length, 1);
+});
+
+// review M10: an owner answer that lands while the phase completes is not folded into the complete commit
+test('the complete commit holds only the phase\'s planning files, never owner answers', async () => {
+  const p = laneProject({ files: { '.planning/turbo/answers/p9.json': '[]\n' } });
+  finishPhase(p);
+  reportReady(p);
+  const base = fakeGsd();
+  const gsd = (args, o) => {
+    if (args[1] === 'phase.complete') fs.writeFileSync(path.join(o.cwd, '.planning', 'turbo', 'answers', 'p9.json'), '[{"id":"late"}]\n');
+    return base(args, o);
+  };
+  const r = await mergeReady(mergeCtx(p, { gsd }).ctx, laneOf(p));
+  assert.equal(r.outcome, 'merged', r.reason);
+  assert.ok(!p.inMain('show', '--name-only', '--format=', 'HEAD').includes('answers'));
 });

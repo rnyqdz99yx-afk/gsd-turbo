@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { A, P, annotated, freshLanes, lanesHarness } from './helpers/lanes.mjs';
-import { tick } from '../lib/supervisor.mjs';
+import { resumableLanes, tick } from '../lib/supervisor.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { acquireGate, heldGates } from '../lib/gate-locks.mjs';
 import { inboxWakePrompt } from '../lib/wake.mjs';
@@ -205,4 +205,77 @@ test('start --plan-only: no phase lane, only prep and annotate jobs; the run end
   const bare = lanesHarness({ phases: [P('1')] });
   const b = await tick({ ...freshLanes(), planOnly: true }, bare.ctx);
   assert.deepEqual([Object.keys(b.lanes), b.finished, bare.notes.map((x) => x.key)], [[], true, ['milestonePrepared']]);
+});
+
+// ---- final review fixes ----
+
+test('review I1: a reintegrate wake whose relaunch fails to launch is retried at the next tick, never dropped', async () => {
+  const h = lanesHarness({ phases: [P('1')], merge: mergeFrom([{ outcome: 'reintegrate', reason: 'main moved' }]) });
+  let s = await tick(freshLanes(), h.ctx);
+  writeLaneStatus(h.root, '1', 'ready', { at: h.at() });
+  h.agentOf('1').state = 'blocked';
+  h.ctx.deps.claude.resume = () => { throw new Error('claude --bg --resume failed'); };
+  let fail = true;
+  h.launchFail = () => (fail ? 'claude --bg failed: boom' : null);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.lanes['1'].inboxWake, s.lanes['1'].launchFailures], ['reintegrate', 1]);
+  fail = false;
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(s.lanes['1'].sessionId, 's2', 'a new resumed session reads the inbox');
+  assert.equal(s.lanes['1'].inboxWake, undefined);
+  assert.deepEqual(h.merges, ['1'], 'L2 is not asked again for the wake it already decided');
+});
+
+test('review I2: a lane whose slot L2 released while the supervisor was away is finished at the next start', async () => {
+  const h = lanesHarness({ phases: [P('1')], merge: mergeFrom([]) });
+  await acquireGate(h.root, 'owner-live', '1');
+  const prev = { ...freshLanes(), lanes: { 1: { key: '1', job: 'phase', phase: '1', slot: 1, slotPath: h.slots[0].path, branch: 'turbo/p1', sessionId: 'gone', launchedAt: h.at(), restarts: 0, notified: {}, mode: 'full' } } };
+  h.mergeStates['1'] = { state: 'released' };
+  const lanes = resumableLanes(prev, null, h.ctx);
+  assert.deepEqual(Object.keys(lanes), ['1']);
+  h.phases[0].complete = true;
+  const s = await tick({ ...prev, lanes }, h.ctx);
+  assert.deepEqual(s.lanes, {});
+  assert.deepEqual(h.notes.map((x) => x.key), ['phaseDone', 'milestoneDone']);
+  assert.deepEqual(heldGates(h.root), []);
+});
+
+test('review I3: resume of a phase that is merged and waits for push or CI relaunches nothing', async () => {
+  const h = lanesHarness({ phases: [P('1')], merge: mergeFrom([{ outcome: 'merged' }]), followUp: () => ({ outcome: 'wait' }) });
+  let s = await tick(freshLanes(), h.ctx);
+  writeLaneStatus(h.root, '1', 'ready', { at: h.at() });
+  h.agentOf('1').state = 'blocked';
+  s = await tick(s, h.ctx);
+  assert.equal(h.mergeStates['1'].state, 'merged');
+  s.lanes['1'].forceRelaunch = true; // the owner's turbo-run resume 1
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 1);
+  assert.equal(s.lanes['1'].forceRelaunch, undefined);
+  assert.deepEqual(h.followUps, ['1']);
+});
+
+test('review I6: start --plan-only never steps a phase lane recorded by an earlier run; the run ends on jobs alone', async () => {
+  const h = lanesHarness({ phases: [P('1')], jobs: () => [] });
+  const prev = { ...freshLanes(), planOnly: true, lanes: { 1: { key: '1', job: 'phase', phase: '1', slot: 1, slotPath: h.slots[0].path, branch: 'turbo/p1', sessionId: 'old111', launchedAt: h.at(), restarts: 0, notified: {}, mode: 'full', forceRelaunch: true } } };
+  const s = await tick(prev, h.ctx);
+  assert.equal(h.launched.length, 0);
+  assert.deepEqual([s.finished, Object.keys(s.lanes)], [true, ['1']]);
+  assert.deepEqual(h.notes.map((x) => x.key), ['milestonePrepared']);
+});
+
+test('review I7: a follow-up needs-owner (L2 wrote the lane record needs-owner) reaches the owner once', async () => {
+  const h = lanesHarness({ phases: [P('1')], merge: mergeFrom([{ outcome: 'merged' }]), followUp: () => ({ outcome: 'needs-owner', reason: 'CI timed out' }) });
+  let s = await tick(freshLanes(), h.ctx);
+  writeLaneStatus(h.root, '1', 'ready', { at: h.at() });
+  h.agentOf('1').state = 'blocked';
+  s = await tick(s, h.ctx);
+  writeLaneStatus(h.root, '1', 'needs-owner', { at: h.at(), reason: 'CI timed out' });
+  for (let i = 0; i < 3; i++) {
+    h.advance(1);
+    s = await tick(s, h.ctx);
+  }
+  assert.deepEqual(h.notes.map((x) => x.key), ['laneNeedsOwner']);
 });

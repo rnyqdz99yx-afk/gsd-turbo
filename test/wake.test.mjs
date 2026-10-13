@@ -124,3 +124,31 @@ test('the probe reads a lane that runs in another directory (its slot) when give
   assert.equal(probe.activity(JOB, new Date(at('10:10')), 15 * 60000, slot).lastMs, Date.parse(at('10:05')));
   assert.equal(probe.replied(JOB, Date.parse(at('10:01')), slot), true);
 });
+
+test('review I4: each lane keeps its own transcript cache across the other lanes\' reads', () => {
+  const base = tmpDir('probe-cache');
+  const root = path.join(base, 'app');
+  fs.mkdirSync(root);
+  const home = path.join(base, 'home');
+  const slots = ['lane-1', 'lane-2'].map((n) => path.join(base, 'app.turbo', n));
+  const jobs = ['1a2b3c4d', '5e6f7a8b'];
+  slots.forEach((slot, i) => {
+    fs.mkdirSync(slot, { recursive: true });
+    const sid = `${jobs[i]}-2222-4333-8444-555555555555`;
+    writeJob(home, jobs[i], { sessionId: sid, cwd: slot });
+    writeSession(projectDirFor(home, slot), sid, [entry.user('go', at('10:00'))]);
+  });
+  const seen = [];
+  const probe = createLaneProbe(root, { CLAUDE_CONFIG_DIR: home }, {
+    agentsOf: (opts) => {
+      seen.push({ main: opts.main.sessionId, cache: opts.cache });
+      opts.used[opts.main.sessionId] = { mark: opts.main.sessionId };
+      return { lastAt: at('10:00'), agents: [] };
+    },
+  });
+  const now = new Date(at('10:05'));
+  probe.activity(jobs[0], now, 60000, slots[0]);
+  probe.activity(jobs[1], now, 60000, slots[1]);
+  probe.activity(jobs[0], now, 60000, slots[0]);
+  assert.deepEqual(seen[2].cache, { [seen[0].main]: { mark: seen[0].main } }, 'lane 1 finds its own cache after lane 2 read');
+});

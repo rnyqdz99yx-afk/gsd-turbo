@@ -186,3 +186,11 @@ test('pickPhases: one phase lane without a fresh annotation; a phase missing fro
   // without an annotation function every phase is **
   assert.deepEqual(pickPhases(phases, { slots: 3 }).picked.map((p) => p.number), ['1']);
 });
+
+test('review I5: extglob groups and .. segments never give a false no-overlap; an empty areas list is everything', () => {
+  assert.equal(areasOverlap(['src/@(api|web)/x.ts'], ['src/api/x.ts']), true);
+  assert.equal(areasOverlap(['src/!(x)'], ['src/y']), true);
+  assert.equal(areasOverlap(['src/+(a)/**'], ['src/a/b.ts']), true);
+  assert.equal(areasOverlap(['src/../lib/x.ts'], ['lib/x.ts']), true);
+  assert.deepEqual(annotationOf({ fresh: true, phases: { 3: { areas: [], gates: [], confidence: 'high' } } }, '3'), { areas: ['**'], gates: [] });
+});

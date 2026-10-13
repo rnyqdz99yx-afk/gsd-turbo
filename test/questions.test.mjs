@@ -335,19 +335,30 @@ test('a lane question is refused without 2-4 options, a recommended one, a quest
 });
 
 test('owner text with turbo\'s or GSD\'s ids is refused; a Russian owner gets no bare English question', () => {
-  const base = { phase: '32', id: 'ask-1', question: RU_Q, options: RU_OPTS, recommended: 1, lang: 'ru' };
+  const base = { phase: '32', id: 'ask-1', question: RU_Q, options: RU_OPTS, recommended: 1, lang: 'ru', planIds: ['32-46', '32-01'] };
   const bad = [
     ['Исправить WR-01..03 сначала?', /finding code WR-01/],
-    ['Закрыть G-32-22?', /finding code G-32/],
+    ['Закрыть G-32-22?', /finding code G-32-22/],
+    ['Закрыть LOOP8-WR-01?', /finding code LOOP8-WR-01/],
+    ['Закрыть CR-2?', /finding code CR-2/],
     ['План 32-46 готов, что дальше?', /plan id 32-46/],
+    ['Задача 32-01-t2 ждёт?', /question id 32-01-t2/],
     ['Ответ на ask-3 устарел?', /question id ask-3/],
     ['Коммит 7b65341 отправлен?', /commit hash 7b65341/],
     ['Поправить REVIEW.md?', /file name REVIEW\.md/],
+    ['Поправить 32-REVIEW.md?', /file name 32-REVIEW\.md/],
+    ['Поправить sync.js?', /file name sync\.js/],
+    ['Поправить код в src/stop?', /path src\/stop/],
   ];
   for (const [question, re] of bad) assert.throws(() => laneQuestion({ ...base, question }), re, question);
-  assert.throws(() => laneQuestion({ ...base, options: [{ label: 'Фикс', description: 'Правка 32-01-t2' }, RU_OPTS[1]] }), /plan id 32-01-t2/);
-  assert.throws(() => laneQuestion({ ...base, question: 'gap loop 8 done; fix review warnings first?' }), /no Russian word/);
-  assert.doesNotThrow(() => laneQuestion({ ...base, question: 'Ревью на 2026-10-13: 10–20 минут, CI зелёный, UTF-8. Дальше?' }));
+  assert.throws(() => laneQuestion({ ...base, options: [{ label: 'Фикс', description: 'Правка 32-01-t2' }, RU_OPTS[1]] }), /question id 32-01-t2/);
+  const fine = ['5-10 минут', 'с 10:00-12:00', 'страница 3-14', 'версия 1.2-10', '10-20 минут', 'после COVID-19', 'хеш SHA-256', 'дата ISO-8601', 'по RFC-7231', 'на Node.js и Next.js', 'слово decade12 и facade1', '2026-10-13', 'UTF-8', 'CI зелёный', '32-47 (не план этой фазы)'];
+  for (const t of fine) assert.doesNotThrow(() => laneQuestion({ ...base, question: 'Проверка: ' + t + '. Дальше?' }), t);
+  assert.throws(() => laneQuestion({ ...base, question: 'gap loop 8 done; fix review warnings first?' }), /the question has no Russian word/);
+  assert.throws(() => laneQuestion({ ...base, context: 'the review found edges' }), /the context has no Russian word/);
+  assert.throws(() => laneQuestion({ ...base, options: [{ label: 'Fix first', description: 'Сначала исправить' }, RU_OPTS[1]] }), /option 1 has no Russian word/);
+  assert.throws(() => laneQuestion({ phase: '32', id: 'ask-1', action: 'plug the phone in', lang: 'ru' }), /the question has no Russian word/, 'the action itself, not turbo\'s prefix');
+  assert.doesNotThrow(() => laneQuestion({ ...base, options: [{ label: 'OK — 42', description: 'Сразу' }, RU_OPTS[1]] }), 'an option with a Russian description');
   assert.doesNotThrow(() => laneQuestion({ ...base, lang: 'en', question: 'The fixes are in; what next?', options: [{ label: 'Fix first', description: 'x' }, { label: 'Live check', description: 'y' }] }));
 });
 

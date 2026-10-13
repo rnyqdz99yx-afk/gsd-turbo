@@ -265,3 +265,12 @@ test('turbo-run questions --deliver lists an answered lane question for the lane
   assert.equal((await run(root, ['owner-gaps', '32'])).code, 1);
   assert.equal((await run(root, ['owner-gaps', '32', '--gap', 'x'])).code, 2);
 });
+
+test('review 1 (MAJOR 3): turbo-run ask takes the phase\'s own plan ids as plan ids; a range is no plan', async () => {
+  const root = project();
+  let r = await run(root, ['ask', '32', '--question', 'Plan 32-10 is done; what next?', '--option', 'Fix|a', '--option', 'Go|b', '--recommended', '1']);
+  assert.equal(r.code, 1);
+  assert.match(r.text, /holds the plan id 32-10/);
+  r = await run(root, ['ask', '32', '--question', 'It takes 10-20 minutes; what next?', '--option', 'Fix|a', '--option', 'Go|b', '--recommended', '1']);
+  assert.equal(r.code, 0, r.text);
+});

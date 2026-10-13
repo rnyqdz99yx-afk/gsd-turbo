@@ -241,3 +241,8 @@ test('turbo-phase skill (review 1, MAJOR 2): no "go on" past the hard gates — 
   assert.match(s, /go on \(never for a stop of final-gate, uat or close\) →/);
   assert.match(s, /`turbo-run phase-step N --done close` refuses unless VERIFICATION\.md reads `passed` and SECURITY\.md counts no open threat/);
 });
+
+test('turbo-phase skill (review 1, MAJOR 3): two refusals of turbo-run ask end the rewriting: the stop goes out with a plain reason', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  assert.match(s, /refused twice → `turbo-run lane-status N needs-owner --reason "<the question in plain words>"`/);
+});

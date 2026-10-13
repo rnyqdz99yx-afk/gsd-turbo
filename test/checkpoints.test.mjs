@@ -100,6 +100,9 @@ test('a tag named in inline code is no element: the field is the real one, never
   assert.match(a.instructions, /^\*\*Что получилось:\*\* пробная сборка готова/);
   assert.ok(!a.instructions.includes('</action>'));
   assert.equal(parseCheckpoints('<tasks>\n<task type="checkpoint:human-verify">\n<action>Show `<what-built>` then ``<how-to-verify>``.</action>\n</task>\n</tasks>')[0].whatBuilt, '');
+  // an unpaired backtick before a field's end tag hides no tag (review 1)
+  const [u] = parseCheckpoints('<tasks>\n<task type="checkpoint:human-verify"><what-built>Готово, ключ `K</what-built><how-to-verify>Открой `страницу` галереи</how-to-verify></task>\n</tasks>');
+  assert.deepEqual([u.whatBuilt, u.howToVerify], ['Готово, ключ `K', 'Открой `страницу` галереи']);
 });
 
 test('the task name (never an option\'s name) and the fields\' raw lines for the owner cards; CRLF reads the same', () => {

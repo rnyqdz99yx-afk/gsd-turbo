@@ -496,6 +496,35 @@ test('owner card: text that fails the plain-words check falls back to the task n
   assert.equal(named.question, 'Проверка: Проверить вывод галереи');
 });
 
+test('owner cards, review 1: the owner\'s commands, an executor line on the tag\'s line, a mid-field owner line, Russian executor lines', () => {
+  const F = '`'.repeat(3);
+  // a fenced command in how-to-verify stays, and so do the steps after it
+  const fenced = card(OWNER_VERIFY_PLAN.replace(/<how-to-verify>[\s\S]*?<\/how-to-verify>/, `<how-to-verify>\n    1. Запусти:\n    ${F}bash\n    npm start\n    ${F}\n    2. Открой страницу галереи.\n  </how-to-verify>`), '32-12');
+  assert.match(fenced.context, /1\. Запусти: `npm start` 2\. Открой страницу галереи\.$/);
+  // an executor line on the tag's own line drops only itself
+  const onTag = card(OWNER_ACTION_PLAN.replace('<instructions>\n', '<instructions>Executor: fill the placeholders first.\n'), '32-13');
+  assert.match(onTag.context, /^Что получилось: пробная сборка готова/);
+  // a line for the owner in the middle of the owner's own text cuts nothing
+  const mid = card(OWNER_DECISION_PLAN.replace('    Превью сейчас', '    Превью сейчас нужны быстро.\n    Варианты для владельца:\n    Превью сейчас'), '32-14');
+  assert.match(mid.context, /^Превью сейчас нужны быстро\. Варианты для владельца: Превью сейчас лежат/);
+  // an executor line in Russian is the executor's
+  const ru = card(OWNER_DECISION_PLAN.replace('    Превью сейчас', '    Исполнитель: перед показом запусти проверку.\n    Превью сейчас'), '32-14');
+  assert.match(ru.context, /^Превью сейчас лежат/);
+});
+
+test('owner cards, review 1: no markup in a decision or a name; the lane\'s own words at a stop; the plan number within a zero-padded phase', () => {
+  const marked = card(OWNER_DECISION_PLAN.replace('<decision>Где хранить превью картинок?</decision>', '<decision>**Где** хранить превью &lt;what-built&gt;картинок?</decision>'), '32-14');
+  assert.equal(marked.question, 'Где хранить превью картинок?');
+  const two = dynamicQuestion({ phase: '32', id: '32-09-t4', kind: 'human-action', question: 'Войди в аккаунт почты. Потом нажми готово.', lang: 'ru' });
+  assert.equal(two.question, 'Действие: Войди в аккаунт почты. Потом нажми готово.');
+  const padded = buildQuestion(cpOf(VERIFY_PLAN.replace(/<what-built>.*<\/what-built>/, '<what-built>Обновлён gallery.mjs.</what-built>')), { phase: '2.1', plan: '02.1-03', lang: 'ru' });
+  assert.equal(padded.question, 'Проверка: План 3, задача 3 ждёт вашего решения: подробности в плане');
+  // a secret after a label the plain-words check drops is masked all the same
+  const token = `ghp_${'a1B2'.repeat(9)}`;
+  const secret = card(OWNER_DECISION_PLAN.replace('    Превью сейчас', `    **Token:** ${token}\n\n    Превью сейчас`), '32-14');
+  assert.ok(!JSON.stringify(secret).includes(token));
+});
+
 test('owner cards: a re-extraction with new text keeps the id, the rev and the answer already given', () => {
   const root = tmpDir('cards');
   writePhase(root, '32-auth', { '32-15-PLAN.md': OWNER_CONTEXT_PLAN, '32-12-PLAN.md': OWNER_VERIFY_PLAN });

@@ -278,7 +278,7 @@ export function clockText(ms, utcOffsetMinutes = null) {
 // A lane's reason without the `owner question <id>` /turbo-phase puts first when it stops for a question (an id is
 // `<plan>-t<task>`): the verdict and the questions say that already, and the id is turbo's own. What follows it stays;
 // '' when nothing does.
-export const laneReason = (reason) => clean(reason).replace(/^owner questions?\s+[\w.-]+-t\d+\b\s*:?\s*/i, '').trim();
+export const laneReason = (reason) => clean(reason).replace(/^owner questions?\s+(?:[\w.-]+-t\d+|ask-\d+)\b\s*:?\s*/i, '').trim();
 
 const stepWord = (t, step) => (step == null ? t.allDone : t.step[step] ?? cut(step, 40));
 const stepNoun = (t, step) => (step == null ? null : t.stepAt[step] ?? stepWord(t, step));

@@ -28,6 +28,9 @@ const ruPlural = (n, one, few, many) => {
   const b = n % 100;
   return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many;
 };
+// Phase ids as words: `phase 34`, `phases 33, 34` (one and many name the word in the case the phrase needs).
+const ids = (l) => [].concat(l ?? []).map(String);
+const idList = (l, one, many) => (ids(l).length > 1 ? `${many} ${ids(l).join(', ')}` : `${one} ${ids(l)[0] ?? ''}`.trim());
 
 // The /turbo-phase steps (lib/phase-progress.mjs STEPS, and ci) and the subagent types, in words; anything else is
 // shown as written. lib/view.mjs keeps the same tables for turbo-run view and status --watch (test/view.test.mjs
@@ -111,6 +114,22 @@ const VIEW_WORDS = {
       test: (n) => `${n} test ${n === 1 ? 'change' : 'changes'}`, docs: (n) => `${n} docs ${n === 1 ? 'change' : 'changes'}`, other: (n) => `${n} other ${n === 1 ? 'change' : 'changes'}`,
     },
     lastAgo: (ago) => `latest ${ago}`,
+    // Stage 4: several lanes (spec §8): a lane's slot, what a prep or annotate lane does, the summary line, why the next
+    // phase waits (supervisor.json next: its why, the phases it waits for, a shared resource by name)
+    lane: (k) => `lane ${k}`,
+    laneHead: (k) => `Lane ${k}`,
+    lanesCount: (n) => `${n} ${n === 1 ? 'lane' : 'lanes'}`,
+    questionsCount: (n) => `${n} ${n === 1 ? 'question' : 'questions'}`,
+    job: { prep: (s) => `getting ready ahead: ${s}`, annotate: 'working out which phases can run together' },
+    gate: { 'prod-deploy': 'the deploy', 'owner-live': 'your live check', 'owner-signature': 'your signature', 'packaged-build': 'the packaged build' },
+    waits: {
+      deps: (p, l) => `next: phase ${p} waits for ${idList(l, 'phase', 'phases')}`,
+      areas: (p, l) => `next: phase ${p} waits for ${idList(l, 'phase', 'phases')} — they change the same files`,
+      gates: (p, l, g) => (ids(l).length ? `next: phase ${p} waits for ${idList(l, 'phase', 'phases')} — both need ${g}` : `next: phase ${p} waits its turn for ${g}`),
+      slots: (p) => `next: phase ${p} waits for a free lane`,
+      annotation: (p) => `next: phase ${p} waits until turbo knows which phases can run together`,
+      merge: (p, l) => `next: phase ${p} waits for ${idList(l, 'phase', 'phases')} to be merged`,
+    },
   },
   ru: {
     ...WORDS.ru,
@@ -173,6 +192,21 @@ const VIEW_WORDS = {
       test: (n) => `${n} ${ruPlural(n, 'правка тестов', 'правки тестов', 'правок тестов')}`, docs: (n) => `${n} ${ruPlural(n, 'правка документов', 'правки документов', 'правок документов')}`, other: (n) => `${n} ${ruPlural(n, 'служебное изменение', 'служебных изменения', 'служебных изменений')}`,
     },
     lastAgo: (ago) => `последнее ${ago}`,
+    lane: (k) => `полоса ${k}`,
+    laneHead: (k) => `Полоса ${k}`,
+    lanesCount: (n) => `${n} ${ruPlural(n, 'полоса', 'полосы', 'полос')}`,
+    questionsCount: (n) => `${n} ${ruPlural(n, 'вопрос', 'вопроса', 'вопросов')}`,
+    job: { prep: (s) => `готовится заранее: ${s}`, annotate: 'разбирает, какие фазы могут идти вместе' },
+    // the case after «используют» and «очереди на»
+    gate: { 'prod-deploy': 'деплой', 'owner-live': 'вашу живую проверку', 'owner-signature': 'вашу подпись', 'packaged-build': 'сборку пакета' },
+    waits: {
+      deps: (p, l) => `следующая: фаза ${p} ждёт ${idList(l, 'фазу', 'фазы')}`,
+      areas: (p, l) => `следующая: фаза ${p} ждёт ${idList(l, 'фазу', 'фазы')} — они меняют одни и те же файлы`,
+      gates: (p, l, g) => (ids(l).length ? `следующая: фаза ${p} ждёт ${idList(l, 'фазу', 'фазы')} — обе используют ${g}` : `следующая: фаза ${p} ждёт своей очереди на ${g}`),
+      slots: (p) => `следующая: фаза ${p} ждёт свободную полосу`,
+      annotation: (p) => `следующая: фаза ${p} ждёт, пока turbo разберёт, какие фазы могут идти вместе`,
+      merge: (p, l) => `следующая: фаза ${p} ждёт слияния ${idList(l, 'фазы', 'фаз')}`,
+    },
   },
 };
 
@@ -334,6 +368,27 @@ const stepNoun = (t, step) => (step == null ? null : t.stepAt[step] ?? stepWord(
 const agentWord = (t, type) => (type ? t.agent[type] ?? cut(type, 40) : t.agent['general-purpose']);
 const planWords = (t, x) => (x?.plan ? t.plan(x.plan, x.task) : null);
 const plansWords = (t, lane) => (lane?.plans?.total > 0 ? t.plans(lane.plans.done, lane.plans.total) : null);
+
+// Stage 4 (L4): a lane's slot (1, 2, …; 0 or none: the main checkout), its head (`Phase 34 · lane 2`, an annotate lane
+// `Lane 2`), what it does in words (a prep lane `getting ready ahead: discussion`), a shared resource by name, why the
+// next phase waits (supervisor.json next, at most three phases named) and the run's summary line (`3 lanes · 1
+// question · next: phase 36 waits for phase 34`). A view from v0.3 has no job: a phase lane.
+const slotOf = (lane) => (Number.isInteger(lane?.slot) && lane.slot >= 1 ? lane.slot : null);
+const laneHeadText = (t, lane) => (lane.job === 'annotate' ? t.laneHead(slotOf(lane) ?? '–') : `${t.phase(cut(lane.phase, 20))}${slotOf(lane) ? ` · ${t.lane(slotOf(lane))}` : ''}`);
+const stepText = (t, lane) => (lane.job === 'annotate' ? t.job.annotate : lane.job === 'prep' ? t.job.prep(stepWord(t, lane.step)) : stepWord(t, lane.step));
+const gateWord = (t, g) => (Object.hasOwn(t.gate, String(g)) ? t.gate[String(g)] : cut(g, 30));
+const NAMES_FOR = new Set(['deps', 'areas', 'merge']);
+function waitsWords(t, next) {
+  if (!next || next.phase == null || !Object.hasOwn(t.waits, String(next.why))) return null;
+  const on = list(next.waitsFor).slice(0, 3).map((x) => cut(x, 20));
+  if (NAMES_FOR.has(next.why) && !on.length) return null;
+  return t.waits[next.why](cut(next.phase, 20), on, next.gate == null ? '' : gateWord(t, next.gate));
+}
+function summaryLine(t, view) {
+  const asked = list(view?.questions).length;
+  return [t.lanesCount(list(view?.lanes).length), asked ? t.questionsCount(asked) : null, waitsWords(t, view?.next)].filter(Boolean).join(' · ');
+}
+export const runSummary = (view) => clean(summaryLine(textOf(view), view));
 
 const TEST_RUN = /\b(?:node\s+--test|npm\s+(?:run\s+)?test|npx\s+(?:jest|vitest|mocha)|jest|vitest|mocha|pytest|go\s+test|cargo\s+test|test-changed|plugin\s+test)\b/;
 const COMMIT = /\bgit\b.*\bcommit\b/;

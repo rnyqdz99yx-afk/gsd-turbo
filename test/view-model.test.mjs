@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, STEPS, TONES, WORDS, afterAnswer, commitSummary, currentAction, phaseSteps, whatNext, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, clean, clockText, cut, errorWords, notSentToast, turboDir, viewArgv, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, paneLines, parseView, refreshMs, render, shouldAutoOpen, spanText, textWidth, toastsFor, turboRunPath, verdict } from '../mod/hooks/view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, STEPS, TEXT, TONES, WORDS, runSummary, afterAnswer, commitSummary, currentAction, phaseSteps, whatNext, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, clean, clockText, cut, errorWords, notSentToast, turboDir, viewArgv, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, paneLines, parseView, refreshMs, render, shouldAutoOpen, spanText, textWidth, toastsFor, turboRunPath, verdict } from '../mod/hooks/view-model.mjs';
 
 const AT = '2026-01-01T11:00:00.000Z';
 const agent = (over) => ({ agentId: 'a1', type: 'gsd-executor', description: '', plan: '32-07', task: '2', model: 'opus', worktreeBranch: null, state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, startedAt: '2026-01-01T10:54:00.000Z', lastAt: '2026-01-01T10:59:50.000Z', elapsedMs: 360000, tokens: 166000, sessionId: 's', transcript: 't', ...over });
@@ -981,4 +981,50 @@ test('a close during the open is not overwritten, and a hung open never holds th
   t.$.ui.open = () => new Promise(() => {});
   t.$.clock.sleep = async () => {};
   assert.deepEqual(await t.hooks['prompt.submit'](t.$, { text: 'go', origin: { kind: 'composer' } }, async (e) => ({ text: e.text })), { text: 'go' });
+});
+
+// Stage 4: three lanes in slots: phase 32 in lane 1 (the question is its), phase 33 in lane 2 (calm), the prep of
+// phase 35 in lane 3; the next phase 34 waits for 32 (the same files), as the scheduler wrote it.
+function lanes3(over = {}, l32 = {}, l33 = {}, l35 = {}) {
+  const base = view(over);
+  const [first] = base.lanes;
+  return {
+    ...base,
+    lanes: [
+      { ...first, key: '32', job: 'phase', slot: 1, ...l32 },
+      { ...first, key: '33', job: 'phase', slot: 2, phase: '33', step: 'fanout', launchedAt: '2026-01-01T10:35:00.000Z', elapsedMs: 25 * 60000, plans: { done: 2, total: 4 }, push: null, agents: [agent({ agentId: 'b1', type: 'gsd-code-reviewer', plan: null, task: null, action: { tool: 'Grep', detail: 'x' }, elapsedMs: 180000 })], ...l33 },
+      { ...first, key: 'prep-35', job: 'prep', slot: 3, phase: '35', step: 'discuss', launchedAt: '2026-01-01T10:56:00.000Z', elapsedMs: 4 * 60000, plans: null, push: null, agents: [], ...l35 },
+    ],
+    next: { phase: '34', why: 'areas', waitsFor: ['32'], gate: null },
+    ...(Object.hasOwn(over, 'next') ? { next: over.next } : {}),
+  };
+}
+
+test('the summary line of a run with lanes: lanes, questions, the next phase and why it waits, in words, in both languages', () => {
+  const s = (next, over = {}) => runSummary(lanes3({ ...over, next }));
+  const ru = (next) => s(next, RU);
+  const N = (why, waitsFor = [], gate = null) => ({ phase: '36', why, waitsFor, gate });
+  assert.equal(s(N('deps', ['34'])), '3 lanes · 1 question · next: phase 36 waits for phase 34');
+  assert.equal(ru(N('deps', ['34'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт фазу 34');
+  assert.equal(s(N('deps', ['33', '34'])), '3 lanes · 1 question · next: phase 36 waits for phases 33, 34');
+  assert.equal(ru(N('deps', ['33', '34'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт фазы 33, 34');
+  assert.equal(s(N('areas', ['32'])), '3 lanes · 1 question · next: phase 36 waits for phase 32 — they change the same files');
+  assert.equal(ru(N('areas', ['32'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт фазу 32 — они меняют одни и те же файлы');
+  assert.equal(s(N('gates', ['33'], 'prod-deploy')), '3 lanes · 1 question · next: phase 36 waits for phase 33 — both need the deploy');
+  assert.equal(ru(N('gates', ['33'], 'owner-signature')), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт фазу 33 — обе используют вашу подпись');
+  assert.equal(s(N('gates', ['33'], 'lab-printer')), '3 lanes · 1 question · next: phase 36 waits for phase 33 — both need lab-printer', 'a project gate as written');
+  assert.equal(s(N('gates', [], 'owner-live')), '3 lanes · 1 question · next: phase 36 waits its turn for your live check', 'a gate locked by hand: no phase holds it');
+  assert.equal(ru(N('gates', [], 'packaged-build')), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт своей очереди на сборку пакета');
+  assert.equal(s(N('slots')), '3 lanes · 1 question · next: phase 36 waits for a free lane');
+  assert.equal(ru(N('slots')), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт свободную полосу');
+  assert.equal(s(N('annotation', ['32'])), '3 lanes · 1 question · next: phase 36 waits until turbo knows which phases can run together');
+  assert.equal(ru(N('annotation')), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт, пока turbo разберёт, какие фазы могут идти вместе');
+  assert.equal(s(N('merge', ['34'])), '3 lanes · 1 question · next: phase 36 waits for phase 34 to be merged');
+  assert.equal(ru(N('merge', ['33', '34'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт слияния фаз 33, 34');
+  assert.equal(ru(N('merge', ['34'])), '3 полосы · 1 вопрос · следующая: фаза 36 ждёт слияния фазы 34');
+  assert.equal(s(N('deps')), '3 lanes · 1 question', 'waiting for nobody named says nothing');
+  assert.equal(s(N('mystery', ['34'])), '3 lanes · 1 question', 'a reason this mod does not know says nothing');
+  assert.equal(s(null, { questions: [] }), '3 lanes');
+  assert.deepEqual([TEXT.ru.lanesCount(2), TEXT.ru.lanesCount(5), TEXT.ru.lanesCount(21), TEXT.ru.questionsCount(3), TEXT.en.lanesCount(1), TEXT.en.questionsCount(2)], ['2 полосы', '5 полос', '21 полоса', '3 вопроса', '1 lane', '2 questions']);
+  assert.deepEqual([TEXT.en.lane(2), TEXT.en.laneHead(2), TEXT.ru.lane(2), TEXT.ru.laneHead(2), TEXT.en.job.prep('discussion'), TEXT.ru.job.annotate], ['lane 2', 'Lane 2', 'полоса 2', 'Полоса 2', 'getting ready ahead: discussion', 'разбирает, какие фазы могут идти вместе']);
 });

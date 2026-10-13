@@ -545,3 +545,18 @@ test('an annotate lane has no phase, steps, plans or push and reads its own reco
   assert.deepEqual([l.key, l.job, l.phase, l.slot], ['32', 'phase', '32', 0]);
   assert.equal(buildView({ root: legacy.root, sup: legacy.sup, env: legacy.env, now: NOW, commits: COMMITS }).next, null, 'checkout mode writes no next');
 });
+
+test('runLine is the pane\'s summary line while two or more lanes run, else nothing; waitReason says the next phase in the owner\'s language', async () => {
+  const pane = await import('../mod/hooks/view-model.mjs');
+  const { runLine, waitReason } = await import('../lib/view.mjs');
+  const one = textView({ next: { phase: '33', why: 'slots', waitsFor: [], gate: null } });
+  assert.equal(runLine(one), null);
+  const two = { ...one, lanes: [{ ...one.lanes[0], key: '32', job: 'phase', slot: 1 }, { ...one.lanes[0], key: '33', job: 'phase', slot: 2, phase: '33' }], next: { phase: '34', why: 'deps', waitsFor: ['32'], gate: null } };
+  assert.equal(runLine(two), '2 lanes · 1 question · next: phase 34 waits for phase 32');
+  for (const lang of ['en', 'ru']) assert.equal(runLine({ ...two, ui: { lang } }), pane.runSummary({ ...two, ui: { lang } }));
+  assert.equal(waitReason({ phase: '36', why: 'deps', waitsFor: ['34'] }, 'ru'), 'следующая: фаза 36 ждёт фазу 34');
+  assert.equal(waitReason({ phase: '36', why: 'slots', waitsFor: [] }), 'next: phase 36 waits for a free lane');
+  assert.equal(waitReason({ phase: '3\x1b[2J6', why: 'gates', waitsFor: ['3\x072'], gate: 'prod-deploy' }), 'next: phase 36 waits for phase 32 — both need the deploy', 'cleaned');
+  assert.equal(waitReason(null), null);
+  assert.equal(waitReason({ phase: '36', why: 'mystery' }), null);
+});

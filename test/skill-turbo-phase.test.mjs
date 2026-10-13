@@ -276,3 +276,16 @@ test('turbo-phase skill (review 1, MAJOR 3): two refusals of turbo-run ask end t
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
   assert.match(s, /refused twice → `turbo-run lane-status N needs-owner --reason "<the question in plain words>"`/);
 });
+
+test('turbo-phase skill: step integrate (Stage 4 §7.1) — the lane takes in main in its slot, reports ready, never marks the step itself', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const sec = section(s, 'integrate');
+  for (const n of [
+    'turbo-run integrate N', 'exit 4', 'TURBO_FULL=1 turbo-run test-changed', 'turbo-run phase-step N --attempt integrate', 'full test rounds allowed',
+    'gsd-tools verification status <phase dir>', '**Stale report**', 'turbo-run lane-status N ready --base', 'without marking this step done',
+    'reintegrate', 'ci-red', 'turbo-run integrate N --hold', 'turbo-run ask N',
+  ]) assert.ok(sec.includes(n), n);
+  assert.ok(section(s, 'close').includes('next integrate'), 'close hands over to integrate in a slot');
+  assert.ok(s.includes('push in slots'), 'CI red and close know the slot line');
+  assert.ok(s.includes('`reintegrate` messages'), 'the inbox paragraph');
+});

@@ -91,3 +91,15 @@ test('nextLine: a merge hold keeps the next phase waiting (reconcile R5)', () =>
   assert.equal(nextLine({ phase: '36', why: 'merge', waitsFor: ['34', '35'] }, 'ru'), 'фаза 36 ждёт слияния фаз 34, 35');
   assert.equal(nextLine({ phase: '36', why: 'merge', waitsFor: [] }), null);
 });
+
+test('integration: supervisorLanes reads a slotPath that is not a non-empty string as no slot (a hand-edited supervisor.json); laneCwd and laneAt never throw on it', () => {
+  const root = tmpDir('lanes-bad-slot');
+  for (const bad of [5, true, { a: 1 }, ['x'], '']) {
+    const sup = { lanes: { 3: { key: '3', job: 'phase', phase: '3', slot: 1, slotPath: bad } } };
+    const [lane] = supervisorLanes(sup, root);
+    assert.equal(lane.slotPath, null, JSON.stringify(bad));
+    assert.equal(laneCwd(root, lane), root);
+    assert.equal(laneAt(sup, root, root), null);
+    assert.equal(laneForPhase(sup, root, '3').slotPath, null);
+  }
+});

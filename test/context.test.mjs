@@ -183,3 +183,16 @@ test('slots mode: the phase\'s lane comes from supervisor.json lanes and its tra
   f.transcript(keyOf(slot), 'abcd1234-5678-90ab', [assistant(slot, usage(0, 0, 330000))]);
   assert.deepEqual([measure(f).used, measure(f).source], [330000, 'lane']);
 });
+
+test('integration: a hand-edited supervisor.json whose slotPath is not a string reads as no slot; nothing throws', () => {
+  const f = setup();
+  fs.mkdirSync(path.join(f.root, '.planning', 'turbo', 'run'), { recursive: true });
+  for (const bad of [5, true, { a: 1 }, ['x']]) {
+    fs.writeFileSync(path.join(f.root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({
+      lanesMode: 'slots',
+      lanes: { 3: { key: '3', job: 'phase', phase: '3', slot: 1, slotPath: bad, sessionId: 'abcd1234' } },
+    }));
+    f.transcript(keyOf(f.root), `root-${String(bad).length}`, [assistant(f.root, usage(0, 0, 100000))]);
+    assert.equal(measure(f).used, 100000, `slotPath ${JSON.stringify(bad)}`);
+  }
+});

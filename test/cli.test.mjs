@@ -594,6 +594,30 @@ test('resume with a dead daemon pid clears the phase and arms a forced relaunch'
   assert.deepEqual([progress.done, progress.attempts], [['freshness'], {}]);
 });
 
+test('resume clears the phase\'s owner request, and status shows the resumed lane as a pending relaunch, never the old session to watch', () => {
+  const root = plainProject();
+  writeSup(root, { pid: DEAD_PID, updatedAt: ago(0), halted: true, lane: { phase: '4', sessionId: 'old111', restarts: 1, launchedAt: ago(2880), mode: 'full', notified: {} } });
+  const runDir = runDirOf(root);
+  fs.writeFileSync(path.join(runDir, 'p4-owner.md'), '# Phase 4\n\nsign rows 7-10\n');
+  fs.writeFileSync(path.join(runDir, 'p4-owner.notified'), JSON.stringify({ checklist: ['3. live check'] }));
+  fs.writeFileSync(path.join(runDir, 'p5-owner.md'), '# Phase 5\n');
+  assert.match(run(['status'], root), /owner request: \.planning\/turbo\/run\/p4-owner\.md/);
+  assert.match(run(['resume', '4'], root), /phase 4 cleared/);
+  assert.equal(fs.existsSync(path.join(runDir, 'p4-owner.md')), false, 'the resume answers the owner request');
+  assert.ok(fs.existsSync(path.join(runDir, 'p4-owner.notified')), 'the checklist already sent is not sent again');
+  assert.ok(fs.existsSync(path.join(runDir, 'p5-owner.md')), 'another phase\'s request stays');
+  const text = run(['status'], root);
+  assert.doesNotMatch(text, /p4-owner\.md/);
+  assert.match(text, /owner request: \.planning\/turbo\/run\/p5-owner\.md/);
+  // no supervisor runs after a plain resume: the line says how to go on
+  assert.match(text, /^lane: phase 4 · relaunch pending \(resume\) · replaces session old111 once a supervisor runs: turbo-run start · mode full$/m);
+  assert.doesNotMatch(text, /watch: claude attach old111/);
+  assert.equal(JSON.parse(run(['status', '--json'], root)).lane.forceRelaunch, true);
+  // a supervisor that runs (resume --start) replaces it at its next check
+  writeSup(root, { ...readSup(root), pid: process.pid, updatedAt: ago(0) });
+  assert.match(run(['status'], root), /^lane: phase 4 · relaunch pending \(resume\) · replaces session old111 at the supervisor's next check · mode full$/m);
+});
+
 test('resume with a stale heartbeat kills nothing and revokes the lock lease', async (t) => {
   const root = plainProject();
   const child = sleeper(t);

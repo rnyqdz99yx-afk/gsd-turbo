@@ -207,7 +207,11 @@ function printStatus(sup, running, { rangeLine = true, attended = [] } = {}) {
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
   if (sup.range && rangeLine) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
-  if (sup.lane) {
+  if (sup.lane?.forceRelaunch) {
+    // a resumed lane: its recorded session belongs to the run before the resume and is replaced at the next check
+    const when = running ? "at the supervisor's next check" : 'once a supervisor runs: turbo-run start';
+    out(`lane: phase ${sup.lane.phase} · relaunch pending (resume) · replaces session ${sup.lane.sessionId} ${when} · mode ${sup.lane.mode || 'safe'}`);
+  } else if (sup.lane) {
     const held = attended.map((a) => a.phase).join(', ');
     const next = held ? `held: phase ${held} attended in the owner's session; no lane runs until turbo-run attend <phase> --done` : `watch: claude attach ${sup.lane.sessionId}`;
     out(`lane: phase ${sup.lane.phase} · session ${sup.lane.sessionId} · restarts ${sup.lane.restarts} · mode ${sup.lane.mode || 'safe'} · since ${sup.lane.launchedAt}\n  ${next}`);
@@ -579,6 +583,9 @@ async function resumePhase(root, id, andStart) {
   // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
   stopDaemon(root, readJson(supPath(root), null));
   fs.rmSync(path.join(runDir(root), `p${id}.json`), { force: true });
+  // the resume answers the phase's owner request; the lane writes it again (uat owner-request) when anything is still
+  // open. The .notified mark stays: a checklist already sent is not sent again.
+  fs.rmSync(path.join(runDir(root), `p${id}-owner.md`), { force: true });
   clearAttend(root, id);
   // the owner's resume gives turbo-phase's bounded rounds a fresh budget; the steps done stay done
   clearAttempts(root, id);

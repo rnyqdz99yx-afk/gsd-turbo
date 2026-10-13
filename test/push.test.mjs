@@ -290,7 +290,7 @@ test('the supervisor pushes the requested head once: fetch, ancestor check, scan
   assert.equal(r.remoteHead(), sha);
   const rec = readJson(recordFile(r.root, '3'));
   assert.deepEqual([rec.outcome, rec.sha, rec.branch, rec.remote, rec.at, rec.lastPush.ci], ['pushed', sha, 'main', 'origin', NOW.toISOString(), { state: 'none', reason: 'push.ci is none' }]);
-  assert.deepEqual(calls.map(sub), ['symbolic-ref', 'merge-base', 'config', 'fetch', 'merge-base', 'log', 'log', 'log', 'push']);
+  assert.deepEqual(calls.map(sub), ['symbolic-ref', 'merge-base', 'config', 'fetch', 'merge-base', 'merge-base', 'log', 'log', 'log', 'push']);
   const push = calls.at(-1);
   // config cannot widen the push: no mirror, no tags that follow, no submodule pushes
   assert.deepEqual(push, ['-c', 'remote.origin.mirror=false', 'push', '--quiet', '--no-follow-tags', '--no-recurse-submodules', 'origin', `${sha}:refs/heads/main`]);
@@ -329,6 +329,56 @@ test('a remote branch that is not an ancestor of HEAD: nothing pushed, pushDiver
   assert.equal(readJson(recordFile(r.root, '3')).outcome, 'diverged');
   assert.deepEqual(notes, [{ key: 'pushDiverged', vars: { phase: '3', remote: 'origin', branch: 'main' } }]);
   assert.ok(!calls.some((a) => sub(a) === 'push'));
+});
+
+test('a requested commit someone already pushed (the remote moved past it): already pushed, nothing scanned, pushed or notified', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes, logs } = supervisorCtx(r);
+  // turbo's own earlier push and its CI watch
+  r.commit('src/a.mjs', 'export const a = 1;\n');
+  ask(r, ctx.config.push);
+  await pushTick(ctx, NOW);
+  const earlier = readJson(recordFile(r.root, '3')).lastPush;
+  // the lane asks for its next commit; before the supervisor gets to it, the owner pushes it and one more by hand
+  const asked = r.commit('src/b.mjs', 'export const b = 2;\n');
+  const req = ask(r, ctx.config.push).request;
+  const later = r.commit('src/c.mjs', 'export const c = 3;\n');
+  r.sh('push', '-q', 'origin', 'main');
+  r.sh('reset', '-q', '--hard', asked);
+  calls.length = 0;
+  await pushTick(ctx, NOW);
+  assert.equal(r.remoteHead(), later);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.deepEqual([rec.requestId, rec.outcome, rec.already, rec.sha, rec.branch], [req.id, 'pushed', true, asked, 'main']);
+  assert.deepEqual(rec.lastPush, earlier, "the CI watch of turbo's last push is carried over");
+  assert.ok(!calls.some((a) => ['push', 'log'].includes(sub(a))), 'nothing scanned, nothing pushed');
+  assert.deepEqual(notes, []);
+  assert.match(logs.at(-1), new RegExp(`^push p3: already pushed ${asked.slice(0, 7)}`));
+  assert.deepEqual(describeRecord(rec), { code: 0, line: `already pushed: ${asked.slice(0, 7)} is on origin/main; nothing to push` });
+  // handled: the next tick does nothing, and asking again for the same head keeps the request
+  calls.length = 0;
+  await pushTick(ctx, NOW);
+  assert.ok(!calls.some((a) => sub(a) === 'fetch'));
+  assert.equal(ask(r, ctx.config.push).request.id, req.id);
+});
+
+test('a requested commit the remote branch already points at (pushed by hand): already pushed, no empty push, no new CI watch, no other watch superseded', async () => {
+  const r = pushRepo();
+  const { ctx, calls, notes } = supervisorCtx(r);
+  // another phase's push still waits for its CI
+  const other = { requestId: 'o', phase: '2', remote: 'origin', outcome: 'pushed', sha: 'e'.repeat(40), lastPush: { requestId: 'o', sha: 'e'.repeat(40), ci: { state: 'pending', since: NOW.toISOString(), runs: [] } } };
+  writeJsonAtomic(recordFile(r.root, '2'), other);
+  const sha = r.commit('src/a.mjs', 'export const a = 1;\n');
+  const req = ask(r, ctx.config.push).request;
+  r.sh('push', '-q', 'origin', 'main');
+  await pushTick(ctx, NOW);
+  const rec = readJson(recordFile(r.root, '3'));
+  assert.deepEqual([rec.requestId, rec.outcome, rec.already, rec.sha, rec.lastPush], [req.id, 'pushed', true, sha, undefined]);
+  assert.ok(!calls.some((a) => ['push', 'log'].includes(sub(a))), 'nothing scanned, nothing pushed');
+  const kept = readJson(recordFile(r.root, '2')).lastPush;
+  assert.deepEqual([kept.sha, kept.ci.state], [other.lastPush.sha, 'pending'], 'the other phase keeps its CI watch');
+  assert.deepEqual(notes, []);
+  assert.equal(describeRecord(rec).code, 0);
 });
 
 test('a file name or a branch name that carries a secret is masked in the record, the log and the notification', async () => {

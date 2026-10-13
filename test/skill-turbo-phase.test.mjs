@@ -217,3 +217,33 @@ test('turbo-phase skill: deferred rows are committed before a stop; close canoni
   assert.match(p2, /`human_needed`.*point 5 of step \*\*uat\*\*/);
   assert.ok(section(s, 'Stale report').includes('not re-run'), 'the note says what was not run again');
 });
+
+test('turbo-phase skill: one verifier pass per uat step — every UAT write first (settle, complete-session), then one Stale report; a legitimate edit is never reverted to keep the report fresh', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const uat = section(s, 'uat');
+  const line = (n) => uat.split('\n').find((l) => l.startsWith(`${n}. `));
+  // point 1: a report stale only from UAT writes, which said human_needed, is refreshed once at point 5, not here
+  const p1 = line(1);
+  // only when nothing but the UAT file, STATE.md and turbo's run files changed (uatOnly): a changed plan or roadmap
+  // refreshes the report before turbo-uat reads its human items
+  for (const n of ['turbo-run staleness N --verification --json', '`uatOnly`', '`reported`', '`human_needed`', 'point 5']) assert.ok(p1.includes(n), n);
+  // point 5: settle, complete the session, then the one Stale report, then verify-work
+  const p5 = line(5);
+  const settle = p5.indexOf('turbo-run uat settle N');
+  const complete = p5.indexOf('uat.complete-session');
+  const stale = p5.indexOf('**Stale report**', complete);
+  const verify = p5.indexOf('Skill(skill="gsd-verify-work"');
+  assert.ok(settle > 0 && settle < complete && complete < stale && stale < verify, p5);
+  assert.ok(p5.includes('core.autocrlf'), 'the reason is named');
+  // the fresh report is read again before verify-work: new human items go back to turbo-uat, gaps or anything else fail
+  const after = p5.slice(stale, verify);
+  for (const n of ['human item', 'back to point 2', '`passed`', '**fail**']) assert.ok(after.includes(n), n);
+  const proc = section(s, 'Stale report');
+  for (const n of ['One pass per step', 'Never revert', 'keep the commit', '`verifier-only`']) assert.ok(proc.includes(n), n);
+  // close: the owner request is current before the done record (a resume removed it)
+  const close = section(s, 'close');
+  const owner = close.indexOf('turbo-run uat owner-request N');
+  assert.ok(owner > 0 && owner < close.indexOf('turbo-run lane-status N done'), 'owner-request before the done record');
+  // and before every stop for the owner in close, so status shows the checklist again after a resumed lane stops
+  assert.ok(owner < close.indexOf('\n1. ') && close.includes('Before every **stop for the owner** in this step'), 'owner-request before any stop of close');
+});

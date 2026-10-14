@@ -356,9 +356,10 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     textView({ questions: [], commits: [{ sha: 'a', at: at('10:59'), subject: 'feat(32): x' }, { sha: 'b', at: at('10:58'), subject: 'docs(phase-32): y' }, { sha: 'c', at: at('10:57'), subject: 'feat: z' }] }),
     // liveness: a long command in flight (the lane and its helper), and a silent lane with what turbo did about it
     textView({ questions: [] }, { lastAt: at('10:54'), busy: { since: at('10:54') }, agents: [{ type: 'gsd-executor', plan: '32-05', task: null, state: 'running', busy: { since: at('10:54') }, action: { tool: 'Bash', detail: 'node -e x' }, lastAt: at('10:54'), elapsedMs: 18 * 60000 }] }),
-    textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 1, relaunched: true, told: false }, agents: [] }),
-    textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 2, relaunched: false, told: true }, agents: [] }),
-    textView({ questions: [], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '33', quiet: true, lastAt: at('10:40'), wake: { count: 2, relaunched: false, told: true }, agents: [] }] }),
+    textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 1, how: 'restarted', told: false }, agents: [] }),
+    textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 1, how: 'tried', told: false }, agents: [] }),
+    textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 2, how: 'woke', told: true }, agents: [] }),
+    textView({ questions: [], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', quiet: true, lastAt: at('10:40'), wake: { count: 2, how: 'woke', told: true }, agents: [] }] }),
   ];
   for (const lang of ['en', 'ru']) {
     for (const v of views) {

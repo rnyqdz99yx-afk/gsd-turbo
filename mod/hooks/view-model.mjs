@@ -68,8 +68,9 @@ const VIEW_WORDS = {
       fine: 'all fine', answer: (n) => `needs your answer (${n})`, ciRed: (asked) => (asked ? 'CI red — needs your answer' : 'CI red — needs your decision'), ciFixing: (n, m) => `CI red — the phase fixes it itself (attempt ${n} of ${m}), nothing needed from you`,
       ciLast: "CI red — the phase's last attempt; if it fails, it will ask you", fullMode: 'waits for you: its final checks need full mode',
       needsOwner: (asked) => (asked ? 'stopped — waits for your answer' : 'stopped — waits for your decision'), failed: 'stopped by a failure',
-      // a silent lane says what turbo did about it (lane.wake): it wakes the session, woke or restarted it before, or gave up
-      quiet: (d) => `silent${d ? ` for ${d}` : ''} — turbo is waking the session`, quietAgain: (d, relaunched) => `silent${d ? ` for ${d}` : ''} — ${relaunched ? 'restarted' : 'woke'} the session, waking it again`,
+      // a silent lane says what turbo did about it (lane.wake): it wakes the session, woke, restarted or could not wake it
+  // before, or gave up
+      quiet: (d) => `silent${d ? ` for ${d}` : ''} — turbo is waking the session`, quietAgain: (d, how) => `silent${d ? ` for ${d}` : ''} — ${how === 'restarted' ? 'restarted the session' : how === 'tried' ? 'could not wake the session' : 'woke the session'}, waking it again`,
       quietTold: (d) => `silent${d ? ` for ${d}` : ''} — waking the session did not help: needs you`, quietHelper: (who, d, more) => `running, but ⚠️ ${who} silent${d ? ` for ${d}` : ''}${more ? ` (and ${more} more)` : ''}`,
       paused: 'paused: needs a fresh context', done: 'done', halted: 'supervisor stopped', failing: (at) => `supervisor failing${at ? ` since ${at}` : ''}`,
       attended: (p) => `phase ${p} is in your session — new phases wait`, supStopped: 'supervisor not running', finished: 'all phases done', never: 'supervisor never started',
@@ -162,7 +163,7 @@ const VIEW_WORDS = {
       fine: 'всё в порядке', answer: (n) => `нужен ваш ответ (${n})`, ciRed: (asked) => (asked ? 'CI красный — нужен ваш ответ' : 'CI красный — нужно ваше решение'), ciFixing: (n, m) => `CI красный — фаза чинит сама (попытка ${n} из ${m}), от вас ничего не нужно`,
       ciLast: 'CI красный — последняя попытка фазы; если не выйдет, она спросит вас', fullMode: 'ждёт вас: для финальных проверок нужен полный режим',
       needsOwner: (asked) => (asked ? 'остановилась — ждёт вашего ответа' : 'остановилась — ждёт вашего решения'), failed: 'остановилась из-за сбоя',
-      quiet: (d) => `тишина${d ? ` ${d}` : ''} — turbo будит сессию`, quietAgain: (d, relaunched) => `тишина${d ? ` ${d}` : ''} — ${relaunched ? 'перезапустил' : 'разбудил'} сессию, будит ещё раз`,
+      quiet: (d) => `тишина${d ? ` ${d}` : ''} — turbo будит сессию`, quietAgain: (d, how) => `тишина${d ? ` ${d}` : ''} — ${how === 'restarted' ? 'перезапустил сессию' : how === 'tried' ? 'не смог разбудить сессию' : 'разбудил сессию'}, будит ещё раз`,
       quietTold: (d) => `тишина${d ? ` ${d}` : ''} — разбудить сессию не вышло: нужны вы`, quietHelper: (who, d, more) => `идёт, но ⚠️ ${who} молчит${d ? ` ${d}` : ''}${more ? ` (и ещё ${more})` : ''}`,
       paused: 'на паузе: нужен новый контекст', done: 'готова', halted: 'супервизор остановился', failing: (at) => `супервизор сбоит${at ? ` с ${at}` : ''}`,
       attended: (p) => `фаза ${p} у вас в сессии — новые фазы ждут`, supStopped: 'супервизор не работает', finished: 'все фазы готовы', never: 'супервизор не запускался',
@@ -461,12 +462,12 @@ const selfFixing = (view, lane) => (view?.supervisor?.running ? ciFixing(lane) :
 // A red CI the phase fixes itself, in words: the attempt, or at the bound the last one (the owner may be asked next).
 const ciWords = (t, fix) => (fix.last ? t.verdict.ciLast : t.verdict.ciFixing(fix.n, fix.m));
 
-// A silent lane in words, with what the supervisor did about it (lane.wake: it wakes the session now, woke or
+// A silent lane in words, with what the supervisor did about it (lane.wake: it wakes the session now, woke, could not wake or
 // restarted it before and wakes it again, or gave up and told the owner): never a bare guess that it hangs.
 function quietWords(t, lane, at) {
   const d = since(t, lane.lastAt, at);
   if (lane.wake?.told) return t.verdict.quietTold(d);
-  return lane.wake?.count > 0 ? t.verdict.quietAgain(d, lane.wake.relaunched === true) : t.verdict.quiet(d);
+  return lane.wake?.count > 0 ? t.verdict.quietAgain(d, lane.wake.how) : t.verdict.quiet(d);
 }
 // A silent lane the supervisor gave up waking: it told the owner, who is needed now.
 const gaveUp = (view, lane) => Boolean(view?.supervisor?.running) && lane?.status === 'running' && Boolean(lane.quiet) && lane.wake?.told === true;

@@ -280,6 +280,17 @@ test('liveness: a stall wake that reaches no session starts a new one, and the l
   assert.deepEqual([s.lane.stall.count, s.lane.stall.relaunched], [1, true]);
 });
 
+test('liveness: a stall wake that can neither wake nor replace the session records that for the view, never a wake', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  resistingSession(h);
+  h.advance(16);
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.lane.stall.count, s.lane.stall.missed, s.lane.stall.relaunched], [1, true, undefined]);
+  assert.equal(h.launched.length, 1, 'no second session beside one that may still run');
+});
+
 test('a lane whose turn ended while its subagents work is waiting for them, not blocked: no laneBlocked while they run', async () => {
   const h = harness();
   let s = await tick(fresh(), h.ctx);

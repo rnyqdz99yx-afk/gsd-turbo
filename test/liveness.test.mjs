@@ -5,7 +5,7 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { DEFAULT_META, SESSION, entry, jsonl, projectDirFor, setMtime, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
 import { COMMAND_TIMEOUT_MS, LONG_CALL_MS, OVERRUN_MS, callsInFlight, liveness, longCall } from '../lib/liveness.mjs';
-import { laneAgents } from '../lib/transcripts.mjs';
+import { laneAgents, sessionTree } from '../lib/transcripts.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
 import { render, paneLines } from '../mod/hooks/view-model.mjs';
@@ -48,6 +48,46 @@ test('callsInFlight: calls of one message written as entries of their own; the p
   assert.deepEqual(callsInFlight(entries), [{ id: 'toolu_bash', tool: 'Bash', startMs: ms('10:02'), timeoutMs: 600000 }]);
   // a call of another tool has no deadline; an Agent call waits for a helper of its own
   assert.deepEqual(callsInFlight([entry.dispatch('toolu_ag', 'gsd-executor', 'Execute plan 02 of phase 34', 'go', at('10:05'))]).map((c) => [c.tool, c.timeoutMs]), [['Agent', null]]);
+});
+
+test('review I1: a prompt after a call left without its result (the wake) means it runs no more; only the message and its results set its start', () => {
+  const left = [agentUser('09:55'), bash('10:00', { timeout: 600000 })];
+  // the wake prompt the supervisor sent after the command overran: the call was left, nothing is in flight
+  assert.deepEqual(callsInFlight([...left, entry.user('This session was interrupted: nothing was written for 13 minutes.', at('10:13'))]), []);
+  // a meta entry, an attachment, a queued notification or a system line after it renew nothing
+  const later = [
+    { ...entry.user('caveat', at('10:05')), isMeta: true },
+    { ...entry.attachedNote('b1x2y3z4w', 'completed', at('10:06')), isSidechain: true },
+    entry.queued('b1x2y3z4w', 'completed', at('10:07')),
+    { type: 'system', subtype: 'turn_duration', timestamp: at('10:08') },
+  ];
+  assert.deepEqual(callsInFlight([...left, ...later]).map((c) => c.startMs), [ms('10:00')]);
+});
+
+test('review I2: only the first call still pending of a message gets a deadline; a command waiting in line behind it has none', () => {
+  const dispatch = { ...entry.dispatch('toolu_ag', 'gsd-executor', 'Execute plan 02 of phase 34', 'go', at('10:00')), message: { id: 'msg_2', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_ag', name: 'Agent', input: { prompt: 'go' } }] } };
+  const queued = bash('10:00', { timeout: 120000 }, { mid: 'msg_2', sidechain: false });
+  assert.deepEqual(callsInFlight([dispatch, queued]).map((c) => [c.tool, c.timeoutMs]), [['Agent', null], ['Bash', null]]);
+  // so a helper that works on past the queued command's would-be deadline never makes the lane silent by it
+  const calls = callsInFlight([dispatch, queued]);
+  assert.equal(liveness({ lastMs: ms('10:03') + 50000, calls, nowMs: ms('10:04') + 30000, stallMs: 15 * MIN }).state, 'active');
+  const two = [bash('10:00', { timeout: 600000 }, { id: 'toolu_1', mid: 'msg_3' }), bash('10:00', { timeout: 60000 }, { id: 'toolu_2', mid: 'msg_3' })];
+  assert.deepEqual(callsInFlight(two).map((c) => [c.id, c.timeoutMs]), [['toolu_1', 600000], ['toolu_2', null]]);
+});
+
+test('review M7: the calls of a transcript are read through a window that grows past a long result to the message', () => {
+  const base = tmpDir('window');
+  const dir = path.join(base, 'p');
+  fs.mkdirSync(dir, { recursive: true });
+  const big = { ...entry.toolResult('toolu_read', 'r'.repeat(100 * 1024), at('10:02')), isSidechain: true };
+  const file = writeSession(dir, SESSION, [
+    agentUser('10:00'),
+    entry.assistant({ ts: at('10:01'), tool: { name: 'Read', input: { file_path: 'a' }, id: 'toolu_read' }, sidechain: true, id: 'msg_1' }),
+    bash('10:01', { timeout: 600000 }, { mid: 'msg_1' }),
+    big,
+  ]);
+  const tree = sessionTree({ file, sessionId: SESSION });
+  assert.deepEqual(tree.calls.map((c) => [c.tool, c.startMs, c.timeoutMs, c.file]), [['Bash', ms('10:02'), 600000, file]]);
 });
 
 test('liveness: busy while a command runs within its timeout, silent once it overran with nothing written, else the write rule', () => {
@@ -162,6 +202,33 @@ test('a nested helper in flight keeps the whole lane busy, and its parent that w
   assert.deepEqual([quiet.lanes[0].quiet, quiet.lanes[0].busy, quiet.lanes[0].agents[0].state], [true, null, 'quiet']);
 });
 
+test('review M3, M5d, M6: the call a finished helper left runs no more; a helper at work outside the tree keeps the lane from silence; a stopped lane is never busy', () => {
+  {
+    const { root, dir, lane, sup, env } = laneProject();
+    fs.appendFileSync(lane, jsonl([entry.note(AID, 'stopped', at('10:05'))]));
+    setMtime(lane, new Date(at('10:05')));
+    executor(dir, [agentUser('10:00'), bash('10:01', { timeout: 3600000 })], '10:01');
+    const v = buildView({ root, sup, running: true, config: { stall_minutes: 5 }, env, now: new Date(at('10:20')), commits: () => [] });
+    assert.deepEqual([v.lanes[0].quiet, v.lanes[0].busy, v.lanes[0].agents[0].state], [true, null, 'stopped']);
+  }
+  {
+    const { root, dir, lane, sup, env } = laneProject();
+    // the executor works in the transcript of another session (a fork moved it): not in this session's tree
+    const other = '22222222-3333-4444-8555-666666666666';
+    setMtime(writeAgent(dir, other, AID, [agentUser('10:00'), entry.assistant({ ts: at('10:19'), text: 'working', sidechain: true })], META), new Date(at('10:19')));
+    assert.ok(fs.existsSync(lane));
+    const v = buildView({ root, sup, running: true, config: { stall_minutes: 5 }, env, now: new Date(at('10:20')), commits: () => [] });
+    assert.deepEqual([v.lanes[0].agents[0].state, v.lanes[0].quiet], ['running', false]);
+  }
+  {
+    const { root, dir, sup, env } = laneProject();
+    executor(dir, [agentUser('10:00'), bash('10:12', { timeout: 600000 })], '10:12');
+    fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'p34.json'), JSON.stringify({ phase: '34', status: 'failed', reason: '', sessionId: '', at: at('10:13') }));
+    const v = buildView({ root, sup, running: true, config: { stall_minutes: 15 }, env, now: new Date(at('10:17')), commits: () => [] });
+    assert.deepEqual([v.lanes[0].status, v.lanes[0].busy], ['failed', null]);
+  }
+});
+
 test('a silent lane in words says what turbo did: it wakes the session, woke or restarted it before, or gave up and needs the owner', () => {
   const { root, dir, sup, env } = laneProject();
   executor(dir, [agentUser('09:55'), bash('09:58', {}), result('toolu_bash', '10:00')], '10:00');
@@ -170,6 +237,9 @@ test('a silent lane in words says what turbo did: it wakes the session, woke or 
   // the supervisor woke it at 10:01: the silence counts from the wake, as the supervisor counts it
   assert.match(view({ stall: { count: 1, at: at('10:01') } }), /· silent for 20m — woke the session, waking it again$/m);
   assert.match(view({ stall: { count: 1, at: at('10:01'), relaunched: true } }, 'ru'), /· тишина 20 мин — перезапустил сессию, будит ещё раз$/m);
+  assert.match(view({ stall: { count: 1, at: at('10:01'), missed: true } }, 'ru'), /· тишина 20 мин — не смог разбудить сессию, будит ещё раз$/m);
+  // the wakes are used up: the supervisor tells the owner at its next check and wakes no more (review M5c)
+  assert.match(view({ stall: { count: 2, at: at('10:01') } }), /· silent for 20m — waking the session did not help: needs you$/m);
   const told = view({ stall: { count: 2, at: at('10:01') }, notified: { stalled: true } }, 'ru');
   assert.match(told, /· тишина 20 мин — разбудить сессию не вышло: нужны вы$/m);
   assert.match(told, /^ {2}Нужны вы: фаза молчит и после пробуждений — посмотреть: claude attach 11111111$/m);

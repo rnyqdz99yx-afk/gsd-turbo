@@ -191,9 +191,10 @@ test('one verdict, first match, that says whether the owner has to step in: the 
     [calm({ supervisor: STOPPED_SUP, attended: ['32'] }), 'attended', 'warning', 'phase 32 is in your session — new phases wait'],
     [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z' }), 'quiet', 'warning', 'silent for 20m — turbo is waking the session'],
     // liveness: a silent lane says what the supervisor did about it, never a bare guess that it hangs
-    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 1, relaunched: false, told: false } }), 'quiet', 'warning', 'silent for 20m — woke the session, waking it again'],
-    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 2, relaunched: true, told: false } }), 'quiet', 'warning', 'silent for 20m — restarted the session, waking it again'],
-    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 2, relaunched: false, told: true } }), 'quiet', 'warning', 'silent for 20m — waking the session did not help: needs you'],
+    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 1, how: 'woke', told: false } }), 'quiet', 'warning', 'silent for 20m — woke the session, waking it again'],
+    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 1, how: 'restarted', told: false } }), 'quiet', 'warning', 'silent for 20m — restarted the session, waking it again'],
+    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 1, how: 'tried', told: false } }), 'quiet', 'warning', 'silent for 20m — could not wake the session, waking it again'],
+    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 2, how: 'woke', told: true } }), 'quiet', 'warning', 'silent for 20m — waking the session did not help: needs you'],
     // a long command in flight is busy: all fine, no warning colour
     [calm({}, { lastAt: '2026-01-01T10:40:00.000Z', busy: { since: '2026-01-01T10:40:00.000Z' } }), 'fine', 'success', 'all fine'],
     [calm({}, { agents: [agent(), agent({ agentId: 'a3', type: 'gsd-verifier', state: 'quiet', lastAt: '2026-01-01T10:44:00.000Z' })] }), 'quietHelper', 'warning', 'running, but ⚠️ Verifier silent for 16m'],

@@ -846,9 +846,10 @@ async function resumePhase(root, id, andStart) {
 }
 
 // What attend says of the stops it released (lib/attend.mjs releaseStops): those asked ahead again, and those that
-// keep the owner's answer, each with the answer and its time, as pre-answers for the sitting. An answer kept from
-// before its stop came back is a new record in the answers file: committed here, as turbo-run answer commits one
-// (no lane runs in this checkout now); a commit that fails is a warning, the answer stays kept.
+// keep the owner's answer, each with the answer and its time, as pre-answers for the sitting; and the done answers it
+// set aside on live sittings (journal 2026-10-14), which no executor may take. An answer kept from before its stop came
+// back, or set aside, changes the answers file: committed here, as turbo-run answer commits one (no lane runs in this
+// checkout now); a commit that fails is a warning, the change stays.
 function printReleased(root, id, released) {
   const list = readQuestions(root, id);
   const answered = list.filter((q) => released.ids.includes(q.id) && q.state === 'answered' && q.answer);
@@ -856,10 +857,13 @@ function printReleased(root, id, released) {
   const words = (a) => clean(String(a.label ?? a.answer ?? '')).replace(/\s+/g, ' ').trim().slice(0, 60);
   if (asked.length) out(`released stops: ${asked.join(', ')} (asked ahead again)`);
   if (answered.length) out(`released stops with your answer: ${answered.map((q) => `${q.id} (${words(q.answer)}, ${clean(q.answer.by)}, ${clean(q.answer.at)})`).join(', ')} (pre-answers for this sitting)`);
-  if (!released.kept.length) return;
-  const what = `the kept answer of ${released.kept.join(', ')}`;
+  const dropped = released.dropped ?? [];
+  if (dropped.length) out(`dropped done answers: ${dropped.map((d) => `${d.id} (${words(d)}, ${clean(d.by)}, ${clean(d.at)})`).join(', ')} (a live sitting is never answered done: it runs in this session, with you)`);
+  if (!released.kept.length && !dropped.length) return;
+  const what = [released.kept.length ? `the kept answer of ${released.kept.join(', ')}` : '', dropped.length ? `the dropped done answer of ${dropped.map((d) => d.id).join(', ')}` : ''].filter(Boolean).join(' and ');
+  const message = [released.kept.length ? `keep the owner's answer to ${released.kept.join(', ')}` : '', dropped.length ? `drop the done answer to the live sitting ${dropped.map((d) => d.id).join(', ')}` : ''].filter(Boolean).join('; ');
   try {
-    const c = commitAnswerPaths(root, [answersRel(id), ANSWERS_IGNORE_REL], `docs(turbo): keep the owner's answer to ${released.kept.join(', ')} (phase ${id}, attended)`);
+    const c = commitAnswerPaths(root, [answersRel(id), ANSWERS_IGNORE_REL], `docs(turbo): ${message} (phase ${id}, attended)`);
     if (!c?.committed && c?.reason !== 'no changes') process.stderr.write(`warn: ${what} is not committed (${c?.reason || 'unknown reason'}); the next answer commits it\n`);
   } catch (err) {
     process.stderr.write(`warn: ${what} is not committed (${String(err?.message ?? err).split(/\r?\n/)[0]}); the next answer commits it\n`);
@@ -959,7 +963,7 @@ async function attendLane(root, id, sup) {
       }
     }
   }
-  const released = releaseStops(root, id);
+  const released = releaseStops(root, id, { phaseRoot: lane.slotPath });
   out(`phase ${id}: attended in the owner's session; the other lanes keep running; nothing starts, relaunches or wakes phase ${id} until turbo-run attend ${id} --done`);
   out(`open: cd "${lane.slotPath}" && claude`);
   out(`open plans: ${plans.join(', ')}`);

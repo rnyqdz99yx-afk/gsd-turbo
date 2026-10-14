@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ACTION_PLAN, DECISION_PLAN, OWNER_ACTION_PLAN, OWNER_CONTEXT_PLAN, OWNER_DECISION_PLAN, OWNER_VERIFY_PLAN, VERIFY_PLAN } from './helpers/plans.mjs';
-import { CHECKPOINT_KINDS, parseCheckpoints, quotedSignal } from '../lib/checkpoints.mjs';
+import { ACTION_PLAN, DECISION_PLAN, ORCHESTRATED_PLAN, OWNER_ACTION_PLAN, OWNER_CONTEXT_PLAN, OWNER_DECISION_PLAN, OWNER_VERIFY_PLAN, SITTING_PLAN, VERIFY_PLAN } from './helpers/plans.mjs';
+import { CHECKPOINT_KINDS, parseCheckpoints, quotedSignal, sittingCheckpoint } from '../lib/checkpoints.mjs';
 
 // three backticks, built so this file holds no fence of its own
 const FENCE = '`'.repeat(3);
@@ -112,4 +112,43 @@ test('the task name (never an option\'s name) and the fields\' raw lines for the
   const [c] = parseCheckpoints(OWNER_CONTEXT_PLAN);
   assert.match(c.raw.context, /^\s*Executor preparation, before presenting; no file changes:\n\s+- Run verify 1/);
   assert.deepEqual(parseCheckpoints(OWNER_CONTEXT_PLAN.replace(/\n/g, '\r\n')), parseCheckpoints(OWNER_CONTEXT_PLAN));
+});
+
+test('a live sitting: a human-action with <instructions> and a go/stop resume signal, or one that names the sitting or the orchestrator (journal 2026-10-14)', () => {
+  const [sit] = parseCheckpoints(SITTING_PLAN);
+  assert.deepEqual([sit.task, sit.kind, sittingCheckpoint(sit)], [2, 'human-action', true]);
+  const [orch] = parseCheckpoints(ORCHESTRATED_PLAN);
+  assert.equal(sittingCheckpoint(orch), true, 'the action names the orchestrator and the sitting');
+  // the owner's own steps are no sitting
+  for (const plan of [ACTION_PLAN, OWNER_ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, OWNER_VERIFY_PLAN, OWNER_DECISION_PLAN, OWNER_CONTEXT_PLAN]) {
+    for (const cp of parseCheckpoints(plan)) assert.equal(sittingCheckpoint(cp), false, `${cp.kind} ${cp.name || cp.action}`);
+  }
+  assert.equal(sittingCheckpoint({ ...sit, instructions: '' }), false, 'no <instructions>: a plain action');
+  assert.equal(sittingCheckpoint({ ...sit, resumeSignal: 'Type "go" when it is plugged in' }), false, 'go alone is a plain go-ahead');
+  assert.equal(sittingCheckpoint({ ...sit, resumeSignal: 'Ответь «старт» или «стоп»' }), true, 'in Russian');
+  assert.equal(sittingCheckpoint({ ...sit, resumeSignal: 'Type "gopher" or "stopwatch"' }), false, 'whole words only');
+  assert.equal(sittingCheckpoint({ ...sit, kind: 'decision' }), false, 'a decision is no sitting');
+  assert.equal(sittingCheckpoint({ ...parseCheckpoints(ACTION_PLAN)[0], action: 'Оркестратор проводит проверку вместе с владельцем' }), true);
+  assert.equal(sittingCheckpoint(null), false);
+});
+
+test('a live sitting is told by its answer words and a named co-performer, never by a bare word (review 1)', () => {
+  const plain = { ...parseCheckpoints(ACTION_PLAN)[0], resumeSignal: 'Type "done" when verified' };
+  const sit = (over) => sittingCheckpoint({ ...plain, ...over });
+  // false positives of the first cut: an executor's note, a posture, a go and a stop that are no answer words
+  assert.equal(sit({ action: 'Orchestrator: present these steps to the user and wait for done' }), false);
+  assert.equal(sit({ instructions: 'While sitting at the PC, plug in the key.' }), false);
+  assert.equal(sit({ resumeSignal: 'Type "go" once you stop the old server' }), false);
+  assert.equal(sit({ resumeSignal: 'go ahead when you stop the service' }), false);
+  // the answer words: quoted, or the whole signal; stop may be abort or cancel
+  assert.equal(sit({ resumeSignal: 'Type "go" to begin, or "abort"' }), true);
+  assert.equal(sit({ resumeSignal: 'Ответь «старт» или «отмена»' }), true);
+  assert.equal(sit({ resumeSignal: 'go / stop' }), true);
+  assert.equal(sit({ resumeSignal: 'cancel or go' }), true);
+  // the sitting named as such, or the orchestrator with a co-performer in one sentence, in any field
+  assert.equal(sit({ name: 'Task 2: the live sitting' }), true);
+  assert.equal(sit({ instructions: 'Живой сеанс: я веду проверку, ты смотришь.' }), true);
+  assert.equal(sit({ action: 'The orchestrator runs the check together with the owner.' }), true);
+  assert.equal(sit({ action: 'The orchestrator prepares it. The owner runs it together with a friend.' }), false, 'two sentences');
+  assert.equal(sit({ resumeSignal: 'Type "done" when the live sitting is over' }), true, 'the resume signal names it');
 });

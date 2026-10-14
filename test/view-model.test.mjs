@@ -582,6 +582,7 @@ test("the answer toast is built from turbo-run answer's exit code and what was s
     ['refused: question q1 has no option 5; its options are 1 to 2', 'Не принято: такого варианта нет', 'Not recorded: no such option'],
     ['refused: question q1 takes one of its options only, no own words', 'Не принято: этот вопрос принимает только варианты из списка', 'Not recorded: this question takes one of its options only'],
     ["refused: a lane never answers the owner's questions; the owner answers them (/turbo-autonomous answer, the turbo-view pane or Telegram)", 'Не принято: из сессии самой фазы отвечать нельзя', "Not recorded: a phase's own session cannot answer"],
+    ['refused: question 33-16-t2 is a live sitting: the phase conducts this step together with you, so it is never answered done. Run /turbo-autonomous attend 33 in a new Claude Code window; nothing was recorded', 'Не принято: это живой сеанс, «сделано» здесь не ответ: запустите /turbo-autonomous attend 33 в новом окне Claude Code', 'Not recorded: this is a live sitting, never answered done: run /turbo-autonomous attend 33 in a new Claude Code window'],
   ];
   for (const [line, r, e] of refusals) assert.deepEqual([answerToast(ru, { code: 1, stdout: stdout(line) }), answerToast(en, { code: 1, stdout: stdout(line) })], [r, e], line);
   assert.equal(answerToast(ru, { code: 2, stdout: '', stderr: 'usage: answer …' }), 'Ответ не отправлен: turbo-run не принял команду (код 2)');
@@ -1453,4 +1454,11 @@ test('review: remaining [] says nothing about the end of the run; a lane being m
   assert.equal(whatNext(none, none.lanes[0]).chain, 'next phase');
   const held = calm({ questions: [{ ...view().questions[0], id: 'merge-hold', phase: '32' }] }, { key: '32', job: 'phase', slot: 1, status: 'ready', step: 'integrate', agents: [] });
   assert.ok(lines(held).includes('  ■ merge into main — stopped here'), lines(held).join('\n'));
+});
+
+test('a live sitting\'s stop card has no Done button: the way in as its question and only the own-words field (journal 2026-10-14)', () => {
+  const q = { id: '33-16-t2', phase: '33', plan: '33-16', task: '2', kind: 'human-action', sitting: true, stopped: true, question: 'A live sitting with you: run /turbo-autonomous attend 33 in a new Claude Code window, and the phase conducts this step there together with you.', context: 'The step: Live check of the tray app.', options: [], allowOther: true, state: 'open', rev: 3 };
+  const tree = render(view({ questions: [q] }));
+  assert.deepEqual(controls(tree).map((c) => c.props.key), ['q:33-16-t2:other']);
+  assert.ok(paneLines(tree).some((l) => l.includes('/turbo-autonomous attend 33')), paneLines(tree).join('\n'));
 });

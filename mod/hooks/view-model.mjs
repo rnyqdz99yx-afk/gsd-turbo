@@ -270,7 +270,7 @@ export const TEXT = {
     channel: { session: 'in a session', pane: 'in the pane', telegram: 'in Telegram', 'standing-rule': 'by a standing rule' },
     changed: 'The question changed — the pane now shows the new one; answer again',
     refused: (why) => `Not recorded: ${why}`,
-    refusal: { secret: 'the answer looks like it holds a secret — say it without', tooLong: (n) => `the answer is longer than ${n} characters`, empty: 'the answer is empty', gone: 'the question is closed', noOption: 'no such option', optionsOnly: 'this question takes one of its options only', lane: "a phase's own session cannot answer" },
+    refusal: { secret: 'the answer looks like it holds a secret — say it without', tooLong: (n) => `the answer is longer than ${n} characters`, empty: 'the answer is empty', gone: 'the question is closed', noOption: 'no such option', optionsOnly: 'this question takes one of its options only', sitting: (p) => `this is a live sitting, never answered done: run /turbo-autonomous attend ${p} in a new Claude Code window`, lane: "a phase's own session cannot answer" },
     usage: 'Answer not sent: turbo-run did not take the call (exit 2)',
     exited: (code) => `Answer not sent: turbo-run exited with ${code}`,
     notSent: (why) => `Answer not sent: ${why}`,
@@ -302,7 +302,7 @@ export const TEXT = {
     channel: { session: 'в сессии', pane: 'в панели', telegram: 'в Telegram', 'standing-rule': 'по постоянному правилу' },
     changed: 'Вопрос изменился — панель показала новый, ответьте ещё раз',
     refused: (why) => `Не принято: ${why}`,
-    refusal: { secret: 'похоже, в ответе секрет — напишите без него', tooLong: (n) => `ответ длиннее ${n} символов`, empty: 'пустой ответ', gone: 'вопрос уже закрыт', noOption: 'такого варианта нет', optionsOnly: 'этот вопрос принимает только варианты из списка', lane: 'из сессии самой фазы отвечать нельзя' },
+    refusal: { secret: 'похоже, в ответе секрет — напишите без него', tooLong: (n) => `ответ длиннее ${n} символов`, empty: 'пустой ответ', gone: 'вопрос уже закрыт', noOption: 'такого варианта нет', optionsOnly: 'этот вопрос принимает только варианты из списка', sitting: (p) => `это живой сеанс, «сделано» здесь не ответ: запустите /turbo-autonomous attend ${p} в новом окне Claude Code`, lane: 'из сессии самой фазы отвечать нельзя' },
     usage: 'Ответ не отправлен: turbo-run не принял команду (код 2)',
     exited: (code) => `Ответ не отправлен: turbo-run завершился с кодом ${code}`,
     notSent: (why) => `Ответ не отправлен: ${why}`,
@@ -1051,6 +1051,8 @@ function refusalWords(t, why) {
   if (/^no question /.test(why)) return t.refusal.gone;
   if (/has no option/.test(why)) return t.refusal.noOption;
   if (/takes one of its options only/.test(why)) return t.refusal.optionsOnly;
+  const sitting = /is a live sitting\b.*\battend (\S+) in a new\b/.exec(why);
+  if (sitting) return t.refusal.sitting(sitting[1]);
   if (/lane never answers/.test(why)) return t.refusal.lane;
   return why;
 }

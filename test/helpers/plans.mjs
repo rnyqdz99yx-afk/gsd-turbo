@@ -260,6 +260,51 @@ export const OWNER_CONTEXT_PLAN = `${head('15', 2)}<tasks>
 </tasks>
 `;
 
+// A live sitting (journal 2026-10-14): a human-action the orchestrator conducts with the owner, written for a Russian
+// owner: <instructions> and a go/stop resume signal.
+export const SITTING_PLAN = `${head('16', 2)}<tasks>
+
+<task type="auto">
+  <name>Task 1: Build the live check rig</name>
+  <action>Build the scripts the live check runs.</action>
+  <verify>npm test</verify>
+</task>
+
+<task type="checkpoint:human-action" gate="blocking">
+  <name>Task 2: Живая проверка приложения вместе с владельцем</name>
+  <action>
+    Executor preparation, before presenting: start nothing yet.
+  </action>
+  <instructions>
+    **Коротко:** живая проверка приложения: я запускаю его и веду проверку, ты смотришь и отвечаешь на мои вопросы.
+    1. Закрой другие копии приложения.
+    2. Будь у компьютера минут двадцать.
+  </instructions>
+  <verification>Every row of the live check has a verdict.</verification>
+  <resume-signal>Type "go" to start the live check, or "stop" to put it off</resume-signal>
+</task>
+
+<task type="auto">
+  <name>Task 3: Record the verdict</name>
+  <action>Write the verdict of the live check.</action>
+</task>
+
+</tasks>
+`;
+
+// A live sitting that names its performer: the orchestrator runs it, its resume signal asks for done.
+export const ORCHESTRATED_PLAN = `${head('17', 3)}<tasks>
+
+<task type="checkpoint:human-action" gate="blocking">
+  <name>Task 1: Live check of the tray app</name>
+  <action>The orchestrator and the operator run the sitting together; the executor stops before this task.</action>
+  <instructions>Keep the app window on screen and answer the questions while the check runs.</instructions>
+  <resume-signal>Type "done" when the check is complete</resume-signal>
+</task>
+
+</tasks>
+`;
+
 // .planning/phases/<dirName>/ with the given files (name -> text); returns the phase directory.
 export function writePhase(root, dirName, files) {
   const dir = path.join(root, '.planning', 'phases', dirName);

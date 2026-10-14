@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
+import { SITTING_PLAN } from './helpers/plans.mjs';
 import { GUARD_SCRIPT, laneSessionName, projectHash } from '../lib/claude.mjs';
 import { decodeGuardArg } from '../lib/lane-guard.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
@@ -102,6 +103,23 @@ function execSpy(dir) {
   const log = path.join(dir, 'exec-spy.jsonl');
   fs.writeFileSync(preload, `(${execSpyPreload})();\n`);
   return { nodeArgs: ['--require', preload], env: { TURBO_SPY_LOG: log }, calls: () => readLines(log) };
+}
+// Preloaded with --require: the process table lib/daemon-probe.mjs reads (Win32_Process through PowerShell, or ps) is
+// this process alone, so a test of the background-service probe never depends on WMI or ps of the machine.
+function processTablePreload() {
+  const cp = require('node:child_process');
+  const sync = cp.execFileSync;
+  cp.execFileSync = function (cmd, args) {
+    const a = (args || []).join(' ');
+    if ((/powershell/i.test(cmd) && /Win32_Process/.test(a) && /CommandLine/.test(a)) || (cmd === 'ps' && /pid=,args=/.test(a))) return `${process.pid} node turbo-run.mjs\n`;
+    return sync.apply(this, arguments);
+  };
+  require('node:module').syncBuiltinESMExports();
+}
+function processTableFake(dir) {
+  const preload = path.join(dir, 'process-table.cjs');
+  fs.writeFileSync(preload, `(${processTablePreload})();\n`);
+  return ['--require', preload];
 }
 function fakeGsd() {
   const fs = require('fs');
@@ -391,6 +409,22 @@ test('stop counts a job the idle-exited background service no longer runs (liste
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /stopped/);
   assert.ok(!p.claudeCalls().some((a) => a[0] === '--bg'), 'no kick for a job that is not running');
+});
+
+// journal 2026-10-14 15:34Z: claude stop failed «… the background service may be restarting» at every retry while claude
+// agents still listed the lane alive (a stale record); no service of this config directory (the test's own, which no
+// Claude Code ever ran) and no process carried the session. The probe runs on the real files (no control pipe or socket
+// of CLAUDE_CONFIG_DIR) and a process table of turbo-run alone (processTableFake).
+test('stop counts a lane session listed alive as stopped when no background service of this config directory runs and no process carries it, and says so in one line', async () => {
+  const p = fakeProject();
+  p.setClaude({ agents: [{ id: 'retired2', name: 'x', cwd: p.root, state: 'blocked', pid: DEAD_PID }] });
+  writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: 'retired2' } });
+  const r = await runAsync(['stop'], p.root, p.env, processTableFake(p.root));
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^Claude Code's background service is not running and no process carries lane session retired2: counted as stopped$/m);
+  assert.match(r.stdout, /^stopped$/m);
+  assert.doesNotMatch(r.stderr, /not stopped/);
+  assert.ok(!p.claudeCalls().some((a) => a[0] === '--bg'), 'no kick to stop a session nothing runs');
 });
 
 test('stop also stops alive lane sessions of this project that supervisor.json never recorded', async () => {
@@ -1130,7 +1164,8 @@ function attendProject(t, { lanePhase = '4', mode = 'full', next = 'execute' } =
 
 test('attend N stops the supervisor and the lane session, marks the phase, releases its stops and names the open plans; status names the mark (S4)', async (t) => {
   const { p, child, env } = attendProject(t);
-  const r = await runAsync(['attend', '4'], p.root, env);
+  // the owner's session that runs attend: the mark names it, so the view reads the sitting's progress there
+  const r = await runAsync(['attend', '4'], p.root, { ...env, CLAUDE_CODE_SESSION_ID: 'owner-session-1' });
   assert.equal(r.code, 0, r.stderr);
   assert.ok(await exited(child), 'the supervisor is stopped');
   assert.equal(readSup(p.root).pid, null);
@@ -1141,7 +1176,7 @@ test('attend N stops the supervisor and the lane session, marks the phase, relea
   assert.match(r.stdout, /^released stops: 04-02-t1 \(asked ahead again\)$/m);
   assert.match(r.stdout, /^already delivered: 04-02-t3 \(the stopped session took these answers; a checkpoint reached again is asked in this session\)$/m, 'a delivered stop is no question asked ahead (F4)');
   const mark = readJsonFile(path.join(runDirOf(p.root), 'p4-attend.json'));
-  assert.deepEqual([mark.phase, mark.sessionId, typeof mark.at], ['4', 'abc123', 'string']);
+  assert.deepEqual([mark.phase, mark.sessionId, typeof mark.at, mark.owner], ['4', 'abc123', 'string', 'owner-session-1']);
   assert.deepEqual(readJsonFile(path.join(runDirOf(p.root), 'p4-questions.json')).map((q) => [q.stopped, q.agentId]), [[false, null], [true, 'a0123456789abcdef']]);
   assert.match(run(['status'], p.root, env), /^attended: phase 4 since \S+ in the owner's session \(hand it back: turbo-run attend 4 --done\)$/m);
   assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, env)).attended.map((a) => a.phase), ['4']);
@@ -1162,6 +1197,31 @@ test('attend names the released stops that keep the owner\'s answer, with its ti
   const records = readJsonFile(path.join(answers, 'p4.json'));
   assert.deepEqual([records.length, records[1].answer, records[1].superseded, typeof records[1].keptAt], [2, 'go\nnow', undefined, 'string']);
   assert.equal(readJsonFile(path.join(runDirOf(p.root), 'p4-questions.json'))[0].state, 'answered');
+});
+
+test('attend drops a done answer on a live sitting stop and says so; the stop is asked ahead again and no pre-answer carries it (journal 2026-10-14)', async (t) => {
+  const { p, env } = attendProject(t);
+  // 04-02 is the sitting plan: its task 2 is the live sitting the lane stopped at, answered Done on a v0.3.3 card
+  fs.writeFileSync(path.join(p.root, '.planning', 'phases', '04-four', '04-02-PLAN.md'), SITTING_PLAN);
+  fs.writeFileSync(path.join(runDirOf(p.root), 'p4-questions.json'), JSON.stringify([
+    { id: '04-02-t2', phase: '4', plan: '04-02', task: '2', kind: 'human-action', source: 'plan', options: [{ label: 'Сделано', signal: 'go', defer: false }], stopped: true, agentId: 'a0123456789abcdef', state: 'answered', answer: { option: 1, label: 'Сделано', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false }, rev: 2 },
+  ]));
+  const answers = path.join(p.root, '.planning', 'turbo', 'answers');
+  fs.mkdirSync(answers, { recursive: true });
+  fs.writeFileSync(path.join(answers, 'p4.json'), JSON.stringify([{ id: '04-02-t2', plan: '04-02', task: '2', option: 1, label: 'Сделано', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false, condition: null, defer: false }]));
+  const r = await runAsync(['attend', '4'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^released stops: 04-02-t2 \(asked ahead again\)$/m);
+  assert.match(r.stdout, /^dropped done answers: 04-02-t2 \(Сделано, pane, 2026-01-01T15:19:48\.000Z\) \(a live sitting is never answered done: it runs in this session, with you\)$/m);
+  assert.doesNotMatch(r.stdout, /released stops with your answer/);
+  // no repository here: the change stays, and the warning says it is not committed
+  assert.match(r.stderr, /^warn: the dropped done answer of 04-02-t2 is not committed \(/m);
+  assert.equal(readJsonFile(path.join(answers, 'p4.json'))[0].supersededBy, 'sitting');
+  assert.equal(run(['questions', '4', '--preanswers', '04-02'], p.root, env).trim(), '', 'no pre-answer for the sitting');
+  // the v0.3.3 card still on file (no refresh yet): its Done is refused
+  const refused = spawnSync(process.execPath, [CLI, 'answer', '4', '04-02-t2', '--option', '1', '--by', 'pane'], { cwd: p.root, env, encoding: 'utf8' });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stdout, /^refused: question 04-02-t2 is a live sitting: .* Run \/turbo-autonomous attend 4 in a new Claude Code window; nothing was recorded$/m);
 });
 
 test('attend refuses, changing nothing, for a phase that is not the lane, a phase with every plan summarized, and inside a lane (S4)', async (t) => {
@@ -1291,6 +1351,21 @@ test('attend stops a lane session the killed supervisor registers after the firs
   assert.equal(r.code, 0, r.stderr);
   assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop'), [['stop', 'abc123'], ['stop', 'late01']]);
   assert.match(r.stdout, /^stopped late lane session late01 \(started by the stopped supervisor\)$/m);
+});
+
+test('attend goes on when the lane session is a stale record of a stopped background service with no process: one plain line in lang, exit 0 (journal 2026-10-14 15:34Z)', async (t) => {
+  const { p, env } = attendProject(t);
+  const cfg = path.join(p.root, '.planning', 'turbo', 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ ...readJsonFile(cfg), lang: 'ru' }));
+  writeSup(p.root, { ...readSup(p.root), lane: { ...readSup(p.root).lane, sessionId: 'retired3' } });
+  p.setClaude({ agents: [{ id: 'retired3', name: laneSessionName(p.root, '4'), cwd: p.root, state: 'working', pid: DEAD_PID }] });
+  const r = await runAsync(['attend', '4'], p.root, { ...env, TURBO_ATTEND_SETTLE_MS: '1200' }, processTableFake(p.root));
+  assert.equal(r.code, 0, r.stderr);
+  const said = r.stdout.split('\n').filter((l) => l.includes('retired3'));
+  assert.deepEqual(said, ['фоновая служба Claude Code не работает и процесса сессии retired3 нет — считаю полосу остановленной'], 'said once, never as a late lane');
+  assert.match(r.stdout, /^phase 4: attended in this session/m);
+  assert.doesNotMatch(r.stderr, /did not stop|not stopped/);
+  assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop'), [['stop', 'retired3'], ['stop', 'retired3']], 'attend\'s stop, then the sweep once (the record stays listed the same way)');
 });
 
 test('lane-status N needs-owner with no owner question waiting hints at turbo-run ask and still records; status lists the questions the phases wait for (v0.3.3)', () => {
@@ -1454,11 +1529,16 @@ test('review: attend cancels a resume the supervisor has not taken (it would cle
   for (const f of ['04-01-PLAN.md', '04-01-SUMMARY.md', '04-02-PLAN.md']) fs.writeFileSync(path.join(dir, f), '# plan\n');
   fs.writeFileSync(path.join(runDir, 'phase-p4.json'), JSON.stringify({ phase: '4', done: STEPS.slice(0, STEPS.indexOf('execute')), attempts: {} }));
   assert.equal((await runAsync(['resume', '4'], p.root, env)).code, 0);
-  const r = await runAsync(['attend', '4'], p.root, env);
+  const r = await runAsync(['attend', '4'], p.root, { ...env, CLAUDE_CODE_SESSION_ID: 'owner-session-2' });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /^cancelled the resume of phase 4 that the supervisor had not taken yet$/m);
   assert.equal(fs.existsSync(path.join(runDir, 'p4-resume.json')), false);
-  assert.ok(fs.existsSync(path.join(runDir, 'p4-attend.json')));
+  // slots mode: a session outside the lane's slot is not the sitting (the skill runs attend again in the slot)
+  assert.equal(readJsonFile(path.join(runDir, 'p4-attend.json')).owner, null);
+  const slot = path.dirname(path.dirname(path.dirname(dir)));
+  const again = await runAsync(['attend', '4', '--project', p.root], slot, { ...env, CLAUDE_CODE_SESSION_ID: 'owner-session-3' });
+  assert.equal(again.code, 0, again.stderr);
+  assert.equal(readJsonFile(path.join(runDir, 'p4-attend.json')).owner, 'owner-session-3', 'the session in the slot');
   // no supervisor runs: a request left is taken when one starts
   assert.equal((await runAsync(['resume', '5'], p.root, env)).code, 0);
   writeSup(p.root, { ...readSup(p.root), pid: null });

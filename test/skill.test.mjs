@@ -151,3 +151,20 @@ test('v0.4.0: /turbo-autonomous away asks everything answerable ahead, then turn
   assert.ok(phase.includes('`owner-correction` messages'), 'the lane reads an undo of an automatic answer');
   assert.ok(phase.includes('Add `--auto-ok` only when'), 'and marks only safe questions of its own');
 });
+
+test('turbo-autonomous attend: GSD\'s executor references are listed to read, not inlined; the missing continuation template is composed from the commits and the stop; dropped done answers are named (journal 2026-10-14)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const a = s.slice(s.indexOf('## If the arguments are `attend <phase>`'), s.indexOf('## Otherwise'));
+  const six = a.slice(a.indexOf('6. **Execute.**'), a.indexOf('7. **Hand back.**'));
+  const refs = six.slice(six.indexOf('reference files'));
+  for (const n of ['`execute-plan.md`', 'the summary template', '`checkpoints.md`', '`tdd.md`', '`worktree-path-safety.md`', '`executor-examples.md`', 'about 145 KB', '"Read these first"', 'instead (same effect, no huge output)', '`continuation-prompt.md`', 'GSD does not ship', "from the plan's commits so far and the stop"]) assert.ok(refs.includes(n), n);
+  const one = a.slice(a.indexOf('1. **Take over the lane.**'), a.indexOf('2. **GSD core.**'));
+  for (const n of ['`dropped done answers: …`', 'never answered done', 'the sitting runs here']) assert.ok(one.includes(n), n);
+});
+
+test('Answer the open questions: a live sitting (sitting: true) is never answered done; at its stop the session shows the way in instead of asking (journal 2026-10-14)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const answer = s.slice(s.indexOf('## Answer the open questions'));
+  const three = answer.slice(answer.indexOf('3. Ask them'), answer.indexOf('4. For each answer'));
+  for (const n of ['`sitting: true`', 'never answered done', '`turbo-run answer` refuses it', 'do not ask it: show its `question`', '`/turbo-autonomous attend <phase>` in a new Claude Code window']) assert.ok(three.includes(n), n);
+});

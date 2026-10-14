@@ -4,7 +4,8 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
+import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
+import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
 import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
 import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
@@ -672,16 +673,33 @@ function printLeftovers({ gates, docs }) {
   for (const p of docs) out(`docs commits off: phase ${p} (run: turbo-run gates docs-restore ${p})`);
 }
 
+// The claude of the owner's commands that stop lane sessions (stop, attend): stop and rm bring Claude Code's idle-exited
+// background service up (lib/claude.mjs daemonAware); a session whose service is gone for this config directory and that
+// no process carries counts as stopped, said once per session in one plain line (in lang). Warnings go to stderr.
+const goneTold = new Set();
+function ownerClaude(root) {
+  let ru = false;
+  try { ru = loadConfig(root).lang === 'ru'; } catch { /* broken config: English */ }
+  const warn = (line) => process.stderr.write(`warn: ${line}\n`);
+  const onGone = (id) => {
+    if (goneTold.has(id)) return;
+    goneTold.add(id);
+    out(ru ? `фоновая служба Claude Code не работает и процесса сессии ${id} нет — считаю полосу остановленной` : `Claude Code's background service is not running and no process carries lane session ${id}: counted as stopped`);
+  };
+  return daemonAware(createClaude({ root }), { log: warn, onGone });
+}
+
 // Runs once the daemon is gone. Stops the lane recorded before and after its death, and every
 // alive lane session of this project: a daemon stopped while launching never records the session
 // it started. A failed `claude stop` counts as stopped only when claude no longer lists the
 // session alive.
-// A job that Claude Code's idle-exited background service no longer runs (no pid) is stopped as it is; one it runs
-// gets the service kicked up and its stop tried once more (lib/claude.mjs daemonAware).
+// A job that Claude Code's idle-exited background service no longer runs (no pid) is stopped as it is, and so is one
+// listed alive when the service is gone and no process carries it; one it may run gets the service kicked up and its
+// stop tried once more (lib/claude.mjs daemonAware).
 function stopLanes(root, before) {
   const after = readJson(supPath(root), null);
   const warn = (line) => process.stderr.write(`warn: ${line}\n`);
-  const claude = daemonAware(createClaude({ root }), { log: warn });
+  const claude = ownerClaude(root);
   const list = () => { try { return claude.list(); } catch (e) { return e; } };
   let ok = true;
   const ids = new Set([...supervisorLanes(before, root), ...supervisorLanes(after, root)].map((l) => l.sessionId).filter(Boolean));
@@ -849,9 +867,10 @@ async function resumePhase(root, id, andStart) {
 }
 
 // What attend says of the stops it released (lib/attend.mjs releaseStops): those asked ahead again, and those that
-// keep the owner's answer, each with the answer and its time, as pre-answers for the sitting. An answer kept from
-// before its stop came back is a new record in the answers file: committed here, as turbo-run answer commits one
-// (no lane runs in this checkout now); a commit that fails is a warning, the answer stays kept.
+// keep the owner's answer, each with the answer and its time, as pre-answers for the sitting; and the done answers it
+// set aside on live sittings (journal 2026-10-14), which no executor may take. An answer kept from before its stop came
+// back, or set aside, changes the answers file: committed here, as turbo-run answer commits one (no lane runs in this
+// checkout now); a commit that fails is a warning, the change stays.
 function printReleased(root, id, released) {
   const list = readQuestions(root, id);
   const answered = list.filter((q) => released.ids.includes(q.id) && q.state === 'answered' && q.answer);
@@ -859,10 +878,13 @@ function printReleased(root, id, released) {
   const words = (a) => clean(String(a.label ?? a.answer ?? '')).replace(/\s+/g, ' ').trim().slice(0, 60);
   if (asked.length) out(`released stops: ${asked.join(', ')} (asked ahead again)`);
   if (answered.length) out(`released stops with your answer: ${answered.map((q) => `${q.id} (${words(q.answer)}, ${clean(q.answer.by)}, ${clean(q.answer.at)})`).join(', ')} (pre-answers for this sitting)`);
-  if (!released.kept.length) return;
-  const what = `the kept answer of ${released.kept.join(', ')}`;
+  const dropped = released.dropped ?? [];
+  if (dropped.length) out(`dropped done answers: ${dropped.map((d) => `${d.id} (${words(d)}, ${clean(d.by)}, ${clean(d.at)})`).join(', ')} (a live sitting is never answered done: it runs in this session, with you)`);
+  if (!released.kept.length && !dropped.length) return;
+  const what = [released.kept.length ? `the kept answer of ${released.kept.join(', ')}` : '', dropped.length ? `the dropped done answer of ${dropped.map((d) => d.id).join(', ')}` : ''].filter(Boolean).join(' and ');
+  const message = [released.kept.length ? `keep the owner's answer to ${released.kept.join(', ')}` : '', dropped.length ? `drop the done answer to the live sitting ${dropped.map((d) => d.id).join(', ')}` : ''].filter(Boolean).join('; ');
   try {
-    const c = commitAnswerPaths(root, [answersRel(id), ANSWERS_IGNORE_REL], `docs(turbo): keep the owner's answer to ${released.kept.join(', ')} (phase ${id}, attended)`);
+    const c = commitAnswerPaths(root, [answersRel(id), ANSWERS_IGNORE_REL], `docs(turbo): ${message} (phase ${id}, attended)`);
     if (!c?.committed && c?.reason !== 'no changes') process.stderr.write(`warn: ${what} is not committed (${c?.reason || 'unknown reason'}); the next answer commits it\n`);
   } catch (err) {
     process.stderr.write(`warn: ${what} is not committed (${String(err?.message ?? err).split(/\r?\n/)[0]}); the next answer commits it\n`);
@@ -873,6 +895,14 @@ function printReleased(root, id, released) {
 // relaunch the lane in the sitting's slot: attend cancels it.
 function cancelResume(root, id) {
   if (clearResumeRequest(root, id)) out(`cancelled the resume of phase ${id} that the supervisor had not taken yet`);
+}
+
+// spec §8: the owner's session this attend runs in (CLAUDE_CODE_SESSION_ID), recorded in the mark: the view reads the
+// sitting's progress from its transcript. dir: the checkout the sitting runs in; an attend run from elsewhere (slots
+// mode: the skill then runs attend again in the slot) names no session. null when none is known (the view then shows
+// the phase without its progress).
+function sittingSession(dir) {
+  return cwdInside(process.cwd(), dir) ? ownSessionId({ env: process.env }) : null;
 }
 
 // How long attend watches for a lane session that a killed supervisor's claude child registers late: 5 s, or
@@ -903,11 +933,11 @@ async function attend(root, id) {
   // a daemon that ran (or a lease that named one) may have left a claude --bg child that registers a lane late
   const hadDaemon = [sup.pid, readJson(lockPath(root), null)?.pid].some((p) => Number.isInteger(p) && p > 0);
   stopDaemon(root, sup);
-  writeAttend(root, id, { sessionId: sup.lane.sessionId || null });
+  writeAttend(root, id, { sessionId: sup.lane.sessionId || null, owner: sittingSession(root) });
   cancelResume(root, id);
   let code = stopLanes(root, sup);
   if (hadDaemon) {
-    const claude = daemonAware(createClaude({ root }), { log: (line) => process.stderr.write(`warn: ${line}\n`) });
+    const claude = ownerClaude(root);
     const late = await sweepLateLanes({ list: () => claude.list(), stop: (x) => claude.stop(x), isLane: (a) => projectLaneAgents([a], root).length === 1, settleMs: attendSettleMs() });
     for (const x of late.stopped) out(`stopped late lane session ${x} (started by the stopped supervisor)`);
     for (const f of late.failed) process.stderr.write(`warn: ${f.id ? `late lane session ${f.id} not stopped` : 'cannot list sessions after the stop'}: ${f.error}
@@ -937,10 +967,10 @@ async function attendLane(root, id, sup) {
   if (!plans.length) die(`phase ${id} has no plan without a summary: nothing to attend. For owner-only UAT items run /gsd-verify-work ${id} in ${lane.slotPath}, then /turbo-autonomous resume ${id}`);
   const gates = attendGates({ mode: lane.mode, next: nextStep(readProgress(root, id)) });
   if (gates.refuse) die(`phase ${id} is not ready to attend: ${gates.refuse}; nothing was stopped`);
-  writeAttend(root, id, { sessionId: lane.sessionId || null });
+  writeAttend(root, id, { sessionId: lane.sessionId || null, owner: sittingSession(lane.slotPath) });
   cancelResume(root, id);
   const warn = (line) => process.stderr.write(`warn: ${line}\n`);
-  const claude = daemonAware(createClaude({ root }), { log: warn });
+  const claude = ownerClaude(root);
   let code = 0;
   const ids = new Set([lane.sessionId].filter(Boolean));
   const name = laneSessionName(root, lane.key);
@@ -962,7 +992,7 @@ async function attendLane(root, id, sup) {
       }
     }
   }
-  const released = releaseStops(root, id);
+  const released = releaseStops(root, id, { phaseRoot: lane.slotPath });
   out(`phase ${id}: attended in the owner's session; the other lanes keep running; nothing starts, relaunches or wakes phase ${id} until turbo-run attend ${id} --done`);
   out(`open: cd "${lane.slotPath}" && claude`);
   out(`open plans: ${plans.join(', ')}`);

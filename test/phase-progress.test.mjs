@@ -378,8 +378,15 @@ test('GSD\'s create-phase-plan commit after the last plan\'s commit counts as ch
   fs.writeFileSync(path.join(dir, '03-04-PLAN.md'), planFile('03-04'));
   commit('docs(03): plan 03-04');
   assert.match((await run('--check', 'plan'), lines.at(-1)), /plan set unchecked/);
-  // the create commit that also adds the plans (a non-chunked run) is at the last plan's commit: it counts
+  // Stage 5 review I3: a create commit that adds a plan file is a gsd-planner's own git_commit (gsd-planner.md), made
+  // before GSD's plan-checker ran: it does not count
   fs.writeFileSync(path.join(dir, '03-05-PLAN.md'), planFile('03-05'));
+  fs.appendFileSync(path.join(root, '.planning', 'STATE.md'), 'planned\n');
   commit('docs(3): create phase plan');
+  assert.match((await run('--check', 'plan'), lines.at(-1)), /plan set unchecked/);
+  // GSD's step 13d after the checker: STATE.md and ROADMAP.md, no plan added
+  fs.writeFileSync(path.join(root, '.planning', 'ROADMAP.md'), '- [ ] 03-05-PLAN.md\n');
+  fs.appendFileSync(path.join(root, '.planning', 'STATE.md'), 'Ready to execute\n');
+  commit('docs(03): create phase plan');
   assert.match((await run('--check', 'plan'), lines.at(-1)), /plan check: GSD's commit/);
 });

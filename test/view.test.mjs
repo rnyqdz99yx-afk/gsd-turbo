@@ -123,7 +123,9 @@ test('stall_minutes sets the quiet threshold; a value below 1 or not a number ta
   assert.equal(stallMs({}), 15 * 60000);
   const { root, dir, sup, env } = laneProject();
   writeSession(dir, SESSION, [entry.launched('toolu_1', 'a2000000000000001', at('10:00'))]);
-  setMtime(writeAgent(dir, SESSION, 'a2000000000000001', agentEntries('a2000000000000001', '10:00', '10:55')), new Date(at('10:55')));
+  // its last command came back (a tool result): nothing in flight, the write alone counts
+  const finished = [...agentEntries('a2000000000000001', '10:00', '10:55'), { ...entry.toolResult('toolu_01BBBBBBBBBBBBBBBBBBBBBB', 'ok', at('10:55')), isSidechain: true }];
+  setMtime(writeAgent(dir, SESSION, 'a2000000000000001', finished), new Date(at('10:55')));
   assert.equal(buildView({ root, sup, config: { stall_minutes: 15 }, env, now: NOW, commits: COMMITS }).lanes[0].agents[0].state, 'running');
   assert.equal(buildView({ root, sup, config: { stall_minutes: 2 }, env, now: NOW, commits: COMMITS }).lanes[0].agents[0].state, 'quiet');
 });
@@ -221,7 +223,7 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
     '  Now: writing code for a plan',
     '  last activity 1m ago',
     '  Executor · plan 32-07, task 2 · editing lib/x.mjs · 6m',
-    '  ⚠️ Verifier silent for 16m — may be stuck',
+    '  ⚠️ Verifier silent for 16m',
     '  1 more helper finished',
     '',
     'Needs your answer (1):',
@@ -257,7 +259,7 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
     'Фаза 32 остановилась — ждёт вашего ответа · шаг: выполнение планов · 5 из 9 планов готово · 1 ч 11 мин',
     '  последнее действие 1 мин назад',
     '  Исполнитель · план 32-07, задача 2 · правит lib/x.mjs · 6 мин',
-    '  ⚠️ Проверяющий молчит 16 мин — возможно, завис',
+    '  ⚠️ Проверяющий молчит 16 мин',
     '  ещё 1 помощник закончил',
     '',
     'Нужен ваш ответ (2):',
@@ -352,6 +354,12 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     textView({ questions: [] }, { step: 'odd-step', status: 'needs-owner', reason: 'a live check' }),
     textView({ questions: [], supervisor: null }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }),
     textView({ questions: [], commits: [{ sha: 'a', at: at('10:59'), subject: 'feat(32): x' }, { sha: 'b', at: at('10:58'), subject: 'docs(phase-32): y' }, { sha: 'c', at: at('10:57'), subject: 'feat: z' }] }),
+    // liveness: a long command in flight (the lane and its helper), and a silent lane with what turbo did about it
+    textView({ questions: [] }, { lastAt: at('10:54'), busy: { since: at('10:54') }, agents: [{ type: 'gsd-executor', plan: '32-05', task: null, state: 'running', busy: { since: at('10:54') }, action: { tool: 'Bash', detail: 'node -e x' }, lastAt: at('10:54'), elapsedMs: 18 * 60000 }] }),
+    textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 1, how: 'restarted', told: false }, agents: [] }),
+    textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 1, how: 'tried', told: false }, agents: [] }),
+    textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 2, how: 'woke', told: true }, agents: [] }),
+    textView({ questions: [], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', quiet: true, lastAt: at('10:40'), wake: { count: 2, how: 'woke', told: true }, agents: [] }] }),
   ];
   for (const lang of ['en', 'ru']) {
     for (const v of views) {

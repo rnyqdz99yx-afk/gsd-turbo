@@ -232,8 +232,12 @@ test('laneStalled exists in en and ru with the same placeholders (S1)', () => {
   assert.notEqual(en.title, 'laneStalled');
   assert.notEqual(ru.title, en.title);
   assert.deepEqual(holes(ru), holes(en));
-  assert.equal(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Its session has written nothing for 16 min; attempts to wake it: 2. To look inside: claude attach 1a2b3c4d. To restart the phase: /turbo-autonomous resume 3');
-  assert.equal(msg('ru', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Её сессия ничего не пишет уже 16 мин; попыток разбудить: 2. Посмотреть: claude attach 1a2b3c4d. Перезапустить фазу: /turbo-autonomous resume 3');
+  assert.equal(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Its session has written nothing for 16 min; turbo woke it, attempts: 2, and no answer came. To look inside: claude attach 1a2b3c4d. To restart the phase: /turbo-autonomous resume 3');
+  assert.equal(msg('ru', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Её сессия ничего не пишет уже 16 мин; turbo будил её, попыток: 2, ответа нет. Посмотреть: claude attach 1a2b3c4d. Перезапустить фазу: /turbo-autonomous resume 3');
+  // liveness: the owner hears what turbo did, never a bare guess that the phase hangs
+  assert.equal(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).title, 'Phase 3 is silent — waking it did not help');
+  assert.equal(msg('ru', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).title, 'Фаза 3 молчит — разбудить не вышло');
+  for (const m of [en, ru]) assert.doesNotMatch(`${m.title}\n${m.body}`, /may be stuck|возможно/);
 });
 
 test('questionsReady exists in en and ru with the same placeholders (S1)', () => {

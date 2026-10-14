@@ -42,7 +42,7 @@ export const WORDS = {
   },
   ru: {
     step: { freshness: 'проверка актуальности', discuss: 'обсуждение', prologue: 'подготовка к планированию', plan: 'планирование', 'gates-off': 'подготовка к выполнению', execute: 'выполняются планы', restore: 'восстановление настроек', fanout: 'проверки качества', fix: 'исправления', 'final-gate': 'финальная проверка', uat: 'приёмка', close: 'завершение', integrate: 'слияние с основной веткой', ci: 'проверка CI' },
-    // all masculine, so «… молчит — возможно, завис» agrees with each
+    // all masculine, so «… молчит» and «… закончил» agree with each
     agent: { 'gsd-executor': 'Исполнитель', 'gsd-verifier': 'Проверяющий', 'gsd-code-reviewer': 'Ревьюер', 'gsd-code-fixer': 'Исправляющий', 'gsd-planner': 'Планировщик', 'gsd-plan-checker': 'Контролёр плана', 'gsd-phase-researcher': 'Исследователь', 'gsd-security-auditor': 'Аудитор безопасности', 'gsd-nyquist-auditor': 'Аудитор тестов', 'gsd-integration-checker': 'Контролёр связей', 'gsd-debugger': 'Отладчик', 'turbo-uat': 'Приёмщик', 'general-purpose': 'Помощник', Explore: 'Разведчик' },
   },
 };
@@ -68,7 +68,10 @@ const VIEW_WORDS = {
       fine: 'all fine', answer: (n) => `needs your answer (${n})`, ciRed: (asked) => (asked ? 'CI red — needs your answer' : 'CI red — needs your decision'), ciFixing: (n, m) => `CI red — the phase fixes it itself (attempt ${n} of ${m}), nothing needed from you`,
       ciLast: "CI red — the phase's last attempt; if it fails, it will ask you", fullMode: 'waits for you: its final checks need full mode',
       needsOwner: (asked) => (asked ? 'stopped — waits for your answer' : 'stopped — waits for your decision'), failed: 'stopped by a failure',
-      quiet: (d) => `silent${d ? ` for ${d}` : ''} — may be stuck`, quietHelper: (who, d, more) => `running, but ⚠️ ${who} silent${d ? ` for ${d}` : ''}${more ? ` (and ${more} more)` : ''}`,
+      // a silent lane says what turbo did about it (lane.wake): it wakes the session, woke, restarted or could not wake it
+  // before, or gave up
+      quiet: (d) => `silent${d ? ` for ${d}` : ''} — turbo is waking the session`, quietAgain: (d, how) => `silent${d ? ` for ${d}` : ''} — ${how === 'restarted' ? 'restarted the session' : how === 'tried' ? 'could not wake the session' : 'woke the session'}, waking it again`,
+      quietTold: (d) => `silent${d ? ` for ${d}` : ''} — waking the session did not help: needs you`, quietHelper: (who, d, more) => `running, but ⚠️ ${who} silent${d ? ` for ${d}` : ''}${more ? ` (and ${more} more)` : ''}`,
       paused: 'paused: needs a fresh context', done: 'done', halted: 'supervisor stopped', failing: (at) => `supervisor failing${at ? ` since ${at}` : ''}`,
       attended: (p) => `phase ${p} is in your session — new phases wait`, supStopped: 'supervisor not running', finished: 'all phases done', never: 'supervisor never started',
       // Stage 4: a lane the supervisor stopped alone; a lane whose turn ended and that is merged into main
@@ -79,7 +82,9 @@ const VIEW_WORDS = {
     doing: { edit: (x) => `editing ${x}`, write: (x) => `writing ${x}`, read: (x) => `reading ${x}`, search: 'searching the code', files: 'looking for files', tests: 'running tests', commit: 'committing', command: (x) => `running a command: ${x}`, helper: 'started a helper', skill: 'using a skill', web: 'searching the web', todo: 'updating its to-do list', message: 'messaging a helper', browser: 'using the browser', working: 'working' },
     state: { completed: 'done', stopped: 'stopped', failed: 'failed' },
     idle: (d) => `silent${d ? ` for ${d}` : ''}`,
-    quietAgent: (who, d) => `⚠️ ${who} silent${d ? ` for ${d}` : ''} — may be stuck`,
+    quietAgent: (who, d) => `⚠️ ${who} silent${d ? ` for ${d}` : ''}`,
+    // a command in flight within its timeout: busy, never silent (lib/liveness.mjs)
+    busy: (d) => `a long command is running${d ? ` · ${d}` : ''}`,
     helpersDone: (n, more) => `${n} ${more ? 'more ' : ''}${n === 1 ? 'helper' : 'helpers'} finished`,
     askHead: (n) => `Needs your answer (${n}):`,
     // v0.4.0: sleep mode and the answers turbo took itself (lib/auto-answer.mjs)
@@ -115,6 +120,7 @@ const VIEW_WORDS = {
       decide: 'Needed from you: the phase waits for your decision — the reason is above', failed: 'Needed from you: the phase stopped by a failure and will not go on by itself', fullMode: 'Needed from you: its final checks need full mode',
       ciLast: 'If the last CI attempt fails, the phase will ask you',
       halted: 'Needed from you: a stopped lane waits for you to resume it',
+      stalled: (id) => `Needed from you: the phase stays silent after turbo woke it — to look inside: claude attach ${id}`,
     },
     kind: {
       feat: (n) => `${n} new ${n === 1 ? 'feature' : 'features'}`, fix: (n) => `${n} ${n === 1 ? 'fix' : 'fixes'}`, refactor: (n) => `${n} ${n === 1 ? 'code rework' : 'code reworks'}`,
@@ -157,7 +163,8 @@ const VIEW_WORDS = {
       fine: 'всё в порядке', answer: (n) => `нужен ваш ответ (${n})`, ciRed: (asked) => (asked ? 'CI красный — нужен ваш ответ' : 'CI красный — нужно ваше решение'), ciFixing: (n, m) => `CI красный — фаза чинит сама (попытка ${n} из ${m}), от вас ничего не нужно`,
       ciLast: 'CI красный — последняя попытка фазы; если не выйдет, она спросит вас', fullMode: 'ждёт вас: для финальных проверок нужен полный режим',
       needsOwner: (asked) => (asked ? 'остановилась — ждёт вашего ответа' : 'остановилась — ждёт вашего решения'), failed: 'остановилась из-за сбоя',
-      quiet: (d) => `тишина${d ? ` ${d}` : ''} — возможно, зависла`, quietHelper: (who, d, more) => `идёт, но ⚠️ ${who} молчит${d ? ` ${d}` : ''}${more ? ` (и ещё ${more})` : ''}`,
+      quiet: (d) => `тишина${d ? ` ${d}` : ''} — turbo будит сессию`, quietAgain: (d, how) => `тишина${d ? ` ${d}` : ''} — ${how === 'restarted' ? 'перезапустил сессию' : how === 'tried' ? 'не смог разбудить сессию' : 'разбудил сессию'}, будит ещё раз`,
+      quietTold: (d) => `тишина${d ? ` ${d}` : ''} — разбудить сессию не вышло: нужны вы`, quietHelper: (who, d, more) => `идёт, но ⚠️ ${who} молчит${d ? ` ${d}` : ''}${more ? ` (и ещё ${more})` : ''}`,
       paused: 'на паузе: нужен новый контекст', done: 'готова', halted: 'супервизор остановился', failing: (at) => `супервизор сбоит${at ? ` с ${at}` : ''}`,
       attended: (p) => `фаза ${p} у вас в сессии — новые фазы ждут`, supStopped: 'супервизор не работает', finished: 'все фазы готовы', never: 'супервизор не запускался',
       laneHalted: 'полоса остановилась — остальные идут дальше', merging: 'готова — вливается в основную ветку',
@@ -167,7 +174,8 @@ const VIEW_WORDS = {
     doing: { edit: (x) => `правит ${x}`, write: (x) => `создаёт ${x}`, read: (x) => `читает ${x}`, search: 'ищет в коде', files: 'ищет файлы', tests: 'запустил тесты', commit: 'делает коммит', command: (x) => `выполняет команду: ${x}`, helper: 'запустил помощника', skill: 'запустил навык', web: 'ищет в интернете', todo: 'обновляет список дел', message: 'пишет помощнику', browser: 'работает в браузере', working: 'работает' },
     state: { completed: 'готов', stopped: 'остановлен', failed: 'сбой' },
     idle: (d) => `тишина${d ? ` ${d}` : ''}`,
-    quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''} — возможно, завис`,
+    quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''}`,
+    busy: (d) => `идёт долгая команда${d ? ` · ${d}` : ''}`,
     helpersDone: (n, more) => `${more ? 'ещё ' : ''}${n} ${ruPlural(n, 'помощник закончил', 'помощника закончили', 'помощников закончили')}`,
     askHead: (n) => `Нужен ваш ответ (${n}):`,
     awayOn: 'Режим «ушёл» — безопасные вопросы turbo решает сам; когда вернётесь: turbo-run back',
@@ -201,6 +209,7 @@ const VIEW_WORDS = {
       decide: 'Нужны вы: фаза ждёт вашего решения — причина выше', failed: 'Нужны вы: фаза остановилась из-за сбоя и сама не продолжит', fullMode: 'Нужны вы: финальным проверкам нужен полный режим',
       ciLast: 'Если последняя попытка починить CI не выйдет, фаза спросит вас',
       halted: 'Нужны вы: остановленная полоса ждёт, что вы её возобновите',
+      stalled: (id) => `Нужны вы: фаза молчит и после пробуждений — посмотреть: claude attach ${id}`,
     },
     kind: {
       feat: (n) => `${n} ${ruPlural(n, 'новая возможность', 'новые возможности', 'новых возможностей')}`, fix: (n) => `${n} ${ruPlural(n, 'исправление', 'исправления', 'исправлений')}`, refactor: (n) => `${n} ${ruPlural(n, 'переделка кода', 'переделки кода', 'переделок кода')}`,
@@ -453,6 +462,16 @@ const selfFixing = (view, lane) => (view?.supervisor?.running ? ciFixing(lane) :
 // A red CI the phase fixes itself, in words: the attempt, or at the bound the last one (the owner may be asked next).
 const ciWords = (t, fix) => (fix.last ? t.verdict.ciLast : t.verdict.ciFixing(fix.n, fix.m));
 
+// A silent lane in words, with what the supervisor did about it (lane.wake: it wakes the session now, woke, could not wake or
+// restarted it before and wakes it again, or gave up and told the owner): never a bare guess that it hangs.
+function quietWords(t, lane, at) {
+  const d = since(t, lane.lastAt, at);
+  if (lane.wake?.told) return t.verdict.quietTold(d);
+  return lane.wake?.count > 0 ? t.verdict.quietAgain(d, lane.wake.how) : t.verdict.quiet(d);
+}
+// A silent lane the supervisor gave up waking: it told the owner, who is needed now.
+const gaveUp = (view, lane) => Boolean(view?.supervisor?.running) && lane?.status === 'running' && Boolean(lane.quiet) && lane.wake?.told === true;
+
 // The one verdict of the run, the answer to "do I have to step in", first match: the supervisor stopped or failing,
 // a phase in the owner's own session, the supervisor not running, a failed or stopped phase, CI red that needs the
 // owner, questions waiting, CI red the phase fixes itself, a silent phase or helper, a phase done, a phase paused for
@@ -481,7 +500,7 @@ function verdictOf(t, view) {
   if (fixing) return v('ciFixing', 'warn', ciWords(t, fixing));
   if (live) {
     const quiet = lanes.find((l) => l.quiet && l.status === 'running');
-    if (quiet) return v('quiet', 'warn', t.verdict.quiet(since(t, quiet.lastAt, view.at)));
+    if (quiet) return v('quiet', 'warn', quietWords(t, quiet, view.at));
     const silent = lanes.filter((l) => l.status === 'running').flatMap((l) => list(l.agents)).filter((a) => a.state === 'quiet').sort((a, b) => String(a.lastAt).localeCompare(String(b.lastAt)));
     if (silent.length) return v('quietHelper', 'warn', t.verdict.quietHelper(agentWord(t, silent[0].type), since(t, silent[0].lastAt, view.at), silent.length - 1));
   }
@@ -578,6 +597,8 @@ function agentRow(t, a, at, live, columns) {
   const plan = planWords(t, a);
   if (a.state === 'quiet' && live) return text(toned('warn', { wrap: 'truncate-end' }), t.quietAgent(who, since(t, a.lastAt, at)), plan ? text(TONES.dim, ` · ${plan}`) : null);
   if (a.state === 'quiet') return text(toned('dim', { wrap: 'truncate-end' }), [who, plan, t.idle(since(t, a.lastAt, at))].filter(Boolean).join(' · '));
+  // a long command in flight (lib/liveness.mjs): calm, its time since it started
+  if (a.busy) return text(live ? { wrap: 'truncate-end' } : toned('dim', { wrap: 'truncate-end' }), who, plan ? text(TONES.dim, ` · ${plan}`) : null, ` · ${t.busy(since(t, a.busy.since, at))}`);
   const d = fmtDuration(t, a.elapsedMs);
   const dur = d === '-' ? '' : ` · ${d}`;
   const head = `${who}${plan ? ` · ${plan}` : ''} · `;
@@ -592,7 +613,8 @@ function lastSign(lane) {
   return times.length ? times.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b)) : null;
 }
 
-// The verdict line, then, indented: the sign of life (amber once the phase reads as silent), the reason it stopped,
+// The verdict line, then, indented: the sign of life (amber once the phase reads as silent; a long command in flight
+// instead, dim), the reason it stopped,
 // the helpers at work, and the finished ones as one dim count. Several lanes (Stage 4 D7): the verdict and the run's
 // summary line first, then a block per lane without the verdict; past two lanes a calm lane is its line alone.
 function runSection(t, view, v, columns) {
@@ -617,7 +639,8 @@ function runSection(t, view, v, columns) {
     const red = lane.push?.ci === 'red' && !fixing && !(first && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
     const under = [
       nowRow(t, view, lane),
-      sign ? text(toned(live && lane.quiet ? 'warn' : 'dim', { wrap: 'truncate-end' }), t.life(since(t, sign, view.at) ?? '-')) : null,
+      // a long command in flight takes the place of the last activity, calm: the lane is busy, not silent
+      lane.busy ? text(toned('dim', { wrap: 'truncate-end' }), t.busy(since(t, lane.busy.since, view.at))) : sign ? text(toned(live && lane.quiet ? 'warn' : 'dim', { wrap: 'truncate-end' }), t.life(since(t, sign, view.at) ?? '-')) : null,
       red ? text(toned('bad', { wrap: 'wrap' }), t.verdict.ciRed(asked)) : null,
       why ? text(toned(STOPPED.has(lane.status) ? 'bad' : 'dim', { wrap: 'wrap' }), `${t.reason}: ${cut(why, 200)}`) : null,
       ...working.map((a) => agentRow(t, a, view.at, live, columns)),
@@ -721,6 +744,7 @@ function nextOf(t, view, lane) {
   if (lane.status === 'failed') need('bad', t.need.failed);
   if (lane.held === 'fullMode') need('bad', t.need.fullMode);
   if (lane.halted) need('bad', t.need.halted);
+  if (gaveUp(view, lane)) need('bad', t.need.stalled(cut(lane.sessionId ?? '', 64)));
   if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
   if (selfFixing(view, lane)?.last) need('warn', t.need.ciLast);
   // the view knows no owner-only acceptance items ahead of time: no guess about them here (review r1)
@@ -743,6 +767,8 @@ function nextOfRun(t, view) {
   if (lanes.some((l) => l.status === 'failed')) need('bad', t.need.failed);
   if (lanes.some((l) => l.held === 'fullMode')) need('bad', t.need.fullMode);
   if (lanes.some((l) => l.halted)) need('bad', t.need.halted);
+  const stalled = lanes.find((l) => gaveUp(view, l));
+  if (stalled) need('bad', t.need.stalled(cut(stalled.sessionId ?? '', 64)));
   if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
   if (lanes.some((l) => selfFixing(view, l)?.last)) need('warn', t.need.ciLast);
   if (!needs.length) need('ok', t.need.none);

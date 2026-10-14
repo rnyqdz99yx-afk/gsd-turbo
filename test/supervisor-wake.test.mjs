@@ -226,6 +226,71 @@ test('a lane that writes nothing for stall_minutes is woken with the interruptio
   assert.equal(s.lane.stall, null, 'it answered and wrote again: a new spell');
 });
 
+// liveness: the probe's calls are the commands in flight in the lane's whole tree (lib/liveness.mjs)
+const inFlight = (startMs, timeoutMs) => [{ id: 'toolu_b', tool: 'Bash', startMs, timeoutMs }];
+
+test('liveness: a command in flight within its timeout is never stall-woken (a wake stops the session and the command); one past its timeout and the margin is woken at once, once', async () => {
+  const h = harness();
+  h.ctx.config.stall_minutes = 5;
+  let s = await tick(fresh(), h.ctx);
+  const start = h.now().getTime();
+  h.activity = { lastMs: start, active: 0, calls: inFlight(start, 600000) };
+  for (let i = 0; i < 12; i++) {
+    h.advance(1);
+    s = await tick(s, h.ctx);
+  }
+  assert.equal(h.resumed.length, 0, '12 minutes silent, past stall_minutes, but the 10-minute command and its margin still run');
+  assert.equal(s.lane.stall ?? null, null);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1, 'past its timeout and the margin with nothing written: woken');
+  assert.match(h.logs.join('\n'), /phase 2: a Bash command ran past its time limit and nothing was written for 13 min; waking session 1a2b3c4d/);
+  // the wake restarts the count: the same command is no overrun twice; stall_minutes after the wake counts again
+  h.advance(4);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 2);
+});
+
+test('liveness: a lane whose turn ended while a nested helper runs a long command waits for it: neither blocked nor woken', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  const start = h.now().getTime();
+  // no direct helper wrote within stall_minutes (active 0); a nested one runs a one-hour command
+  h.activity = { lastMs: start, active: 0, calls: inFlight(start, 3600000) };
+  for (let i = 0; i < 8; i++) {
+    h.advance(5);
+    s = await tick(s, h.ctx);
+  }
+  assert.ok(!h.notes.some((x) => x.key === 'laneBlocked' || x.key === 'laneStalled'), JSON.stringify(h.notes));
+  assert.equal(h.resumed.length, 0);
+});
+
+test('liveness: a stall wake that reaches no session starts a new one, and the lane records the restart for the view', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  h.resumeOut = ['neither a wake nor a copy', 'neither a wake nor a copy'];
+  h.advance(16);
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2, 'a new session in place of the one that did not wake');
+  assert.deepEqual([s.lane.stall.count, s.lane.stall.relaunched], [1, true]);
+});
+
+test('liveness: a stall wake that can neither wake nor replace the session records that for the view, never a wake', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  resistingSession(h);
+  h.advance(16);
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.lane.stall.count, s.lane.stall.missed, s.lane.stall.relaunched], [1, true, undefined]);
+  assert.equal(h.launched.length, 1, 'no second session beside one that may still run');
+});
+
 test('a lane whose turn ended while its subagents work is waiting for them, not blocked: no laneBlocked while they run', async () => {
   const h = harness();
   let s = await tick(fresh(), h.ctx);

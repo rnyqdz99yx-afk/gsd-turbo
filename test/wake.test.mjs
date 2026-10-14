@@ -50,10 +50,10 @@ test('the lane probe: the session id from the job state, the newest write of the
   setMtime(writeAgent(dir, SID, AGENT, [entry.agentUser(AGENT, 'task', at('10:01')), entry.assistant({ ts: at('10:20'), text: 'working', sidechain: true })]), new Date(at('10:20')));
   const probe = createLaneProbe(root, { CLAUDE_CONFIG_DIR: home });
   assert.equal(probe.session(JOB), SID);
-  assert.deepEqual(probe.activity(JOB, new Date(at('10:25')), 15 * 60000), { lastMs: Date.parse(at('10:20')), active: 1 });
-  assert.deepEqual(probe.activity(JOB, new Date(at('10:40')), 15 * 60000), { lastMs: Date.parse(at('10:20')), active: 0 });
+  assert.deepEqual(probe.activity(JOB, new Date(at('10:25')), 15 * 60000), { lastMs: Date.parse(at('10:20')), active: 1, calls: [] });
+  assert.deepEqual(probe.activity(JOB, new Date(at('10:40')), 15 * 60000), { lastMs: Date.parse(at('10:20')), active: 0, calls: [] });
   assert.equal(probe.session('ffffffff'), null);
-  assert.deepEqual(probe.activity('ffffffff', new Date(at('10:40')), 15 * 60000), { lastMs: null, active: 0 });
+  assert.deepEqual(probe.activity('ffffffff', new Date(at('10:40')), 15 * 60000), { lastMs: null, active: 0, calls: [] });
   assert.deepEqual(activityOf({ lastAt: null, agents: [] }), { lastMs: null, active: 0 });
 });
 

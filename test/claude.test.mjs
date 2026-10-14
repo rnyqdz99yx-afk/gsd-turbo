@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveBin, parseAgents, laneSessionName, buildBgArgs, buildResumeArgs, parseBgLaunch, parseResume, createClaude, sessionFreeEnv } from '../lib/claude.mjs';
+import { resolveBin, parseAgents, laneSessionName, buildBgArgs, buildResumeArgs, parseBgLaunch, parseResume, createClaude, sessionFreeEnv, isDaemonDown, daemonAware, buildKickArgs, KICK_NAME, NOT_RUNNING } from '../lib/claude.mjs';
 
 const BG_OPTS = { name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto' };
 const PLAIN_BIN = { cmd: 'claude', prefix: [], shell: false };
@@ -330,4 +330,131 @@ test('parseResume: a backgrounded id is the session itself only when it is exact
   assert.deepEqual(parseResume('backgrounded · 1a2b3c4d9 · lane\n', ids), { woke: false, copyId: '1a2b3c4d9' });
   assert.deepEqual(parseResume('backgrounded · 1a2b3c · lane\n', ids), { woke: false, copyId: '1a2b3c' });
   assert.deepEqual(parseResume('backgrounded · 9f9f9f · lane\n', ids), { woke: false, copyId: '9f9f9f' });
+});
+
+// Claude Code's background service idle-exits with no clients; stop and rm then fail with this text until any
+// claude --bg starts it again.
+const DOWN = (cmd, id) => new Error(`claude ${cmd} failed: couldn't confirm ${id} was stopped — the background service may be restarting. Try again in a moment.`);
+
+test('isDaemonDown recognizes the background service message, and a marked error', () => {
+  assert.equal(isDaemonDown(DOWN('stop', 'a1b2c3')), true);
+  assert.equal(isDaemonDown(new Error("claude rm failed: couldn't remove a1b2c3 — the background service may be restarting. Try again in a moment.")), true);
+  assert.equal(isDaemonDown(Object.assign(new Error('x'), { daemonDown: true })), true);
+  assert.equal(isDaemonDown(new Error('claude rm failed: timed out after 30000 ms')), false);
+  assert.equal(isDaemonDown(undefined), false);
+});
+
+test('buildKickArgs starts a named no-op background session without worktree isolation', () => {
+  const args = buildKickArgs();
+  assert.deepEqual(args.slice(0, 3), ['--bg', '--name', KICK_NAME]);
+  assert.equal(KICK_NAME, 'turbo-daemon-kick');
+  assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' } });
+  assert.ok(!args.includes('--resume'));
+});
+
+test('kick launches the kick session in the project root, waits until claude agents --json lists it, then stops and removes it', () => {
+  const calls = [];
+  let lists = 0;
+  const exec = (cmd, args, opts) => {
+    calls.push({ args, cwd: opts.cwd });
+    if (args[0] === '--bg') return 'backgrounded · c0ffee · turbo-daemon-kick\n';
+    if (args[0] === 'agents') return ++lists < 3 ? '[]' : JSON.stringify([{ id: 'c0ffee', name: KICK_NAME, state: 'working', pid: 7 }]);
+    return '';
+  };
+  const slept = [];
+  const c = createClaude({ bin: PLAIN_BIN, exec, root: '/proj', sleep: (ms) => slept.push(ms) });
+  assert.equal(c.kick(), 'c0ffee');
+  assert.equal(calls[0].cwd, '/proj');
+  assert.deepEqual(calls[0].args.slice(0, 3), ['--bg', '--name', KICK_NAME]);
+  const agentsCalls = calls.filter((x) => x.args[0] === 'agents');
+  assert.ok(agentsCalls.every((x) => x.args.join(' ') === 'agents --json'), 'waits on claude agents --json');
+  assert.equal(slept.length, 2);
+  assert.deepEqual(calls.slice(-2).map((x) => x.args), [['stop', 'c0ffee'], ['rm', 'c0ffee']]);
+});
+
+test('kick throws when the kick session is never listed, after stopping and removing it', () => {
+  const calls = [];
+  let t = 0;
+  const exec = (cmd, args) => {
+    calls.push(args);
+    if (args[0] === '--bg') return 'backgrounded · c0ffee · turbo-daemon-kick\n';
+    if (args[0] === 'agents') return '[]';
+    return '';
+  };
+  const c = createClaude({ bin: PLAIN_BIN, exec, root: '/proj', kickWaitMs: 3000, sleep: (ms) => { t += ms; }, clock: () => t });
+  assert.throws(() => c.kick(), /background service did not list the kick session c0ffee/);
+  assert.deepEqual(calls.slice(-2), [['stop', 'c0ffee'], ['rm', 'c0ffee']]);
+});
+
+// A fake claude whose background service is down until kick is called (kickWorks) or for good.
+function downClaude({ agents = [], kickWorks = true, stillDown = false } = {}) {
+  const f = { up: false, calls: [], agents };
+  const gate = (cmd, id, ok) => {
+    f.calls.push([cmd, id]);
+    if (!f.up || stillDown) throw DOWN(cmd, id);
+    return ok;
+  };
+  Object.assign(f, {
+    list: () => f.agents.map((a) => ({ ...a })),
+    stop: (id) => gate('stop', id, ''),
+    rm: (id) => gate('rm', id, ''),
+    resume: (sid) => gate('resume', sid, `note: woke session ${sid}`),
+    launchBg: () => 'x',
+    kick: () => {
+      f.calls.push(['kick']);
+      if (!kickWorks) throw new Error('the background service did not list the kick session k1');
+      f.up = true;
+      return 'k1';
+    },
+  });
+  return f;
+}
+
+test('daemonAware stop: a listed job without a pid counts as stopped while the service is down, with no kick', () => {
+  const f = downClaude({ agents: [{ id: 'a1b2c3', state: 'blocked' }] });
+  const c = daemonAware(f);
+  assert.equal(c.stop('a1b2c3'), NOT_RUNNING);
+  assert.deepEqual(f.calls, [['stop', 'a1b2c3']]);
+  // an unlisted job is not running either
+  assert.equal(daemonAware(downClaude()).stop('zz9988'), NOT_RUNNING);
+});
+
+test('daemonAware stop of a job with a pid, rm and resume: the service is brought up once, then the command is tried once more', () => {
+  const f = downClaude({ agents: [{ id: 'a1b2c3', state: 'working', pid: 42 }] });
+  const c = daemonAware(f);
+  c.stop('a1b2c3');
+  assert.deepEqual(f.calls, [['stop', 'a1b2c3'], ['kick'], ['stop', 'a1b2c3']]);
+  const g = downClaude();
+  daemonAware(g).rm('a1b2c3');
+  assert.deepEqual(g.calls, [['rm', 'a1b2c3'], ['kick'], ['rm', 'a1b2c3']]);
+  const h = downClaude();
+  assert.match(daemonAware(h).resume('s1-uuid', 'P', '/p'), /woke session s1-uuid/);
+  assert.deepEqual(h.calls, [['resume', 's1-uuid'], ['kick'], ['resume', 's1-uuid']]);
+});
+
+test('daemonAware: a service that stays down throws a daemonDown error and logs once per outage; a success ends the outage', () => {
+  const logs = [];
+  const f = downClaude({ stillDown: true });
+  const c = daemonAware(f, { log: (l) => logs.push(l) });
+  assert.throws(() => c.rm('a1b2c3'), (e) => e.daemonDown === true && isDaemonDown(e));
+  assert.throws(() => c.rm('a1b2c3'), (e) => e.daemonDown === true);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /background service is down/);
+  assert.match(logs[0], /retrying next tick/);
+  assert.equal(c.isDown(), true);
+  const k = downClaude({ kickWorks: false });
+  const ck = daemonAware(k);
+  assert.throws(() => ck.rm('a1b2c3'), (e) => e.daemonDown === true);
+  assert.deepEqual(k.calls, [['rm', 'a1b2c3'], ['kick']], 'no retry when the kick failed');
+  k.up = true;
+  ck.rm('a1b2c3');
+  assert.equal(ck.isDown(), false);
+});
+
+test('daemonAware passes other errors through untouched and wraps only once', () => {
+  const f = { list: () => [], stop: () => { throw new Error('claude stop failed: timed out'); }, rm: () => '', resume: () => '', kick: () => { throw new Error('never'); } };
+  const c = daemonAware(f);
+  assert.throws(() => c.stop('a1'), (e) => e.message === 'claude stop failed: timed out' && !e.daemonDown);
+  assert.equal(daemonAware(c), c);
+  assert.equal(daemonAware(null), null);
 });

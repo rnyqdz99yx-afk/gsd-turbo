@@ -748,6 +748,71 @@ test('failed session notifies and halts', async () => {
   s = await tick(s, h.ctx);
   assert.equal(s.halted, true);
   assert.equal(h.notes.at(-1).key, 'laneFailed');
+  // the session failed, not the lane's own record: a start at logon may take this run up again (lib/autostart.mjs)
+  assert.equal(s.haltedFor, 'sessionFailed');
+});
+
+// Gap 2 (v0.4.0): a reboot or a crash took the supervisor and the lane's session down together. The supervisor that
+// starts next (takeover, set by turbo-run daemon) relaunches the lane as a continuation, as resume N --start does,
+// instead of halting on a session that failed or is gone.
+test('a starting supervisor relaunches the lane whose session failed while none ran: a continuation, no halt, no notification', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'failed';
+  h.advance(30);
+  s = await tick({ ...s, takeover: true }, h.ctx);
+  assert.equal(s.halted, false);
+  assert.equal(s.takeover, undefined, 'only the first tick of a supervisor');
+  assert.deepEqual([s.lane.sessionId, s.lane.restarts, s.lane.forceRelaunch], ['s2', 0, false]);
+  assert.match(h.launched[1].prompt, /^Resume phase 2\./);
+  assert.deepEqual(h.removed, ['s1']);
+  assert.deepEqual(h.notes, []);
+  assert.ok(h.logs.includes('phase 2: session s1 failed while no supervisor ran (a reboot or a crash); relaunching it (continuation)'), h.logs.join('\n'));
+});
+
+test('a starting supervisor relaunches a lane whose session is gone with a fresh count of restarts, however many it had', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  s.lane.restarts = DEFAULTS.max_restarts_without_progress; // no progress since: the next counted relaunch would halt
+  h.agents = []; // claude agents no longer lists it after the reboot
+  h.advance(30);
+  s = await tick({ ...s, takeover: true }, h.ctx);
+  assert.equal(s.halted, false);
+  assert.deepEqual([s.lane.sessionId, s.lane.restarts], ['s2', 0]);
+  assert.ok(h.logs.some((l) => /^phase 2: session s1 is gone while no supervisor ran/.test(l)), h.logs.join('\n'));
+});
+
+test('a starting supervisor keeps the usual handling of a lane that recorded its own state, of a live session and of a completed phase', async () => {
+  // the lane asked the owner before the reboot: it waits for the answer, nothing is relaunched
+  const asked = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), asked.ctx);
+  asked.advance(1);
+  writeLaneStatus(asked.root, '2', 'needs-owner', { reason: 'owner sign-off', at: asked.ctx.deps.now().toISOString() });
+  asked.agents[0].state = 'failed';
+  s = await tick({ ...s, takeover: true }, asked.ctx);
+  assert.deepEqual([asked.launched.length, s.halted, s.lane.sessionId], [1, false, 's1']);
+  assert.deepEqual(asked.notes.map((x) => x.key), ['laneNeedsOwner']);
+  // the lane recorded its own failure: that still stops the run
+  const failed = harness({ phases: [P('2')] });
+  s = await tick(fresh(), failed.ctx);
+  failed.advance(1);
+  writeLaneStatus(failed.root, '2', 'failed', { reason: 'tests broke', at: failed.ctx.deps.now().toISOString() });
+  failed.agents[0].state = 'failed';
+  s = await tick({ ...s, takeover: true }, failed.ctx);
+  assert.deepEqual([failed.launched.length, s.halted, s.haltedFor], [1, true, undefined]);
+  // a session that still works is adopted as it is
+  const live = harness({ phases: [P('2')] });
+  s = await tick(fresh(), live.ctx);
+  s = await tick({ ...s, takeover: true }, live.ctx);
+  assert.deepEqual([live.launched.length, s.lane.sessionId], [1, 's1']);
+  // safe mode: GSD completed the phase while the session was down: it is done, not relaunched
+  const done = harness({ phases: [P('2')] });
+  s = await tick(fresh(), done.ctx);
+  done.agents = [];
+  done.phases[0].complete = true;
+  s = await tick({ ...s, takeover: true }, done.ctx);
+  assert.deepEqual([done.launched.length, s.lane], [1, null]);
+  assert.deepEqual(done.notes.map((x) => x.key), ['phaseDone']);
 });
 
 // A lane that writes its record and ends its turn stays listed as state "blocked" (Claude Code 2.1.292).
@@ -811,6 +876,7 @@ test('blocked session with a fresh failed record notifies laneFailed and halts',
   assert.equal(s.halted, true);
   assert.deepEqual(h.notes.map((x) => x.key), ['laneFailed']);
   assert.equal(h.launched.length, 1);
+  assert.equal(s.haltedFor, undefined, 'the lane\'s own failure: never taken up again at logon');
 });
 
 test('blocked session with a stale needs-owner record waits as blocked; a working one with a fresh record runs', async () => {

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { A, P, annotated, freshLanes, lanesHarness } from './helpers/lanes.mjs';
 import { tick } from '../lib/supervisor.mjs';
-import { readLaneStatus } from '../lib/run-status.mjs';
+import { readLaneStatus, writeLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName } from '../lib/claude.mjs';
 import { writeAttend } from '../lib/attend.mjs';
 import { acquireGate, releaseGate } from '../lib/gate-locks.mjs';
@@ -83,6 +83,31 @@ test('a failed session or no progress stops only its lane; the run halts once ev
   assert.equal(s.halted, true);
   assert.deepEqual(h.notes.map((x) => x.key), ['laneStopped', 'laneStopped']);
   assert.equal(msg('en', 'laneStopped', h.notes[0].vars).body, `The other lanes go on. To look inside: cd "${h.slots[0].path}" && claude. To try again: /turbo-autonomous resume 1`);
+});
+
+test('a supervisor that starts after a reboot relaunches the slot lanes whose sessions failed or are gone, as continuations; a lane that asked the owner keeps waiting (Gap 2)', async () => {
+  const h = lanesHarness({ phases: [P('1'), P('2'), P('3')], lanes: annotated({ 1: A('a/**'), 2: A('b/**'), 3: A('c/**') }) });
+  h.ctx.config.max_restarts_without_progress = 0;
+  let s = await tick(freshLanes(), h.ctx);
+  h.agentOf('1').state = 'failed';
+  h.agents = h.agents.filter((a) => a.id !== s.lanes['2'].sessionId); // gone after the reboot
+  h.agentOf('3').state = 'failed';
+  writeLaneStatus(h.root, '3', 'needs-owner', { reason: 'sign-off', at: h.at() }); // phase 3 asked before the crash
+  h.advance(30);
+  // a lane step that fails keeps the relaunch armed for the next tick (the takeover is the first tick's only)
+  h.launchFail = (opts) => (opts.name === laneSessionName(h.root, '1') ? 'claude --bg failed: the background service may be restarting' : null);
+  s = await tick({ ...s, takeover: true }, h.ctx);
+  assert.equal(s.takeover, undefined);
+  assert.deepEqual([s.lanes['1'].halted, s.lanes['1'].forceRelaunch, s.lanes['1'].sessionId], [undefined, true, 's1']);
+  assert.deepEqual([s.lanes['2'].halted, s.lanes['2'].sessionId, s.lanes['2'].restarts], [undefined, 's4', 0]);
+  assert.deepEqual([s.lanes['3'].halted, s.lanes['3'].sessionId], [undefined, 's3'], 'phase 3 waits for its answer');
+  h.launchFail = () => null;
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.lanes['1'].halted, s.lanes['1'].forceRelaunch, s.lanes['1'].sessionId], [undefined, false, 's5']);
+  assert.equal(h.launched.find((l) => l.id === 's5').prompt, 'Resume phase 1. Run the turbo-phase skill with arguments: 1 --resume');
+  assert.equal(s.halted, false);
+  assert.deepEqual(h.notes.filter((x) => x.key === 'laneStopped'), []);
 });
 
 test('a slot Claude Code does not trust is never used (the owner is told once); a slot that refuses its preparation is skipped for a while (D10)', async () => {

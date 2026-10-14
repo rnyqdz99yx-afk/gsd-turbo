@@ -38,15 +38,16 @@ import { IntegrateRefused, readyRecord } from '../lib/integrate.mjs';
 import { jobLaneStatus, runAnnotateCommand } from '../lib/cli-jobs.mjs';
 import { runAwayCommand } from '../lib/away.mjs';
 import { autoAnswers, readAway } from '../lib/away-state.mjs';
+import { beatBeforeBoot, clearOwnerStop, logonSkip, readOwnerStop, runAutostart, writeOwnerStop } from '../lib/autostart.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail|away|back> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail|away|back|autostart> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax']);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
-const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back']);
+const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const START_USAGE = 'usage: turbo-run start [--from <phase>] [--to <phase>] | start --only <phase> | start --all';
@@ -151,6 +152,10 @@ function daemonAlive(pid, updatedAt, pollSeconds) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   const at = Date.parse(updatedAt);
   if (!Number.isFinite(at) || Math.abs(Date.now() - at) > Math.max(HEARTBEAT_MIN_MS, 5 * pollSeconds * 1000)) return false;
+  // a heartbeat from before the machine started: the daemon died with it (its pid may be another process's now).
+  // TURBO_UPTIME_SECONDS stands in for the machine's uptime in tests whose heartbeats are hours old.
+  const up = process.env.TURBO_UPTIME_SECONDS;
+  if (beatBeforeBoot(updatedAt, up ? { uptimeSeconds: Number(up) } : {})) return false;
   return pidExists(pid);
 }
 // The running daemon may poll more slowly than the config now says: it records its own poll.
@@ -372,7 +377,7 @@ function logTail(root, lines = 10) {
 }
 
 // requested: rangeFlags' result (undefined keeps the range of a run that has not finished).
-async function start(root, requested = undefined, { planOnly = false } = {}) {
+async function start(root, requested = undefined, { planOnly = false, logon = false } = {}) {
   const config = runtimeConfig(loadConfig(root)); // a corrupt config fails here, not inside the detached daemon
   // reconcile R10: /turbo-plan-milestone runs start --plan-only: prep and lane markup jobs in slots, no phase
   if (planOnly && lanesSettings(config.lanes).mode !== 'slots') die(`start --plan-only needs lanes.mode slots (this project runs lanes.mode ${lanesSettings(config.lanes).mode}); nothing was started`);
@@ -388,6 +393,8 @@ async function start(root, requested = undefined, { planOnly = false } = {}) {
       process.stderr.write(`a run of the phases is going (supervisor pid ${sup.pid}); nothing was changed: run turbo-run stop first, then start --plan-only\n`);
       return 1;
     }
+    // the owner's start: a stop mark a failed stop left behind goes (Gap 2)
+    clearOwnerStop(root);
     out(`already running (pid ${sup.pid})`);
     const opts = statusOpts(root, config);
     printStatus(sup, true, opts);
@@ -427,7 +434,7 @@ async function start(root, requested = undefined, { planOnly = false } = {}) {
   if (range) out(`range: phases ${rangeLabel(range)}${kept ? ' (kept from the previous run)' : ''}`);
   // a forgotten sitting holds every lane of the daemon about to start: say so, never let it look like a run
   printAttended(attendedPhases(root));
-  const rangeArgs = [...(range?.from ? ['--from', range.from] : []), ...(range?.to ? ['--to', range.to] : []), ...(planOnly ? ['--plan-only'] : [])];
+  const rangeArgs = [...(range?.from ? ['--from', range.from] : []), ...(range?.to ? ['--to', range.to] : []), ...(planOnly ? ['--plan-only'] : []), ...(logon ? ['--autostart'] : [])];
   // reconcile R10: a later start without --plan-only clears a kept plan-only mark (a daemon restart keeps it)
   const stored = readJson(supPath(root), null);
   if (!planOnly && stored?.planOnly) {
@@ -435,6 +442,8 @@ async function start(root, requested = undefined, { planOnly = false } = {}) {
     writeJsonAtomic(supPath(root), rest);
   }
   if (planOnly) out('plan only: prep and lane markup jobs run in the slots; no phase runs');
+  // the run goes on: a start at logon takes it up again after a reboot (Gap 2)
+  clearOwnerStop(root);
   ensureDir(logsDir(root));
   const fd = fs.openSync(path.join(logsDir(root), 'supervisor.log'), 'a');
   const spawnedAt = Date.now();
@@ -473,6 +482,45 @@ async function start(root, requested = undefined, { planOnly = false } = {}) {
   return 1;
 }
 
+// Gap 2: turbo-run start --autostart, what autostart on registers for the logon. It starts the supervisor only for a
+// run that was going when the machine went down (lib/autostart.mjs logonSkip), keeping its range and plan-only mark,
+// and copies everything it prints, a failure of the start included, into the supervisor log: nobody sees a logon
+// command's output.
+async function startAtLogon(root) {
+  const log = (text) => {
+    const lines = String(text).split(/\r?\n/).filter((l) => l.trim());
+    if (!lines.length) return;
+    try {
+      ensureDir(logsDir(root));
+      fs.appendFileSync(path.join(logsDir(root), 'supervisor.log'), lines.map((l) => `${new Date().toISOString()} ${l.startsWith('autostart: ') ? l : `autostart: ${l}`}\n`).join(''));
+    } catch { /* logging is best-effort */ }
+  };
+  for (const stream of [process.stdout, process.stderr]) {
+    const write = stream.write.bind(stream);
+    stream.write = (chunk, ...rest) => {
+      log(chunk);
+      return write(chunk, ...rest);
+    };
+  }
+  const sup = readJson(supPath(root), null);
+  const why = logonSkip({ sup, ownerStop: readOwnerStop(root), alive: supAlive(sup, pollOf(root)) });
+  if (why) {
+    out(`autostart: nothing started: ${why}`);
+    return 0;
+  }
+  out('autostart: the run was going when the machine went down; starting the supervisor');
+  return start(root, undefined, { planOnly: Boolean(sup.planOnly), logon: true });
+}
+
+// Gap 1: how the owner comes back to their controlling session after a crash, printed by status in that session (the
+// skill's own Bash knows its id as CLAUDE_CODE_SESSION_ID); never in a lane. Bare claude -c may open a lane's
+// conversation: in checkout mode the lanes run in this directory too.
+function backToChat(env, lang) {
+  const id = String(env.CLAUDE_CODE_SESSION_ID ?? '');
+  if (env.TURBO_LANE || !/^[A-Za-z0-9_-]{8,80}$/.test(id)) return null;
+  return lang === 'ru' ? `вернуться в этот чат: claude -r (выбрать по названию) или claude --resume ${id}` : `back to this chat: claude -r (pick it by its title) or claude --resume ${id}`;
+}
+
 // The daemon's lease, checked after every sleep. After a long sleep (hibernate, a stopped VM) the
 // heartbeat goes stale: another start may then judge this daemon dead and take the lock, and stop
 // or resume clear it ({pid: null}). daemon.lock alone decides: the lease is lost as soon as the lock
@@ -496,7 +544,7 @@ function leaseSleep(root, log) {
   };
 }
 
-async function daemon(root, mode = 'safe', range = null, { planOnly: asked = false } = {}) {
+async function daemon(root, mode = 'safe', range = null, { planOnly: asked = false, logon = false } = {}) {
   const ctx = await makeCtx(root, mode);
   const poll = ctx.config.poll_seconds;
   const lock = acquireLock(root, poll);
@@ -512,9 +560,12 @@ async function daemon(root, mode = 'safe', range = null, { planOnly: asked = fal
     // range: the phases this run may start (no key: the whole milestone)
     // reconcile R10: --plan-only, or kept from the run this daemon takes over (start without it clears the mark)
     const planOnly = asked || Boolean(prev && !prev.finished && prev.planOnly);
-    const base = { finished: false, halted: false, poll_seconds: poll, ...(range ? { range } : {}), ...(planOnly ? { planOnly: true } : {}) };
+    // takeover: the first tick relaunches a lane whose session failed or is gone while no supervisor ran (a reboot or
+    // a crash), as a continuation instead of a halt (lib/supervisor.mjs takeOver)
+    const base = { finished: false, halted: false, takeover: true, poll_seconds: poll, ...(range ? { range } : {}), ...(planOnly ? { planOnly: true } : {}) };
     let initial;
-    if (ctx.lanes === 'slots') initial = { lanesMode: 'slots', lanes: resumableLanes(prev, range, ctx), ...base };
+    // logon: a start at logon tries again only the lanes a crash stopped (Gap 2)
+    if (ctx.lanes === 'slots') initial = { lanesMode: 'slots', lanes: resumableLanes(prev, range, ctx, { logon }), ...base };
     else {
       if (lanesSettings(ctx.config.lanes).mode === 'slots') ctx.deps.log(`lanes.mode slots needs full mode (doctor: ${mode}); one lane runs in this checkout`);
       if (prev?.lanes && Object.keys(prev.lanes).length && !prev.finished) ctx.deps.log(`slots-mode lanes are recorded (${Object.keys(prev.lanes).join(', ')}); checkout mode does not resume them (their sessions and slots kept)`);
@@ -722,6 +773,8 @@ async function resumePhase(root, id, andStart) {
   // a live daemon (for example one waiting for the owner) rewrites supervisor.json every
   // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
   stopDaemon(root, readJson(supPath(root), null));
+  // the owner goes on with the run: a start at logon takes it up again (Gap 2)
+  clearOwnerStop(root);
   // the phase's own files: in its lane's slot (Stage 4), else in this checkout
   const phaseRoot = laneForPhase(readJson(supPath(root), null), root, id)?.slotPath || root;
   fs.rmSync(path.join(runDir(root), `p${id}.json`), { force: true });
@@ -951,11 +1004,15 @@ async function main() {
     }
     case 'start': {
       if (!root) die('no .planning directory found');
+      if (args.includes('--autostart')) {
+        if (rangeFlags(args) !== undefined || args.includes('--plan-only')) die('start --autostart takes no range flags and no --plan-only: it takes up the run as it was');
+        return startAtLogon(root);
+      }
       return start(root, rangeFlags(args), { planOnly: args.includes('--plan-only') });
     }
     case 'daemon': {
       if (!root) die('no .planning directory found');
-      return daemon(root, flag(args, '--mode', 'safe'), rangeFlags(args) ?? null, { planOnly: args.includes('--plan-only') });
+      return daemon(root, flag(args, '--mode', 'safe'), rangeFlags(args) ?? null, { planOnly: args.includes('--plan-only'), logon: args.includes('--autostart') });
     }
     case 'status': {
       if (!root) die('no .planning directory found');
@@ -990,6 +1047,8 @@ async function main() {
       printAttended(attended);
       printAway(root, config);
       printLeftovers(leftovers);
+      const back = backToChat(process.env, config.lang);
+      if (back) out(back);
       return 0;
     }
     case 'view': {
@@ -1000,6 +1059,8 @@ async function main() {
     }
     case 'stop': {
       if (!root) die('no .planning directory found');
+      // the owner's stop: a start at logon (autostart) leaves the run stopped until the owner's start or resume
+      if (fs.existsSync(path.dirname(runDir(root)))) writeOwnerStop(root);
       const sup = readJson(supPath(root), null);
       stopDaemon(root, sup);
       // supervisor.json may be missing (never started) or unreadable for any reason: this
@@ -1007,6 +1068,18 @@ async function main() {
       const code = stopLanes(root, sup);
       printLeftovers(gatesLeftovers(root));
       return code;
+    }
+    case 'autostart': {
+      // Gap 2: opt-in, per project: the supervisor comes back at logon after a reboot; every change printed, off
+      // undoes it (lib/autostart.mjs)
+      if (!root) die('no .planning directory found');
+      const action = pos[0];
+      if (action === 'on' && !fs.existsSync(path.dirname(runDir(root)))) die('no .planning/turbo/ in this project: run /turbo-autonomous here first');
+      // node by its real path: a version manager's per-shell link (fnm) is gone after a reboot
+      const r = runAutostart(action, { root, node: fs.realpathSync(process.execPath), turboRun: SELF });
+      const failing = r.code ? r.lines.at(-1) : null;
+      for (const line of r.lines) (line === failing ? process.stderr : process.stdout).write(`${line}\n`);
+      return r.code;
     }
     case 'annotate': {
       // spec §6.2 (L3): the markup session's brief and apply

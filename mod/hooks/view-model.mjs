@@ -1022,10 +1022,12 @@ export function refreshMs(view, foreground) {
   return foreground ? ms : Math.max(BACKGROUND_MS, ms);
 }
 
-// The mod opens the pane by itself only while there is something live to watch; Claude Code places such a pane
-// from 144 columns (110 once the person opened it), and /turbo-view or the owner's next prompt (register.mjs
-// askAgain) opens it at any width.
-export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || list(view?.questions).length);
+// The mod opens the pane by itself only while there is something live to watch: the supervisor runs, a question is
+// open, or a lane is open (a crash or a reboot leaves its lanes recorded with no supervisor: the pane says so). A run
+// the owner stopped (turbo-run stop) opens it only for a question. Claude Code places such a pane from 144 columns (110
+// once the person opened it), and /turbo-view or the owner's next prompt (register.mjs askAgain) opens it at any width.
+const laneOpen = (lane) => lane?.status !== 'done';
+export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || list(view?.questions).length || (!view?.supervisor?.stoppedByOwner && list(view?.lanes).some(laneOpen)));
 
 // The argv of S1's single answer arbiter (spec §5.3) for a press in the pane: option is the 1-based option number,
 // text a free answer, passed as one argument (no shell); --rev is always the revision the pane drew, so an answer to

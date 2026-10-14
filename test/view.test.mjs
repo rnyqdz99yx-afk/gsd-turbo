@@ -10,6 +10,7 @@ import { writeAttend } from '../lib/attend.mjs';
 import { watch } from '../lib/watch.mjs';
 import { writeLaneStatus } from '../lib/run-status.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
+import { writeOwnerStop } from '../lib/autostart.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
 import { buildView, formatView, openQuestions, plansOf, pushOf, recentCommits, stallMs } from '../lib/view.mjs';
 import { DEFAULTS, viewRefreshSeconds } from '../lib/config.mjs';
@@ -64,6 +65,13 @@ test('the view shows supervisor, range, the lane with its step, record and subag
   assert.deepEqual(v.questions.map((q) => q.id), ['q1']);
   assert.deepEqual(v.commits, COMMITS());
   assert.equal(JSON.stringify(v).includes(LEAK), false);
+});
+
+test('the view says when the owner stopped the run (turbo-run stop\'s mark): the pane does not open by itself for its lanes (Gap 1)', () => {
+  const { root, sup, env } = laneProject();
+  assert.equal('stoppedByOwner' in buildView({ root, sup, env, now: NOW, commits: COMMITS }).supervisor, false);
+  writeOwnerStop(root, at('10:30'));
+  assert.equal(buildView({ root, sup, env, now: NOW, commits: COMMITS }).supervisor.stoppedByOwner, true);
 });
 
 test('a lane record from before the lane launched does not count; a lane without its transcript has no agents', () => {

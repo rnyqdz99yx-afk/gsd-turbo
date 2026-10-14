@@ -610,12 +610,24 @@ test('refreshMs: view.refresh_seconds in the foreground (1–60, else 3), at lea
   assert.equal(refreshMs(view({ ui: { lang: 'en', refreshSeconds: 30 } }), false), 30000);
 });
 
-test('the pane opens by itself only while the supervisor runs or a question is open', () => {
+test('the pane opens by itself only while the supervisor runs, a lane is open or a question is open', () => {
   assert.equal(shouldAutoOpen(view()), true);
-  assert.equal(shouldAutoOpen(view({ supervisor: { running: false }, questions: [] })), false);
+  assert.equal(shouldAutoOpen(view({ supervisor: STOPPED_SUP, questions: [], lanes: [] })), false);
   assert.equal(shouldAutoOpen(view({ supervisor: null })), true);
   assert.equal(shouldAutoOpen(null), false);
   assert.equal(PANE_ID, 'turbo-view');
+});
+
+test('after a crash (no supervisor runs, the lane recorded running) the pane still opens by itself; a finished lane or an owner stop does not open it', () => {
+  // the machine went down: the supervisor is dead, its lane is still recorded and no question is open
+  assert.equal(shouldAutoOpen(calm({ supervisor: STOPPED_SUP })), true);
+  assert.equal(shouldAutoOpen(calm({ supervisor: STOPPED_SUP }, { status: 'paused-context' })), true);
+  assert.equal(shouldAutoOpen(calm({ supervisor: STOPPED_SUP }, { status: 'ready' })), true, 'a phase waiting for its merge needs the supervisor');
+  assert.equal(shouldAutoOpen(calm({ supervisor: { ...STOPPED_SUP, finished: true } }, { status: 'done' })), false);
+  // turbo-run stop is the owner's own: the stopped run's lanes do not open the pane, an open question still does
+  const stopped = { ...STOPPED_SUP, stoppedByOwner: true };
+  assert.equal(shouldAutoOpen(calm({ supervisor: stopped })), false);
+  assert.equal(shouldAutoOpen(view({ supervisor: stopped })), true);
 });
 
 test('answerArgv names the project first, then the option number or, last, the free text as one argument whatever it holds, and always the drawn rev (Review Focus 2)', () => {
@@ -686,7 +698,7 @@ test('paths: ancestors on Windows and POSIX, the turbo-run location from CLAUDE_
   assert.equal(firstLine('\n  invalid turbo config x\n    at y'), 'invalid turbo config x');
 });
 
-test('the mod is a plugin whose hooks module loads in plain Node and registers its six hooks; its version follows package.json', async () => {
+test('the mod is a plugin whose hooks module loads in plain Node and registers its seven hooks; its version follows package.json', async () => {
   const plugin = JSON.parse(fs.readFileSync('mod/.claude-plugin/plugin.json', 'utf8'));
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
   assert.deepEqual([plugin.name, plugin.version], ['turbo-view', pkg.version]);
@@ -697,7 +709,7 @@ test('the mod is a plugin whose hooks module loads in plain Node and registers i
     hooks.push([event, typeof matcher === 'function' ? null : matcher]);
     return { catch() {} };
   });
-  assert.deepEqual(hooks, [['session.start', null], ['command.run', { command: 'turbo-view' }], ['ui.render', { component: 'AbovePrompt' }], ['prompt.submit', null], ['ui.close', { id: PANE_ID }], ['ui.render', { component: 'Pane', requestId: PANE_ID }]]);
+  assert.deepEqual(hooks, [['session.start', null], ['classic.SessionStart', null], ['command.run', { command: 'turbo-view' }],['ui.render', { component: 'AbovePrompt' }], ['prompt.submit', null], ['ui.close', { id: PANE_ID }], ['ui.render', { component: 'Pane', requestId: PANE_ID }]]);
 });
 
 // The mod shell driven in plain Node through a fake $, for what the claude plugin test kit cannot stub: a $.clock.every
@@ -760,6 +772,97 @@ test('a clock that failed to start at the first read is started by /turbo-view',
   assert.deepEqual(await s.hooks['command.run:turbo-view'](s.$, { command: 'turbo-view', args: '' }), {});
   await s.settle();
   assert.deepEqual(s.live().map((t) => t.ms), [3000]);
+});
+
+// Gap 1 (v0.4.0): the pane comes back by itself when a session starts or resumes (claude --resume after a crash). A
+// fresh copy of the module per test, a fake $ whose clock works; nothing is drawn unless the test draws it.
+const CRASHED = () => calm({ supervisor: STOPPED_SUP }); // the machine went down: no supervisor, its lane recorded running
+async function session(name, { surfaces = ['terminal'], placed = [true], read = CRASHED() } = {}) {
+  const { register } = await import(`../mod/hooks/register.mjs?${name}`);
+  const hooks = {};
+  register((event, a, b) => {
+    hooks[typeof a === 'function' ? event : `${event}:${Object.values(a).join(':')}`] = typeof a === 'function' ? a : b;
+    return { catch() {} };
+  });
+  const BIN = '/home/dev/.claude/turbo/bin/turbo-run.mjs';
+  const runs = [];
+  const opens = [];
+  const asked = [];
+  const $ = {
+    session: { cwd: async () => '/work', surfaces: async () => surfaces },
+    fs: { exists: async (p) => ['/work/.planning', '/work/.planning/turbo', BIN, '/usr/bin/node'].includes(p) },
+    env: { get: async (n) => ({ CLAUDE_CONFIG_DIR: '/home/dev/.claude', PATH: '/usr/bin' })[n] },
+    process: { run: async (argv) => (runs.push(argv), { exitCode: 0, stdout: JSON.stringify(read), stderr: '' }) },
+    clock: { sleep: () => new Promise(() => {}), every: (ms) => ({ ms, cancel() {} }) },
+    ui: {
+      open: async (o) => (opens.push(o), { isPlaced: placed[Math.min(opens.length - 1, placed.length - 1)] }),
+      panes: async () => (opens.length ? [{ id: PANE_ID, isPlaced: placed[Math.min(opens.length - 1, placed.length - 1)] }] : []),
+      toast() {}, log() {}, invalidate: (what) => asked.push(what), resolve: () => ({ Box: (p) => p, Text: (p) => p }),
+    },
+    command: { register: async () => {} },
+  };
+  const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
+  const start = (isInteractive = true) => hooks['session.start']($, { cwd: '/work', surface: isInteractive && surfaces.length ? 'terminal' : null, isInteractive }, (e) => ({ cwd: e.cwd }));
+  const classic = (source) => hooks['classic.SessionStart']($, { hook_event_name: 'SessionStart', source }, () => ({}));
+  const band = async () => spanText(await hooks['ui.render:AbovePrompt']($, { component: 'AbovePrompt' }, async () => null) ?? '');
+  return { hooks, runs, opens, asked, settle, start, classic, band };
+}
+
+test('a session that resumes in a terminal reads the run and opens the pane by itself, before any band draw or /turbo-view (Gap 1)', async () => {
+  for (const [name, order] of [['resume', ['start', 'resume']], ['resume-first', ['resume', 'start']], ['startup', ['start', 'startup']]]) {
+    const s = await session(name);
+    for (const step of order) await (step === 'start' ? s.start() : s.classic(step));
+    await s.settle();
+    assert.deepEqual([s.runs.length, s.runs[0]?.[2]], [1, 'view'], name);
+    assert.deepEqual(s.opens, [{ id: PANE_ID, title: 'turbo' }], `${name}: opened by itself, unasked (no focus)`);
+    // a later SessionStart (/clear, a compaction) reads nothing more and never opens twice
+    await s.classic('clear');
+    await s.settle();
+    assert.deepEqual([s.runs.length, s.opens.length], [1, 1], name);
+  }
+});
+
+test('the session start alone reads nothing (the folder may not be trusted yet) and asks the band again, whose draw starts the reads (Gap 1)', async () => {
+  const s = await session('untrusted');
+  await s.start();
+  await s.settle();
+  assert.deepEqual([s.runs, s.opens], [[], []]);
+  assert.ok(s.asked.includes('ui.render'), 'a band drawn before the session started is drawn again');
+  await s.band();
+  await s.settle();
+  assert.deepEqual([s.runs.length, s.opens.length], [1, 1], 'the first band draw reads and opens');
+});
+
+test('never in a background session no terminal is attached to, nor in claude -p (Gap 1)', async () => {
+  const bg = await session('background', { surfaces: [] });
+  await bg.start();
+  await bg.classic('resume');
+  await bg.settle();
+  assert.deepEqual([bg.runs, bg.opens], [[], []]);
+  const p = await session('print');
+  await p.start(false);
+  await p.classic('startup');
+  await p.settle();
+  assert.deepEqual([p.runs, p.opens], [[], []]);
+});
+
+test('a narrow terminal: the pane opened at the start waits undrawn and the band says how to open it (Gap 1, the 144-column rule)', async () => {
+  const s = await session('narrow', { placed: [false] });
+  await s.start();
+  await s.classic('resume');
+  await s.settle();
+  assert.equal(s.opens.length, 1);
+  assert.match(await s.band(), /open the pane: \/turbo-view$/);
+});
+
+test('a run the owner stopped, or one that finished, opens no pane at the start (Gap 1)', async () => {
+  for (const [name, read] of [['owner-stop', calm({ supervisor: { ...STOPPED_SUP, stoppedByOwner: true } })], ['finished', calm({ supervisor: { ...STOPPED_SUP, finished: true }, lanes: [] })]]) {
+    const s = await session(name, { read });
+    await s.start();
+    await s.classic('resume');
+    await s.settle();
+    assert.deepEqual([s.runs.length, s.opens], [1, []], name);
+  }
 });
 
 // v0.3.3: what the lane does now, its steps, what comes next and when the owner is needed, the commits by kind

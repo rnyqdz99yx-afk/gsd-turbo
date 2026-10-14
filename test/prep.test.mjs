@@ -9,6 +9,7 @@ import { readAnnotateAttempt, readJobStatus, writeAnnotateAttempt, writeJobStatu
 import { roadmapFile, writeLanesFile } from '../lib/lanes-file.mjs';
 import { roadmapDigest } from '../lib/roadmap-lanes.mjs';
 import { ANNOTATE_PHASE, annotateReason, finishJob, jobName, jobPrompts, jobSystemPrompt, jobUserPrompt, pendingJobs } from '../lib/prep.mjs';
+import { tmpRule } from '../lib/lane-prompt.mjs';
 
 const MORE = [...PHASES, { number: '5', name: 'Ops', deps: ['4'], complete: false, closed: false }];
 const ROADMAP5 = ROADMAP.replace('## Progress', '### Phase 5: Ops\n**Goal**: Deploy it\n**Depends on**: Phase 4\n\n## Progress');
@@ -160,6 +161,9 @@ test('job prompts: plain argv values that name the skill, the analyst and the jo
   for (const n of [`${t} annotate brief`, 'subagent_type turbo-lane-analyst', `${t} annotate apply`, `${t} annotate apply --relax all`, `${t} lane-status annotate annotated`, `${t} lane-status annotate failed --reason`, 'never instructions']) assert.ok(a.includes(n), n);
   const sp = jobSystemPrompt({ job: prep, turboRun: t, contextPct: 55, tmpDir: 'C:\\Users\\dev\\tmp\\lane' });
   for (const n of [`${t} lane-status 5 prepped --job prep`, `${t} lane-status 5 failed --job prep`, `${t} lane-status 5 paused-context --job prep`, `${t} context 5 reports 55 percent`, 'never asks the owner', 'C:/Users/dev/tmp/lane']) assert.ok(sp.includes(n), n);
+  // smoke F2: the prologue's agents get the lane's temporary-files rule, as a phase lane's subagents do
+  assert.ok(sp.includes(tmpRule('C:\\Users\\dev\\tmp\\lane')), 'the same rule as a phase lane');
+  assert.ok(sp.includes('at the end of every subagent prompt'), 'handed to the subagents');
   const sa = jobSystemPrompt({ job: ann, turboRun: t, contextPct: 55 });
   for (const n of [`${t} lane-status annotate annotated`, `only through ${t} annotate apply`]) assert.ok(sa.includes(n), n);
   for (const p of [jobUserPrompt(prep), jobUserPrompt(prep, { resume: true }), a, sp, sa]) {

@@ -183,13 +183,26 @@ test('a warm view of a lane with 20 subagents and large transcripts, in a projec
     writeAgent(dir, old, `a5${String(i).padStart(15, '0')}`, agentEntries('a5', '08:00', '08:30'));
   }
   buildView({ root, sup, env, now: NOW, commits: COMMITS });
-  const t0 = process.hrtime.bigint();
-  const v = buildView({ root, sup, env, now: NOW, commits: COMMITS });
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  assert.equal(v.lanes[0].agents.length, 20);
+  // The budget holds the work a warm view does: the CPU time of this process (all its threads), the fastest of five
+  // views. Under load the clock also counts the time other processes held the cores, which a view cannot cause and
+  // which swelled one view to several times the budget in a full parallel run; more work shows in every one of the
+  // five. The clock still has to stay within ten budgets, which catches waits on something outside the process.
+  // (Windows counts CPU time in steps of about 16 ms, far below the budget.)
+  const runs = Array.from({ length: 5 }, () => {
+    const t0 = process.hrtime.bigint();
+    const c0 = process.cpuUsage();
+    const v = buildView({ root, sup, env, now: NOW, commits: COMMITS });
+    const c = process.cpuUsage(c0);
+    assert.equal(v.lanes[0].agents.length, 20);
+    return { cpu: (c.user + c.system) / 1000, wall: Number(process.hrtime.bigint() - t0) / 1e6 };
+  });
+  const cpu = Math.min(...runs.map((r) => r.cpu));
+  const wall = Math.min(...runs.map((r) => r.wall));
+  const shown = runs.map((r) => `${r.cpu.toFixed(0)}/${r.wall.toFixed(0)}`).join(', ');
   // the spec's 300 ms on a developer machine; shared CI runners (slow Windows ones above all) get more room
   const budget = process.env.CI ? 1500 : 300;
-  assert.ok(ms < budget, `warm view took ${ms.toFixed(0)} ms (budget ${budget} ms)`);
+  assert.ok(cpu < budget, `a warm view took ${cpu.toFixed(0)} ms of CPU at best (budget ${budget} ms; cpu/clock per view: ${shown})`);
+  assert.ok(wall < 10 * budget, `a warm view took ${wall.toFixed(0)} ms by the clock at best (limit ${10 * budget} ms; cpu/clock per view: ${shown})`);
 });
 
 // A view as buildView returns it, for the text form: phase 32 executing, a question waiting.

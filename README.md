@@ -71,6 +71,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 | `/turbo-autonomous` | start the rest of the milestone (`--only N`, `--from N --to M`, `--all`) |
 | `/turbo-autonomous status` | what runs now and what waits for you |
 | `/turbo-autonomous answer` | answer the open questions |
+| `/turbo-autonomous away` | answer ahead everything that can be, then leave; `back` shows what happened |
 | `/turbo-autonomous attend N` | run the rest of phase N here with you (for plans that need a device, a login…) |
 | `/turbo-autonomous stop` | stop the supervisor and its sessions |
 
@@ -79,7 +80,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 - **Permissions.** Background sessions run with `--permission-mode bypassPermissions` so nobody has to approve tool calls. Your Claude Code hooks still apply. For a stricter first run, set `lane_permission_mode` in `.planning/turbo/config.json` ([config](docs/reference.md#config)).
 - **Usage.** Phases run on your model in the background with parallel helpers and automated UAT. Expect to hit your plan's limits faster than with plain GSD.
 - **GSD version.** Tested with GSD core 1.16.x. With another version `turbo-run doctor` drops to a safe mode, or refuses to start if GSD changed incompatibly.
-- **What stays yours.** Signatures, your accounts on third-party sites, physical devices, 2FA, money. The run does everything else first, then stops and asks.
+- **What stays yours.** Signatures, your accounts on third-party sites, physical devices, 2FA, money. The run does everything else first, then stops and asks. A safe question you leave open for an hour (a plan's recommended choice, a check its automated evidence decides) is taken by turbo itself and notified, with an undo command ([which ones](docs/reference.md#owner-questions)).
 - **Safety rails.** No force-push, no rewriting published history, no data deletion without a dry run, no overwriting a running executable. Details in [Safety](docs/reference.md#safety).
 - **Uninstall** with `node install.mjs --uninstall` ([what to check first](docs/reference.md#uninstall)).
 

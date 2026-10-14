@@ -18,6 +18,6 @@
 2. `test/questions.test.mjs`: `askedAt` from `askOwner` and `stopQuestion`, carried by `refreshQuestions` and reset on a new rev; `autoOk`.
 3. `test/away.test.mjs` (new): gather (refreshes idle phases only), set, back summary, `autoAnsweredSince`.
 4. `test/cli-questions.test.mjs`: `answer --undo`, `ask --auto-ok`; `test/view.test.mjs`, `test/view-model.test.mjs`: the new lines equal in both.
-5. Implement: `lib/auto-answer.mjs`, `lib/away.mjs` (new), `lib/questions.mjs`, `lib/answers.mjs`, `lib/owner-tick.mjs`, `lib/config.mjs`, `lib/messages.mjs`, `lib/inbox.mjs`, `lib/annotate.mjs`, `lib/cli-phase.mjs`, `lib/view.mjs`, `mod/hooks/view-model.mjs`, `bin/turbo-run.mjs`, the two skills, `docs/reference.md`, version 0.4.0.
+5. Implement: `lib/auto-answer.mjs`, `lib/away.mjs` (new), `lib/questions.mjs`, `lib/answers.mjs`, `lib/owner-tick.mjs`, `lib/config.mjs`, `lib/messages.mjs`, `lib/inbox.mjs`, `lib/annotate.mjs`, `lib/cli-phase.mjs`, `lib/view.mjs`, `mod/hooks/view-model.mjs`, `bin/turbo-run.mjs`, the two skills, `docs/reference.md`, the READMEs. The version stays for the v0.4.0 release (other Stage 4 branches merge first).
 
 Not touched (parallel branch `stage-4-daemon`): `lib/claude.mjs`, the supervisor's wake and remove paths, the push secret scan.

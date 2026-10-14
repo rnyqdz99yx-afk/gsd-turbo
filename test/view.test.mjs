@@ -39,7 +39,7 @@ const agentEntries = (id, from, to, tokens = 166000) => [
 test('without supervisor.json the view has no supervisor and no lanes, and still lists questions and commits', () => {
   const { root, env } = laneProject();
   const v = buildView({ root, sup: null, env, now: NOW, commits: COMMITS });
-  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], next: null, questions: [], commits: COMMITS(), attended: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
+  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], next: null, questions: [], commits: COMMITS(), attended: [], away: null, autoAnswered: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
 });
 
 test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
@@ -663,4 +663,38 @@ test('review I5: the run line of a notification leaves out the lane that is leav
   assert.equal(runLineFor(root, {}, { env, now: NOW, leaving: '33' }), '2 lanes · next: phase 34 waits for phase 32');
   writeJsonAtomic(path.join(runDirOf(root), 'supervisor.json'), { ...sup, lanes: { 32: sup.lanes[32], 33: sup.lanes[33] } });
   assert.equal(runLineFor(root, {}, { env, now: NOW, leaving: '33' }), null);
+});
+
+test('v0.4.0: away mode and the answers turbo took itself — formatView prints the pane\'s lines; buildView reads them from the run', async () => {
+  const pane = await import('../mod/hooks/view-model.mjs');
+  const auto = [{ phase: '32', id: '32-09-t2', question: 'Select the authentication provider', option: 'Clerk', at: at('10:30'), undo: 'turbo-run answer 32 32-09-t2 --undo' }];
+  const views = [
+    textView({ questions: [], away: { since: at('09:00') }, autoAnswered: auto }),
+    textView({ questions: [], away: null, autoAnswered: auto }),
+    textView({ questions: [], away: { since: at('09:00') }, autoAnswered: [] }),
+  ];
+  for (const lang of ['en', 'ru']) {
+    for (const v of views) {
+      const view = { ...v, ui: { lang, refreshSeconds: 3, utcOffsetMinutes: 0 } };
+      assert.equal(formatView(view), pane.paneLines(pane.render(view)).join('\n'), lang);
+    }
+  }
+  const lines = formatView(views[0]).split('\n');
+  const i = lines.indexOf('Away mode — turbo takes the safe questions itself; when you are back: turbo-run back');
+  assert.ok(i > 0, lines.join('\n'));
+  assert.deepEqual(lines.slice(i + 1, i + 4), ['Accepted automatically while you were away (1):', '  Select the authentication provider → Clerk', '    undo: turbo-run answer 32 32-09-t2 --undo']);
+  assert.ok(formatView({ ...views[1], ui: { lang: 'ru' } }).includes('Принято автоматически, пока вас не было (1):'));
+  const root = tmpDir('vaway');
+  const { writeAway } = await import('../lib/away-state.mjs');
+  const { writeQuestions } = await import('../lib/questions.mjs');
+  const { answerQuestion } = await import('../lib/answers.mjs');
+  writeQuestions(root, '32', [{ id: '32-09-t2', phase: '32', plan: '32-09', task: '2', kind: 'decision', question: 'Pick one', options: [{ label: 'Clerk', signal: 'clerk', recommended: true }], allowOther: true, state: 'open', rev: 1 }]);
+  answerQuestion({ root, phase: '32', id: '32-09-t2', option: 1, by: 'auto', now: new Date(at('10:30')), laneRunning: true });
+  writeAway(root, { since: at('09:00'), ackAt: at('08:00'), snapshot: null });
+  let v = buildView({ root, sup: null, commits: () => [], agents: false });
+  assert.deepEqual(v.away, { since: at('09:00') });
+  assert.deepEqual(v.autoAnswered.map((a) => [a.id, a.question, a.option, a.undo]), [['32-09-t2', 'Pick one', 'Clerk', 'turbo-run answer 32 32-09-t2 --undo']]);
+  writeAway(root, { since: null, ackAt: at('11:00'), snapshot: null });
+  v = buildView({ root, sup: null, commits: () => [], agents: false });
+  assert.deepEqual([v.away, v.autoAnswered], [null, []], 'seen after the owner came back');
 });

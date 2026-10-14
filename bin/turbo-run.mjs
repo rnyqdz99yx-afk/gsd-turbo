@@ -36,15 +36,17 @@ import { laneForPhase, laneLabel, lanesSummary, setupLines, supervisorLanes } fr
 import { loadLanePlugins } from '../lib/lane-plugins.mjs';
 import { IntegrateRefused, readyRecord } from '../lib/integrate.mjs';
 import { jobLaneStatus, runAnnotateCommand } from '../lib/cli-jobs.mjs';
+import { runAwayCommand } from '../lib/away.mjs';
+import { autoAnswers, readAway } from '../lib/away-state.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail|away|back> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax']);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
-const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend']);
+const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const START_USAGE = 'usage: turbo-run start [--from <phase>] [--to <phase>] | start --only <phase> | start --all';
@@ -257,6 +259,17 @@ function printLanes(sup, { attended, questions, lang }) {
 // spec §8 (S4): the phases the owner runs in their own session; while any is marked, no lane runs.
 function printAttended(attended) {
   for (const a of attended) out(`attended: phase ${a.phase}${a.at ? ` since ${a.at}` : ''} in the owner's session (hand it back: turbo-run attend ${a.phase} --done)`);
+}
+
+// v0.4.0: away mode and the answers turbo took itself since the owner last came back, each with its undo command
+function printAway(root, config) {
+  const away = readAway(root);
+  const ru = config.lang === 'ru';
+  if (away.since) out(ru ? `режим «ушёл»: с ${away.since}; когда вернётесь: turbo-run back` : `away: since ${away.since}; when you are back: turbo-run back`);
+  for (const a of autoAnswers(root, { after: away.ackAt })) {
+    const q = String(a.question).replace(/\s+/g, ' ');
+    out(ru ? `принято автоматически: фаза ${a.phase} — ${q} → ${a.option} (отменить: ${a.undo})` : `auto-answered: phase ${a.phase} — ${q} → ${a.option} (undo: ${a.undo})`);
+  }
 }
 
 function fingerprint(root) {
@@ -973,6 +986,7 @@ async function main() {
       const said = config.lang === 'ru' ? ['вопрос к вам: фаза', 'ответить'] : ['owner question: phase', 'answer'];
       for (const q of openQuestions(root).filter((x) => x.stopped)) out(`${said[0]} ${q.phase} — ${String(q.question).replace(/\s+/g, ' ')} (${said[1]}: /turbo-autonomous answer)`);
       printAttended(attended);
+      printAway(root, config);
       printLeftovers(leftovers);
       return 0;
     }
@@ -1044,6 +1058,22 @@ async function main() {
         die(`phase ${id} is not attended: nothing to hand back (${marks ? `attended: phase ${marks}` : 'no phase is attended'}); nothing was changed. To give phase ${id} back to its lane without a sitting: turbo-run resume ${id} --start`);
       }
       return resumePhase(root, id, true);
+    }
+    case 'away':
+    case 'back': {
+      // v0.4.0 sleep mode: the questions to answer before leaving (away), the mode on (away --set), the morning summary
+      if (!root) die('no .planning directory found');
+      const config = loadConfig(root);
+      const core = gsdCoreDir(root);
+      const deps = {
+        config,
+        sup: readJson(supPath(root), null),
+        loadPhases: () => {
+          if (!core) { process.stderr.write('warn: gsd-core not found: only the questions already built are listed\n'); return []; }
+          return loadPhases(root, core).phases;
+        },
+      };
+      return runAwayCommand(cmd, args, { root, out, deps });
     }
     case 'lanes': {
       // spec §4, §4.1 (Stage 4 L0): the slots of this project: setup, trust, remove

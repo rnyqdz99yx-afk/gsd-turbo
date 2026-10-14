@@ -10,9 +10,10 @@ const git = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio
 const LINK = process.platform === 'win32' ? 'junction' : 'dir';
 
 // A project with agent worktrees the way Claude Code's Agent(isolation="worktree") makes them:
-// .claude/worktrees/agent-<id> on branch worktree-agent-<id>.
+// .claude/worktrees/agent-<id> on branch worktree-agent-<id>. The root as git prints it: a Windows runner's temp
+// path has an 8.3 short name (C:UsersRUNNER~1…) that only the native realpath expands.
 function project() {
-  const root = tmpGitRepo();
+  const root = fs.realpathSync.native(tmpGitRepo());
   fs.writeFileSync(path.join(root, '.gitignore'), 'node_modules\n.claude/\n');
   git(root, 'add', '.gitignore');
   git(root, 'commit', '-q', '-m', 'ignore');
@@ -38,10 +39,11 @@ async function run(root, args, deps = {}) {
 const registered = (root) => git(root, 'worktree', 'list', '--porcelain').split('\n').filter((l) => l.startsWith('worktree ')).length;
 const branches = (root) => git(root, 'branch', '--format=%(refname:short)').split('\n').filter(Boolean).sort();
 
-test('agentWorktrees lists only Claude Code agent worktrees of the project, never the main checkout or another worktree', () => {
+test('agentWorktrees lists only Claude Code agent worktrees of the project (inside its .claude/worktrees), never the main checkout or another worktree', () => {
   const { root, add } = project();
   const a = add('a1b2c3');
   git(root, 'worktree', 'add', '-q', '-b', 'feature', path.join(tmpDir('feat'), 'feature'));
+  git(root, 'worktree', 'add', '-q', '-b', 'worktree-agent-zz', path.join(tmpDir('elsewhere'), 'agent-zz'));
   const list = agentWorktrees(root);
   assert.deepEqual(list.map((w) => [w.path, w.branch]), [[a, 'worktree-agent-a1b2c3']]);
 });
@@ -172,4 +174,41 @@ test('turbo-run worktrees prune --dry-run from the project folder; a wrong form 
   assert.deepEqual([r.status, r.stdout.trim()], [0, `would remove ${p} (branch worktree-agent-c1)`]);
   assert.equal(cli('tidy').status, 2);
   assert.ok(fs.existsSync(p));
+});
+
+test('a worktree remove git gives up halfway (its record gone, files left): partly removed, the branch still deleted', async () => {
+  const { root, add } = project();
+  const p = add('p1', { commit: true, merge: true });
+  const halfway = (cwd, args) => {
+    if (args[0] === 'worktree' && args[1] === 'remove') {
+      // git dropped the worktree's record, then failed on a file a process holds
+      fs.renameSync(p, `${p}.held`);
+      execFileSync('git', ['worktree', 'prune'], { cwd });
+      fs.renameSync(`${p}.held`, p);
+      throw Object.assign(new Error('x'), { stderr: 'error: failed to delete: Permission denied\n' });
+    }
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  };
+  const r = await run(root, ['prune', p], { git: halfway });
+  assert.equal(r.code, 1);
+  assert.equal(r.text, `partly removed ${p} (branch worktree-agent-p1 deleted): git worktree remove: error: failed to delete: Permission denied; what is left of the folder is no worktree any more: delete it once nothing holds it`);
+});
+
+test('worktrees prune runs in the main checkout only: from inside a worktree nothing is judged or removed', async () => {
+  const { root, add } = project();
+  const p = add('w1', { commit: true });
+  const r = await run(p, ['prune']);
+  assert.equal(r.code, 2);
+  assert.match(r.text, /^ERR turbo-run worktrees prune runs in the main checkout (.*), not in a worktree of it/);
+  assert.deepEqual(agentWorktrees(root).map((w) => w.path), [p]);
+});
+
+test('an untracked file counts as a change whatever status.showUntrackedFiles says', async () => {
+  const { root, add } = project();
+  const p = add('n1', { commit: true, merge: true });
+  git(root, 'config', 'status.showUntrackedFiles', 'no');
+  fs.writeFileSync(path.join(p, 'new-work.txt'), 'not committed\n');
+  const r = await run(root, ['prune']);
+  assert.equal(r.text, `kept ${p}: it has uncommitted changes`);
+  assert.ok(fs.existsSync(path.join(p, 'new-work.txt')));
 });

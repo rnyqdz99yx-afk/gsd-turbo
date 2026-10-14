@@ -276,12 +276,17 @@ test('turbo-phase skill: a human action that did not work goes back to the owner
   assert.ok(p.includes(HUMAN_ACTION_RULE), 'the rule verbatim, as the lanes get it');
   for (const n of [
     'read-only', 'turbo-run questions N --json', '`diagnosis`',
-    'turbo-run questions N --stop <plan id>-t<task number> --agent <agent id> --unmet --question "<', '--context "<',
-    'turbo-run ask N --action "<', 'elevated', 'one command', 'never the plan\'s instructions again',
-    'the second identical failure', 'owner question <plan id>-t<task number>: <',
+    "turbo-run questions N --stop <plan id>-t<task number> --agent <agent id> --unmet --question '<", "--context '<",
+    "turbo-run ask N --action '<", 'elevated', 'one command', 'never the plan\'s instructions again', 'Single quotes keep the shell off',
+    'refused twice', 'the card keeps its last words', 'the second identical failure', 'never Done for the same step',
+    // a delivery not marked yet is marked before the stop opens the question again; Delivery then has nothing to mark
+    'mark it first, `turbo-run questions N --delivered <id> --path',
+    'owner question <plan id>-t<task number>: <',
   ]) assert.ok(p.includes(n), n);
   // a diagnosis never changes what it looks at
   assert.match(p, /[Nn]ever change/);
+  const delivery = owner.slice(owner.indexOf('**Delivery.**'), owner.indexOf('**After an interruption.**'));
+  assert.equal(delivery.split('(nothing to do when **A step that did not work** marked it already)').length, 3, 'both delivery paths');
 });
 
 test('turbo-phase skill: during chunked planning each committed plan\'s questions are listed and classified at once, so the owner can answer ahead; the end of the step lists them once more', () => {
@@ -303,7 +308,7 @@ test('turbo-phase skill: the merged Nyquist worktree goes through turbo-run work
   const dry = point.indexOf('`turbo-run worktrees prune <path> --dry-run`');
   const real = point.indexOf('`turbo-run worktrees prune <path>`');
   assert.ok(dry > point.indexOf('git merge --no-ff <branch>') && real > dry, 'merge, dry run, then the removal');
-  for (const n of ['locks', 'this session', '`kept <path>: <why>`', 'name the line in the note', 'never force', 'never delete it by hand', 'git merge --abort', 'leave the worktree and its branch']) assert.ok(point.includes(n), n);
+  for (const n of ['locks', 'this session', '`kept <path>: <why>`', '`partly removed <path> …`', '`not an agent worktree of this project: …`', 'name the line in the note', 'never force', 'never delete it by hand', 'git merge --abort', 'leave the worktree and its branch']) assert.ok(point.includes(n), n);
   assert.ok(!point.includes('git worktree remove') && !point.includes('git branch -d'), 'no hand removal the harness lock refuses');
 });
 

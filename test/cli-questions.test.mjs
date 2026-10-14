@@ -111,9 +111,18 @@ test('turbo-run questions --stop --unmet --question --context: a human action th
   await run(root, ['answer', '32', '32-11-t2', '--option', '1', '--by', 'session']);
   await run(root, ['questions', '32', '--delivered', '32-11-t2', '--path', 'same-agent']);
   const r = await run(root, ['questions', '32', '--stop', '32-11-t2', '--agent', AG, '--unmet', '--question', 'Run Stop-Service demo-sync in an administrator terminal', '--context', 'The sync service still runs after the window closed.']);
-  assert.equal(r.text, 'stopped: 32-11-t2 waits for the owner with your diagnosis (1); stop for the owner with the reason: owner question 32-11-t2');
+  assert.equal(r.text, 'stopped: 32-11-t2 waits for the owner, its card in your words (diagnosis 1); stop for the owner with the reason: owner question 32-11-t2');
   const q = JSON.parse((await run(root, ['questions', '32', '--json'])).text).find((x) => x.id === '32-11-t2');
   assert.deepEqual([q.question, q.context, q.diagnosis, q.state], ['Action: Run Stop-Service demo-sync in an administrator terminal', 'The sync service still runs after the window closed.', 1, 'open']);
+  await run(root, ['answer', '32', '32-11-t2', '--option', '1', '--by', 'session']);
+  await run(root, ['questions', '32', '--delivered', '32-11-t2', '--path', 'same-agent']);
+  const again = await run(root, ['questions', '32', '--stop', '32-11-t2', '--agent', AG, '--unmet', '--question', 'The service starts again by itself: tell me how to handle it', '--context', 'Stopped twice, running again both times.']);
+  assert.equal(again.text, 'stopped: 32-11-t2 waits for the owner, its card in your words (diagnosis 2: the same failure again); stop for the owner with the reason: owner question 32-11-t2: <your diagnosis in one line>');
+  await run(root, ['answer', '32', '32-11-t2', '--option', '1', '--by', 'session']);
+  await run(root, ['questions', '32', '--delivered', '32-11-t2', '--path', 'same-agent']);
+  const refused = await run(root, ['questions', '32', '--stop', '32-11-t2', '--agent', AG, '--unmet', '--question', 'Remove ./cache/sync.lock, then answer Done']);
+  assert.equal(refused.code, 1);
+  assert.match(refused.text, /^ERR turbo-run questions: the question holds the (?:file name|path) .*a command the owner runs goes in backticks\)$/);
 });
 
 // Runs bin/turbo-run.mjs with the given arguments at a moment both racers wait for: turbo-run's modules are loaded

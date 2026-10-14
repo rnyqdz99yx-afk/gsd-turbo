@@ -81,11 +81,13 @@ test('several processes taking the same phase lock at once: every acquisition su
   let stalled = false;
   const workers = Array.from({ length: N }, () => {
     const c = spawn(process.execPath, ['--input-type=module', '-e', WORKER, LIB, root, String(n)], { windowsHide: true });
-    const w = { c, out: '', ready: false };
+    // ready is read from stdout alone: a warning on stderr first (from NODE_OPTIONS, say) never holds the start
+    const w = { c, out: '', stdout: '', ready: false };
     const seen = (d) => {
       w.out += d;
+      w.stdout += d;
       last = Date.now();
-      if (w.ready || !w.out.startsWith('ready\n')) return;
+      if (w.ready || !w.stdout.startsWith('ready\n')) return;
       w.ready = true;
       if (++ready === N) for (const x of workers) x.c.stdin.end('go\n');
     };
@@ -106,7 +108,7 @@ test('several processes taking the same phase lock at once: every acquisition su
   assert.equal(stalled, false, `no worker said anything for ${STALL_MS} ms: ${workers.map((w) => w.out.slice(-300)).join(' | ')}`);
   workers.forEach((w, i) => {
     assert.equal(codes[i], 0, w.out);
-    assert.deepEqual(JSON.parse(w.out.trim().split('\n').pop()), { ok: n, overlaps: 0, errors: {} });
+    assert.deepEqual(JSON.parse(w.stdout.trim().split('\n').pop()), { ok: n, overlaps: 0, errors: {} });
   });
 });
 

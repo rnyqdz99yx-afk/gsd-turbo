@@ -186,8 +186,9 @@ test('a warm view of a lane with 20 subagents and large transcripts, in a projec
   // The budget holds the work a warm view does: the CPU time of this process (all its threads), the fastest of five
   // views. Under load the clock also counts the time other processes held the cores, which a view cannot cause and
   // which swelled one view to several times the budget in a full parallel run; more work shows in every one of the
-  // five. The clock still has to stay within ten budgets, which catches waits on something outside the process.
-  // (Windows counts CPU time in steps of about 16 ms, far below the budget.)
+  // five. The fastest view by the clock still has to stay within three budgets, which catches waits on something
+  // outside the process (a child process's CPU time is not counted here). (Windows counts CPU time in steps of about
+  // 16 ms, far below the budget.)
   const runs = Array.from({ length: 5 }, () => {
     const t0 = process.hrtime.bigint();
     const c0 = process.cpuUsage();
@@ -202,7 +203,7 @@ test('a warm view of a lane with 20 subagents and large transcripts, in a projec
   // the spec's 300 ms on a developer machine; shared CI runners (slow Windows ones above all) get more room
   const budget = process.env.CI ? 1500 : 300;
   assert.ok(cpu < budget, `a warm view took ${cpu.toFixed(0)} ms of CPU at best (budget ${budget} ms; cpu/clock per view: ${shown})`);
-  assert.ok(wall < 10 * budget, `a warm view took ${wall.toFixed(0)} ms by the clock at best (limit ${10 * budget} ms; cpu/clock per view: ${shown})`);
+  assert.ok(wall < 3 * budget, `a warm view took ${wall.toFixed(0)} ms by the clock at best (limit ${3 * budget} ms; cpu/clock per view: ${shown})`);
 });
 
 // A view as buildView returns it, for the text form: phase 32 executing, a question waiting.

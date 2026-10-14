@@ -8,6 +8,7 @@ import { tmpDir } from './helpers/tmp.mjs';
 import { laneSessionName, projectHash } from '../lib/claude.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 import { askOwner } from '../lib/questions.mjs';
+import { writeAttend } from '../lib/attend.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
 const run = (args, cwd, env = process.env, nodeArgs = []) => execFileSync(process.execPath, [...nodeArgs, CLI, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1136,6 +1137,23 @@ test('attend N stops the supervisor and the lane session, marks the phase, relea
   assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, env)).attended.map((a) => a.phase), ['4']);
 });
 
+test('attend names the released stops that keep the owner\'s answer, with its time, apart from those asked ahead again (journal 08:22Z)', async (t) => {
+  const { p, env } = attendProject(t);
+  // the owner answered 04-02-t1 at its stop; the agent returned the same checkpoint and the stop set the answer aside
+  const answers = path.join(p.root, '.planning', 'turbo', 'answers');
+  fs.mkdirSync(answers, { recursive: true });
+  fs.writeFileSync(path.join(answers, 'p4.json'), JSON.stringify([{ id: '04-02-t1', plan: '04-02', task: '1', option: null, label: null, answer: 'go\nnow', by: 'pane', at: '2026-01-01T08:22:11.000Z', conditional: false, condition: null, defer: false, superseded: '2026-01-01T08:26:09.000Z', supersededBy: 'stop' }]));
+  const r = await runAsync(['attend', '4'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^released stops with your answer: 04-02-t1 \(go now, pane, 2026-01-01T08:22:11\.000Z\) \(pre-answers for this sitting\)$/m);
+  assert.doesNotMatch(r.stdout, /^released stops: /m, 'nothing is asked ahead again');
+  // not a git repository here: the answer is kept all the same, and the warning says it is not committed
+  assert.match(r.stderr, /^warn: the kept answer of 04-02-t1 is not committed \(/m);
+  const records = readJsonFile(path.join(answers, 'p4.json'));
+  assert.deepEqual([records.length, records[1].answer, records[1].superseded, typeof records[1].keptAt], [2, 'go\nnow', undefined, 'string']);
+  assert.equal(readJsonFile(path.join(runDirOf(p.root), 'p4-questions.json'))[0].state, 'answered');
+});
+
 test('attend refuses, changing nothing, for a phase that is not the lane, a phase with every plan summarized, and inside a lane (S4)', async (t) => {
   const other = attendProject(t, { lanePhase: '5' });
   let r = await runAsync(['attend', '4'], other.p.root, other.env);
@@ -1376,15 +1394,74 @@ test('attend N in slots mode stops only lane N, keeps the supervisor and the oth
   assert.match(r.stderr, /phase 6 has no lane in this run \(lanes: 4, 5, prep-6\)/);
 });
 
-test('resume N in slots mode clears its stop and arms a relaunch of that lane only (spec §9)', async (t) => {
-  const { p, env } = slotsProject(t);
+test('resume N in slots mode without a running supervisor clears its stop and arms a relaunch of that lane only (spec §9)', async (t) => {
+  const { p, child, env } = slotsProject(t);
+  writeSup(p.root, { ...readSup(p.root), pid: null });
   const r = await runAsync(['resume', '5'], p.root, env);
   assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^phase 5 cleared; run: turbo-run start$/m);
   const sup = readSup(p.root);
   assert.deepEqual([sup.lanes['5'].halted, sup.lanes['5'].forceRelaunch, sup.lanes['5'].restarts], [undefined, true, 0]);
   assert.equal(sup.lanes['4'].forceRelaunch, undefined);
   assert.deepEqual([sup.pid, sup.halted, sup.lanesMode], [null, false, 'slots']);
   assert.match(run(['status'], p.root, env), /^ {2}relaunch pending \(resume\)$/m);
+  assert.equal(pidExists(child.pid), true, 'a process the record no longer names is never killed');
+});
+
+test('F5: resume N in slots mode with a running supervisor hands the phase to it: the supervisor and the other lanes keep running', async (t) => {
+  const { p, child, env } = slotsProject(t);
+  const runDir = runDirOf(p.root);
+  fs.writeFileSync(path.join(runDir, 'p5.json'), JSON.stringify({ phase: '5', status: 'failed', at: ago(1) }));
+  const before = readSup(p.root);
+  for (const args of [['resume', '5'], ['resume', '5', '--start']]) {
+    const r = await runAsync(args, p.root, env);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`^phase 5: handed to the running supervisor \\(pid ${child.pid}\\): at its next check it clears the phase and relaunches its lane; the other lanes keep running$`, 'm'));
+    assert.doesNotMatch(r.stdout, /stopped supervisor|started supervisor/);
+  }
+  assert.equal(await exited(child, 300), false, 'the supervisor keeps running');
+  assert.deepEqual(readSup(p.root), before, 'supervisor.json is the running supervisor\'s own: untouched');
+  assert.ok(fs.existsSync(path.join(runDir, 'p5.json')), 'the supervisor clears the phase itself, between its lane steps');
+  assert.equal(readJsonFile(path.join(runDir, 'p5-resume.json')).phase, '5');
+  assert.deepEqual(p.claudeCalls(), []);
+  assert.match(run(['status'], p.root, env), /^lane 5: [^\n]*\n {2}resume asked: the running supervisor relaunches it at its next check$/m);
+  // the hand-back of a sitting in a slot goes the same way: the supervisor clears the mark with the phase
+  writeAttend(p.root, '4', { sessionId: 'abc111' });
+  const done = await runAsync(['attend', '4', '--done'], p.root, env);
+  assert.equal(done.code, 0, done.stderr);
+  assert.match(done.stdout, /^phase 4: handed to the running supervisor /m);
+  assert.ok(fs.existsSync(path.join(runDir, 'p4-resume.json')));
+  assert.equal(await exited(child, 300), false);
+  // a phase without a lane: only cleared
+  assert.match((await runAsync(['resume', '7'], p.root, env)).stdout, /^phase 7: handed to the running supervisor \(pid \d+\): at its next check it clears the phase; the other lanes keep running$/m);
+});
+
+test('review: attend cancels a resume the supervisor has not taken (it would clear the new mark); status without a supervisor says when a resume is taken; a plan-only or halted supervisor is not handed one', async (t) => {
+  const { p, child, env } = slotsProject(t);
+  const runDir = runDirOf(p.root);
+  const dir = path.join(path.dirname(p.root), `${path.basename(p.root)}.turbo`, 'lane-1', '.planning', 'phases', '04-four');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of ['04-01-PLAN.md', '04-01-SUMMARY.md', '04-02-PLAN.md']) fs.writeFileSync(path.join(dir, f), '# plan\n');
+  fs.writeFileSync(path.join(runDir, 'phase-p4.json'), JSON.stringify({ phase: '4', done: STEPS.slice(0, STEPS.indexOf('execute')), attempts: {} }));
+  assert.equal((await runAsync(['resume', '4'], p.root, env)).code, 0);
+  const r = await runAsync(['attend', '4'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^cancelled the resume of phase 4 that the supervisor had not taken yet$/m);
+  assert.equal(fs.existsSync(path.join(runDir, 'p4-resume.json')), false);
+  assert.ok(fs.existsSync(path.join(runDir, 'p4-attend.json')));
+  // no supervisor runs: a request left is taken when one starts
+  assert.equal((await runAsync(['resume', '5'], p.root, env)).code, 0);
+  writeSup(p.root, { ...readSup(p.root), pid: null });
+  assert.match(run(['status'], p.root, env), /^lane 5: [^\n]*\n {2}resume asked: taken when the supervisor starts \(turbo-run start\)$/m);
+  // a plan-only run never steps a phase lane, a halted supervisor takes nothing more: the resume goes the old way
+  for (const [mark, daemon] of [[{ planOnly: true }, child], [{ halted: true }, sleeper(t)]]) {
+    writeSup(p.root, { ...readSup(p.root), pid: daemon.pid, updatedAt: ago(0), planOnly: undefined, halted: false, ...mark });
+    const old = await runAsync(['resume', '5'], p.root, env);
+    assert.equal(old.code, 0, old.stderr);
+    assert.match(old.stdout, /^phase 5 cleared; run: turbo-run start$/m, JSON.stringify(mark));
+    assert.equal(fs.existsSync(path.join(runDir, 'p5-resume.json')), false, 'done here: no request is left');
+    assert.ok(await exited(daemon), 'stopped as before');
+  }
 });
 
 test('start in slots mode builds the slots before any supervisor; when none can be built it starts nothing (Stage 4 L1)', async () => {

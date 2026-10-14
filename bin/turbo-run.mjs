@@ -21,14 +21,15 @@ import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, VALUE_FLAGS as PHASE_VALUE_FLAGS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
-import { clearAttempts, nextStep, readProgress } from '../lib/phase-progress.mjs';
+import { nextStep, readProgress } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, clean, formatView, openQuestions, runLineFor, withRunLine } from '../lib/view.mjs';
 import { quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
-import { deliveryState, dropLaneQuestions, readQuestions, refreshQuestions } from '../lib/questions.mjs';
-import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
+import { ANSWERS_IGNORE_REL, answersRel, deliveryState, readQuestions } from '../lib/questions.mjs';
+import { commitAnswerPaths } from '../lib/answers.mjs';
+import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearResumeRequest, handBack, openPlans, releaseStops, requestResume, resumeRequests, writeAttend } from '../lib/attend.mjs';
 import { runLanesCommand } from '../lib/cli-lanes.mjs';
 import { listSlots, maxLanes, prepareSlot, releaseSlot, setupSlots, slotForPhase, slotsDir } from '../lib/slots.mjs';
 import { trustLine, trustState } from '../lib/trust.mjs';
@@ -225,17 +226,19 @@ function clearDaemonPid(root, state) {
 
 // What status prints next to the lanes: the attended phases, the open questions, the owner's language.
 function statusOpts(root, config) {
-  return { attended: attendedPhases(root), questions: openQuestions(root).length, lang: config?.lang === 'ru' ? 'ru' : 'en' };
+  return { attended: attendedPhases(root), questions: openQuestions(root).length, lang: config?.lang === 'ru' ? 'ru' : 'en', resumes: resumeRequests(root) };
 }
 
 // rangeLine false: the caller printed the range line already. attended: attendedPhases; a mark holds every lane, so
 // the lane line names the hold instead of a session to watch.
-function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en' } = {}) {
+function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en', resumes = [] } = {}) {
   const finished = sup.range ? ' · range finished' : ' · milestone finished';
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.planOnly ? ' · plan only' : ''}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
   if (sup.range && rangeLine) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
-  if (sup.lanes) return printLanes(sup, { attended, questions, lang });
+  if (sup.lanes) return printLanes(sup, { attended, questions, lang, resumes, running });
+  // F5: a resume handed to a slots supervisor that a supervisor of this mode has not taken yet
+  for (const p of resumes) out(`resume asked: phase ${p} · ${running ? 'the running supervisor takes it at its next check' : 'taken when the supervisor starts (turbo-run start)'}`);
   if (sup.lane?.forceRelaunch) {
     // a resumed lane: its recorded session belongs to the run before the resume and is replaced at the next check
     const when = running ? "at the supervisor's next check" : 'once a supervisor runs: turbo-run start';
@@ -248,13 +251,16 @@ function printStatus(sup, running, { rangeLine = true, attended = [], questions 
 }
 
 // spec §8 (D16): the summary line, then one block per lane: what it runs, where, and what to do next.
-function printLanes(sup, { attended, questions, lang }) {
+function printLanes(sup, { attended, questions, lang, resumes = [], running = false }) {
   const held = new Set(attended.map((a) => a.phase));
+  const asked = new Set(resumes);
   const lanes = supervisorLanes(sup);
   out(lanesSummary({ lanes: lanes.length, questions, next: sup.next || null }, lang));
   for (const l of lanes) {
     out(`lane ${l.key}: ${laneLabel(l)} · slot ${l.slot} ${l.slotPath} · session ${l.sessionId || 'none yet'} · restarts ${l.restarts ?? 0} · since ${l.launchedAt || '-'}`);
-    if (l.job === 'phase' && held.has(l.phase)) out(`  attended in the owner's session: cd "${l.slotPath}" && claude (hand it back: turbo-run attend ${l.phase} --done)`);
+    // F5: a resume handed to the running supervisor that it has not taken yet
+    if (l.job === 'phase' && asked.has(l.phase)) out(`  resume asked: ${running ? 'the running supervisor relaunches it at its next check' : 'taken when the supervisor starts (turbo-run start)'}`);
+    else if (l.job === 'phase' && held.has(l.phase)) out(`  attended in the owner's session: cd "${l.slotPath}" && claude (hand it back: turbo-run attend ${l.phase} --done)`);
     else if (l.halted) out(`  stopped (${l.halted.why}): try again with turbo-run resume ${l.phase}`);
     else if (l.forceRelaunch) out('  relaunch pending (resume)');
     else if (!l.sessionId) out('  launch pending');
@@ -760,7 +766,8 @@ function readView(root) {
 
 // The owner's resume, and attend N --done (spec §8): clears the phase's lane record and its attend mark (the owner
 // hands the phase back), gives turbo-phase's bounded rounds a fresh budget, arms a forced relaunch of its lane, and
-// with andStart starts the supervisor.
+// with andStart starts the supervisor. F5 (Stage 4 §9): a slots-mode supervisor that runs is never stopped for it: the
+// resume is handed to it (requestResume) and it does the same between its lane steps, while the other lanes go on.
 async function resumePhase(root, id, andStart) {
   if (andStart) {
     // start would keep this range and never resume a phase outside it: refuse before anything changes
@@ -771,36 +778,31 @@ async function resumePhase(root, id, andStart) {
       die(`phase ${id} is outside the range ${rangeLabel(kept)} that start keeps; nothing was stopped, removed or started. To run phase ${id}, change the range: ${stopFirst}turbo-run start --only ${id} (or --from <phase>, or --all)`);
     }
   }
+  // a plan-only run never steps a phase lane, and a supervisor that halted or finished takes nothing more: those go the
+  // way below (a start without --plan-only clears the plan-only mark)
+  const live = readJson(supPath(root), null);
+  if (live?.lanes && !live.planOnly && !live.halted && !live.finished && supAlive(live, pollOf(root))) {
+    clearOwnerStop(root);
+    requestResume(root, id);
+    const what = laneForPhase(live, root, id) ? 'clears the phase and relaunches its lane' : 'clears the phase';
+    out(`phase ${id}: handed to the running supervisor (pid ${live.pid}): at its next check it ${what}; the other lanes keep running`);
+    return 0;
+  }
   // a live daemon (for example one waiting for the owner) rewrites supervisor.json every
   // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
   stopDaemon(root, readJson(supPath(root), null));
   // the owner goes on with the run: a start at logon takes it up again (Gap 2)
   clearOwnerStop(root);
-  // the phase's own files: in its lane's slot (Stage 4), else in this checkout
+  // the phase's own files: in its lane's slot (Stage 4), else in this checkout. The questions are rebuilt as the plans
+  // are now, before any supervisor tick notifies them: a sitting may have finished plans whose questions (a released
+  // human-action stop, never answered there) would otherwise be announced again
   const phaseRoot = laneForPhase(readJson(supPath(root), null), root, id)?.slotPath || root;
-  fs.rmSync(path.join(runDir(root), `p${id}.json`), { force: true });
-  // the resume answers the phase's owner request; the lane writes it again (uat owner-request) when anything is still
-  // open. The .notified mark stays: a checklist already sent is not sent again.
-  fs.rmSync(path.join(runDir(root), `p${id}-owner.md`), { force: true });
-  clearAttend(root, id);
-  // the owner's resume gives turbo-phase's bounded rounds a fresh budget; the steps done stay done
-  clearAttempts(root, id);
+  const warn = (line) => process.stderr.write(`warn: ${line}\n`);
+  const { dropped } = handBack(root, id, { phaseRoot, lang: loadConfig(root).lang, warn });
   // review 1: the restarted step asks again; a lane question left open would block its wakes or answer another step
-  try {
-    const dropped = dropLaneQuestions(root, id);
-    if (dropped.length) out(`dropped questions: ${dropped.join(', ')} (the restarted step asks again)`);
-  } catch (err) {
-    process.stderr.write(`warn: the lane questions of phase ${id} were not dropped (${String(err?.message ?? err).split(/\r?\n/)[0]})\n`);
-  }
-  // the questions as the plans are now, before any supervisor tick notifies them: a sitting may have finished plans
-  // whose questions (a released human-action stop, never answered there) would otherwise be announced again
-  if (openPlans(phaseRoot, id) !== null) {
-    try {
-      refreshQuestions(phaseRoot, id, { lang: loadConfig(root).lang, warn: (line) => process.stderr.write(`warn: ${line}\n`) });
-    } catch (err) {
-      process.stderr.write(`warn: the questions of phase ${id} were not rebuilt (${String(err?.message ?? err).split(/\r?\n/)[0]}); the lane rebuilds them\n`);
-    }
-  }
+  if (dropped.length) out(`dropped questions: ${dropped.join(', ')} (the restarted step asks again)`);
+  // done here: a request an earlier resume left for a supervisor that stopped before it took it goes
+  clearResumeRequest(root, id);
   const sup = readJson(supPath(root), null);
   if (sup?.lanes) {
     // spec §9: only lane N is armed again (its stop cleared); the other lanes keep their state
@@ -821,6 +823,33 @@ async function resumePhase(root, id, andStart) {
   }
   out(`phase ${id} cleared; run: turbo-run start`);
   return 0;
+}
+
+// What attend says of the stops it released (lib/attend.mjs releaseStops): those asked ahead again, and those that
+// keep the owner's answer, each with the answer and its time, as pre-answers for the sitting. An answer kept from
+// before its stop came back is a new record in the answers file: committed here, as turbo-run answer commits one
+// (no lane runs in this checkout now); a commit that fails is a warning, the answer stays kept.
+function printReleased(root, id, released) {
+  const list = readQuestions(root, id);
+  const answered = list.filter((q) => released.ids.includes(q.id) && q.state === 'answered' && q.answer);
+  const asked = released.ids.filter((x) => !answered.some((q) => q.id === x));
+  const words = (a) => clean(String(a.label ?? a.answer ?? '')).replace(/\s+/g, ' ').trim().slice(0, 60);
+  if (asked.length) out(`released stops: ${asked.join(', ')} (asked ahead again)`);
+  if (answered.length) out(`released stops with your answer: ${answered.map((q) => `${q.id} (${words(q.answer)}, ${clean(q.answer.by)}, ${clean(q.answer.at)})`).join(', ')} (pre-answers for this sitting)`);
+  if (!released.kept.length) return;
+  const what = `the kept answer of ${released.kept.join(', ')}`;
+  try {
+    const c = commitAnswerPaths(root, [answersRel(id), ANSWERS_IGNORE_REL], `docs(turbo): keep the owner's answer to ${released.kept.join(', ')} (phase ${id}, attended)`);
+    if (!c?.committed && c?.reason !== 'no changes') process.stderr.write(`warn: ${what} is not committed (${c?.reason || 'unknown reason'}); the next answer commits it\n`);
+  } catch (err) {
+    process.stderr.write(`warn: ${what} is not committed (${String(err?.message ?? err).split(/\r?\n/)[0]}); the next answer commits it\n`);
+  }
+}
+
+// A resume of the phase handed to a supervisor that has not taken it yet would clear the mark attend just wrote and
+// relaunch the lane in the sitting's slot: attend cancels it.
+function cancelResume(root, id) {
+  if (clearResumeRequest(root, id)) out(`cancelled the resume of phase ${id} that the supervisor had not taken yet`);
 }
 
 // How long attend watches for a lane session that a killed supervisor's claude child registers late: 5 s, or
@@ -852,6 +881,7 @@ async function attend(root, id) {
   const hadDaemon = [sup.pid, readJson(lockPath(root), null)?.pid].some((p) => Number.isInteger(p) && p > 0);
   stopDaemon(root, sup);
   writeAttend(root, id, { sessionId: sup.lane.sessionId || null });
+  cancelResume(root, id);
   let code = stopLanes(root, sup);
   if (hadDaemon) {
     const claude = daemonAware(createClaude({ root }), { log: (line) => process.stderr.write(`warn: ${line}\n`) });
@@ -865,7 +895,7 @@ async function attend(root, id) {
   out(`phase ${id}: attended in this session; no lane starts, relaunches or wakes until turbo-run attend ${id} --done`);
   out(`open plans: ${plans.join(', ')}`);
   out(`gates: ${gates.gates === 'off' ? 'turn off' : 'keep on'} (${gates.why})`);
-  if (released.length) out(`released stops: ${released.join(', ')} (asked ahead again)`);
+  printReleased(root, id, released);
   const delivered = readQuestions(root, id).filter((q) => q.stopped && q.state === 'delivered').map((q) => q.id);
   if (delivered.length) out(`already delivered: ${delivered.join(', ')} (the stopped session took these answers; a checkpoint reached again is asked in this session)`);
   if (code !== 0) process.stderr.write('a lane session did not stop (see the warnings above): stop it with claude stop <id> before anything runs in this checkout\n');
@@ -885,6 +915,7 @@ async function attendLane(root, id, sup) {
   const gates = attendGates({ mode: lane.mode, next: nextStep(readProgress(root, id)) });
   if (gates.refuse) die(`phase ${id} is not ready to attend: ${gates.refuse}; nothing was stopped`);
   writeAttend(root, id, { sessionId: lane.sessionId || null });
+  cancelResume(root, id);
   const warn = (line) => process.stderr.write(`warn: ${line}\n`);
   const claude = daemonAware(createClaude({ root }), { log: warn });
   let code = 0;
@@ -913,7 +944,7 @@ async function attendLane(root, id, sup) {
   out(`open: cd "${lane.slotPath}" && claude`);
   out(`open plans: ${plans.join(', ')}`);
   out(`gates: ${gates.gates === 'off' ? 'turn off' : 'keep on'} (${gates.why})`);
-  if (released.length) out(`released stops: ${released.join(', ')} (asked ahead again)`);
+  printReleased(root, id, released);
   const delivered = readQuestions(root, id).filter((q) => q.stopped && q.state === 'delivered').map((q) => q.id);
   if (delivered.length) out(`already delivered: ${delivered.join(', ')} (the stopped session took these answers; a checkpoint reached again is asked in this session)`);
   if (code !== 0) process.stderr.write(`a lane session did not stop (see the warnings above): stop it with claude stop <id> before anything runs in ${lane.slotPath}\n`);

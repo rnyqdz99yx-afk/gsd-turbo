@@ -339,3 +339,15 @@ test('v0.4.0: turbo-run answer N <id> --undo takes back an automatic answer (reo
   r = await run(root, ['ask', '34', '--question', 'Keep the cache in memory?', '--option', 'Yes|Fast', '--option', 'No|Slow', '--recommended', '1', '--json']);
   assert.equal(JSON.parse(r.text).question.autoOk, false);
 });
+
+test('turbo-run questions N lists each answer with its channel and time, so an attended sitting sees what it takes ahead', async () => {
+  const root = project();
+  withLane(root);
+  await run(root, ['questions', '32']);
+  await run(root, ['answer', '32', '32-09-t2', '--option', '1', '--by', 'pane'], { now: () => new Date('2026-01-01T08:22:11Z') });
+  const r = await run(root, ['questions', '32']);
+  assert.match(r.text, /^ {2}32-09-t2 · decision · answered \(Clerk, pane, 2026-01-01T08:22:11\.000Z\) · unclassified · /m);
+  assert.match(r.text, /^ {2}32-10-t3 · human-verify · open · /m);
+  await run(root, ['answer', '32', '32-10-t3', '--by', 'session', '--text', 'looks right\n  ship it'], { now: () => new Date('2026-01-01T09:00:00Z') });
+  assert.match((await run(root, ['questions', '32'])).text, /^ {2}32-10-t3 · human-verify · answered \(looks right ship it, session, 2026-01-01T09:00:00\.000Z\) · /m);
+});

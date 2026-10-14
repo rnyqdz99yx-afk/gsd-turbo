@@ -1071,3 +1071,17 @@ test('wakePrompt: a phase lane gets v0.3\'s wake prompts; a job lane asks the jo
   assert.equal(wakePrompt(ctx, prep, { kind: 'stall', minutes: 16 }), 'prep-4 true stall');
   assert.throws(() => wakePrompt({ ...ctx, deps: {} }, prep, { kind: 'stall', minutes: 1 }), /^Error: no prep\/annotate support \(lib\/prep\.mjs\) for lane prep-4$/);
 });
+
+test('every tick records the unfinished phases of the run in phase order (remaining): the view ends the last one\'s chain with the end of the run', async () => {
+  const h = harness({ phases: [P('1', [], true), P('2', ['1']), P('3', ['2'])] });
+  let s = await tick(fresh(), h.ctx);
+  assert.deepEqual(s.remaining, ['2', '3']);
+  h.phases = [P('1', [], true), P('2', ['1'], true), P('3', ['2'])];
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(s.remaining, ['2', '3'], 'the phase of the running lane, complete in the roadmap or not');
+  s = await tick({ ...s, lane: null, range: { from: '3', to: null } }, h.ctx);
+  assert.deepEqual(s.remaining, ['3']);
+  s = await tick({ ...fresh(), range: { from: '1', to: '2' } }, h.ctx);
+  assert.deepEqual(s.remaining, [], 'only the range counts');
+});

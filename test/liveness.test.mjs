@@ -8,7 +8,7 @@ import { COMMAND_TIMEOUT_MS, LONG_CALL_MS, OVERRUN_MS, callsInFlight, liveness, 
 import { laneAgents, sessionTree } from '../lib/transcripts.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
 import { buildView, formatView } from '../lib/view.mjs';
-import { render, paneLines } from '../mod/hooks/view-model.mjs';
+import { bandLine, render, paneLines } from '../mod/hooks/view-model.mjs';
 
 // Synthetic transcripts in Claude Code 2.1.29x's shapes: while a tool call runs, its tool_use is the last entry.
 const at = (hhmm) => `2026-01-01T${hhmm}:00.000Z`;
@@ -248,4 +248,36 @@ test('a silent lane in words says what turbo did: it wakes the session, woke or 
   const recent = view({ stall: { count: 1, at: at('10:10') } });
   assert.doesNotMatch(recent, /the session/);
   assert.match(recent, /^ {2}⚠️ Executor silent for 20m · plan 34-02$/m);
+});
+
+// The supervisor's stall decision (lib/supervisor.mjs checkStall): its probe's activity, silent by liveness.mjs with no
+// helper running, counted from the lane's launch.
+function supervisorSilent(root, env, sup, now) {
+  const live = createLaneProbe(root, env).activity(sup.lane.sessionId, now, STALL, root);
+  return !live.active && liveness({ lastMs: live.lastMs, calls: live.calls, nowMs: now.getTime(), stallMs: STALL, floorMs: Date.parse(sup.lane.launchedAt) }).state === 'silent';
+}
+
+test('a lane that waits while its gap planner writes: the band neither calls it silent nor says "running plans"; its silence is the supervisor\'s, case by case (journal 10:56Z)', () => {
+  const { root, dir, sup, env } = laneProject();
+  // phase 34 ran both its plans (each has its SUMMARY) and is at its execute step: verification found gaps
+  const phaseDir = path.join(root, '.planning', 'phases', '34-gaps');
+  fs.mkdirSync(phaseDir, { recursive: true });
+  for (const f of ['34-01-PLAN.md', '34-01-SUMMARY.md', '34-02-PLAN.md', '34-02-SUMMARY.md']) fs.writeFileSync(path.join(phaseDir, f), '# x\n');
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'phase-p34.json'), JSON.stringify({ phase: '34', done: ['freshness', 'discuss', 'prologue', 'plan', 'gates-off'], notes: {}, attempts: { execute: 1 } }));
+  // the lane session last wrote at 10:00 (it launched the gap planner and waits for it); the planner writes at 10:30
+  const planner = { ...DEFAULT_META, agentType: 'gsd-planner', description: 'Plan Phase 34 gap closure' };
+  const write = (ts) => entry.assistant({ ts: at(ts), tool: { name: 'Write', input: { file_path: 'x' }, id: 'toolu_w' }, sidechain: true });
+  setMtime(writeAgent(dir, SESSION, AID, [agentUser('10:00'), write('10:30'), result('toolu_w', '10:30')], planner), new Date(at('10:30')));
+  const view = (hhmm) => buildView({ root, sup, running: true, config: { stall_minutes: 15, lang: 'ru' }, env, now: new Date(at(hhmm)), commits: () => [] });
+  const v = view('10:31');
+  assert.deepEqual([v.lanes[0].quiet, supervisorSilent(root, env, sup, new Date(at('10:31')))], [false, false], 'the lane wrote 31 minutes ago, its planner a minute ago');
+  assert.equal(bandLine(v), 'turbo · фаза 34: планирование доработок 2/2 · всё в порядке');
+  assert.match(formatView(v), /^ {2}Сейчас: пишет планы доработок по итогам проверки$/m);
+  // the planner silent too: both call it silent, and the band says what turbo does about it
+  const late = view('10:50');
+  assert.deepEqual([late.lanes[0].quiet, supervisorSilent(root, env, sup, new Date(at('10:50')))], [true, true]);
+  assert.equal(bandLine(late), 'turbo · фаза 34: планирование доработок 2/2 · тишина 20 мин — turbo будит сессию');
+  // the same agreement for a lane between the two: the planner silent, the lane itself not yet
+  setMtime(path.join(dir, `${SESSION}.jsonl`), new Date(at('10:45')));
+  assert.deepEqual([view('10:50').lanes[0].quiet, supervisorSilent(root, env, sup, new Date(at('10:50')))], [false, false]);
 });

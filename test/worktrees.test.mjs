@@ -11,7 +11,7 @@ const LINK = process.platform === 'win32' ? 'junction' : 'dir';
 
 // A project with agent worktrees the way Claude Code's Agent(isolation="worktree") makes them:
 // .claude/worktrees/agent-<id> on branch worktree-agent-<id>. The root as git prints it: a Windows runner's temp
-// path has an 8.3 short name (C:UsersRUNNER~1…) that only the native realpath expands.
+// path has an 8.3 short name (C:\Users\RUNNER~1\…) that only the native realpath expands.
 function project() {
   const root = fs.realpathSync.native(tmpGitRepo());
   fs.writeFileSync(path.join(root, '.gitignore'), 'node_modules\n.claude/\n');

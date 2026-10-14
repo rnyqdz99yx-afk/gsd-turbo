@@ -44,6 +44,23 @@ test('without supervisor.json the view has no supervisor and no lanes, and still
   assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], next: null, remaining: null, questions: [], commits: COMMITS(), attended: [], away: null, autoAnswered: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
 });
 
+// A supervisor.json a crash damaged (lib/sup-state.mjs) is never "never started": the view, status --watch and the pane
+// say it is damaged and what to do, in the owner's words.
+test('a damaged supervisor.json shows as a damaged supervisor with what to do, never as never started', () => {
+  const { root, env } = laneProject();
+  const damaged = { why: '526 zero bytes', at: at('10:20') };
+  const v = buildView({ root, sup: null, damaged, env, now: NOW, commits: () => [] });
+  assert.deepEqual(v.supervisor, { running: false, pid: null, finished: false, halted: false, failingSince: null, updatedAt: null, damaged });
+  assert.deepEqual(v.lanes, []);
+  assert.equal(formatView(v), 'Run — supervisor state damaged (likely a machine crash) — run turbo-run start, it rebuilds the lanes\n\nSupervisor state damaged');
+  assert.equal(formatView({ ...v, ui: { ...v.ui, lang: 'ru' } }), 'Прогон — состояние супервизора повреждено (вероятно, сбой машины) — запустите turbo-run start, он восстановит полосы\n\nСостояние супервизора повреждено');
+  // the owner's stop mark rides along: the pane then does not open by itself for it
+  writeOwnerStop(root, at('10:30'));
+  assert.equal(buildView({ root, sup: null, damaged, env, now: NOW, commits: () => [] }).supervisor.stoppedByOwner, true);
+  // a readable supervisor.json wins over a stale damaged mark
+  assert.equal(buildView({ root, sup: { pid: null, finished: true }, damaged, env, now: NOW, commits: () => [] }).supervisor.damaged, undefined);
+});
+
 test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
   const { root, dir, sup, env } = laneProject();
   for (const s of ['freshness', 'discuss', 'prologue', 'plan', 'gates-off']) completeStep(root, '32', s, { note: s === 'plan' ? `path same-agent ${LEAK}` : '' });
@@ -400,6 +417,9 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     // gap planning: the planner past the plan step, and the plan checker
     textView({ questions: [] }, { plans: { done: 9, total: 9 }, agents: [{ type: 'gsd-planner', plan: null, state: 'running', action: { tool: 'Write', detail: 'x' }, elapsedMs: 5000 }] }),
     textView({ questions: [] }, { step: 'uat', agents: [{ type: 'gsd-plan-checker', plan: null, state: 'running', action: null, elapsedMs: 5000 }] }),
+    // a supervisor.json a crash damaged: no lane known, the owner told what to do (with and without a question)
+    textView({ questions: [], lanes: [], range: null, supervisor: { ...stoppedSup, damaged: { why: '526 zero bytes', at: at('10:20') } } }),
+    textView({ questions: [], range: null, supervisor: { ...stoppedSup, damaged: { why: 'not JSON (40 bytes)', at: null } } }),
   ];
   for (const lang of ['en', 'ru']) {
     for (const v of views) {

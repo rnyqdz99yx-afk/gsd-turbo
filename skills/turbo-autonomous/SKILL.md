@@ -29,6 +29,8 @@ Run the matching command and show its output, then stop:
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" stop`
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" resume <phase> --start` (clears the phase's lane record and its owner request, which the resume answers, and starts the supervisor in one command; with several lanes and the supervisor running it prints `handed to the running supervisor`: the supervisor relaunches that lane at its next check and the other lanes go on)
 
+If `status` prints `supervisor: state damaged`, tell the user in plain words that the supervisor's state file was damaged, most likely by a machine crash, that nothing runs the lanes now, and that `/turbo-autonomous` (its `start`) keeps the damaged file aside and rebuilds the lanes. `resume <phase>` rebuilds it the same way and prints what it recovered: show those lines.
+
 ## If the arguments are `answer`
 
 Run **Answer the open questions** (the last section), then stop.
@@ -68,6 +70,7 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
 
 1. **Already running?** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status`.
    - If it fails, show its output and stop.
+   - If it prints `supervisor: state damaged`, tell the user the supervisor's state file was damaged (most likely by a machine crash) and go on with the steps below: `start` keeps the damaged file aside and rebuilds the lanes.
    - If it prints `attended:` lines, a phase is in the user's own sitting and no lane runs until it is handed back: tell the user which phase, that `/turbo-autonomous attend <N>` goes on with the sitting and that `turbo-run attend <N> --done` gives the phase back to its lane. Then go on with the bullets below.
    - If it prints `supervisor: running`, show the output and tell the user a run is already in progress (watch it with `claude attach <session id>` or `/turbo-autonomous status`, stop it with `/turbo-autonomous stop`). Then run **Answer the open questions** (it only says so when there are none) and stop. Commit nothing yourself: a background session is working in this checkout.
 2. **Compatibility.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor`.
@@ -80,6 +83,7 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
    - Then run `git status --porcelain` again. If the output is not empty, show it and stop: the background sessions work in this checkout, so a dirty tree is never handed to them, and the test runner records a green result only on a clean tree.
 5. **Start.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" start <range flags>`, then `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status`.
    - If `start` exits with a non-zero code, show its output (it includes the end of the supervisor log, or the usage for wrong range flags) and stop.
+   - If `start` printed `supervisor.json was damaged …` with `recovered …` and `not recovered …` lines, show them to the user unchanged: which lanes it took up from the slots and their sessions, and what was lost. A run that had a range runs the whole milestone now unless range flags were given: offer `/turbo-autonomous stop` and a new start with the range.
    - If `start` or the status output has `attended:` lines, a phase is in the user's own sitting and no lane runs until it is handed back: tell the user which phase, that `/turbo-autonomous attend <N>` goes on with the sitting and that `turbo-run attend <N> --done` gives the phase back to its lane; say no phase is running, whatever the `lane:` line names.
    - Otherwise, if the status output has a `lane:` line, the first phase is running. If it is not the phase the user expected (for example the `--only` or `--from` phase), run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" stop` at once, show the status output and report it.
    - If it has no `lane:` line yet, tell the user the first phase starts within `poll_seconds` (20 by default) and suggest `/turbo-autonomous status`.

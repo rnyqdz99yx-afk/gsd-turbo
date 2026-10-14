@@ -1534,3 +1534,23 @@ test('a live sitting\'s stop card has no Done button: the way in as its question
   assert.deepEqual(controls(tree).map((c) => c.props.key), ['q:33-16-t2:other']);
   assert.ok(paneLines(tree).some((l) => l.includes('/turbo-autonomous attend 33')), paneLines(tree).join('\n'));
 });
+
+// A supervisor.json a crash damaged (turbo-run view's supervisor.damaged): the pane, the band and the verdict say so with
+// what to do, the pane opens by itself, and nothing reads as «never started».
+test('a damaged supervisor state: a red verdict with the command, the band says it, the pane opens by itself', () => {
+  const damaged = view({ supervisor: { ...STOPPED_SUP, damaged: { why: '526 zero bytes', at: '2026-01-01T10:20:00.000Z' } }, questions: [], lanes: [], range: null, commits: [] });
+  assert.deepEqual(verdict(damaged), { kind: 'damaged', tone: 'bad', text: 'supervisor state damaged (likely a machine crash) — run turbo-run start, it rebuilds the lanes' });
+  assert.equal(verdict({ ...damaged, ...RU }).text, 'состояние супервизора повреждено (вероятно, сбой машины) — запустите turbo-run start, он восстановит полосы');
+  assert.deepEqual(paneLines(render(damaged)), ['Run — supervisor state damaged (likely a machine crash) — run turbo-run start, it rebuilds the lanes', '', 'Supervisor state damaged']);
+  assert.equal(bandLine({ ...damaged, ...RU }), 'turbo · состояние супервизора повреждено (вероятно, сбой машины) — запустите turbo-run start, он восстановит полосы');
+  assert.deepEqual(bandStyle(damaged), TONES.bad);
+  assert.equal(shouldAutoOpen(damaged), true);
+  // a run the owner stopped opens the pane only for a question, damaged or not
+  const stopped = { ...damaged, supervisor: { ...damaged.supervisor, stoppedByOwner: true } };
+  assert.equal(shouldAutoOpen(stopped), false);
+  assert.equal(verdict(stopped).kind, 'damaged', 'the pane still says it when opened');
+  // a question still waits: the verdict stays the damaged state (nothing takes the answer to its lane)
+  assert.equal(verdict({ ...damaged, questions: view().questions }).kind, 'damaged');
+  // a later view without the damage raises no toast of its own
+  assert.deepEqual(toastsFor(damaged, view({ questions: [] })), []);
+});

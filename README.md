@@ -93,7 +93,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 
 ## Troubleshooting
 
-**After a crash or a reboot.** Come back to your chat with `claude -r` (pick it by its title) or `claude --resume <id>`: `/turbo-autonomous status` prints that line with the id. A bare `claude -c` opens the latest conversation in the folder, which in checkout mode may be a lane's own. The turbo pane comes back by itself. Unless autostart is on, start the supervisor again with `/turbo-autonomous`: lanes whose sessions died with the machine go on where they stopped ([details](docs/reference.md#after-a-crash-or-a-reboot)). A supervisor that dies without a word while you are away is told to you once, on the desktop and in Telegram, by the turbo pane in your session or by a running lane.
+**After a crash or a reboot.** Come back to your chat with `claude -r` (pick it by its title) or `claude --resume <id>`: `/turbo-autonomous status` prints that line with the id. A bare `claude -c` opens the latest conversation in the folder, which in checkout mode may be a lane's own. The turbo pane comes back by itself. Unless autostart is on, start the supervisor again with `/turbo-autonomous`: lanes whose sessions died with the machine go on where they stopped ([details](docs/reference.md#after-a-crash-or-a-reboot)). A supervisor that dies without a word while you are away is told to you once, on the desktop and in Telegram, by the turbo pane in your session or by a running lane. If the crash left the supervisor's state file damaged, the pane and `/turbo-autonomous status` say so, and `/turbo-autonomous` keeps the file aside and rebuilds the lanes from the slots and their sessions, saying what it recovered and what not.
 
 ## Documentation
 

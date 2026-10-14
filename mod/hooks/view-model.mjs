@@ -76,6 +76,8 @@ const VIEW_WORDS = {
       attended: (p) => `phase ${p} is running in your session`, supStopped: 'supervisor not running', finished: 'all phases done', never: 'supervisor never started',
       // Stage 4: a lane the supervisor stopped alone; a lane whose turn ended and that is merged into main
       laneHalted: 'a lane stopped — the other lanes go on', merging: 'done — being merged into the main branch',
+      // supervisor.json exists but holds no state (lib/sup-state.mjs): never «never started»
+      damaged: 'supervisor state damaged (likely a machine crash) — run turbo-run start, it rebuilds the lanes',
     },
     reason: 'Reason',
     life: (d) => `last activity ${d} ago`,
@@ -99,7 +101,7 @@ const VIEW_WORDS = {
     justNow: 'just now',
     days: (n) => `${n}d`,
     // attended: attend stopped the supervisor (checkout mode); attend N --done starts it again
-    sup: { running: 'Supervisor running', stopped: 'Supervisor not running', finished: 'Supervisor finished', halted: 'Supervisor stopped', never: 'Supervisor never started', attended: (p) => `Supervisor paused: phase ${p} is running in your session` },
+    sup: { running: 'Supervisor running', stopped: 'Supervisor not running', finished: 'Supervisor finished', halted: 'Supervisor stopped', never: 'Supervisor never started', attended: (p) => `Supervisor paused: phase ${p} is running in your session`, damaged: 'Supervisor state damaged' },
     phases: (from, to) => `phases ${from}–${to}`,
     duration: (h, m, s) => (h ? `${h}h ${m}m` : m ? `${m}m` : `${s}s`),
     // v0.3.3: what the phase does now, its steps, what comes next, when the owner is needed, the commits by kind
@@ -178,6 +180,7 @@ const VIEW_WORDS = {
       paused: 'на паузе: нужен новый контекст', done: 'готова', halted: 'супервизор остановился', failing: (at) => `супервизор сбоит${at ? ` с ${at}` : ''}`,
       attended: (p) => `фаза ${p} идёт у вас в этой сессии`, supStopped: 'супервизор не работает', finished: 'все фазы готовы', never: 'супервизор не запускался',
       laneHalted: 'полоса остановилась — остальные идут дальше', merging: 'готова — вливается в основную ветку',
+      damaged: 'состояние супервизора повреждено (вероятно, сбой машины) — запустите turbo-run start, он восстановит полосы',
     },
     reason: 'Причина',
     life: (d) => `последнее действие ${d} назад`,
@@ -198,7 +201,7 @@ const VIEW_WORDS = {
     ago: (d) => `${d} назад`,
     justNow: 'только что',
     days: (n) => `${n} дн`,
-    sup: { running: 'Супервизор работает', stopped: 'Супервизор не работает', finished: 'Супервизор закончил', halted: 'Супервизор остановился', never: 'Супервизор не запускался', attended: (p) => `Супервизор на паузе: фаза ${p} идёт у вас в сессии` },
+    sup: { running: 'Супервизор работает', stopped: 'Супервизор не работает', finished: 'Супервизор закончил', halted: 'Супервизор остановился', never: 'Супервизор не запускался', attended: (p) => `Супервизор на паузе: фаза ${p} идёт у вас в сессии`, damaged: 'Состояние супервизора повреждено' },
     phases: (from, to) => `фазы ${from}–${to}`,
     duration: (h, m, s) => (h ? `${h} ч ${m} мин` : m ? `${m} мин` : `${s} с`),
     nowHead: 'Сейчас',
@@ -527,6 +530,8 @@ function verdictOf(t, view) {
   const asked = shownQuestions(view).length;
   const has = (s) => lanes.some((l) => l.status === s);
   const v = (kind, tone, text = t.verdict[kind]) => ({ kind, tone, text });
+  // supervisor.json exists but holds no state (a crash cut its write short): nothing runs the lanes until the owner starts
+  if (sup?.damaged) return v('damaged', 'bad');
   if (sup?.halted) return v('halted', 'bad');
   if (live && sup.failingSince) return v('failing', 'bad', t.verdict.failing(clockText(Date.parse(sup.failingSince), view?.ui?.utcOffsetMinutes)));
   // nothing runs but the owner's own session (checkout mode: attend stopped the supervisor): neutral, nothing is wrong
@@ -561,6 +566,7 @@ export const verdict = (view) => verdictOf(textOf(view), view);
 function supWord(t, view) {
   const sup = view?.supervisor;
   if (!sup) return t.sup.never;
+  if (sup.damaged) return t.sup.damaged;
   if (sup.running) return t.sup.running;
   if (sup.halted) return t.sup.halted;
   if (sup.finished) return t.sup.finished;
@@ -1167,11 +1173,12 @@ export function refreshMs(view, foreground) {
 }
 
 // The mod opens the pane by itself only while there is something live to watch: the supervisor runs, a question is
-// open, or a lane is open (a crash or a reboot leaves its lanes recorded with no supervisor: the pane says so). A run
+// open, or a lane is open (a crash or a reboot leaves its lanes recorded with no supervisor: the pane says so), or the
+// supervisor's state is damaged (a crash cut its write short: the pane says what to do) in a run the owner did not stop. A run
 // the owner stopped (turbo-run stop) opens it only for a question. Claude Code places such a pane from 144 columns (110
 // once the person opened it), and /turbo-view or the owner's next prompt (register.mjs askAgain) opens it at any width.
 const laneOpen = (lane) => lane?.status !== 'done';
-export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || shownQuestions(view).length || (!view?.supervisor?.stoppedByOwner && list(view?.lanes).some(laneOpen)));
+export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || (view?.supervisor?.damaged && !view.supervisor.stoppedByOwner) || shownQuestions(view).length || (!view?.supervisor?.stoppedByOwner && list(view?.lanes).some(laneOpen)));
 
 // The argv of S1's single answer arbiter (spec §5.3) for a press in the pane: option is the 1-based option number,
 // text a free answer, passed as one argument (no shell); --rev is always the revision the pane drew, so an answer to

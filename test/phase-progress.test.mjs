@@ -190,7 +190,14 @@ test('an interrupted chunked planning: while GSD\'s outline lists plans not writ
   fs.writeFileSync(path.join(dir, '03-02-PLAN.md'), planFile('03-02'));
   fs.writeFileSync(path.join(dir, '03-03-PLAN.md'), planFile('03-03').replace(/\n/g, '\r\n'));
   assert.equal(await run('--check', 'plan'), 0);
-  assert.equal(lines.at(-1), 'phase 3: plan set complete: GSD\'s chunked plan outline 03-PLAN-OUTLINE.md lists 3 plans, all written');
+  // the whole set, but GSD's plan-checker has no verdict on record yet: the step stays open for the checker pass
+  assert.equal(lines.at(-1), 'phase 3: plan set unchecked: GSD\'s chunked plan outline 03-PLAN-OUTLINE.md lists 3 plans, all written; no plan-checker verdict on record for its 3 plan(s) (a session may have stopped before GSD\'s plan-checker ran)');
+  assert.equal(await run('--done', 'plan'), 1);
+  assert.match(lines.at(-1), /^ERR turbo-run phase-step: phase 3 cannot finish planning: .*no plan-checker verdict on record/);
+  assert.equal(await run('--plan-checked', '--note', 'passed'), 0);
+  assert.equal(lines.at(-1), 'phase 3: plan check recorded for 3 plan(s)');
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.match(lines.at(-1), /^phase 3: plan set complete: GSD's chunked plan outline 03-PLAN-OUTLINE\.md lists 3 plans, all written; plan check: verdict recorded \d{4}-.*Z \(passed\)$/);
   assert.equal(await run('--done', 'plan'), 0);
   assert.match(lines.at(-1), /next gates-off/);
 });
@@ -213,7 +220,7 @@ test('an outline GSD stopped writing (no ## OUTLINE COMPLETE line) is an incompl
   // a non-chunked run writes every plan at once and no outline
   fs.rmSync(path.join(dir, '03-PLAN-OUTLINE.md'));
   assert.equal(await run('--check', 'plan'), 0);
-  assert.equal(lines.at(-1), 'phase 3: plan set complete: no chunked plan outline (gsd-tools has_plans decides)');
+  assert.match(lines.at(-1), /^phase 3: plan set unchecked: no chunked plan outline \(gsd-tools has_plans decides\); no plan-checker verdict/);
   assert.equal(await run('--check', 'close'), 2);
   assert.match(lines.at(-1), /^ERR usage: turbo-run phase-step <phase> .*--check plan/);
 });
@@ -229,15 +236,16 @@ test('review: an outline an earlier planning run left never blocks the plan step
   // GSD reads only <padded phase>-PLAN-OUTLINE.md: another number's outline is not this phase's
   fs.writeFileSync(path.join(dir, '04-PLAN-OUTLINE.md'), OUTLINE.replace(/03-/g, '04-'));
   assert.equal(await run('--check', 'plan'), 0);
-  assert.equal(lines.at(-1), 'phase 3: plan set complete: no chunked plan outline (gsd-tools has_plans decides)');
+  assert.match(lines.at(-1), /^phase 3: plan set unchecked: no chunked plan outline \(gsd-tools has_plans decides\);/);
   // a finished outline none of whose plans exist, while the phase has others (replanned without --chunked)
   fs.writeFileSync(path.join(dir, '03-PLAN-OUTLINE.md'), OUTLINE.replace(/03-0(\d)/g, '03-1$1'));
   assert.equal(await run('--check', 'plan'), 0);
-  assert.match(lines.at(-1), /^phase 3: plan set complete: .*does not match the phase's plans: a leftover of an earlier planning run/);
+  assert.match(lines.at(-1), /^phase 3: plan set unchecked: .*does not match the phase's plans: a leftover of an earlier planning run/);
   // an unfinished outline beside plans: GSD writes plans only after the outline, so it is a leftover too
   fs.writeFileSync(path.join(dir, '03-PLAN-OUTLINE.md'), OUTLINE.replace('## OUTLINE COMPLETE', ''));
   assert.equal(await run('--check', 'plan'), 0);
-  assert.match(lines.at(-1), /plan set complete: .*a leftover of an earlier planning run/);
+  assert.match(lines.at(-1), /plan set unchecked: .*a leftover of an earlier planning run/);
+  assert.equal(await run('--plan-checked'), 0);
   assert.equal(await run('--done', 'plan'), 0);
 });
 
@@ -261,4 +269,73 @@ test('activePhase in slots mode: no lane works in the main checkout while lanes 
   assert.equal(activePhase(root), null);
   writeJsonAtomic(sup, { lanesMode: 'slots', lanes: {} });
   assert.equal(activePhase(root), '4');
+});
+
+// Journal (release-fix batch): a lane cut between the last plan's commit and GSD's plan-checker left a whole plan set
+// nobody checked, and the resumed lane marked the plan step done. turbo now keeps its own record of the checker's verdict.
+test('the plan step needs the plan-checker\'s verdict on record: a whole set without it is unchecked, --plan-checked records it, a plan written later reopens it', async () => {
+  const root = project();
+  const dir = path.join(root, '.planning', 'phases', '03-demo');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const s of STEPS.slice(0, STEPS.indexOf('plan'))) completeStep(root, '3', s);
+  const lines = [];
+  const run = (...a) => runPhaseCommand('phase-step', ['3', ...a], { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) });
+  // nothing to record while the set is incomplete or has no plan at all
+  assert.equal(await run('--plan-checked'), 1);
+  assert.equal(lines.at(-1), 'ERR turbo-run phase-step: phase 3: no plan check to record: the phase has no plan files');
+  fs.writeFileSync(path.join(dir, '03-PLAN-OUTLINE.md'), OUTLINE);
+  fs.writeFileSync(path.join(dir, '03-01-PLAN.md'), planFile('03-01'));
+  assert.equal(await run('--plan-checked'), 1);
+  assert.match(lines.at(-1), /^ERR turbo-run phase-step: phase 3: no plan check to record: plan set incomplete: .*2 not written yet/);
+  assert.equal(readProgress(root, '3').checks.plan, undefined);
+  for (const id of ['03-02', '03-03']) fs.writeFileSync(path.join(dir, `${id}-PLAN.md`), planFile(id));
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.match(lines.at(-1), /^phase 3: plan set unchecked: .*no plan-checker verdict on record for its 3 plan\(s\)/);
+  assert.equal(await run('--done', 'plan'), 1);
+  assert.equal(nextStep(readProgress(root, '3')), 'plan', 'still open: the resumed lane runs the checker pass');
+
+  // the record names the plans it covers; the other bookkeeping keeps it
+  assert.equal(await run('--plan-checked', '--note', 'passed after 1 revision'), 0);
+  const rec = readProgress(root, '3').checks.plan;
+  assert.deepEqual(rec.plans, ['03-01-PLAN.md', '03-02-PLAN.md', '03-03-PLAN.md']);
+  assert.equal(rec.note, 'passed after 1 revision');
+  countAttempt(root, '3', 'plan');
+  assert.equal(await run('--attempt', 'ci'), 0);
+  assert.deepEqual(readProgress(root, '3').checks.plan, rec, 'attempts keep it');
+
+  // a plan written after the verdict (a later planning run added one) is unchecked again
+  fs.mkdirSync(path.join(dir, 'plans'));
+  fs.writeFileSync(path.join(dir, 'plans', 'PLAN-04.md'), planFile('03-04'));
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.match(lines.at(-1), /^phase 3: plan set unchecked: plans\/PLAN-04\.md written after the plan-checker's verdict of \d{4}-/);
+  assert.equal(await run('--plan-checked'), 0);
+  assert.equal(await run('--done', 'plan', '--note', 'plans exist'), 0);
+  assert.deepEqual(readProgress(root, '3').checks.plan.plans, ['03-01-PLAN.md', '03-02-PLAN.md', '03-03-PLAN.md', 'plans/PLAN-04.md'], 'completeStep keeps it');
+  // the owner's reset (reused phase numbers) drops it with the rest
+  assert.equal(await run('--reset'), 0);
+  assert.equal(readProgress(root, '3').checks.plan, undefined);
+});
+
+test('backward compatible: a phase whose execution began (a plan SUMMARY) counts as checked, and so does GSD\'s plan check switched off', async () => {
+  const root = project();
+  const dir = path.join(root, '.planning', 'phases', '03-demo');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const s of STEPS.slice(0, STEPS.indexOf('plan'))) completeStep(root, '3', s);
+  for (const id of ['03-01', '03-02']) fs.writeFileSync(path.join(dir, `${id}-PLAN.md`), planFile(id));
+  const lines = [];
+  const run = (...a) => runPhaseCommand('phase-step', ['3', ...a], { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) });
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.match(lines.at(-1), /plan set unchecked/);
+  // GSD's workflow.plan_check false: GSD runs no checker, nothing to wait for
+  fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify({ workflow: { plan_check: false } }));
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.equal(lines.at(-1), "phase 3: plan set complete: no chunked plan outline (gsd-tools has_plans decides); plan check: off in GSD's config (workflow.plan_check false)");
+  fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify({ workflow: { plan_check: true } }));
+  assert.match((await run('--check', 'plan'), lines.at(-1)), /plan set unchecked/);
+  // planned (and checked) before turbo kept the record, execution already begun
+  fs.writeFileSync(path.join(dir, '03-01-SUMMARY.md'), '---\nphase: 03-demo\n---\n');
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.equal(lines.at(-1), 'phase 3: plan set complete: no chunked plan outline (gsd-tools has_plans decides); plan check: execution has begun (a plan has its SUMMARY)');
+  assert.equal(await run('--done', 'plan'), 0);
+  assert.equal(readProgress(root, '3').checks.plan, undefined, 'no record was needed');
 });

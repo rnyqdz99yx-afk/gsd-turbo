@@ -387,6 +387,21 @@ test('turbo-phase skill: the watchdog\'s line makes the lane go on and never sta
   assert.match(p, /^`warn: the supervisor is not running …` \(from `turbo-run inbox`, `ask` or `lane-status`\): .*Go on with the point you are in\. Never start, stop or restart the supervisor yourself \(`turbo-run start` and `resume` refuse in a lane\)/);
 });
 
+test('turbo-phase skill: the plan step is done only with turbo\'s own record of the plan check; a lane cut before GSD\'s plan-checker runs the checker pass, never planning again', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const plan = section(s, 'plan').split('\n');
+  const p1 = plan.find((l) => l.startsWith('1. '));
+  const p3 = plan.find((l) => l.startsWith('3. '));
+  const p6 = plan.find((l) => l.startsWith('6. '));
+  for (const n of ['`plan set unchecked: …`', 'the checker pass only, never planning again', '`gsd-plan-checker`', '`<gsd-core>/workflows/plan-phase.md`', '`gsd-planner` revision', 'two rounds at most', 'then points 4, 5 and 6']) assert.ok(p1.includes(n), n);
+  assert.ok(p3.includes('until point 6 has recorded the plan check'), p3);
+  assert.ok(p6, 'point 6');
+  for (const n of ['`turbo-run phase-step N --plan-checked --note', 'Auto-Advance Check', "point 1's checker pass", '`workflow.plan_check` off', 'SUMMARY']) assert.ok(p6.includes(n), n);
+  // freshness's own checker round over a whole plan set counts too
+  const fresh = section(s, 'freshness');
+  assert.ok(fresh.includes('`turbo-run phase-step N --plan-checked --note "freshness re-check"`'), 'freshness records its checker round');
+});
+
 test('turbo-phase skill: the lane\'s write guard is named, and a denial is never worked around through Bash', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
   const line = s.split('\n').find((l) => l.startsWith('- Temporary files'));

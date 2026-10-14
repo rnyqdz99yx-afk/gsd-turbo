@@ -284,6 +284,19 @@ test('turbo-phase skill: a human action that did not work goes back to the owner
   assert.match(p, /[Nn]ever change/);
 });
 
+test('turbo-phase skill: during chunked planning each committed plan\'s questions are listed and classified at once, so the owner can answer ahead; the end of the step lists them once more', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const plan = section(s, 'plan');
+  const point = plan.split('\n').find((l) => l.startsWith('2. '));
+  const at = point.indexOf('after each plan\'s commit');
+  assert.ok(at > point.indexOf('Skill(skill="gsd-plan-phase", args="N --chunked")'), point);
+  assert.ok(point.includes('`docs(<padded phase>): plan <plan id> (chunked)`'), 'the commit GSD makes per plan');
+  for (const n of ['`turbo-run questions N`', '`unclassified`', '`turbo-run questions N --class', 'answer ahead', 'before the next plan']) assert.ok(point.slice(at).includes(n), n);
+  assert.ok(plan.split('\n').some((l) => l.startsWith('5. **List and classify**')), 'the whole list once more after the checker\'s revisions');
+  const owner = s.slice(s.indexOf('### Owner questions'), s.indexOf('### Stale report'));
+  assert.match(owner, /\*\*List and classify\*\* \(step \*\*plan\*\*: after each plan's commit and once more at its end;/);
+});
+
 test('turbo-phase skill: the merged Nyquist worktree goes through turbo-run worktrees prune, dry run first, never forced; a conflict keeps the unmerged work', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
   const point = section(s, 'fanout').split('\n').find((l) => l.startsWith('6. '));

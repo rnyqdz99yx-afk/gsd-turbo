@@ -128,6 +128,20 @@ test('a refresh keeps the class, the agent and the stop; state and answer come f
   assert.equal(readAnswers(root, '32').length, 1, 'answers stay');
 });
 
+test('chunked planning: each committed plan brings its questions at the next refresh, the outline none; earlier answers and classes stay; a plan\'s questions classify alone', () => {
+  const root = tmpDir('chunked');
+  const dir = writePhase(root, '32-auth', { '32-PLAN-OUTLINE.md': '| Plan ID | Objective | Wave |\n| 32-09 | auth | 1 |\n| 32-10 | page | 2 |\n\n## OUTLINE COMPLETE\n' });
+  assert.deepEqual(refreshQuestions(root, '32'), [], 'the outline is no plan');
+  fs.writeFileSync(path.join(dir, '32-09-PLAN.md'), DECISION_PLAN);
+  assert.deepEqual(refreshQuestions(root, '32').map((q) => [q.id, q.classified]), [['32-09-t2', false]]);
+  classifyQuestions(root, '32', '32-09-t2=decision');
+  owner(root, '32-09-t2', { option: 1 });
+  fs.writeFileSync(path.join(dir, '32-10-PLAN.md'), VERIFY_PLAN);
+  const list = refreshQuestions(root, '32');
+  assert.deepEqual(list.map((q) => [q.id, q.state, q.classified]), [['32-09-t2', 'answered', true], ['32-10-t3', 'open', false]]);
+  assert.deepEqual(classifyQuestions(root, '32', '32-10-t3=verify').map((q) => [q.id, q.class]), [['32-09-t2', 'decision'], ['32-10-t3', 'verify']]);
+});
+
 test('liveAnswer skips superseded records; a preference reads as deferred', () => {
   const recs = [{ id: 'a', answer: 'x' }, { id: 'a', answer: 'y', superseded: 'z' }, { id: 'b', answer: 'q' }];
   assert.equal(liveAnswer(recs, 'a').answer, 'x');

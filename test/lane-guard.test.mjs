@@ -105,7 +105,9 @@ test('POSIX paths on a real file system: links resolved, sibling prefixes and th
 });
 
 test('nothing to decide allows: another tool, no path, no roots; the hook prints a deny only and allows what it cannot read', () => {
-  const base = { cwd: '/w/slot', roots: ['/w/slot'], tmp: '/t' };
+  // POSIX paths on any machine (on win32, /w/slot is Git Bash's spelling of W:\slot): a file system where nothing exists
+  const posix = { platform: 'linux', realpath: (p) => { throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' }); } };
+  const base = { cwd: '/w/slot', roots: ['/w/slot'], tmp: '/t', ...posix };
   assert.deepEqual(guardDecision({ ...base, tool: 'Bash', input: { command: 'echo x > /etc/x' } }), { allow: true });
   assert.deepEqual(guardDecision({ ...base, tool: 'Read', input: { file_path: '/etc/x' } }), { allow: true });
   assert.deepEqual(guardDecision({ ...base, tool: 'Write', input: {} }), { allow: true });
@@ -113,12 +115,12 @@ test('nothing to decide allows: another tool, no path, no roots; the hook prints
 
   const arg = encodeGuardArg({ roots: ['/w/slot', '/t'], tmp: '/t' });
   const call = (file_path) => JSON.stringify({ session_id: 's', cwd: '/w/slot', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path, content: 'x' } });
-  assert.equal(hookOutput(call('/w/slot/a.ts'), arg), '');
-  const out = JSON.parse(hookOutput(call('/w/exec-02-01/capture.mjs'), arg));
+  assert.equal(hookOutput(call('/w/slot/a.ts'), arg, posix), '');
+  const out = JSON.parse(hookOutput(call('/w/exec-02-01/capture.mjs'), arg, posix));
   assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
   assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /\/w\/exec-02-01\/capture\.mjs lies outside this lane's checkout \/w\/slot\. Write temporary files .* under \/t:/);
-  for (const [stdin, a] of [['not json', arg], [call('/etc/x'), 'not base64 json'], [call('/etc/x'), undefined]]) assert.equal(hookOutput(stdin, a), '', String(a));
+  for (const [stdin, a] of [['not json', arg], [call('/etc/x'), 'not base64 json'], [call('/etc/x'), undefined]]) assert.equal(hookOutput(stdin, a, posix), '', String(a));
 });
 
 test('the hook command: the script quoted for every shell, the settings in one base64url argument', () => {

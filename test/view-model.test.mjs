@@ -52,7 +52,7 @@ test('render draws the run in plain words, in sections a blank line apart: verdi
     '  last activity 10s ago',
     '  Executor · plan 32-07, task 2 · editing lib/x.mjs · 6m',
     '  Executor · plan 32-08 · running tests · 2m',
-    '  ⚠️ Verifier silent for 16m — may be stuck',
+    '  ⚠️ Verifier silent for 16m',
     '  1 more helper finished',
     '',
     'Needs your answer (1):',
@@ -91,7 +91,7 @@ test('render in Russian is Russian throughout, no English but paths and commands
     '  последнее действие 10 с назад',
     '  Исполнитель · план 32-07, задача 2 · правит lib/x.mjs · 6 мин',
     '  Исполнитель · план 32-08 · запустил тесты · 2 мин',
-    '  ⚠️ Проверяющий молчит 16 мин — возможно, завис',
+    '  ⚠️ Проверяющий молчит 16 мин',
     '  ещё 1 помощник закончил',
     '',
     'Нужен ваш ответ (1):',
@@ -189,7 +189,13 @@ test('one verdict, first match, that says whether the owner has to step in: the 
     [view({ supervisor: { running: false, halted: true } }), 'halted', 'error', 'supervisor stopped'],
     [calm({ ...offset, supervisor: { ...view().supervisor, failingSince: '2026-01-01T01:10:00.000Z' } }), 'failing', 'error', 'supervisor failing since 08:10'],
     [calm({ supervisor: STOPPED_SUP, attended: ['32'] }), 'attended', 'warning', 'phase 32 is in your session — new phases wait'],
-    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z' }), 'quiet', 'warning', 'silent for 20m — may be stuck'],
+    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z' }), 'quiet', 'warning', 'silent for 20m — turbo is waking the session'],
+    // liveness: a silent lane says what the supervisor did about it, never a bare guess that it hangs
+    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 1, relaunched: false, told: false } }), 'quiet', 'warning', 'silent for 20m — woke the session, waking it again'],
+    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 2, relaunched: true, told: false } }), 'quiet', 'warning', 'silent for 20m — restarted the session, waking it again'],
+    [calm({}, { quiet: true, lastAt: '2026-01-01T10:40:00.000Z', wake: { count: 2, relaunched: false, told: true } }), 'quiet', 'warning', 'silent for 20m — waking the session did not help: needs you'],
+    // a long command in flight is busy: all fine, no warning colour
+    [calm({}, { lastAt: '2026-01-01T10:40:00.000Z', busy: { since: '2026-01-01T10:40:00.000Z' } }), 'fine', 'success', 'all fine'],
     [calm({}, { agents: [agent(), agent({ agentId: 'a3', type: 'gsd-verifier', state: 'quiet', lastAt: '2026-01-01T10:44:00.000Z' })] }), 'quietHelper', 'warning', 'running, but ⚠️ Verifier silent for 16m'],
     [calm({}, { agents: [agent({ state: 'quiet', lastAt: '2026-01-01T10:50:00.000Z' }), agent({ agentId: 'a3', type: 'gsd-verifier', state: 'quiet', lastAt: '2026-01-01T10:44:00.000Z' })] }), 'quietHelper', 'warning', 'running, but ⚠️ Verifier silent for 16m (and 1 more)'],
     [calm({}, { status: 'done', step: null }), 'done', 'success', 'done'],
@@ -1133,7 +1139,7 @@ test('the summary line of a run with lanes: lanes, questions, the next phase and
 });
 
 const CARD = (where) => ['│ you can answer ahead — the phase is not waiting', `│ Deploy after green CI? (${where})`, '│   [1. Yes, by the gate]  [2. Stop]', '│   [Your own answer…]'];
-const LANE32 = ['  Now: writing code for 2 plans at once', '  last activity 10s ago', '  Executor · plan 32-07, task 2 · editing lib/x.mjs · 6m', '  Executor · plan 32-08 · running tests · 2m', '  ⚠️ Verifier silent for 16m — may be stuck', '  1 more helper finished'];
+const LANE32 = ['  Now: writing code for 2 plans at once', '  last activity 10s ago', '  Executor · plan 32-07, task 2 · editing lib/x.mjs · 6m', '  Executor · plan 32-08 · running tests · 2m', '  ⚠️ Verifier silent for 16m', '  1 more helper finished'];
 
 test('two lanes: the verdict, the summary line, a block per lane, the questions with their lane, the owner\'s needs; no phase steps', () => {
   const two = { ...lanes3(), lanes: lanes3().lanes.slice(0, 2) };
@@ -1186,7 +1192,7 @@ test('more than two lanes: calm lanes are one line, the lane with the question i
     '  последнее действие 10 с назад',
     '  Исполнитель · план 32-07, задача 2 · правит lib/x.mjs · 6 мин',
     '  Исполнитель · план 32-08 · запустил тесты · 2 мин',
-    '  ⚠️ Проверяющий молчит 16 мин — возможно, завис',
+    '  ⚠️ Проверяющий молчит 16 мин',
     '  ещё 1 помощник закончил',
     'Фаза 33 · полоса 2 — проверки качества · 2 из 4 планов готово · 25 мин',
     'Фаза 35 · полоса 3 — готовится заранее: обсуждение · 4 мин',

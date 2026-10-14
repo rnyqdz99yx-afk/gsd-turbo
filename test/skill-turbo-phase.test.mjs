@@ -59,7 +59,12 @@ test('turbo-phase skill: STATE.md\'s position is synced after every stop and aft
   const point = loop.split('\n').find((l) => l.startsWith('2. '));
   assert.ok(point.indexOf('gsd-pause-work') < point.indexOf('turbo-run state-sync N') && point.indexOf('turbo-run state-sync N') < point.indexOf('paused-context'), point);
   assert.ok(section(s, 'execute').includes('turbo-run state-sync N'), 'execute ends with a sync');
-  assert.ok(!/gsd-tools (query )?state[.\s](begin-phase|planned-phase)/.test(s), 'turbo never calls begin-phase or planned-phase');
+  assert.ok(!/gsd-tools (query )?state[.\s]begin-phase/.test(s), 'turbo never calls begin-phase');
+  // planned-phase only where GSD's plan-phase would have run it (review M3): the plan step's checker pass, before execution
+  const planned = [...s.matchAll(/gsd-tools (?:query )?state[.\s]planned-phase/g)].map((m) => m.index);
+  const p1 = s.indexOf('\n1. ', s.indexOf('\n### plan\n'));
+  assert.deepEqual(planned.length, 1);
+  assert.ok(planned[0] > p1 && planned[0] < s.indexOf('\n2. ', p1), 'only in step plan point 1');
 });
 
 test('turbo-phase skill: inside execute the context stop finishes the plan or wave and leaves the step undone; state-sync is best effort', () => {
@@ -393,10 +398,13 @@ test('turbo-phase skill: the plan step is done only with turbo\'s own record of 
   const p1 = plan.find((l) => l.startsWith('1. '));
   const p3 = plan.find((l) => l.startsWith('3. '));
   const p6 = plan.find((l) => l.startsWith('6. '));
-  for (const n of ['`plan set unchecked: …`', 'the checker pass only, never planning again', '`gsd-plan-checker`', '`<gsd-core>/workflows/plan-phase.md`', '`gsd-planner` revision', 'two rounds at most', 'then points 4, 5 and 6']) assert.ok(p1.includes(n), n);
+  for (const n of ['`plan set unchecked: …`', 'the checker pass only, never planning again', '`gsd-plan-checker`', '`<gsd-core>/workflows/plan-phase.md`', '`gsd-planner` revision', 'one revision round at most', 'then points 4, 5 and 6']) assert.ok(p1.includes(n), n);
+  // review I1/M3: GSD's own record of the planning (its steps 13b-13d) follows the checker pass
+  for (const n of ['`gsd-tools query state.planned-phase --phase N', '`gsd-tools query roadmap.annotate-dependencies N`', '`commit_docs`', '"docs(<padded phase>): create phase plan"', '.planning/STATE.md .planning/ROADMAP.md']) assert.ok(p1.includes(n), n);
+  assert.ok(p1.indexOf('`gsd-plan-checker`') < p1.indexOf('state.planned-phase') && p1.indexOf('create phase plan"') < p1.indexOf('then points 4, 5 and 6'), 'checker, then GSD\'s record, then points 4-6');
   assert.ok(p3.includes('until point 6 has recorded the plan check'), p3);
   assert.ok(p6, 'point 6');
-  for (const n of ['`turbo-run phase-step N --plan-checked --note', 'Auto-Advance Check', "point 1's checker pass", '`workflow.plan_check` off', 'SUMMARY']) assert.ok(p6.includes(n), n);
+  for (const n of ['`turbo-run phase-step N --plan-checked --note', 'Auto-Advance Check', "point 1's checker pass", 'create phase plan` commit', '`plan_checker`, else `workflow.plan_check`', 'SUMMARY']) assert.ok(p6.includes(n), n);
   // freshness's own checker round over a whole plan set counts too
   const fresh = section(s, 'freshness');
   assert.ok(fresh.includes('`turbo-run phase-step N --plan-checked --note "freshness re-check"`'), 'freshness records its checker round');

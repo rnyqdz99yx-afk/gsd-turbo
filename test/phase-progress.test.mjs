@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tmpDir } from './helpers/tmp.mjs';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { STEPS, readProgress, nextStep, completeStep, resetProgress, activePhase, countAttempt, clearAttempts } from '../lib/phase-progress.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
@@ -191,9 +191,10 @@ test('an interrupted chunked planning: while GSD\'s outline lists plans not writ
   fs.writeFileSync(path.join(dir, '03-03-PLAN.md'), planFile('03-03').replace(/\n/g, '\r\n'));
   assert.equal(await run('--check', 'plan'), 0);
   // the whole set, but GSD's plan-checker has no verdict on record yet: the step stays open for the checker pass
-  assert.equal(lines.at(-1), 'phase 3: plan set unchecked: GSD\'s chunked plan outline 03-PLAN-OUTLINE.md lists 3 plans, all written; no plan-checker verdict on record for its 3 plan(s) (a session may have stopped before GSD\'s plan-checker ran)');
+  assert.equal(lines.at(-1), 'phase 3: plan set unchecked: GSD\'s chunked plan outline 03-PLAN-OUTLINE.md lists 3 plans, all written; no plan-checker verdict on record for its 3 plan(s) and no create-phase-plan commit after them (a session may have stopped before GSD\'s plan-checker ran)');
   assert.equal(await run('--done', 'plan'), 1);
-  assert.match(lines.at(-1), /^ERR turbo-run phase-step: phase 3 cannot finish planning: .*no plan-checker verdict on record/);
+  // review I2: the refusal names the remedy
+  assert.match(lines.at(-1), /^ERR turbo-run phase-step: phase 3 cannot finish planning: .*no plan-checker verdict on record.*; run GSD's plan-checker over the plans, then turbo-run phase-step 3 --plan-checked$/);
   assert.equal(await run('--plan-checked', '--note', 'passed'), 0);
   assert.equal(lines.at(-1), 'phase 3: plan check recorded for 3 plan(s)');
   assert.equal(await run('--check', 'plan'), 0);
@@ -327,15 +328,58 @@ test('backward compatible: a phase whose execution began (a plan SUMMARY) counts
   assert.equal(await run('--check', 'plan'), 0);
   assert.match(lines.at(-1), /plan set unchecked/);
   // GSD's workflow.plan_check false: GSD runs no checker, nothing to wait for
-  fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify({ workflow: { plan_check: false } }));
-  assert.equal(await run('--check', 'plan'), 0);
-  assert.equal(lines.at(-1), "phase 3: plan set complete: no chunked plan outline (gsd-tools has_plans decides); plan check: off in GSD's config (workflow.plan_check false)");
-  fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify({ workflow: { plan_check: true } }));
-  assert.match((await run('--check', 'plan'), lines.at(-1)), /plan set unchecked/);
+  // review M4: the keys GSD reads, the flat plan_checker before workflow.plan_check
+  const off = "phase 3: plan set complete: no chunked plan outline (gsd-tools has_plans decides); plan check: off in GSD's config (plan_checker / workflow.plan_check false)";
+  for (const [cfg, want] of [[{ workflow: { plan_check: false } }, off], [{ plan_checker: false }, off], [{ plan_checker: false, workflow: { plan_check: true } }, off], [{ plan_checker: true, workflow: { plan_check: false } }, /plan set unchecked/], [{ workflow: { plan_check: true } }, /plan set unchecked/]]) {
+    fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify(cfg));
+    assert.equal(await run('--check', 'plan'), 0);
+    if (typeof want === 'string') assert.equal(lines.at(-1), want, JSON.stringify(cfg));
+    else assert.match(lines.at(-1), want, JSON.stringify(cfg));
+  }
   // planned (and checked) before turbo kept the record, execution already begun
   fs.writeFileSync(path.join(dir, '03-01-SUMMARY.md'), '---\nphase: 03-demo\n---\n');
   assert.equal(await run('--check', 'plan'), 0);
   assert.equal(lines.at(-1), 'phase 3: plan set complete: no chunked plan outline (gsd-tools has_plans decides); plan check: execution has begun (a plan has its SUMMARY)');
   assert.equal(await run('--done', 'plan'), 0);
   assert.equal(readProgress(root, '3').checks.plan, undefined, 'no record was needed');
+});
+
+// review I1: GSD 1.16's plan-phase does leave a trace once its checker passed: step 13d commits
+// `docs(<padded phase>): create phase plan` (with commit_docs). At or after the last plan's commit it counts as checked.
+test('GSD\'s create-phase-plan commit after the last plan\'s commit counts as checked; one before a later plan does not', async () => {
+  const root = tmpGitRepo();
+  fs.mkdirSync(path.join(root, '.planning'), { recursive: true });
+  const dir = path.join(root, '.planning', 'phases', '03-demo');
+  fs.mkdirSync(dir, { recursive: true });
+  const git = (...a) => execFileSync('git', a, { cwd: root, stdio: 'pipe' });
+  const commit = (msg, allow = false) => { git('add', '-A'); git('commit', '-q', ...(allow ? ['--allow-empty'] : []), '-m', msg); };
+  const lines = [];
+  const run = (...a) => runPhaseCommand('phase-step', ['3', ...a], { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) });
+  fs.writeFileSync(path.join(dir, '03-PLAN-OUTLINE.md'), OUTLINE.replace('| 03-03 | Wire them | 2 | 03-01, 03-02 | REQ-03 |\n', ''));
+  for (const id of ['03-01', '03-02']) {
+    fs.writeFileSync(path.join(dir, `${id}-PLAN.md`), planFile(id));
+    commit(`docs(03): plan ${id} (chunked)`);
+  }
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.match(lines.at(-1), /plan set unchecked: .*no create-phase-plan commit after them/);
+  // another phase's create commit is not this one's
+  fs.writeFileSync(path.join(root, '.planning', 'STATE.md'), 'x\n');
+  commit('docs(04): create phase plan');
+  assert.match((await run('--check', 'plan'), lines.at(-1)), /plan set unchecked/);
+  // 13b-13d: STATE.md, ROADMAP.md, the commit
+  fs.writeFileSync(path.join(root, '.planning', 'STATE.md'), 'Ready to execute\n');
+  commit('docs(03): create phase plan');
+  const sha = String(git('rev-parse', 'HEAD')).trim();
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.equal(lines.at(-1), `phase 3: plan set complete: GSD's chunked plan outline 03-PLAN-OUTLINE.md lists 2 plans, all written; plan check: GSD's commit ${sha.slice(0, 12)} (create phase plan) follows the last plan's commit`);
+  commit('chore: later work', true);
+  assert.match((await run('--check', 'plan'), lines.at(-1)), /plan check: GSD's commit/);
+  // a plan written after it (a later planning run) needs a new verdict
+  fs.writeFileSync(path.join(dir, '03-04-PLAN.md'), planFile('03-04'));
+  commit('docs(03): plan 03-04');
+  assert.match((await run('--check', 'plan'), lines.at(-1)), /plan set unchecked/);
+  // the create commit that also adds the plans (a non-chunked run) is at the last plan's commit: it counts
+  fs.writeFileSync(path.join(dir, '03-05-PLAN.md'), planFile('03-05'));
+  commit('docs(3): create phase plan');
+  assert.match((await run('--check', 'plan'), lines.at(-1)), /plan check: GSD's commit/);
 });

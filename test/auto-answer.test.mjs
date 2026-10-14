@@ -261,6 +261,8 @@ test('review I1/I2: undo of a stop the lane is being woken for, of a finished pl
   assert.deepEqual(readInbox(root, 'annotate'), []);
 });
 
+// A guard only: a sitting is a checkpoint:human-action, which autoChoice never answers; this pins that a sitting stays
+// one (its card has no option to take ahead but a defer, none at the stop) whatever class a lane gives it.
 test('a live sitting is never answered automatically, ahead or at its stop, whatever class a lane gave it (journal 2026-10-14)', () => {
   const cp = parseCheckpoints(SITTING_PLAN)[0];
   for (const stopped of [false, true]) {

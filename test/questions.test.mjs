@@ -659,9 +659,9 @@ test('a live sitting\'s card never offers Done: ahead the wish to join it when t
   assert.deepEqual([plain.options.map((o) => o.label), 'sitting' in plain], [['Done'], false]);
 });
 
-test('doneAnswer: turbo\'s Done and Check again in either language and the owner\'s own word for done; a preference or other words are none', () => {
-  for (const r of [{ label: 'Сделано', answer: 'go' }, { label: 'Done', answer: 'done' }, { label: 'Check again', answer: 'x' }, { label: null, answer: 'Сделано.' }, { label: null, answer: ' done! ' }, { answer: 'готово' }]) assert.equal(doneAnswer(r), true, JSON.stringify(r));
-  for (const r of [null, { label: 'Проведу сеанс, когда фаза попросит', answer: null, defer: true }, { label: 'Done', answer: 'done', defer: true }, { label: null, answer: 'go' }, { label: null, answer: 'done, but the tray hangs' }]) assert.equal(doneAnswer(r), false, JSON.stringify(r));
+test('doneAnswer: turbo\'s Done and Check again in either language and own words that start with the owner\'s word for done; a preference or other words are none', () => {
+  for (const r of [{ label: 'Сделано', answer: 'go' }, { label: 'Done', answer: 'done' }, { label: 'Check again', answer: 'x' }, { label: null, answer: 'Сделано.' }, { label: null, answer: ' done! ' }, { answer: 'готово' }, { label: null, answer: 'done, but the tray hangs' }, { answer: 'Сделал всё, продолжай' }]) assert.equal(doneAnswer(r), true, JSON.stringify(r));
+  for (const r of [null, { label: 'Проведу сеанс, когда фаза попросит', answer: null, defer: true }, { label: 'Done', answer: 'done', defer: true }, { label: null, answer: 'go' }, { answer: 'doneness check later' }, { answer: 'Готовность завтра' }, { answer: 'not done yet' }]) assert.equal(doneAnswer(r), false, JSON.stringify(r));
 });
 
 // A phase 33 with the sitting plan 16 and the plain action plan 11.
@@ -710,4 +710,31 @@ test('a done recorded on a sitting before it was told apart (v0.3.3 card) is nev
   Object.assign(marked.find((x) => x.id === '33-16-t2'), { state: 'answered', answer: { option: null, label: null, answer: 'сделано', by: 'session', at: 'x', conditional: false } });
   writeQuestions(root, '33', marked);
   assert.deepEqual([deliveryState(root, '33').waiting.map((x) => x.id), deliveryState(root, '33').ready], [['33-16-t2'], []]);
+});
+
+test('review 1: a done on an unmarked sitting stop (answered on v0.3.3, the supervisor restarted on v0.4 without attend) waits, is never ready, and the next refresh opens it with the way in', () => {
+  const root = sittingProject();
+  refreshQuestions(root, '33');
+  stopQuestion(root, '33', '33-16-t2', { agentId: AG });
+  const list = readQuestions(root, '33');
+  const q = list.find((x) => x.id === '33-16-t2');
+  delete q.sitting;
+  const answer = { option: 1, label: 'Сделано', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false };
+  Object.assign(q, { options: [{ label: 'Сделано', description: '', recommended: false, signal: 'go', defer: false }], state: 'answered', answer, rev: 2 });
+  writeQuestions(root, '33', list);
+  writeAnswers(root, '33', [{ id: '33-16-t2', plan: '33-16', task: '2', ...answer, condition: null, defer: false }]);
+  // before any refresh: no wake for it (never ready), it waits for the owner
+  assert.deepEqual([deliveryState(root, '33').waiting.map((x) => x.id), deliveryState(root, '33').ready], [['33-16-t2'], []]);
+  const fresh = refreshQuestions(root, '33', { now: new Date('2026-01-01T16:00:00Z') }).find((x) => x.id === '33-16-t2');
+  assert.deepEqual([fresh.state, fresh.answer, fresh.sitting, fresh.stopped, fresh.options, fresh.rev, fresh.askedAt], ['open', null, true, true, [], 3, '2026-01-01T16:00:00.000Z']);
+  assert.match(fresh.question, /run \/turbo-autonomous attend 33 in a new Claude Code window/);
+  assert.deepEqual([readAnswers(root, '33')[0].superseded, readAnswers(root, '33')[0].supersededBy], ['2026-01-01T16:00:00.000Z', 'sitting']);
+  assert.deepEqual(deliveryState(root, '33').waiting.map((x) => x.id), ['33-16-t2'], 'the card is open again');
+  // a delivered one stays as it is: the lane already took it
+  const taken = readQuestions(root, '33');
+  Object.assign(taken.find((x) => x.id === '33-16-t2'), { state: 'delivered' });
+  writeQuestions(root, '33', taken);
+  writeAnswers(root, '33', [{ id: '33-16-t2', plan: '33-16', task: '2', ...answer, condition: null, defer: false }]);
+  assert.equal(refreshQuestions(root, '33').find((x) => x.id === '33-16-t2').state, 'delivered');
+  assert.equal(readAnswers(root, '33')[0].superseded, undefined);
 });

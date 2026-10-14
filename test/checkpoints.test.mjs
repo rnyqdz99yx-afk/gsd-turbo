@@ -131,3 +131,24 @@ test('a live sitting: a human-action with <instructions> and a go/stop resume si
   assert.equal(sittingCheckpoint({ ...parseCheckpoints(ACTION_PLAN)[0], action: 'Оркестратор проводит проверку вместе с владельцем' }), true);
   assert.equal(sittingCheckpoint(null), false);
 });
+
+test('a live sitting is told by its answer words and a named co-performer, never by a bare word (review 1)', () => {
+  const plain = { ...parseCheckpoints(ACTION_PLAN)[0], resumeSignal: 'Type "done" when verified' };
+  const sit = (over) => sittingCheckpoint({ ...plain, ...over });
+  // false positives of the first cut: an executor's note, a posture, a go and a stop that are no answer words
+  assert.equal(sit({ action: 'Orchestrator: present these steps to the user and wait for done' }), false);
+  assert.equal(sit({ instructions: 'While sitting at the PC, plug in the key.' }), false);
+  assert.equal(sit({ resumeSignal: 'Type "go" once you stop the old server' }), false);
+  assert.equal(sit({ resumeSignal: 'go ahead when you stop the service' }), false);
+  // the answer words: quoted, or the whole signal; stop may be abort or cancel
+  assert.equal(sit({ resumeSignal: 'Type "go" to begin, or "abort"' }), true);
+  assert.equal(sit({ resumeSignal: 'Ответь «старт» или «отмена»' }), true);
+  assert.equal(sit({ resumeSignal: 'go / stop' }), true);
+  assert.equal(sit({ resumeSignal: 'cancel or go' }), true);
+  // the sitting named as such, or the orchestrator with a co-performer in one sentence, in any field
+  assert.equal(sit({ name: 'Task 2: the live sitting' }), true);
+  assert.equal(sit({ instructions: 'Живой сеанс: я веду проверку, ты смотришь.' }), true);
+  assert.equal(sit({ action: 'The orchestrator runs the check together with the owner.' }), true);
+  assert.equal(sit({ action: 'The orchestrator prepares it. The owner runs it together with a friend.' }), false, 'two sentences');
+  assert.equal(sit({ resumeSignal: 'Type "done" when the live sitting is over' }), true, 'the resume signal names it');
+});

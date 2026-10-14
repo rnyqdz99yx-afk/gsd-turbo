@@ -384,6 +384,11 @@ test('GSD\'s create-phase-plan commit after the last plan\'s commit counts as ch
   fs.appendFileSync(path.join(root, '.planning', 'STATE.md'), 'planned\n');
   commit('docs(3): create phase plan');
   assert.match((await run('--check', 'plan'), lines.at(-1)), /plan set unchecked/);
+  // review I-b: in a concurrent chunked run another planner's commit took this planner's plan; its own commit then holds
+  // ROADMAP.md alone: no STATE.md, so not GSD's step 13d
+  fs.writeFileSync(path.join(root, '.planning', 'ROADMAP.md'), '- [ ] 03-04-PLAN.md\n');
+  commit('docs(03): create phase plan');
+  assert.match((await run('--check', 'plan'), lines.at(-1)), /plan set unchecked/);
   // GSD's step 13d after the checker: STATE.md and ROADMAP.md, no plan added
   fs.writeFileSync(path.join(root, '.planning', 'ROADMAP.md'), '- [ ] 03-05-PLAN.md\n');
   fs.appendFileSync(path.join(root, '.planning', 'STATE.md'), 'Ready to execute\n');

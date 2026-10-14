@@ -56,6 +56,9 @@ test('a scripted /turbo-phase run drives every deterministic step and leaves GSD
   await done('prologue');
   await run('staleness', '3', '--record-all');
   commit('docs(phase-3): record planning bases');
+  // the plan step's own record of GSD's plan-checker verdict (step plan, point 6): --done plan refuses without it
+  assert.match(await run('phase-step', '3', '--check', 'plan'), /plan set unchecked: /);
+  assert.equal(await run('phase-step', '3', '--plan-checked', '--note', 'passed'), 'phase 3: plan check recorded for 1 plan(s)');
   await done('plan');
 
   // gates-off: one commit, clean tree

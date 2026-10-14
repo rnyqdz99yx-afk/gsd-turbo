@@ -223,12 +223,12 @@ test('pushSettings: off by default; every key validated; a bad value is a one-li
 });
 
 test('lanes (Stage 4 L0): defaults, a valid hand-edited value, and every invalid one stops with the key named', () => {
-  assert.deepEqual(DEFAULTS.lanes, { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true, gates: [] });
+  assert.deepEqual(DEFAULTS.lanes, { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true, gates: [], write_guard: true });
   assert.deepEqual(LANE_MODES, ['slots', 'checkout']);
   assert.deepEqual(lanesSettings(), DEFAULTS.lanes);
   assert.deepEqual(
-    lanesSettings({ mode: 'checkout', dir: ' ../slots ', copy: [' config/*.env ', '**/.npmrc'], install: ' pnpm install --offline ', trust_write: false, gates: ['packaged-build'] }),
-    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false, gates: ['packaged-build'] },
+    lanesSettings({ mode: 'checkout', dir: ' ../slots ', copy: [' config/*.env ', '**/.npmrc'], install: ' pnpm install --offline ', trust_write: false, gates: ['packaged-build'], write_guard: false }),
+    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false, gates: ['packaged-build'], write_guard: false },
   );
   // a key of a later sub-project (L1's lanes.gates) passes through unchecked (I2)
   assert.deepEqual(lanesSettings({ gates: { full: true } }).gates, { full: true });
@@ -245,6 +245,7 @@ test('lanes (Stage 4 L0): defaults, a valid hand-edited value, and every invalid
     [{ copy: ['.git/config'] }, /must not name \.git/],
     [{ install: 1 }, /lanes\.install: must be a command string/],
     [{ trust_write: 'no' }, /lanes\.trust_write: must be true or false/],
+    [{ write_guard: 'off' }, /lanes\.write_guard: must be true or false/],
   ];
   for (const [v, re] of cases) assert.throws(() => lanesSettings(v), re, JSON.stringify(v));
   // a hand-edited config file reaches it through loadConfig; the rest keeps its default

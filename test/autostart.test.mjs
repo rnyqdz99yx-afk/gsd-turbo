@@ -52,6 +52,32 @@ test('Windows on: a hidden launcher in turbo\'s directory and a per-user Run ent
   assert.ok(r.lines.some((l) => /^undo: turbo-run autostart off/.test(l)), r.lines.join('\n'));
 });
 
+test('Windows: the launcher starts turbo-run with the Claude Code config directory autostart was turned on in; without one, with the logon\'s own (it relaunched with ~/.claude)', () => {
+  const launcherJs = (s, dir) => fs.readFileSync(path.join(dir, 'turbo', 'autostart', `${s.key}.js`)).subarray(2).toString('utf16le');
+  const s = setup();
+  s.env.CLAUDE_CONFIG_DIR = path.join(s.home, "cfg 'a' b");
+  assert.equal(runAutostart('on', s.opts).code, 0);
+  const js = launcherJs(s, s.env.CLAUDE_CONFIG_DIR);
+  const set = `shell.Environment('Process')('CLAUDE_CONFIG_DIR') = ${JSON.stringify(s.env.CLAUDE_CONFIG_DIR)};`;
+  assert.ok(js.includes(set), js);
+  assert.ok(js.indexOf(set) < js.indexOf('.Run('), 'set before node starts');
+  // the Run entry gets the user's logon environment: its PATH is the user's own, never a copy frozen now
+  assert.ok(!/Environment\('Process'\)\('PATH'\)/.test(js), js);
+  // a relative directory is the one turbo uses now
+  const rel = setup();
+  rel.env.CLAUDE_CONFIG_DIR = path.relative(process.cwd(), path.join(rel.home, 'rel-cfg'));
+  assert.equal(runAutostart('on', rel.opts).code, 0);
+  assert.ok(launcherJs(rel, path.join(rel.home, 'rel-cfg')).includes(`('CLAUDE_CONFIG_DIR') = ${JSON.stringify(path.join(rel.home, 'rel-cfg'))};`));
+  // no config directory: nothing set, the launcher in ~/.claude
+  const d = setup();
+  delete d.env.CLAUDE_CONFIG_DIR;
+  assert.equal(runAutostart('on', d.opts).code, 0);
+  const plain = launcherJs(d, path.join(d.home, '.claude'));
+  assert.ok(!plain.includes('Environment('), plain);
+  assert.ok(plain.includes(`.Run(${JSON.stringify(`"${NODE}" "${TURBO}" start --autostart --project "${d.root}"`)}, 0, false)`), plain);
+  assert.match(runAutostart('status', d.opts).lines[0], /^autostart: on /);
+});
+
 test('Windows: a refused reg add leaves nothing behind; status reads the entry and the launcher; off removes both', () => {
   const refused = setup({ answers: { 'reg.exe add': { status: 1, stderr: 'ERROR: Access is denied.\r\n' } } });
   const r = runAutostart('on', refused.opts);
@@ -145,6 +171,15 @@ test('a path a logon command cannot carry (a line break, a JavaScript line separ
   // % is fine outside Windows
   const mac = setup({ platform: 'darwin' });
   assert.equal(runAutostart('on', { ...mac.opts, root: path.join(mac.root, '100%') }).code, 0);
+  // the config directory a launcher sets (a line break would add lines to a unit file)
+  for (const [platform, bad] of [['linux', 'a\nExecStartPre=/bin/sh'], ['win32', 'a b'], ['win32', '%APPDATA%'], ['darwin', 'a\rb']]) {
+    const s = setup({ platform });
+    s.env.CLAUDE_CONFIG_DIR = path.join(s.home, bad);
+    const r = runAutostart('on', s.opts);
+    assert.equal(r.code, 1, `${platform} ${JSON.stringify(bad)}`);
+    assert.match(r.lines[0], /^autostart not set: the path of the Claude Code config directory has a character/);
+    assert.deepEqual([s.calls, fs.readdirSync(s.home)], [[], []]);
+  }
 });
 
 test('the files carry no project path in their comments (review m4)', () => {

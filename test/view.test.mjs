@@ -40,7 +40,7 @@ const agentEntries = (id, from, to, tokens = 166000) => [
 test('without supervisor.json the view has no supervisor and no lanes, and still lists questions and commits', () => {
   const { root, env } = laneProject();
   const v = buildView({ root, sup: null, env, now: NOW, commits: COMMITS });
-  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], next: null, questions: [], commits: COMMITS(), attended: [], away: null, autoAnswered: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
+  assert.deepEqual(v, { v: 1, at: NOW.toISOString(), supervisor: null, range: null, lanes: [], next: null, remaining: null, questions: [], commits: COMMITS(), attended: [], away: null, autoAnswered: [], ui: { lang: 'en', refreshSeconds: 3, utcOffsetMinutes: -NOW.getTimezoneOffset() } });
 });
 
 test('the view shows supervisor, range, the lane with its step, record and subagents, open questions and commits', () => {
@@ -374,6 +374,18 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 1, how: 'tried', told: false }, agents: [] }),
     textView({ questions: [] }, { quiet: true, lastAt: at('10:40'), wake: { count: 2, how: 'woke', told: true }, agents: [] }),
     textView({ questions: [], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', quiet: true, lastAt: at('10:40'), wake: { count: 2, how: 'woke', told: true }, agents: [] }] }),
+    // F4: a lane being merged (its merge step now), and one no supervisor merges
+    textView({ questions: [] }, { key: '32', job: 'phase', slot: 1, status: 'ready', step: 'integrate', agents: [] }),
+    textView({ questions: [], supervisor: stoppedSup }, { key: '32', job: 'phase', slot: 1, status: 'ready', step: 'integrate', agents: [] }),
+    // the last phase of a run without a range
+    textView({ questions: [], range: null, remaining: ['32'] }, { step: 'uat' }),
+    // an attended phase: alone (checkout mode), and beside a lane that goes on
+    textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', reason: 'checkpoint 32-10 Task 2', quiet: true, lastAt: at('10:01') }),
+    textView({ questions: [], attended: ['32'] }, { status: 'needs-owner', reason: 'a live check', push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } }),
+    textView({ questions: [], attended: ['34'], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', status: 'needs-owner', quiet: true, lastAt: at('10:01') }] }),
+    // gap planning: the planner past the plan step, and the plan checker
+    textView({ questions: [] }, { plans: { done: 9, total: 9 }, agents: [{ type: 'gsd-planner', plan: null, state: 'running', action: { tool: 'Write', detail: 'x' }, elapsedMs: 5000 }] }),
+    textView({ questions: [] }, { step: 'uat', agents: [{ type: 'gsd-plan-checker', plan: null, state: 'running', action: null, elapsedMs: 5000 }] }),
   ];
   for (const lang of ['en', 'ru']) {
     for (const v of views) {
@@ -727,4 +739,12 @@ test('v0.4.0: away mode and the answers turbo took itself — formatView prints 
   writeAway(root, { since: null, ackAt: at('11:00'), snapshot: null });
   v = buildView({ root, sup: null, commits: () => [], agents: false });
   assert.deepEqual([v.away, v.autoAnswered], [null, []], 'seen after the owner came back');
+});
+
+test('the view carries the run\'s unfinished phases as the supervisor last read them (remaining), cleaned; none without them', () => {
+  const { root, env, sup } = laneProject();
+  const v = buildView({ root, sup: { ...sup, remaining: ['32', '33\x1b[2J', { x: 1 }] }, running: true, env, now: NOW, commits: () => [] });
+  assert.deepEqual(v.remaining, ['32', '33']);
+  assert.equal(buildView({ root, sup, running: true, env, now: NOW, commits: () => [] }).remaining, null);
+  assert.equal(formatView({ ...v, range: null, remaining: ['32'] }).includes('→ end of the run'), true);
 });

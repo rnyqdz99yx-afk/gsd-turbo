@@ -199,3 +199,10 @@ test('laneStopped, slotUntrusted and slotRefused in en and ru', () => {
     body: 'uncommitted changes. В нём ничего не изменено; turbo попробует снова через 10 мин, а пока использует другие слоты.',
   });
 });
+
+test('slots mode records the unfinished phases of the run too (remaining), the running ones included', async () => {
+  const h = lanesHarness({ phases: [P('1'), P('2', [], true), P('3', ['1'])], lanes: annotated({ 1: A('a/**'), 3: A('a/**') }) });
+  const s = await tick(freshLanes(), h.ctx);
+  assert.deepEqual(Object.keys(s.lanes), ['1']);
+  assert.deepEqual(s.remaining, ['1', '3']);
+});

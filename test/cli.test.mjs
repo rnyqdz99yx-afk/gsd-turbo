@@ -102,6 +102,23 @@ function execSpy(dir) {
   fs.writeFileSync(preload, `(${execSpyPreload})();\n`);
   return { nodeArgs: ['--require', preload], env: { TURBO_SPY_LOG: log }, calls: () => readLines(log) };
 }
+// Preloaded with --require: the process table lib/daemon-probe.mjs reads (Win32_Process through PowerShell, or ps) is
+// this process alone, so a test of the background-service probe never depends on WMI or ps of the machine.
+function processTablePreload() {
+  const cp = require('node:child_process');
+  const sync = cp.execFileSync;
+  cp.execFileSync = function (cmd, args) {
+    const a = (args || []).join(' ');
+    if ((/powershell/i.test(cmd) && /Win32_Process/.test(a) && /CommandLine/.test(a)) || (cmd === 'ps' && /pid=,args=/.test(a))) return `${process.pid} node turbo-run.mjs\n`;
+    return sync.apply(this, arguments);
+  };
+  require('node:module').syncBuiltinESMExports();
+}
+function processTableFake(dir) {
+  const preload = path.join(dir, 'process-table.cjs');
+  fs.writeFileSync(preload, `(${processTablePreload})();\n`);
+  return ['--require', preload];
+}
 function fakeGsd() {
   const fs = require('fs');
   const path = require('path');
@@ -394,13 +411,13 @@ test('stop counts a job the idle-exited background service no longer runs (liste
 
 // journal 2026-10-14 15:34Z: claude stop failed «… the background service may be restarting» at every retry while claude
 // agents still listed the lane alive (a stale record); no service of this config directory (the test's own, which no
-// Claude Code ever ran) and no process carried the session. The real probe runs here: no control pipe or socket of
-// CLAUDE_CONFIG_DIR, and the process table has no process with the session id or the listed pid.
+// Claude Code ever ran) and no process carried the session. The probe runs on the real files (no control pipe or socket
+// of CLAUDE_CONFIG_DIR) and a process table of turbo-run alone (processTableFake).
 test('stop counts a lane session listed alive as stopped when no background service of this config directory runs and no process carries it, and says so in one line', async () => {
   const p = fakeProject();
   p.setClaude({ agents: [{ id: 'retired2', name: 'x', cwd: p.root, state: 'blocked', pid: DEAD_PID }] });
   writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: 'retired2' } });
-  const r = await runAsync(['stop'], p.root, p.env);
+  const r = await runAsync(['stop'], p.root, p.env, processTableFake(p.root));
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /^Claude Code's background service is not running and no process carries lane session retired2: counted as stopped$/m);
   assert.match(r.stdout, /^stopped$/m);
@@ -1307,7 +1324,7 @@ test('attend goes on when the lane session is a stale record of a stopped backgr
   fs.writeFileSync(cfg, JSON.stringify({ ...readJsonFile(cfg), lang: 'ru' }));
   writeSup(p.root, { ...readSup(p.root), lane: { ...readSup(p.root).lane, sessionId: 'retired3' } });
   p.setClaude({ agents: [{ id: 'retired3', name: laneSessionName(p.root, '4'), cwd: p.root, state: 'working', pid: DEAD_PID }] });
-  const r = await runAsync(['attend', '4'], p.root, { ...env, TURBO_ATTEND_SETTLE_MS: '1200' });
+  const r = await runAsync(['attend', '4'], p.root, { ...env, TURBO_ATTEND_SETTLE_MS: '1200' }, processTableFake(p.root));
   assert.equal(r.code, 0, r.stderr);
   const said = r.stdout.split('\n').filter((l) => l.includes('retired3'));
   assert.deepEqual(said, ['фоновая служба Claude Code не работает и процесса сессии retired3 нет — считаю полосу остановленной'], 'said once, never as a late lane');

@@ -227,17 +227,17 @@ function clearDaemonPid(root, state) {
 
 // The watchdog's look (lib/watchdog.mjs): a supervisor that died without a word is told to the owner once. root: the
 // command's project (a lane's slot names its control root). Its line, or null; a look never fails the command it rides on.
-// The notification waits LOOK_NOTIFY_MS per channel at most: the mod ends a view read after 10 s.
 const LANE_LOOKS = new Set(['inbox', 'ask', 'lane-status']);
-const LOOK_NOTIFY_MS = 4000;
+// The owner's commands that start the supervisor (start, resume): a lane hears from the watchdog that it died and never
+// starts it, since a lane's environment (its TURBO_LANE, its own temp directory) is no daemon's.
+const refuseInLane = (cmd) => { if (process.env.TURBO_LANE) die(`refused: ${cmd} is the owner's: a lane never runs it`); };
 async function supervisorLook(root, by) {
   try {
     const control = stateRoot(root);
     const config = runtimeConfig(loadConfig(control));
     const sup = readJson(supPath(control), null);
     const up = process.env.TURBO_UPTIME_SECONDS;
-    const send = (m) => notify(config, m, { timeoutMs: LOOK_NOTIFY_MS });
-    const r = await watchSupervisor(control, { sup, alive: supAlive(sup, config.poll_seconds), config, by, notify: send, ...(up ? { uptimeSeconds: Number(up) } : {}) });
+    const r = await watchSupervisor(control, { sup, alive: supAlive(sup, config.poll_seconds), config, by, ...(up ? { uptimeSeconds: Number(up) } : {}) });
     return r?.line ?? null;
   } catch {
     return null;
@@ -1061,9 +1061,7 @@ async function main() {
     }
     case 'start': {
       if (!root) die('no .planning directory found');
-      // a lane hears from the watchdog that the supervisor died; the restart is the owner's (a lane's environment, its
-      // TURBO_LANE and temp directory, is no daemon's)
-      if (process.env.TURBO_LANE) die("refused: start is the owner's: a lane never runs it");
+      refuseInLane('start');
       if (args.includes('--autostart')) {
         if (rangeFlags(args) !== undefined || args.includes('--plan-only')) die('start --autostart takes no range flags and no --plan-only: it takes up the run as it was');
         return startAtLogon(root);
@@ -1178,6 +1176,7 @@ async function main() {
       return 0;
     }
     case 'resume': {
+      refuseInLane('resume');
       const [phase] = pos;
       if (!root || !phase || !PHASE_ID.test(phase)) die('resume <phase> [--start]');
       return resumePhase(root, normalizePhaseId(phase), args.includes('--start'));

@@ -11,9 +11,11 @@ import { askOwner } from '../lib/questions.mjs';
 import { writeAttend } from '../lib/attend.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
-const run = (args, cwd, env = process.env, nodeArgs = []) => execFileSync(process.execPath, [...nodeArgs, CLI, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+// NOT_LANE: turbo's own tests may run inside a turbo lane; a CLI call is the owner's unless a test says otherwise
+const NOT_LANE = { ...process.env, TURBO_LANE: '' };
+const run = (args, cwd, env = NOT_LANE, nodeArgs = []) => execFileSync(process.execPath, [...nodeArgs, CLI, ...args], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 // Async, so this process keeps reaping children the CLI kills (no POSIX zombies).
-const runAsync = (args, cwd, env = process.env, nodeArgs = []) => new Promise((resolve) => {
+const runAsync = (args, cwd, env = NOT_LANE, nodeArgs = []) => new Promise((resolve) => {
   execFile(process.execPath, [...nodeArgs, CLI, ...args], { cwd, env, encoding: 'utf8', windowsHide: true }, (err, stdout, stderr) => {
     resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr });
   });
@@ -151,7 +153,7 @@ function fakeProject({
   fs.writeFileSync(path.join(home, 'skills', 'turbo-phase', 'SKILL.md'), 'x');
   fs.mkdirSync(path.join(home, 'agents'), { recursive: true });
   fs.writeFileSync(path.join(home, 'agents', 'turbo-uat.md'), 'x');
-  const env = { ...process.env, [PATH_KEY]: `${bin}${path.delimiter}${process.env[PATH_KEY]}`, CLAUDE_CONFIG_DIR: path.join(root, 'claude-home') };
+  const env = { ...process.env, TURBO_LANE: '', [PATH_KEY]: `${bin}${path.delimiter}${process.env[PATH_KEY]}`, CLAUDE_CONFIG_DIR: path.join(root, 'claude-home') };
   return {
     root,
     env,

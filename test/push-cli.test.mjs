@@ -10,7 +10,8 @@ import { msg } from '../lib/messages.mjs';
 import { readJson, writeJsonAtomic } from '../lib/fsx.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
-const cli = (args, cwd) => spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8', windowsHide: true });
+// the owner's calls: turbo's own tests may run inside a turbo lane
+const cli = (args, cwd) => spawnSync(process.execPath, [CLI, ...args], { cwd, env: { ...process.env, TURBO_LANE: '' }, encoding: 'utf8', windowsHide: true });
 
 function writeConfig(root, obj) {
   fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });

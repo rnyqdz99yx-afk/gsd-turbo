@@ -346,3 +346,113 @@ test('the complete commit holds only the phase\'s planning files, never owner an
   assert.equal(r.outcome, 'merged', r.reason);
   assert.ok(!p.inMain('show', '--name-only', '--format=', 'HEAD').includes('answers'));
 });
+
+// smoke F6: GSD 1.16 publishes .planning/state.json (never committed, never ignored by GSD) after every phase.* and state.*
+// step that wrote planning files (state-contract.cjs publishStateContract), so the supervisor's phase.complete and
+// state-sync in the main checkout left an untracked one behind
+const publishing = (base) => (args, o) => {
+  const out = base(args, o);
+  if (args[1] === 'phase.complete') {
+    fs.writeFileSync(path.join(o.cwd, '.planning', 'state.json'), `{"completed":"${args[2]}"}\n`);
+  }
+  return out;
+};
+
+test('the GSD state.json the supervisor\'s phase.complete publishes in the main checkout goes again when main had none; the owner\'s own and a tracked one stay', async () => {
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  const r = await mergeReady(mergeCtx(p, { gsd: publishing(fakeGsd()) }).ctx, laneOf(p));
+  assert.equal(r.outcome, 'merged', r.reason);
+  assert.equal(fs.existsSync(path.join(p.root, '.planning', 'state.json')), false);
+  assert.equal(p.inMain('status', '--porcelain', '--untracked-files=all', '--', '.planning'), '', 'no untracked leftover in main');
+
+  // the owner's GSD keeps one in the main checkout: GSD updates it and it stays, untracked
+  const q = laneProject();
+  finishPhase(q);
+  reportReady(q);
+  q.writeMain('.planning/state.json', '{"owner":true}\n');
+  assert.equal((await mergeReady(mergeCtx(q, { gsd: publishing(fakeGsd()) }).ctx, laneOf(q))).outcome, 'merged');
+  assert.equal(readMain(q, '.planning/state.json'), '{"completed":"3"}\n');
+
+  // a project that tracks it: the complete commit takes GSD's update, as with ROADMAP and STATE
+  const t = laneProject({ files: { '.planning/state.json': '{}\n' } });
+  finishPhase(t);
+  reportReady(t);
+  assert.equal((await mergeReady(mergeCtx(t, { gsd: publishing(fakeGsd()) }).ctx, laneOf(t))).outcome, 'merged');
+  assert.equal(t.inMain('show', 'HEAD:.planning/state.json'), '{"completed":"3"}');
+  assert.equal(t.inMain('status', '--porcelain'), '');
+});
+
+test('a restart after a crash that left the published state.json: main\'s record from the first try decides, so it still goes', async () => {
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  const rec = readLaneStatus(p.root, '3');
+  // the first try recorded that main had no state.json, merged, and crashed right after phase.complete published one
+  p.inMain('fetch', '-q', p.slot, 'refs/heads/turbo/p3');
+  p.inMain('merge', '--no-ff', '-q', '-m', 'Merge phase 3 (turbo lane 1)', rec.head);
+  writeJsonAtomic(mergeFile(p.root, '3'), { v: 1, phase: '3', state: 'merging', readyAt: rec.at, laneHead: rec.head, base: rec.base, slot: 1, branch: 'turbo/p3', mergeSha: p.inMain('rev-parse', 'HEAD'), rounds: 0, gsdStateBefore: false });
+  p.writeMain('.planning/state.json', '{"crashed":true}\n');
+  const r = await mergeReady(mergeCtx(p, { gsd: publishing(fakeGsd()) }).ctx, laneOf(p));
+  assert.equal(r.outcome, 'merged', r.reason);
+  assert.equal(fs.existsSync(path.join(p.root, '.planning', 'state.json')), false);
+});
+
+test('review: the published state.json goes on every way out of the complete stage (a failure for the owner too), and also when the project ignores it', async () => {
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  const base = publishing(fakeGsd());
+  const failing = (args, o) => {
+    const out = base(args, o);
+    if (args[1] === 'phase.complete') throw new Error('gsd-tools query phase.complete failed: Error: disk full');
+    return out;
+  };
+  const r = await mergeReady(mergeCtx(p, { gsd: failing }).ctx, laneOf(p));
+  assert.equal(r.outcome, 'needs-owner');
+  assert.equal(fs.existsSync(path.join(p.root, '.planning', 'state.json')), false);
+
+  const q = laneProject({ files: { '.planning/.gitignore': 'state.json\n' } });
+  finishPhase(q);
+  reportReady(q);
+  assert.equal((await mergeReady(mergeCtx(q, { gsd: publishing(fakeGsd()) }).ctx, laneOf(q))).outcome, 'merged');
+  assert.equal(fs.existsSync(path.join(q.root, '.planning', 'state.json')), false, 'ignored, but main had none before');
+});
+
+test('review: a removal that failed leaves a mark and is logged (POSIX); the next merge counts that state.json as turbo\'s, removes it and clears the mark', async (t) => {
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  const file = path.join(p.root, '.planning', 'state.json');
+  const mark = path.join(p.root, '.planning', 'turbo', 'run', 'gsd-state-left');
+  // a read-only file on Windows, a read-only folder elsewhere: the removal fails (unless this runs as root)
+  const lock = process.platform === 'win32' ? file : path.dirname(file);
+  const base = publishing(fakeGsd());
+  const locking = (args, o) => {
+    const out = base(args, o);
+    if (args[1] === 'phase.complete') fs.chmodSync(lock, process.platform === 'win32' ? 0o444 : 0o555);
+    return out;
+  };
+  const m = mergeCtx(p, { gsd: locking });
+  try {
+    assert.equal((await mergeReady(m.ctx, laneOf(p))).outcome, 'merged');
+  } finally {
+    if (fs.existsSync(lock)) fs.chmodSync(lock, process.platform === 'win32' ? 0o666 : 0o755);
+  }
+  if (fs.existsSync(file)) {
+    assert.ok(fs.existsSync(mark), 'the failed removal is marked');
+    assert.ok(m.logs.some((l) => l.startsWith('merge p3: .planning/state.json not removed: ')), m.logs.join('\n'));
+  } else t.diagnostic('the removal did not fail here: Node removes a read-only file on Windows, and root may remove anything');
+
+  // the next merge: main seems to have a state.json of its own, but the mark says it is the one turbo left
+  const q = laneProject();
+  finishPhase(q);
+  reportReady(q);
+  q.writeMain('.planning/state.json', '{"left":true}\n');
+  fs.mkdirSync(path.dirname(path.join(q.root, '.planning', 'turbo', 'run', 'gsd-state-left')), { recursive: true });
+  fs.writeFileSync(path.join(q.root, '.planning', 'turbo', 'run', 'gsd-state-left'), 'earlier\n');
+  assert.equal((await mergeReady(mergeCtx(q, { gsd: publishing(fakeGsd()) }).ctx, laneOf(q))).outcome, 'merged');
+  assert.equal(fs.existsSync(path.join(q.root, '.planning', 'state.json')), false);
+  assert.equal(fs.existsSync(path.join(q.root, '.planning', 'turbo', 'run', 'gsd-state-left')), false, 'the mark goes with it');
+});

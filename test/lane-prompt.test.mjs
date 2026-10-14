@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GAP_PLAN_RULE, HUMAN_ACTION_RULE, RELEASE_RULE, laneSystemPrompt, laneUserPrompt, lockRule } from '../lib/lane-prompt.mjs';
+import { GAP_PLAN_RULE, HUMAN_ACTION_RULE, RELEASE_RULE, TMP_RULE_LEAD, laneSystemPrompt, laneUserPrompt, lockRule, tmpRule } from '../lib/lane-prompt.mjs';
 
 test('system prompt carries rules, no double quotes or percent signs', () => {
   const s = laneSystemPrompt({ phase: '3', turboRun: 'node /h/.claude/turbo/bin/turbo-run.mjs', contextPct: 55, autonomy: 'standard' });
@@ -79,6 +79,23 @@ test('temporary files, stands and data copies go under the lane\'s temp director
     assert.ok(!rule.includes('lane-status 3 done removes'), 'the session may still use it after its done record');
     assert.ok(!s.includes('"') && !s.includes('%'), mode);
   }
+});
+
+// smoke F2: GSD executors wrote TDD captures into the folder above the slots, next to the project. Subagents never see
+// the lane's system prompt, so the lane hands them the rule, as it does the release rule.
+test('the temporary-files rule confines writes to the checkout and the lane\'s temp directory, and goes to every subagent the lane dispatches', () => {
+  const dir = 'C:\\Users\\dev\\cfg\\turbo\\tmp\\0123456789abcdef\\p3';
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard', mode, tmpDir: dir });
+    const rule = s.split('\n').find((l) => l.startsWith('7. '));
+    assert.ok(rule.includes(`7. ${TMP_RULE_LEAD}`), mode);
+    assert.ok(rule.includes(tmpRule(dir)), 'rule 7 carries the rule the subagents get, unchanged');
+    for (const n of ['nothing of yours goes anywhere else outside the checkout you work in', 'not next to the checkout', 'not in a folder above it', 'not the home directory', 'in Git Bash on Windows /tmp is not that directory', 'TDD RED evidence record', '.planning/turbo/run/tdd/ in the checkout (git ignores that folder)']) assert.ok(tmpRule(dir).includes(n), n);
+    assert.ok(tmpRule(dir).includes('C:/Users/dev/cfg/turbo/tmp/0123456789abcdef/p3'));
+    for (const n of ['at the end of every subagent prompt', 'executors', 'continuation agents', 'planners', 'pass it on']) assert.ok(rule.includes(n), n);
+    assert.ok(!/["%<>]/.test(tmpRule(dir)) && !tmpRule(dir).startsWith('-'), 'a plain argv value');
+  }
+  assert.ok(!laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard' }).includes(TMP_RULE_LEAD), 'no temp directory, no rule');
 });
 
 // spec 6.2: with autonomy standard, deploying is the owner's (class D); max deploys itself

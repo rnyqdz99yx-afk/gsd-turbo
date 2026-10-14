@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
-import { askOwner, deliveryState, markDelivered, readQuestions, refreshQuestions, stopQuestion } from '../lib/questions.mjs';
+import { askOwner, deliveryState, markDelivered, readAnswers, readQuestions, refreshQuestions, stopQuestion, writeAnswers } from '../lib/questions.mjs';
 import { answerQuestion, preAnswerText } from '../lib/answers.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 import { attendFile, attendGates, attendedPhases, clearAttend, openPlans, releaseStops, sweepLateLanes, writeAttend } from '../lib/attend.mjs';
@@ -45,7 +45,7 @@ test('releaseStops: the checkpoints a stopped lane waits at are asked ahead agai
   assert.deepEqual(deliveryState(root, '32').ready.map((q) => q.id), ['32-10-t3'], 'without the release the next lane session would deliver it');
   assert.equal(preAnswerText(root, '32', '32-10'), '', 'a stop is delivered, never pre-answered');
 
-  assert.deepEqual(releaseStops(root, '32'), ['32-10-t3', '32-11-t2']);
+  assert.deepEqual(releaseStops(root, '32'), { ids: ['32-10-t3', '32-11-t2'], kept: [] }, 'an answer given at the stop stands as it is');
   assert.deepEqual(deliveryState(root, '32'), { waiting: [], ready: [] });
   const list = refreshQuestions(root, '32');
   const v = list.find((q) => q.id === '32-10-t3');
@@ -53,8 +53,8 @@ test('releaseStops: the checkpoints a stopped lane waits at are asked ahead agai
   assert.match(preAnswerText(root, '32', '32-10'), /At checkpoint task 3 \(checkpoint:human-verify\) the owner's answer is: approved\./);
   const a = list.find((q) => q.id === '32-11-t2');
   assert.deepEqual([a.stopped, a.state, a.options.map((o) => o.defer)], [false, 'open', [true]], 'a physical action is asked ahead as a preference again');
-  assert.deepEqual(releaseStops(root, '32'), []);
-  assert.deepEqual(releaseStops(tmpDir('att-none'), '3'), []);
+  assert.deepEqual(releaseStops(root, '32').ids, []);
+  assert.deepEqual(releaseStops(tmpDir('att-none'), '3'), { ids: [], kept: [] });
 });
 
 test('attendGates: off only while a full lane\'s restore and fan-out lie ahead; on after them and in safe mode; refused before the plans are checked (F1)', () => {
@@ -81,7 +81,7 @@ test('releaseStops leaves a stop whose answer the stopped session already took: 
   answerQuestion({ root, phase: '32', id: '32-09-t2', option: 1, by: 'session', laneRunning: true });
   markDelivered(root, '32', '32-09-t2', 'same-agent');
   stopQuestion(root, '32', '32-10-t3', { agentId: AG });
-  assert.deepEqual(releaseStops(root, '32'), ['32-10-t3']);
+  assert.deepEqual(releaseStops(root, '32').ids, ['32-10-t3']);
   const d = readQuestions(root, '32').find((q) => q.id === '32-09-t2');
   assert.deepEqual([d.stopped, d.state], [true, 'delivered']);
   assert.deepEqual(deliveryState(root, '32'), { waiting: [], ready: [] }, 'nothing to deliver after the hand-back either');
@@ -127,6 +127,85 @@ test('releaseStops leaves a lane\'s own question alone: it belongs to no agent, 
   const root = tmpDir('att-lane');
   writePhase(root, '32-auth', { '32-09-PLAN.md': DECISION_PLAN });
   askOwner(root, '32', { action: 'Plug the phone in.' }, { lang: 'en' });
-  assert.deepEqual(releaseStops(root, '32'), []);
+  assert.deepEqual(releaseStops(root, '32').ids, []);
   assert.deepEqual(deliveryState(root, '32').waiting.map((q) => q.id), ['ask-1']);
+});
+
+test('a released stop keeps the owner\'s last real answer as the sitting\'s pre-answer, with its time, when only the stop came back (journal 08:22Z)', () => {
+  const root = tmpDir('att-keep');
+  writePhase(root, '32-auth', { '32-11-PLAN.md': ACTION_PLAN });
+  refreshQuestions(root, '32');
+  stopQuestion(root, '32', '32-11-t2', { agentId: AG, now: new Date('2026-01-01T08:20:00Z') });
+  answerQuestion({ root, phase: '32', id: '32-11-t2', text: 'go', by: 'pane', laneRunning: true, now: new Date('2026-01-01T08:22:11Z') });
+  markDelivered(root, '32', '32-11-t2', 'same-agent');
+  // the agent returns the same checkpoint (the lane cannot go on without the owner's session): asked again, the answer set aside
+  stopQuestion(root, '32', '32-11-t2', { agentId: AG, now: new Date('2026-01-01T08:26:09Z') });
+  assert.equal(readQuestions(root, '32')[0].state, 'open');
+  assert.equal(readAnswers(root, '32')[0].supersededBy, 'stop');
+  assert.deepEqual(releaseStops(root, '32', { now: new Date('2026-01-01T08:30:00Z') }), { ids: ['32-11-t2'], kept: ['32-11-t2'] });
+  for (const list of [readQuestions(root, '32'), refreshQuestions(root, '32')]) {
+    const q = list[0];
+    assert.deepEqual([q.stopped, q.agentId, q.state, q.answer.answer, q.answer.by, q.answer.at], [false, null, 'answered', 'go', 'pane', '2026-01-01T08:22:11.000Z']);
+  }
+  assert.match(preAnswerText(root, '32', '32-11'), /At checkpoint task 2 \(checkpoint:human-action\) the owner's answer is: \(the owner's own words\) go\./);
+  const records = readAnswers(root, '32');
+  assert.equal(records.length, 2, 'the set-aside record stays as it was');
+  assert.deepEqual([records[0].superseded, records[1].superseded, records[1].at, records[1].keptAt], ['2026-01-01T08:26:09.000Z', undefined, '2026-01-01T08:22:11.000Z', '2026-01-01T08:30:00.000Z']);
+  assert.deepEqual(deliveryState(root, '32'), { waiting: [], ready: [] }, 'nothing to deliver: the sitting\'s executor takes it ahead');
+  assert.deepEqual(releaseStops(root, '32'), { ids: [], kept: [] });
+});
+
+test('a released stop asks again when its condition changed: an unmet answer, the lane\'s new diagnosis, a preference, turbo\'s own answer, a newer preference, a changed plan', () => {
+  const setup = (plans) => {
+    const root = tmpDir('att-changed');
+    writePhase(root, '32-auth', plans);
+    refreshQuestions(root, '32');
+    return root;
+  };
+  const answerAndReturn = (root, id, answer, again = {}) => {
+    stopQuestion(root, '32', id, { agentId: AG });
+    answerQuestion({ root, phase: '32', id, laneRunning: true, ...answer });
+    markDelivered(root, '32', id, 'same-agent');
+    stopQuestion(root, '32', id, { agentId: AG, ...again });
+  };
+  const opened = (root, id) => {
+    const r = releaseStops(root, '32');
+    assert.deepEqual(r.kept, [], id);
+    assert.equal(refreshQuestions(root, '32').find((q) => q.id === id).state, 'open', id);
+  };
+  let root = setup({ '32-10-PLAN.md': VERIFY_PLAN });
+  answerAndReturn(root, '32-10-t3', { option: 1, by: 'session' }, { unmet: true });
+  assert.equal(readAnswers(root, '32')[0].supersededBy, 'unmet');
+  opened(root, '32-10-t3');
+  root = setup({ '32-11-PLAN.md': ACTION_PLAN });
+  answerAndReturn(root, '32-11-t2', { option: 1, by: 'pane' }, { question: 'Turn the mail service on in its console first.', context: 'The check still finds it off.' });
+  assert.equal(readAnswers(root, '32')[0].supersededBy, 'diagnosis');
+  opened(root, '32-11-t2');
+  // a preference given ahead ("ask me then"): the stop asks, never a kept answer
+  root = setup({ '32-11-PLAN.md': ACTION_PLAN });
+  answerQuestion({ root, phase: '32', id: '32-11-t2', option: 1, by: 'pane', laneRunning: true });
+  stopQuestion(root, '32', '32-11-t2', { agentId: AG });
+  assert.equal(readAnswers(root, '32')[0].supersededBy, 'defer');
+  opened(root, '32-11-t2');
+  // turbo's own answer is never kept for the owner's sitting
+  root = setup({ '32-09-PLAN.md': DECISION_PLAN });
+  answerAndReturn(root, '32-09-t2', { option: 1, by: 'auto' });
+  opened(root, '32-09-t2');
+  // the owner's newest word was a preference: the real answer before it is not taken back
+  root = setup({ '32-09-PLAN.md': DECISION_PLAN });
+  answerAndReturn(root, '32-09-t2', { option: 1, by: 'session' });
+  const [first] = readAnswers(root, '32');
+  const { superseded: _s, supersededBy: _b, ...plain } = first;
+  writeAnswers(root, '32', [first, { ...plain, defer: true, at: '2026-01-02T00:00:00.000Z' }]);
+  assert.deepEqual(releaseStops(root, '32').kept, []);
+  assert.equal(refreshQuestions(root, '32').find((q) => q.id === '32-09-t2').state, 'deferred');
+  // an answer recorded before supersededBy existed: kept only when plain (no condition) at an unchanged card
+  root = setup({ '32-09-PLAN.md': DECISION_PLAN });
+  answerAndReturn(root, '32-09-t2', { option: 1, by: 'telegram' });
+  writeAnswers(root, '32', readAnswers(root, '32').map(({ supersededBy: _gone, ...r }) => r));
+  assert.deepEqual(releaseStops(root, '32').kept, ['32-09-t2']);
+  // the plan changed the checkpoint after the release: the kept answer is set aside at the next refresh
+  const dir = path.join(root, '.planning', 'phases', '32-auth');
+  fs.writeFileSync(path.join(dir, '32-09-PLAN.md'), DECISION_PLAN.replace('Clerk', 'Clerk Pro'));
+  assert.equal(refreshQuestions(root, '32').find((q) => q.id === '32-09-t2').state, 'open');
 });

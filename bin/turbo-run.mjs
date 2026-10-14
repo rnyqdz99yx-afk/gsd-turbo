@@ -27,7 +27,8 @@ import { measureContext } from '../lib/context.mjs';
 import { buildView, clean, formatView, openQuestions, runLineFor, withRunLine } from '../lib/view.mjs';
 import { quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
-import { deliveryState, dropLaneQuestions, readQuestions, refreshQuestions } from '../lib/questions.mjs';
+import { ANSWERS_IGNORE_REL, answersRel, deliveryState, dropLaneQuestions, readQuestions, refreshQuestions } from '../lib/questions.mjs';
+import { commitAnswerPaths } from '../lib/answers.mjs';
 import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
 import { runLanesCommand } from '../lib/cli-lanes.mjs';
 import { listSlots, maxLanes, prepareSlot, releaseSlot, setupSlots, slotForPhase, slotsDir } from '../lib/slots.mjs';
@@ -823,6 +824,27 @@ async function resumePhase(root, id, andStart) {
   return 0;
 }
 
+// What attend says of the stops it released (lib/attend.mjs releaseStops): those asked ahead again, and those that
+// keep the owner's answer, each with the answer and its time, as pre-answers for the sitting. An answer kept from
+// before its stop came back is a new record in the answers file: committed here, as turbo-run answer commits one
+// (no lane runs in this checkout now); a commit that fails is a warning, the answer stays kept.
+function printReleased(root, id, released) {
+  const list = readQuestions(root, id);
+  const answered = list.filter((q) => released.ids.includes(q.id) && q.state === 'answered' && q.answer);
+  const asked = released.ids.filter((x) => !answered.some((q) => q.id === x));
+  const words = (a) => clean(String(a.label ?? a.answer ?? '')).replace(/\s+/g, ' ').trim().slice(0, 60);
+  if (asked.length) out(`released stops: ${asked.join(', ')} (asked ahead again)`);
+  if (answered.length) out(`released stops with your answer: ${answered.map((q) => `${q.id} (${words(q.answer)}, ${clean(q.answer.by)}, ${clean(q.answer.at)})`).join(', ')} (pre-answers for this sitting)`);
+  if (!released.kept.length) return;
+  const what = `the kept answer of ${released.kept.join(', ')}`;
+  try {
+    const c = commitAnswerPaths(root, [answersRel(id), ANSWERS_IGNORE_REL], `docs(turbo): keep the owner's answer to ${released.kept.join(', ')} (phase ${id}, attended)`);
+    if (!c?.committed && c?.reason !== 'no changes') process.stderr.write(`warn: ${what} is not committed (${c?.reason || 'unknown reason'}); the next answer commits it\n`);
+  } catch (err) {
+    process.stderr.write(`warn: ${what} is not committed (${String(err?.message ?? err).split(/\r?\n/)[0]}); the next answer commits it\n`);
+  }
+}
+
 // How long attend watches for a lane session that a killed supervisor's claude child registers late: 5 s, or
 // TURBO_ATTEND_SETTLE_MS (0 to 60000).
 function attendSettleMs() {
@@ -865,7 +887,7 @@ async function attend(root, id) {
   out(`phase ${id}: attended in this session; no lane starts, relaunches or wakes until turbo-run attend ${id} --done`);
   out(`open plans: ${plans.join(', ')}`);
   out(`gates: ${gates.gates === 'off' ? 'turn off' : 'keep on'} (${gates.why})`);
-  if (released.length) out(`released stops: ${released.join(', ')} (asked ahead again)`);
+  printReleased(root, id, released);
   const delivered = readQuestions(root, id).filter((q) => q.stopped && q.state === 'delivered').map((q) => q.id);
   if (delivered.length) out(`already delivered: ${delivered.join(', ')} (the stopped session took these answers; a checkpoint reached again is asked in this session)`);
   if (code !== 0) process.stderr.write('a lane session did not stop (see the warnings above): stop it with claude stop <id> before anything runs in this checkout\n');
@@ -913,7 +935,7 @@ async function attendLane(root, id, sup) {
   out(`open: cd "${lane.slotPath}" && claude`);
   out(`open plans: ${plans.join(', ')}`);
   out(`gates: ${gates.gates === 'off' ? 'turn off' : 'keep on'} (${gates.why})`);
-  if (released.length) out(`released stops: ${released.join(', ')} (asked ahead again)`);
+  printReleased(root, id, released);
   const delivered = readQuestions(root, id).filter((q) => q.stopped && q.state === 'delivered').map((q) => q.id);
   if (delivered.length) out(`already delivered: ${delivered.join(', ')} (the stopped session took these answers; a checkpoint reached again is asked in this session)`);
   if (code !== 0) process.stderr.write(`a lane session did not stop (see the warnings above): stop it with claude stop <id> before anything runs in ${lane.slotPath}\n`);

@@ -1136,6 +1136,23 @@ test('attend N stops the supervisor and the lane session, marks the phase, relea
   assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, env)).attended.map((a) => a.phase), ['4']);
 });
 
+test('attend names the released stops that keep the owner\'s answer, with its time, apart from those asked ahead again (journal 08:22Z)', async (t) => {
+  const { p, env } = attendProject(t);
+  // the owner answered 04-02-t1 at its stop; the agent returned the same checkpoint and the stop set the answer aside
+  const answers = path.join(p.root, '.planning', 'turbo', 'answers');
+  fs.mkdirSync(answers, { recursive: true });
+  fs.writeFileSync(path.join(answers, 'p4.json'), JSON.stringify([{ id: '04-02-t1', plan: '04-02', task: '1', option: null, label: null, answer: 'go\nnow', by: 'pane', at: '2026-01-01T08:22:11.000Z', conditional: false, condition: null, defer: false, superseded: '2026-01-01T08:26:09.000Z', supersededBy: 'stop' }]));
+  const r = await runAsync(['attend', '4'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^released stops with your answer: 04-02-t1 \(go now, pane, 2026-01-01T08:22:11\.000Z\) \(pre-answers for this sitting\)$/m);
+  assert.doesNotMatch(r.stdout, /^released stops: /m, 'nothing is asked ahead again');
+  // not a git repository here: the answer is kept all the same, and the warning says it is not committed
+  assert.match(r.stderr, /^warn: the kept answer of 04-02-t1 is not committed \(/m);
+  const records = readJsonFile(path.join(answers, 'p4.json'));
+  assert.deepEqual([records.length, records[1].answer, records[1].superseded, typeof records[1].keptAt], [2, 'go\nnow', undefined, 'string']);
+  assert.equal(readJsonFile(path.join(runDirOf(p.root), 'p4-questions.json'))[0].state, 'answered');
+});
+
 test('attend refuses, changing nothing, for a phase that is not the lane, a phase with every plan summarized, and inside a lane (S4)', async (t) => {
   const other = attendProject(t, { lanePhase: '5' });
   let r = await runAsync(['attend', '4'], other.p.root, other.env);

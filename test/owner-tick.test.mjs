@@ -70,3 +70,18 @@ test('a lane question (no plan, no header) is listed by its plain question alone
   await ownerTick(ctx, NOW, {});
   assert.equal(notes[1].vars.list, `${long.slice(0, 80)}; 04-01 T2: ${long.slice(0, 80)}`);
 });
+
+test('v0.4.0: ownerTick answers a safe question that waited owner.auto_answer_minutes (by auto) and notifies it; a bad limit is logged and answers nothing', async () => {
+  const { root, ctx, notes, logs } = project();
+  const options = [{ label: 'Memory', description: '', recommended: true, signal: 'memory', defer: false }, { label: 'Disk', description: '', recommended: false, signal: 'disk', defer: false }];
+  writeQuestions(root, '3', [Q('ask-1', { plan: null, task: null, header: '', options, gate: 'blocking', askedAt: '2026-01-01T08:00:00.000Z', allowOther: true, source: 'lane', autoOk: true, class: 'decision', classified: true })]);
+  ctx.config.owner = { auto_answer_minutes: 'x' };
+  await ownerTick(ctx, NOW, {});
+  assert.ok(logs.some((l) => /^auto-answer: invalid turbo config owner\.auto_answer_minutes/.test(l)), logs.join('\n'));
+  assert.deepEqual(notes.map((n) => n.key), ['questionsReady']);
+  ctx.config.owner = { auto_answer_minutes: 60 };
+  ctx.deps.commitAnswers = () => ({ committed: true });
+  await ownerTick(ctx, NOW, {});
+  assert.deepEqual(notes.map((n) => n.key), ['questionsReady', 'autoAnswered']);
+  assert.equal(notes[1].vars.option, 'Memory');
+});

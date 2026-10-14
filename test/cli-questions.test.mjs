@@ -293,3 +293,27 @@ test('laneRuns: only v0.3\'s lane commits in this checkout; slots lanes never do
   writeJsonAtomic(file, { lanesMode: 'slots', lanes: { 32: { key: '32', job: 'phase', phase: '32', slot: 1, slotPath: tmpDir('slot'), sessionId: '1a2b3c4d' } } });
   assert.equal(laneRuns(root, { supervisorAlive: () => true }), false);
 });
+
+test('v0.4.0: turbo-run answer N <id> --undo takes back an automatic answer (reopened, or noted when delivered); refused for another answer and inside a lane; ask --auto-ok marks a lane question', async () => {
+  const root = project();
+  await run(root, ['questions', '32']);
+  const { answerQuestion } = await import('../lib/answers.mjs');
+  answerQuestion({ root, phase: '32', id: '32-09-t2', option: 1, by: 'auto', laneRunning: true });
+  answerQuestion({ root, phase: '32', id: '32-10-t3', option: 1, by: 'session', laneRunning: true });
+  withLane(root);
+  let r = await run(root, ['answer', '32', '32-09-t2', '--undo'], { env: { TURBO_LANE: '1' } });
+  assert.equal(r.code, 1);
+  assert.match(r.text, /^refused: a lane never answers/);
+  r = await run(root, ['answer', '32', '32-09-t2', '--undo']);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /^reopened 32-09-t2: the automatic answer \(Clerk\) is taken back; the question is open again/);
+  r = await run(root, ['answer', '32', '32-10-t3', '--undo']);
+  assert.equal(r.code, 1);
+  assert.match(r.text, /^refused: question 32-10-t3 has no automatic answer to undo/);
+  r = await run(root, ['answer', '32', '32-09-t2', '--undo', '--option', '1']);
+  assert.equal(r.code, 2, 'undo takes no answer');
+  r = await run(root, ['ask', '33', '--question', 'Keep the cache in memory?', '--option', 'Yes|Fast', '--option', 'No|Slow', '--recommended', '1', '--auto-ok', '--json']);
+  assert.equal(JSON.parse(r.text).question.autoOk, true);
+  r = await run(root, ['ask', '34', '--question', 'Keep the cache in memory?', '--option', 'Yes|Fast', '--option', 'No|Slow', '--recommended', '1', '--json']);
+  assert.equal(JSON.parse(r.text).question.autoOk, false);
+});

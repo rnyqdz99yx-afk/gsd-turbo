@@ -82,6 +82,10 @@ const VIEW_WORDS = {
     quietAgent: (who, d) => `⚠️ ${who} silent${d ? ` for ${d}` : ''} — may be stuck`,
     helpersDone: (n, more) => `${n} ${more ? 'more ' : ''}${n === 1 ? 'helper' : 'helpers'} finished`,
     askHead: (n) => `Needs your answer (${n}):`,
+    // v0.4.0: sleep mode and the answers turbo took itself (lib/auto-answer.mjs)
+    awayOn: 'Away mode — turbo takes the safe questions itself; when you are back: turbo-run back',
+    autoHead: (n) => `Accepted automatically while you were away (${n}):`,
+    undo: 'undo',
     holds: 'The phase waits for this answer',
     ahead: (running) => (running ? 'you can answer ahead — the phase is not waiting' : 'you can answer ahead'),
     recommended: 'recommended',
@@ -166,6 +170,9 @@ const VIEW_WORDS = {
     quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''} — возможно, завис`,
     helpersDone: (n, more) => `${more ? 'ещё ' : ''}${n} ${ruPlural(n, 'помощник закончил', 'помощника закончили', 'помощников закончили')}`,
     askHead: (n) => `Нужен ваш ответ (${n}):`,
+    awayOn: 'Режим «ушёл» — безопасные вопросы turbo решает сам; когда вернётесь: turbo-run back',
+    autoHead: (n) => `Принято автоматически, пока вас не было (${n}):`,
+    undo: 'отменить',
     holds: 'Фаза ждёт этот ответ',
     ahead: (running) => (running ? 'можно ответить заранее — фаза не стоит' : 'можно ответить заранее'),
     recommended: 'рекомендуется',
@@ -792,6 +799,20 @@ function changesSection(t, view) {
   return c ? box({ marginTop: 1 }, text({ wrap: 'truncate-end' }, text({ bold: true }, t.changes), ` ${c.kinds}`, c.last ? text(TONES.dim, ` · ${c.last}`) : null)) : null;
 }
 
+// v0.4.0: away mode (turbo-run away --set) and the answers turbo took itself while the owner was away, each with the
+// command that takes it back (lib/view.mjs formatView prints the same lines).
+function awaySection(t, view) {
+  const auto = list(view.autoAnswered);
+  if (!view.away && !auto.length) return null;
+  return box({ flexDirection: 'column', marginTop: 1 },
+    view.away ? text(TONES.warn, t.awayOn) : null,
+    auto.length ? text(toned('warn', { bold: true }), t.autoHead(auto.length)) : null,
+    auto.length ? box({ flexDirection: 'column', paddingLeft: 2 }, auto.flatMap((a) => [
+      text({ wrap: 'wrap' }, `${cut(a?.question ?? '', QUESTION_MAX)} → ${cut(a?.option ?? '', LABEL_MAX)}`),
+      text(TONES.dim, `  ${t.undo}: ${cut(a?.undo ?? '', 200)}`),
+    ])) : null);
+}
+
 // The pane: the verdict and the run (what each phase does now under it), the questions waiting for the owner (the ones
 // the phase waits for first), what comes next and when the owner is needed, the phase's steps, the latest commits by
 // kind and the supervisor, in sections a blank line apart. error is why the last refresh failed; the last
@@ -804,6 +825,7 @@ export function render(view, { error = null, field = NO_FIELD, columns = null } 
   parts.push(runSection(t, view, verdictOf(t, view), columns));
   const questions = [...list(view.questions)].sort((a, b) => (b?.stopped === true) - (a?.stopped === true));
   if (questions.length) parts.push(box({ flexDirection: 'column', marginTop: 1 }, text(toned('warn', { bold: true }), t.askHead(questions.length)), questions.map((q) => questionCard(t, view, q, field))));
+  parts.push(awaySection(t, view));
   const lane = list(view.lanes)[0] ?? null;
   parts.push(nextSection(t, view, lane), stepsSection(t, view, lane), changesSection(t, view));
   if (view.supervisor) {

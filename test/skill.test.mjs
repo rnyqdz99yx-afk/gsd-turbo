@@ -61,7 +61,7 @@ test('turbo-autonomous skill never sleeps and covers "no lane yet" and "not runn
 test('turbo-autonomous skill answers the open questions (S1): AskUserQuestion in batches of 4, recommended first, turbo-run answer --by session --rev; at start and while a run goes', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
   assert.match(s, /^allowed-tools: \[Bash, Read, AskUserQuestion, Skill\]$/m);
-  assert.match(s, /^argument-hint: ".*\| answer"$/m);
+  assert.match(s, /^argument-hint: ".*\| answer \| away \| back"$/m);
   const needles = [
     '## If the arguments are `answer`', '## Answer the open questions', 'turbo-run.mjs" questions --open --json', 'up to 4 questions per call', ' (Recommended)', 'Not now',
     'turbo-run.mjs" answer <phase> <id> --option <k> --by session --rev <rev>', "--text '<the words>' --by session --rev <rev>",
@@ -76,7 +76,7 @@ test('turbo-autonomous skill answers the open questions (S1): AskUserQuestion in
 
 test('turbo-autonomous attend <phase> (S4): take over the lane, questions up front, GSD execute-phase one plan at a time in this checkout, hand back', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
-  assert.match(s, /^argument-hint: ".*\| resume <phase> \| attend <phase> \| answer"$/m);
+  assert.match(s, /^argument-hint: ".*\| resume <phase> \| attend <phase> \| answer \| away \| back"$/m);
   const at = s.indexOf('## If the arguments are `attend <phase>`');
   assert.ok(at > s.indexOf('## If the arguments are `answer`') && at < s.indexOf('## Otherwise'), 'its own section before the start flow');
   const a = s.slice(at, s.indexOf('## Otherwise'));
@@ -119,4 +119,18 @@ test('turbo-autonomous start flow: an attended: line means no lane runs; the use
   for (const part of [one, five]) {
     for (const n of ['`attended:`', '/turbo-autonomous attend <N>', 'turbo-run attend <N> --done']) assert.ok(part.includes(n), n);
   }
+});
+
+test('v0.4.0: /turbo-autonomous away asks everything answerable ahead, then turns away mode on; every other call shows the morning summary first', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const first = s.indexOf('## First: back from away mode?');
+  const away = s.indexOf('## If the arguments are `away`');
+  assert.ok(first > 0 && first < away && away < s.indexOf('## If the arguments are `status`'), 'before every other section');
+  const sec = s.slice(away, s.indexOf('## If the arguments are `status`'));
+  for (const n of ['turbo-run.mjs" away --json', '**Answer the open questions** from its point 2', 'turbo-run.mjs" away --set', 'owner.auto_answer_minutes']) assert.ok(sec.includes(n), n);
+  assert.ok(sec.indexOf('away --json') < sec.indexOf('Answer the open questions') && sec.indexOf('Answer the open questions') < sec.indexOf('away --set'), 'gather, ask, then leave');
+  assert.ok(s.slice(first, away).includes('turbo-run.mjs" back`'));
+  const phase = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  assert.ok(phase.includes('`owner-correction` messages'), 'the lane reads an undo of an automatic answer');
+  assert.ok(phase.includes('Add `--auto-ok` only when'), 'and marks only safe questions of its own');
 });

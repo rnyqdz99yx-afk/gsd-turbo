@@ -207,15 +207,15 @@ test('a class turbo-uat recorded is the floor of every later run: the plan offer
   assert.throws(() => applyUatResults(live, [RESULTS[3]], opts), /class C is below the class D turbo-uat recorded for this test/);
 });
 
-test('a pass needs evidence, and a harness is one of playwright-script, http, socket (M7)', () => {
+test('a pass needs evidence, and a harness is one of playwright-script, http, socket, static (M7, F1)', () => {
   const apply = (r) => () => applyUatResults(UAT, [r], { head: HEAD, phase: '3' });
   for (const evidence of [undefined, []]) {
     assert.throws(apply({ test: 1, result: 'pass', class: 'A', harness: 'http', evidence }), /test 1: a pass result needs at least one evidence file/);
   }
-  for (const harness of ['playwright-mcp', 'browser', 'HTTP', 7]) {
-    assert.throws(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }), /test 1: harness must be one of playwright-script, http, socket/);
+  for (const harness of ['playwright-mcp', 'browser', 'HTTP', 7, 'grep']) {
+    assert.throws(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }), /test 1: harness must be one of playwright-script, http, socket, static$/);
   }
-  for (const harness of ['playwright-script', 'http', 'socket', undefined]) assert.doesNotThrow(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }));
+  for (const harness of ['playwright-script', 'http', 'socket', 'static', undefined]) assert.doesNotThrow(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }));
   // only a pass proves something observed: an issue, a deferral or an owner row needs no evidence
   assert.doesNotThrow(apply({ test: 4, result: 'issue', class: 'A', reported: 'nothing happens', harness: 'http' }));
   assert.doesNotThrow(apply({ test: 2, result: 'owner', class: 'D' }));

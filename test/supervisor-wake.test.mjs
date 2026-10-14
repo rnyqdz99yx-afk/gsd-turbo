@@ -52,11 +52,11 @@ function harness() {
           if (!h.agents.some((a) => a.id === id)) throw new Error(`claude rm failed: no session ${id}`);
           h.agents = h.agents.filter((a) => a.id !== id);
         },
-        kick: () => {
+        kick: (during) => {
           h.kicks++;
           if (h.stuck) throw new Error('the background service did not list the kick session c0ffee');
           h.down = false;
-          return 'c0ffee';
+          return during ? during() : 'c0ffee';
         },
         resume: (target, prompt, cwd) => {
           if (h.down) throw DOWN('--resume', target);

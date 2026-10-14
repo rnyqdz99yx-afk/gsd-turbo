@@ -95,6 +95,10 @@ test('credential assignment: quoted literals, entropy-bearing and plain-word val
     'password: "proxyPass"', "token = 'this.authToken'", `const pass = '${v}'`, `let password = '${v}'`,
     `password: ${v}`, `token=${'Zx9'.repeat(4)}`, `secret: ${'s3cr3tV4lue'}`, 'password=correcthorse', `pass = ${v}`,
     `  pass: ${'S3cret9'}`, `DB_PASSWORD=${'abcDEF123xyz'}`,
+    // base64 pads, an identifier-like head with digits after a separator, PascalCase, '$'-led and capitalised paths
+    `secret=${'c2VjcmV0dmFsdWUxMjM0NTY3OA=='}`, `token=${'abc==def123'}`, `password: ${'s3cr3t=='}`, `token: myUser:${'s3cr3tP4ss9x'}`,
+    `password: abcDef,${'ghi123xyz'}`, 'password=CorrectHorseBattery', 'password: SuperSecret', 'DB_PASSWORD=MyPassWord',
+    'password: $ecretValue', 'password: Summer.Time',
   ];
   for (const line of hits) assert.equal(CRED.test(line), true, line);
 });

@@ -400,11 +400,16 @@ function downClaude({ agents = [], kickWorks = true, stillDown = false } = {}) {
     rm: (id) => gate('rm', id, ''),
     resume: (sid) => gate('resume', sid, `note: woke session ${sid}`),
     launchBg: () => 'x',
-    kick: () => {
+    kick: (during) => {
       f.calls.push(['kick']);
-      if (!kickWorks) throw new Error('the background service did not list the kick session k1');
+      if (!kickWorks) throw new Error(f.kickError || 'the background service did not list the kick session k1');
       f.up = true;
-      return 'k1';
+      try {
+        return during ? during() : 'k1';
+      } finally {
+        f.calls.push(['kick-cleanup']);
+        if (f.idleExit) f.up = false;
+      }
     },
   });
   return f;
@@ -423,13 +428,13 @@ test('daemonAware stop of a job with a pid, rm and resume: the service is brough
   const f = downClaude({ agents: [{ id: 'a1b2c3', state: 'working', pid: 42 }] });
   const c = daemonAware(f);
   c.stop('a1b2c3');
-  assert.deepEqual(f.calls, [['stop', 'a1b2c3'], ['kick'], ['stop', 'a1b2c3']]);
+  assert.deepEqual(f.calls, [['stop', 'a1b2c3'], ['kick'], ['stop', 'a1b2c3'], ['kick-cleanup']]);
   const g = downClaude();
   daemonAware(g).rm('a1b2c3');
-  assert.deepEqual(g.calls, [['rm', 'a1b2c3'], ['kick'], ['rm', 'a1b2c3']]);
+  assert.deepEqual(g.calls, [['rm', 'a1b2c3'], ['kick'], ['rm', 'a1b2c3'], ['kick-cleanup']]);
   const h = downClaude();
   assert.match(daemonAware(h).resume('s1-uuid', 'P', '/p'), /woke session s1-uuid/);
-  assert.deepEqual(h.calls, [['resume', 's1-uuid'], ['kick'], ['resume', 's1-uuid']]);
+  assert.deepEqual(h.calls, [['resume', 's1-uuid'], ['kick'], ['resume', 's1-uuid'], ['kick-cleanup']]);
 });
 
 test('daemonAware: a service that stays down throws a daemonDown error and logs once per outage; a success ends the outage', () => {
@@ -457,4 +462,46 @@ test('daemonAware passes other errors through untouched and wraps only once', ()
   assert.throws(() => c.stop('a1'), (e) => e.message === 'claude stop failed: timed out' && !e.daemonDown);
   assert.equal(daemonAware(c), c);
   assert.equal(daemonAware(null), null);
+});
+
+test('daemonAware: the retry runs while the kick session still holds the service up (it idle-exits once the kick is gone)', () => {
+  const f = Object.assign(downClaude(), { idleExit: true });
+  daemonAware(f).rm('a1b2c3');
+  assert.deepEqual(f.calls, [['rm', 'a1b2c3'], ['kick'], ['rm', 'a1b2c3'], ['kick-cleanup']]);
+  assert.equal(f.up, false);
+});
+
+test('daemonAware: after a stop that found the job not running, the resume is made inside a kick without trying it first', () => {
+  const f = Object.assign(downClaude({ agents: [{ id: 'a1b2c3', state: 'done' }] }), { idleExit: true });
+  const c = daemonAware(f);
+  assert.equal(c.stop('a1b2c3'), NOT_RUNNING);
+  assert.match(c.resume('a1b2c3-uuid', 'P', '/p'), /woke session/);
+  assert.deepEqual(f.calls, [['stop', 'a1b2c3'], ['kick'], ['resume', 'a1b2c3-uuid'], ['kick-cleanup']]);
+});
+
+test('daemonAware stop: a job listed alive (working) without a pid is no proof it stopped: the service is kicked and the stop tried again', () => {
+  const f = downClaude({ agents: [{ id: 'a1b2c3', state: 'working' }] });
+  daemonAware(f).stop('a1b2c3');
+  assert.deepEqual(f.calls, [['stop', 'a1b2c3'], ['kick'], ['stop', 'a1b2c3'], ['kick-cleanup']]);
+});
+
+test('daemonAware: a kick Claude Code refuses for an untrusted folder is thrown as it is, never as an outage', () => {
+  const f = Object.assign(downClaude({ kickWorks: false }), { kickError: 'claude --bg failed: workspace not trusted' });
+  assert.throws(() => daemonAware(f).rm('a1b2c3'), (e) => /workspace not trusted/.test(e.message) && !isDaemonDown(e));
+});
+
+test('kick(during) runs during while its session is listed, returns its result, and removes the session even when during throws', () => {
+  const calls = [];
+  const exec = (cmd, args) => {
+    calls.push(args[0]);
+    if (args[0] === '--bg') return 'backgrounded · c0ffee · turbo-daemon-kick';
+    if (args[0] === 'agents') return JSON.stringify([{ id: 'c0ffee', name: KICK_NAME, state: 'working' }]);
+    return '';
+  };
+  const c = createClaude({ bin: PLAIN_BIN, exec, root: '/proj', sleep: () => {} });
+  assert.equal(c.kick(() => { calls.push('during'); return 'R'; }), 'R');
+  assert.deepEqual(calls, ['--bg', 'agents', 'during', 'stop', 'rm']);
+  calls.length = 0;
+  assert.throws(() => c.kick(() => { throw new Error('boom'); }), /boom/);
+  assert.deepEqual(calls, ['--bg', 'agents', 'stop', 'rm']);
 });

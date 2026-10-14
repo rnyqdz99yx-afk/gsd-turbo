@@ -20,6 +20,14 @@ test('turbo-autonomous start tells the owner once, in plain words, where to watc
   assert.equal(report.split('\n').filter((l) => l.includes('/turbo-view')).length, 1, 'said once');
 });
 
+test('turbo-autonomous start report passes on how to come back to this chat after a crash, from status\'s line, and never suggests a bare claude -c (Gap 1)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const report = s.slice(s.indexOf('7. **Report to the user, briefly:**'), s.indexOf('Do not run GSD phase commands'));
+  const back = report.split('\n').find((l) => l.includes('come back to this chat'));
+  assert.ok(back, 'one bullet says how to come back');
+  for (const needle of ['`back to this chat:`', '`вернуться в этот чат:`', '`claude -r`', '`claude --resume <id>`', 'Never suggest a bare `claude -c`', "a lane's conversation"]) assert.ok(back.includes(needle), needle);
+});
+
 test('turbo-autonomous skill honours CLAUDE_CONFIG_DIR and resumes with one command', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
   assert.ok(s.includes('node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs"'), 'CLAUDE_CONFIG_DIR path form');

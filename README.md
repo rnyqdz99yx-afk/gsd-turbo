@@ -88,6 +88,11 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 - **Telegram** — get the questions and answer them with buttons away from the computer ([setup](docs/reference.md#telegram-optional)).
 - **Push and CI** — the supervisor pushes and watches GitHub Actions; a red run goes back to the phase to fix ([setup](docs/reference.md#push-and-ci-optional)).
 - **Targeted tests** — set up by `turbo-run init` when a full test command is known ([how it decides](docs/reference.md#what-happens)).
+- **Autostart after a reboot** — `turbo-run autostart on` brings this project's supervisor back at logon when a run was going; `off` removes it ([what it sets up](docs/reference.md#after-a-crash-or-a-reboot)).
+
+## Troubleshooting
+
+**After a crash or a reboot.** Come back to your chat with `claude -r` (pick it by its title) or `claude --resume <id>`: `/turbo-autonomous status` prints that line with the id. A bare `claude -c` opens the latest conversation in the folder, which in checkout mode may be a lane's own. The turbo pane comes back by itself. Unless autostart is on, start the supervisor again with `/turbo-autonomous`: lanes whose sessions died with the machine go on where they stopped ([details](docs/reference.md#after-a-crash-or-a-reboot)).
 
 ## Documentation
 

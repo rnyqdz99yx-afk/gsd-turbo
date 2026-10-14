@@ -1388,3 +1388,83 @@ test('start --plan-only needs slots mode; a start without it clears a kept plan-
   assert.ok(sup, logOf(p.root));
   assert.equal(sup.planOnly, undefined);
 });
+
+// Gap 2 (v0.4.0): the run comes back after a reboot. turbo-run stop leaves the owner's mark; start --autostart, what
+// autostart on registers for the logon, starts only a run that was going when the machine went down.
+const stopMarkOf = (root) => path.join(runDirOf(root), 'owner-stop.json');
+
+test('stop leaves the owner\'s stop mark; start --autostart then starts nothing and logs why; the owner\'s start clears the mark (Gap 2)', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: true }] });
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  writeSup(p.root, { pid: null, finished: false, halted: false, lane: null });
+  const stop = await runAsync(['stop'], p.root, p.env);
+  assert.equal(stop.code, 0, stop.stderr);
+  assert.ok(readJsonFile(stopMarkOf(p.root))?.at, 'the mark names when');
+  const r = await runAsync(['start', '--autostart'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^autostart: nothing started: the run was stopped by the owner at \S+ \(turbo-run stop\)$/m);
+  assert.match(logOf(p.root), /autostart: nothing started: the run was stopped by the owner/);
+  assert.equal(readSup(p.root).pid, null);
+  assert.ok(!p.claudeCalls().some((a) => a[0] === '--bg'));
+  const own = await runAsync(['start'], p.root, p.env);
+  assert.equal(own.code, 0, own.stdout + own.stderr);
+  assert.equal(fs.existsSync(stopMarkOf(p.root)), false, 'the owner started it again');
+  assert.ok(await waitFor(() => { const s = readSup(p.root); return s?.finished && s.pid === null ? s : null; }, 15000), logOf(p.root));
+  // a finished run is not started at logon either, nor a project that never ran one
+  const fin = await runAsync(['start', '--autostart'], p.root, p.env);
+  assert.match(fin.stdout, /^autostart: nothing started: the run finished$/m);
+  const never = fakeProject();
+  assert.match((await runAsync(['start', '--autostart'], never.root, never.env)).stdout, /^autostart: nothing started: no run was ever started in this project$/m);
+});
+
+test('start --autostart takes up a run that was going when the machine went down: the supervisor starts and relaunches the lane whose session failed (Gap 2)', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  // the dead supervisor's pid and heartbeat, its lane's session listed failed after the reboot
+  p.setClaude({ agents: [{ id: 'old111', name: laneSessionName(p.root, '4'), cwd: p.root, state: 'failed' }] });
+  writeSup(p.root, { pid: DEAD_PID, updatedAt: ago(60), finished: false, halted: false, lane: { phase: '4', sessionId: 'old111', restarts: 3, launchedAt: ago(70), fingerprint: 'x', mode: 'full', notified: {} } });
+  const r = await runAsync(['start', '--autostart'], p.root, p.env);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^autostart: the run was going when the machine went down; starting the supervisor$/m);
+  assert.match(r.stdout, /started supervisor pid \d+/);
+  const sup = await waitFor(() => { const s = readSup(p.root); return s?.pid && s.lane?.sessionId === 'abcdef123456' ? s : null; }, 15000);
+  assert.ok(sup, logOf(p.root));
+  assert.deepEqual([sup.halted, sup.lane.restarts, sup.takeover], [false, 0, undefined]);
+  assert.match(logOf(p.root), /phase 4: session old111 failed while no supervisor ran \(a reboot or a crash\); relaunching it \(continuation\)/);
+  assert.ok(p.claudeCalls().some((a) => a[0] === '--bg' && a.join(' ').includes('--resume')), JSON.stringify(p.claudeCalls()));
+  const stop = await runAsync(['stop'], p.root, p.env);
+  assert.equal(stop.code, 0, stop.stderr);
+});
+
+test('start --autostart takes no range flags; autostart without on, off or status is a usage error that changes nothing (Gap 2)', async () => {
+  const p = fakeProject();
+  const r = await runAsync(['start', '--autostart', '--only', '4'], p.root, p.env);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /start --autostart takes no range flags/);
+  const a = await runAsync(['autostart'], p.root, p.env);
+  assert.equal(a.code, 1);
+  assert.match(a.stderr, /^usage: turbo-run autostart on\|off\|status/m);
+  assert.deepEqual(p.claudeCalls(), []);
+});
+
+test('resume clears the owner\'s stop mark: the owner goes on with the run (Gap 2)', () => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }] });
+  writeSup(p.root, { pid: null, finished: false, halted: false, lane: { phase: '4', sessionId: 'old111', restarts: 0, launchedAt: ago(5) } });
+  fs.writeFileSync(stopMarkOf(p.root), JSON.stringify({ at: ago(1) }));
+  run(['resume', '4'], p.root, p.env);
+  assert.equal(fs.existsSync(stopMarkOf(p.root)), false);
+});
+
+test('status in the owner\'s session says how to come back to it after a crash, in the owner\'s language; never in a lane or outside a session (Gap 1)', () => {
+  const p = fakeProject();
+  writeSup(p.root, { pid: null, finished: false, halted: false, lane: null });
+  const sid = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
+  const back = `back to this chat: claude -r (pick it by its title) or claude --resume ${sid}`;
+  assert.ok(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: sid }).split(/\r?\n/).includes(back));
+  fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lang: 'ru', notify: { desktop: false, telegram: false }, lanes: { mode: 'checkout' } }));
+  assert.ok(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: sid }).split(/\r?\n/).includes(`вернуться в этот чат: claude -r (выбрать по названию) или claude --resume ${sid}`));
+  const { CLAUDE_CODE_SESSION_ID: _drop, ...outside } = p.env;
+  assert.doesNotMatch(run(['status'], p.root, outside), /claude --resume/);
+  assert.doesNotMatch(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: sid, TURBO_LANE: '1' }), /claude --resume/);
+  assert.doesNotMatch(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: 'x; rm -rf ~' }), /claude --resume/);
+});

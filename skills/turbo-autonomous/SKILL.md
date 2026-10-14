@@ -76,6 +76,7 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
    - for the curious: `claude attach <session id>` (exit with the detach key, the session keeps running), `/turbo-autonomous status`, and the log `.planning/turbo/logs/supervisor.log`;
    - that a desktop notification arrives when the owner is needed or the milestone is done;
    - that this session can be closed: the supervisor and the lanes keep running;
+   - how to come back to this chat after a crash or a reboot: when the status output has a `back to this chat:` line (`вернуться в этот чат:` in Russian), pass it on unchanged: `claude -r` and pick this chat by its title, or `claude --resume <id>`. Never suggest a bare `claude -c`: it may open a lane's conversation instead (the lanes work in this folder too);
    - how to stop: `/turbo-autonomous stop`.
 
 Do not run GSD phase commands in this checkout while the supervisor is running.

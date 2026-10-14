@@ -21,7 +21,7 @@ test('turbo-uat agent: owner-only list, refusal handling, isolation and record o
     'D for real money, a signature or legal review, private/offline keys, 2FA, an owner\'s decision, and under `standard` autonomy any deploy or production write',
     'C for production reads, third-party platforms, the owner\'s accounts, devices or phones, desktop apps, and email/SMS delivery',
     '`uat.base_url` is one of `uat.forbidden_hosts`', '`stand.reason` exactly as printed', 'stop and reply with its error',
-    'fresh, empty profile', 'no isolated browser', 'no isolated data dir', 'every A and B item needs a non-empty request log', 'no requests logged',
+    'fresh, empty profile', 'no isolated browser', 'no isolated data dir', 'every A and B item but a static check needs a non-empty request log', 'no requests logged',
     'Never edit the UAT file', 'new record line', 'At most 3 record attempts', 'live part, split from test',
     'Record before cleanup', 'only after step 4', '.planning/turbo/run/uat-pN/',
     'the value never reaches command output, evidence or your reply', 'when unsure between C and D, D',
@@ -40,4 +40,19 @@ test('turbo-uat agent: owner-only list, refusal handling, isolation and record o
   assert.ok(!s.includes('playwright-mcp'), 'the agent never names the MCP harness');
   assert.ok(!/\bnpx\b/.test(s), 'no npx: it may download a package');
   assert.ok(!s.includes("page.on('request')"), 'a page listener misses popups and new pages');
+});
+
+// F1: GSD's review wording on a plan's prohibition is no owner decision; such items are static checks with evidence.
+test("turbo-uat agent: static code properties are checked with git grep and git diff, never stopped on GSD's review wording (F1)", () => {
+  const s = fs.readFileSync('agents/turbo-uat.md', 'utf8');
+  const needles = [
+    "An owner's decision is a call only the owner may make on their own rights", 'A review GSD asks for is none',
+    '"judgment-tier"', '"unverified-prohibition"', '"human review recommended"', '"accept or reject"', 'never C or D for that wording alone',
+    '`static code property`', '`git grep`', 'never a recursive grep of the working tree', '`git diff`', '`harness: static`',
+    '`playwright-script`, `http`, `socket` or `static`', 'needs a person to read: <what>', 'never a stop',
+    'Static checks need only `prepare`',
+  ];
+  for (const n of needles) assert.ok(s.includes(n), n);
+  // the old D trigger stays, but never for GSD's wording on a code property
+  assert.ok(!/Propose D for[^.]*human review/.test(s));
 });

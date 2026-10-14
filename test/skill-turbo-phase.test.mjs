@@ -337,3 +337,16 @@ test('turbo-phase skill: step integrate (Stage 4 §7.1) — the lane takes in ma
   assert.ok(s.includes('push in slots'), 'CI red and close know the slot line');
   assert.ok(s.includes('`reintegrate` messages'), 'the inbox paragraph');
 });
+
+// F1: Done on an action card cannot sign UAT rows, so the stop for a signature is a sign-off card whose Accept signs them
+test('turbo-phase skill: a UAT stop for the owner\'s signature is a sign-off card (ask --sign), and only the owner\'s Accept signs the rows (F1)', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const p4 = section(s, 'uat').split('\n').find((l) => l.startsWith('4. '));
+  for (const n of ['`sign`', 'turbo-run ask N --sign', 'never `--action`', 'Accept', 'Not now']) assert.ok(p4.includes(n), n);
+  assert.ok(p4.indexOf('turbo-run ask N --sign') < p4.indexOf('/gsd-verify-work N'), 'the card first, verify-work as the owner\'s other way');
+  const early = s.slice(s.indexOf('### Stopping early'), s.indexOf('### Push and CI'));
+  assert.match(early, /UAT rows that wait for the owner's signature[^\n]*`turbo-run ask N --sign/);
+  const lane = s.slice(s.indexOf('**Lane questions.**'), s.indexOf('**Owner-chosen fixes.**'));
+  for (const n of ['turbo-run uat sign N --answer <id>', 'gsd-tools commit', 'Not now', 'never sign rows any other way']) assert.ok(lane.includes(n), n);
+  assert.ok(lane.indexOf('turbo-run uat sign N --answer <id>') < lane.lastIndexOf('--path lane'), 'signed before it is marked delivered');
+});

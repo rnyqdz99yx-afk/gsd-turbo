@@ -1392,7 +1392,7 @@ test('an attended phase (turbo-run attend N) is in the owner\'s session: a neutr
   assert.equal(l[0], 'Phase 32 is running in your session · 5 of 9 plans done', 'the step is the stopped lane\'s: no step on the line');
   assert.ok(!l.some((x) => /last activity|silent|Reason|Executor|stopped|Needed from you/.test(x)), l.join('\n'));
   assert.ok(l.includes('  Nothing needed from you now'), l.join('\n'));
-  assert.ok(l.includes('  ▶ running plans — now'), l.join('\n'));
+  assert.ok(!l.some((x) => /Phase steps|— now|→/.test(x)), 'no steps or chain from the stopped lane\'s step');
   assert.deepEqual([verdict(v).kind, verdict(v).tone], ['attended', 'plain']);
   assert.deepEqual(bandStyle(v), {});
   assert.equal(textNode(render(v), 'Phase 32').children[0].props.color, undefined);
@@ -1493,6 +1493,31 @@ test('an attended phase shows its sitting (lane.sitting, the owner\'s session): 
   // no sitting in the view (an older turbo-run, or a session not known): the stopped lane's life is never drawn
   assert.ok(!lines(sit({})).some((x) => x.startsWith('  ')  && !/Nothing needed|→|✓|▶|·/.test(x)), lines(sit({})).join('\n'));
   assert.equal(lines(sit({}))[1], '');
+});
+
+test('review: a paused or cut-off sitting keeps its hidden questions in sight (lane.sitting.questions): a dim line with how to go on, never a green "nothing needed"; its question to the owner in flight says so; unknown tools read as working', () => {
+  const paused = calm({ supervisor: STOPPED_SUP, attended: ['32'] }, { status: 'needs-owner', lastAt: null, agents: [], sitting: { sessionId: null, action: null, questions: 2 } });
+  const ru = lines({ ...paused, ...RU });
+  assert.equal(ru[1], '  2 вопроса фазы — в вашей сессии · продолжить: /turbo-autonomous attend 32 · вернуть фазу: turbo-run attend 32 --done');
+  assert.equal(textNode(render({ ...paused, ...RU }), '2 вопроса фазы').props.dimColor, true);
+  assert.ok(ru.includes('  Вопросы фазы (2) ждут вас в вашей сессии') && !ru.some((x) => /ничего не нужно|Нужны вы/.test(x)), ru.join('\n'));
+  assert.equal(textNode(render({ ...paused, ...RU }), 'Вопросы фазы (2)').props.color, undefined, 'plain, not red, not green');
+  assert.equal(whatNext(paused, paused.lanes[0]).chain, null);
+  // its session asks the owner now
+  const asking = calm({ supervisor: STOPPED_SUP, attended: ['32'] }, { status: 'needs-owner', lastAt: '2026-01-01T10:59:00.000Z', agents: [], sitting: { sessionId: 'o1', action: { tool: 'AskUserQuestion', detail: 'Go?' }, questions: 0 } });
+  const ra = lines({ ...asking, ...RU });
+  assert.equal(ra[1], '  Сейчас: ждёт вашего ответа в сессии');
+  assert.ok(ra.includes('  Ваша сессия ждёт вашего ответа') && !ra.some((x) => /ничего не нужно|AskUserQuestion/.test(x)), ra.join('\n'));
+  // a tool without words (an MCP tool, say): the generic word, never its raw name
+  const mcp = calm({ supervisor: STOPPED_SUP, attended: ['32'] }, { status: 'needs-owner', lastAt: '2026-01-01T10:59:00.000Z', agents: [], sitting: { sessionId: 'o1', action: { tool: 'mcp__db__query', detail: 'select 1' }, questions: 0 } });
+  assert.equal(lines(mcp)[1], '  Now: working');
+  assert.ok(lines(mcp).includes('  Nothing needed from you now'));
+  // slots mode: the run's needs say it too
+  const two = { ...lanes3({ questions: [], attended: ['33'] }, { agents: [agent()] }, { sitting: { sessionId: null, action: null, questions: 1 } }), lanes: lanes3({}, { agents: [agent()] }, { sitting: { sessionId: null, action: null, questions: 1 } }).lanes.slice(0, 2) };
+  assert.ok(lines(two).includes("  The phase's questions (1) wait for you in your session"), lines(two).join('\n'));
+  // the supervisor line: an annotate lane or a finished lane beside the sitting does not make the supervisor "not running"
+  const withDone = { ...paused, lanes: [paused.lanes[0], { ...paused.lanes[0], phase: '31', status: 'done' }, { ...paused.lanes[0], job: 'annotate', phase: null, key: 'annotate' }] };
+  assert.ok(lines(withDone).includes('Supervisor paused: phase 32 is running in your session · phases 32–34'), lines(withDone).join('\n'));
 });
 
 test('review: remaining [] says nothing about the end of the run; a lane being merged while its phase asks the owner waits there', () => {

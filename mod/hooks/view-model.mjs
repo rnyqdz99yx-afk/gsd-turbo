@@ -79,7 +79,7 @@ const VIEW_WORDS = {
     },
     reason: 'Reason',
     life: (d) => `last activity ${d} ago`,
-    doing: { edit: (x) => `editing ${x}`, write: (x) => `writing ${x}`, read: (x) => `reading ${x}`, search: 'searching the code', files: 'looking for files', tests: 'running tests', commit: 'committing', command: (x) => `running a command: ${x}`, helper: 'started a helper', skill: 'using a skill', web: 'searching the web', todo: 'updating its to-do list', message: 'messaging a helper', browser: 'using the browser', working: 'working' },
+    doing: { edit: (x) => `editing ${x}`, write: (x) => `writing ${x}`, read: (x) => `reading ${x}`, search: 'searching the code', files: 'looking for files', tests: 'running tests', commit: 'committing', command: (x) => `running a command: ${x}`, helper: 'started a helper', skill: 'using a skill', web: 'searching the web', todo: 'updating its to-do list', message: 'messaging a helper', browser: 'using the browser', working: 'working', asks: 'waits for your answer in the session' },
     state: { completed: 'done', stopped: 'stopped', failed: 'failed' },
     idle: (d) => `silent${d ? ` for ${d}` : ''}`,
     quietAgent: (who, d) => `⚠️ ${who} silent${d ? ` for ${d}` : ''}`,
@@ -115,6 +115,8 @@ const VIEW_WORDS = {
     gapPlan: 'planning gap fixes',
     // a phase the owner attends (turbo-run attend N): it runs in their own session, not in its lane
     inSession: 'is running in your session',
+    // an attended phase's questions, left out of the view: where they are and how to go on (a sitting paused or cut off)
+    sittingAsks: (n, p) => `${n} ${n === 1 ? 'question' : 'questions'} of the phase in your session · go on: /turbo-autonomous attend ${p} · give the phase back: turbo-run attend ${p} --done`,
     stepsHead: 'Phase steps:',
     stepNow: (s) => `${s} — now`,
     stepStopped: (s) => `${s} — stopped here`,
@@ -127,6 +129,8 @@ const VIEW_WORDS = {
       ciLast: 'If the last CI attempt fails, the phase will ask you',
       halted: 'Needed from you: a stopped lane waits for you to resume it',
       stalled: (id) => `Needed from you: the phase stays silent after turbo woke it — to look inside: claude attach ${id}`,
+      // an attended phase: its session asks the owner now, or its questions wait there
+      inSession: (asking, n) => (asking ? 'Your session waits for your answer' : `The phase's questions (${n}) wait for you in your session`),
     },
     kind: {
       feat: (n) => `${n} new ${n === 1 ? 'feature' : 'features'}`, fix: (n) => `${n} ${n === 1 ? 'fix' : 'fixes'}`, refactor: (n) => `${n} ${n === 1 ? 'code rework' : 'code reworks'}`,
@@ -177,7 +181,7 @@ const VIEW_WORDS = {
     },
     reason: 'Причина',
     life: (d) => `последнее действие ${d} назад`,
-    doing: { edit: (x) => `правит ${x}`, write: (x) => `создаёт ${x}`, read: (x) => `читает ${x}`, search: 'ищет в коде', files: 'ищет файлы', tests: 'запустил тесты', commit: 'делает коммит', command: (x) => `выполняет команду: ${x}`, helper: 'запустил помощника', skill: 'запустил навык', web: 'ищет в интернете', todo: 'обновляет список дел', message: 'пишет помощнику', browser: 'работает в браузере', working: 'работает' },
+    doing: { edit: (x) => `правит ${x}`, write: (x) => `создаёт ${x}`, read: (x) => `читает ${x}`, search: 'ищет в коде', files: 'ищет файлы', tests: 'запустил тесты', commit: 'делает коммит', command: (x) => `выполняет команду: ${x}`, helper: 'запустил помощника', skill: 'запустил навык', web: 'ищет в интернете', todo: 'обновляет список дел', message: 'пишет помощнику', browser: 'работает в браузере', working: 'работает', asks: 'ждёт вашего ответа в сессии' },
     state: { completed: 'готов', stopped: 'остановлен', failed: 'сбой' },
     idle: (d) => `тишина${d ? ` ${d}` : ''}`,
     quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''}`,
@@ -207,6 +211,7 @@ const VIEW_WORDS = {
     },
     gapPlan: 'планирование доработок',
     inSession: 'идёт у вас в этой сессии',
+    sittingAsks: (n, p) => `${n} ${ruPlural(n, 'вопрос', 'вопроса', 'вопросов')} фазы — в вашей сессии · продолжить: /turbo-autonomous attend ${p} · вернуть фазу: turbo-run attend ${p} --done`,
     stepsHead: 'Шаги фазы:',
     stepNow: (s) => `${s} — сейчас`,
     stepStopped: (s) => `${s} — остановилась здесь`,
@@ -219,6 +224,7 @@ const VIEW_WORDS = {
       ciLast: 'Если последняя попытка починить CI не выйдет, фаза спросит вас',
       halted: 'Нужны вы: остановленная полоса ждёт, что вы её возобновите',
       stalled: (id) => `Нужны вы: фаза молчит и после пробуждений — посмотреть: claude attach ${id}`,
+      inSession: (asking, n) => (asking ? 'Ваша сессия ждёт вашего ответа' : `Вопросы фазы (${n}) ждут вас в вашей сессии`),
     },
     kind: {
       feat: (n) => `${n} ${ruPlural(n, 'новая возможность', 'новые возможности', 'новых возможностей')}`, fix: (n) => `${n} ${ruPlural(n, 'исправление', 'исправления', 'исправлений')}`, refactor: (n) => `${n} ${ruPlural(n, 'переделка кода', 'переделки кода', 'переделок кода')}`,
@@ -449,7 +455,8 @@ const COMMIT = /\bgit\b.*\bcommit\b/;
 const EDITS = new Set(['Edit', 'MultiEdit', 'NotebookEdit']);
 
 // What a running subagent does, in words, from its last tool call ({ tool, detail }, S0's actionOf).
-function doingWords(t, action) {
+// strict: null for a tool it has no words for (an attended sitting's own call: its words or the generic one).
+function doingWords(t, action, { strict = false } = {}) {
   const d = t.doing;
   if (!action) return d.working;
   const tool = String(action.tool ?? '');
@@ -467,7 +474,18 @@ function doingWords(t, action) {
   if (tool === 'TodoWrite') return d.todo;
   if (tool === 'SendMessage') return d.message;
   if (/^mcp__.*(?:playwright|browser|chrome)/i.test(tool)) return d.browser;
-  return `${cut(tool, 40)} ${x}`.trim();
+  return strict ? null : `${cut(tool, 40)} ${x}`.trim();
+}
+
+// What the owner's sitting does by its own call in flight: it asks them (AskUserQuestion), a tool in words, else working.
+const sittingDoing = (t, action) => (String(action?.tool ?? '') === 'AskUserQuestion' ? t.doing.asks : doingWords(t, action, { strict: true }) ?? t.doing.working);
+// The sitting asks the owner now (its own AskUserQuestion in flight).
+const sittingAsking = (lane) => String(lane?.sitting?.action?.tool ?? '') === 'AskUserQuestion';
+// What attended lanes need from the owner, or null: their session asks them, or the phase's questions wait there.
+function sittingNeed(t, lanes) {
+  const asking = lanes.some(sittingAsking);
+  const n = lanes.reduce((sum, l) => sum + (Number.isInteger(l?.sitting?.questions) && l.sitting.questions > 0 ? l.sitting.questions : 0), 0);
+  return asking || n ? t.need.inSession(asking, n) : null;
 }
 
 // A red CI the running phase still fixes itself: { n, m } (attempt n of the m S2 allows: push.ci_fix_rounds,
@@ -547,7 +565,8 @@ function supWord(t, view) {
   if (sup.halted) return t.sup.halted;
   if (sup.finished) return t.sup.finished;
   const attended = list(view?.attended)[0];
-  return attended != null && list(view?.lanes).every((l) => attendedLane(view, l)) ? t.sup.attended(cut(attended, 20)) : t.sup.stopped;
+  const open = list(view?.lanes).filter((l) => l.job !== 'annotate' && l.status !== 'done');
+  return attended != null && open.every((l) => attendedLane(view, l)) ? t.sup.attended(cut(attended, 20)) : t.sup.stopped;
 }
 
 // The pane is a tree of plain nodes the hooks module turns into the surface's elements: { type: 'Box' | 'Text',
@@ -674,6 +693,7 @@ function runSection(t, view, v, columns) {
         s.life ? text(toned('dim', { wrap: 'truncate-end' }), s.life) : null,
         lane.push?.ci === 'red' ? text(toned('bad', { wrap: 'wrap' }), t.verdict.ciRed(asked)) : null,
         ...s.helpers.map((a) => agentRow(t, a, view.at, true, columns)),
+        s.asks ? text(toned('dim', { wrap: 'wrap' }), s.asks) : null,
       ].filter(Boolean);
       if (under.length) rows.push(box({ flexDirection: 'column', paddingLeft: 2 }, under));
       return;
@@ -761,11 +781,12 @@ function helpersNow(t, lane, working) {
 // activity, never a silence: the owner may think or be away), helpers (at work) }. Nothing from a view without sitting
 // (an older turbo-run, or a session not known): the stopped lane's would mislead.
 function sittingRows(t, view, lane) {
-  if (!lane?.sitting || typeof lane.sitting !== 'object') return { now: null, life: null, helpers: [] };
+  if (!lane?.sitting || typeof lane.sitting !== 'object') return { now: null, life: null, helpers: [], asks: null };
   const helpers = list(lane.agents).filter((a) => a.state === 'running');
-  const now = helpers.length ? helpersNow(t, lane, helpers) : lane.sitting.action ? doingWords(t, lane.sitting.action) : null;
+  const now = helpers.length ? helpersNow(t, lane, helpers) : lane.sitting.action ? sittingDoing(t, lane.sitting.action) : null;
   const sign = lastSign(lane);
-  return { now, life: sign ? t.life(since(t, sign, view.at) ?? '-') : null, helpers };
+  const n = Number.isInteger(lane.sitting.questions) ? lane.sitting.questions : 0;
+  return { now, life: sign ? t.life(since(t, sign, view.at) ?? '-') : null, helpers, asks: n > 0 ? t.sittingAsks(n, cut(lane.phase, 20)) : null };
 }
 
 export const currentAction = (view, lane) => nowOf(textOf(view), view, lane);
@@ -799,7 +820,9 @@ export function phaseSteps(lane) {
 // { chain, needs: [{ tone, text }] }.
 function nextOf(t, view, lane) {
   if (!lane || lane.status === 'done' || lane.job === 'annotate') return null;
-  const ahead = phaseSteps(lane).filter((s) => s.state === 'ahead').map((s) => stepWord(t, s.step));
+  // an attended lane's steps are the stopped lane's: no chain; what it needs is its sitting's
+  const attended = attendedLane(view, lane);
+  const ahead = attended ? [] : phaseSteps(lane).filter((s) => s.state === 'ahead').map((s) => stepWord(t, s.step));
   const last = lastPhase(view, lane);
   const questions = shownQuestions(view);
   const held = questions.filter((q) => waitsFor(view, q)).length;
@@ -815,9 +838,11 @@ function nextOf(t, view, lane) {
   if (own && gaveUp(view, lane)) need('bad', t.need.stalled(cut(lane.sessionId ?? '', 64)));
   if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
   if (selfFixing(view, lane)?.last) need('warn', t.need.ciLast);
+  const sitting = attended ? sittingNeed(t, [lane]) : null;
+  if (sitting) need('plain', sitting);
   // the view knows no owner-only acceptance items ahead of time: no guess about them here (review r1)
   if (!needs.length) need('ok', t.need.none);
-  return { chain: [...ahead, last ? t.runEnd : t.nextPhase].join(' → '), needs };
+  return { chain: attended ? null : [...ahead, last ? t.runEnd : t.nextPhase].join(' → '), needs };
 }
 
 export const whatNext = (view, lane) => nextOf(textOf(view), view, lane);
@@ -848,6 +873,8 @@ function nextOfRun(t, view) {
   if (stalled) need('bad', t.need.stalled(cut(stalled.sessionId ?? '', 64)));
   if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
   if (lanes.some((l) => selfFixing(view, l)?.last)) need('warn', t.need.ciLast);
+  const sitting = sittingNeed(t, list(view?.lanes).filter((l) => attendedLane(view, l)));
+  if (sitting) need('plain', sitting);
   if (!needs.length) need('ok', t.need.none);
   return { chain: null, needs };
 }
@@ -873,7 +900,8 @@ function stepHalt(view, lane) {
 // · dim.
 function stepsSection(t, view, lane) {
   // several lanes: each lane line says its step (Stage 4 D7)
-  const steps = list(view.lanes).length > 1 || lane?.job === 'prep' ? [] : phaseSteps(lane);
+  // an attended lane's step is the stopped lane's: no steps (its sitting says what it does)
+  const steps = list(view.lanes).length > 1 || lane?.job === 'prep' || attendedLane(view, lane) ? [] : phaseSteps(lane);
   if (!steps.length) return null;
   const halt = stepHalt(view, lane);
   const row = (s) => {

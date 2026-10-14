@@ -1451,7 +1451,12 @@ test('review: attend cancels a resume the supervisor has not taken (it would cle
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /^cancelled the resume of phase 4 that the supervisor had not taken yet$/m);
   assert.equal(fs.existsSync(path.join(runDir, 'p4-resume.json')), false);
-  assert.equal(readJsonFile(path.join(runDir, 'p4-attend.json')).owner, 'owner-session-2', 'slots mode: the session in the slot');
+  // slots mode: a session outside the lane's slot is not the sitting (the skill runs attend again in the slot)
+  assert.equal(readJsonFile(path.join(runDir, 'p4-attend.json')).owner, null);
+  const slot = path.dirname(path.dirname(path.dirname(dir)));
+  const again = await runAsync(['attend', '4', '--project', p.root], slot, { ...env, CLAUDE_CODE_SESSION_ID: 'owner-session-3' });
+  assert.equal(again.code, 0, again.stderr);
+  assert.equal(readJsonFile(path.join(runDir, 'p4-attend.json')).owner, 'owner-session-3', 'the session in the slot');
   // no supervisor runs: a request left is taken when one starts
   assert.equal((await runAsync(['resume', '5'], p.root, env)).code, 0);
   writeSup(p.root, { ...readSup(p.root), pid: null });

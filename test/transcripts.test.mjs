@@ -401,7 +401,7 @@ test('laneAgents with sinceMs leaves out the agents whose newest write is older 
   assert.deepEqual(ids(undefined), [AGENT, AGENT2].sort());
 });
 
-test('sessionById finds a session\'s transcript by its exact id; ownSessionId names the calling session: CLAUDE_CODE_SESSION_ID, else the newest recent transcript of the project that is not excluded', () => {
+test('sessionById finds a session\'s transcript by its exact id; ownSessionId names the calling session by CLAUDE_CODE_SESSION_ID only, never a guess', () => {
   const { root, home, dir } = setup();
   const now = Date.parse('2026-01-01T11:00:00Z');
   setMtime(writeSession(dir, SESSION, [entry.user('owner', T0)]), new Date('2026-01-01T10:58:00Z'));
@@ -409,10 +409,10 @@ test('sessionById finds a session\'s transcript by its exact id; ownSessionId na
   assert.deepEqual(sessionById({ home, root, sessionId: SESSION }), { file: path.join(dir, `${SESSION}.jsonl`), sessionId: SESSION });
   assert.equal(sessionById({ home, root, sessionId: SESSION.slice(0, 8) }), null, 'an exact id only');
   assert.equal(sessionById({ home, root, sessionId: '../x' }), null);
-  assert.equal(ownSessionId({ home, root, env: { CLAUDE_CODE_SESSION_ID: 'abc-123' }, now }), 'abc-123');
-  assert.equal(ownSessionId({ home, root, env: {}, now }), FORK);
-  assert.equal(ownSessionId({ home, root, env: {}, now, exclude: new Set([FORK]) }), SESSION, 'the stopped lane is never the owner');
-  assert.equal(ownSessionId({ home, root, env: { CLAUDE_CODE_SESSION_ID: '../x' }, now: now + 3600000 }), null, 'nothing recent');
+  assert.equal(ownSessionId({ env: { CLAUDE_CODE_SESSION_ID: 'abc-123' } }), 'abc-123');
+  assert.equal(ownSessionId({ env: {} }), null, 'no guess from the newest transcript');
+  assert.equal(ownSessionId({ env: { CLAUDE_CODE_SESSION_ID: '../x' } }), null);
+  assert.ok(now > 0);
 });
 
 test('scanLaneTranscript reads only what was appended, keeps a line without its newline for later, and rereads a file that shrank', () => {

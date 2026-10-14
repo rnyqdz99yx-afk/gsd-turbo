@@ -390,6 +390,12 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', reason: 'x', sitting: { sessionId: 'o1', action: { tool: 'Agent', detail: 'x' } }, lastAt: at('10:59'), agents: [{ type: 'gsd-executor', plan: '32-13', task: '1', state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, lastAt: at('10:59'), elapsedMs: 5000 }, { type: 'gsd-verifier', state: 'completed', lastAt: at('10:40'), elapsedMs: 5000 }] }),
     textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', sitting: { sessionId: 'o1', action: { tool: 'Bash', detail: 'node scripts/live-check.mjs' } }, lastAt: at('10:58'), agents: [], push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } }),
     textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', sitting: { sessionId: 'o1', action: null }, lastAt: at('10:01'), agents: [] }),
+    // review: hidden questions of a paused sitting, its question to the owner in flight, a tool without words, the run's needs
+    textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', sitting: { sessionId: null, action: null, questions: 3 }, lastAt: null, agents: [] }),
+    textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', sitting: { sessionId: 'o1', action: { tool: 'AskUserQuestion', detail: 'Go?' }, questions: 1 }, lastAt: at('10:59'), agents: [] }),
+    textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', sitting: { sessionId: 'o1', action: { tool: 'mcp__db__query', detail: 'x' }, questions: 0 }, lastAt: at('10:59'), agents: [] }),
+    textView({ questions: [], attended: ['34'], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', status: 'needs-owner', sitting: { sessionId: null, action: null, questions: 2 }, lastAt: null, agents: [] }] }),
+    textView({ questions: [], supervisor: stoppedSup, attended: ['32'], lanes: [{ ...textView().lanes[0], status: 'needs-owner', sitting: { sessionId: null, action: null, questions: 0 } }, { ...textView().lanes[0], phase: '31', status: 'done' }] }),
     textView({ questions: [], attended: ['34'], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', status: 'needs-owner', sitting: { sessionId: 'o1', action: null }, lastAt: at('10:50'), agents: [{ type: 'gsd-planner', state: 'running', action: null, lastAt: at('10:50'), elapsedMs: 5000 }] }] }),
     // gap planning: the planner past the plan step, and the plan checker
     textView({ questions: [] }, { plans: { done: 9, total: 9 }, agents: [{ type: 'gsd-planner', plan: null, state: 'running', action: { tool: 'Write', detail: 'x' }, elapsedMs: 5000 }] }),
@@ -476,17 +482,22 @@ test('an attended phase\'s progress is its sitting\'s, read from the owner\'s se
   for (const round of ['cold', 'warm']) {
     const v = buildView({ root, sup, env, now: NOW, commits: COMMITS });
     const [lane] = v.lanes;
-    assert.deepEqual(lane.sitting, { sessionId: OWNER, action: { tool: 'Bash', detail: 'node scripts/live-check.mjs' } }, round);
+    assert.deepEqual(lane.sitting, { sessionId: OWNER, action: { tool: 'Bash', detail: 'node scripts/live-check.mjs' }, questions: 1 }, round);
     assert.deepEqual([lane.lastAt, lane.quiet, lane.busy], [at('10:59'), false, null], round);
     assert.deepEqual(lane.agents.map((a) => [a.agentId, a.type, a.plan, a.state]), [['a4000000000000001', 'gsd-executor', '32-13', 'running']], `${round}: the sitting's helpers since the mark only`);
     assert.deepEqual(v.questions.map((q) => q.id), ['34-01-t1'], `${round}: the sitting's questions are asked in the owner's session`);
     const text = formatView(v).split('\n');
     assert.deepEqual(text.slice(0, 3), ['Phase 32 is running in your session', '  Now: writing code for a plan', '  last activity 1m ago'], round);
     assert.ok(text[3].startsWith('  Executor · plan 32-13 · '), text.join('\n'));
+    // the hidden question: where it is and how to go on; never "nothing needed", no steps of the stopped lane
+    assert.equal(text[4], '  1 question of the phase in your session · go on: /turbo-autonomous attend 32 · give the phase back: turbo-run attend 32 --done');
+    assert.ok(text.includes("  The phase's questions (1) wait for you in your session") && !text.some((x) => /Nothing needed|Phase steps|— now/.test(x)), text.join('\n'));
     assert.ok(!text.some((x) => /silent|Reason|stopped|Needed from you|Live check|not running/.test(x)), text.join('\n'));
     assert.equal(text.at(-1), 'Supervisor paused: phase 32 is running in your session · phases 32–34');
   }
-  assert.ok(Object.keys(readJsonFile(path.join(runDirOf(root), 'view-cache.json')).files).some((k) => k.startsWith('sitting:')), 'the session\'s last action is cached by size and mtime');
+  const cached = readJsonFile(path.join(runDirOf(root), 'view-cache.json')).files;
+  assert.ok(Object.keys(cached).some((k) => k.startsWith('sitting:')), 'the session\'s last action is cached by size and mtime');
+  assert.deepEqual(cached[`owner:${OWNER}`], { file: path.join(dir, `${OWNER}.jsonl`) }, 'the session\'s transcript is found once');
   // a silent sitting (the owner is away): its age, no action, no alarm
   const later = buildView({ root, sup, env, now: new Date(at('12:30')), commits: COMMITS });
   assert.equal(later.lanes[0].sitting.action, null);
@@ -497,7 +508,7 @@ test('an attended phase\'s progress is its sitting\'s, read from the owner\'s se
     writeAttend(p.root, '32', { sessionId: SESSION.slice(0, 8), owner, now: new Date(at('10:30')) });
     setMtime(writeSession(p.dir, SESSION, [entry.user('run phase 32', at('09:48'))]), new Date(at('10:01')));
     const v = buildView({ root: p.root, sup: p.sup, env: p.env, now: NOW, commits: COMMITS });
-    assert.deepEqual([v.lanes[0].sitting, v.lanes[0].lastAt, v.lanes[0].agents], [null, null, []], String(owner));
+    assert.deepEqual([v.lanes[0].sitting, v.lanes[0].lastAt, v.lanes[0].agents], [{ sessionId: null, action: null, questions: 0 }, null, []], String(owner));
     assert.deepEqual(formatView(v).split('\n').slice(0, 2), ['Phase 32 is running in your session', ''], String(owner));
   }
 });

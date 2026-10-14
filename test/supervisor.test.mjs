@@ -8,6 +8,7 @@ import { answerWakePrompt, stallWakePrompt } from '../lib/wake.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus, readLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName, parseAgents, projectHash } from '../lib/claude.mjs';
+import { clearAttend, writeAttend } from '../lib/attend.mjs';
 
 // lane temp directories live under turbo's own directory: a throwaway one for this file
 const HOME = tmpDir('home');
@@ -767,7 +768,7 @@ test('a starting supervisor relaunches the lane whose session failed while none 
   assert.match(h.launched[1].prompt, /^Resume phase 2\./);
   assert.deepEqual(h.removed, ['s1']);
   assert.deepEqual(h.notes, []);
-  assert.ok(h.logs.includes('phase 2: session s1 failed while no supervisor ran (a reboot or a crash); relaunching it (continuation)'), h.logs.join('\n'));
+  assert.ok(h.logs.includes('phase 2: session s1 failed before this supervisor started (a reboot, a crash or a halt); relaunching it (continuation)'), h.logs.join('\n'));
 });
 
 test('a starting supervisor relaunches a lane whose session is gone with a fresh count of restarts, however many it had', async () => {
@@ -779,7 +780,27 @@ test('a starting supervisor relaunches a lane whose session is gone with a fresh
   s = await tick({ ...s, takeover: true }, h.ctx);
   assert.equal(s.halted, false);
   assert.deepEqual([s.lane.sessionId, s.lane.restarts], ['s2', 0]);
-  assert.ok(h.logs.some((l) => /^phase 2: session s1 is gone while no supervisor ran/.test(l)), h.logs.join('\n'));
+  assert.ok(h.logs.some((l) => /^phase 2: session s1 is gone before this supervisor started/.test(l)), h.logs.join('\n'));
+  // a session claude lists as ended in another way (stopped, done) is taken up the same (review m7)
+  const ended = harness({ phases: [P('2')] });
+  s = await tick(fresh(), ended.ctx);
+  s.lane.restarts = DEFAULTS.max_restarts_without_progress;
+  ended.agents[0].state = 'stopped';
+  s = await tick({ ...s, takeover: true }, ended.ctx);
+  assert.deepEqual([s.halted, s.lane.sessionId, s.lane.restarts], [false, 's2', 0]);
+  assert.ok(ended.logs.some((l) => /^phase 2: session s1 ended \(stopped\) before this supervisor started/.test(l)), ended.logs.join('\n'));
+});
+
+test('a starting supervisor held by the owner\'s sitting keeps its takeover check for the step after the sitting (review m8)', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'failed';
+  writeAttend(h.root, '2');
+  s = await tick({ ...s, takeover: true }, h.ctx);
+  assert.equal(s.takeover, true);
+  clearAttend(h.root, '2');
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.takeover, s.halted, s.lane.sessionId], [undefined, false, 's2']);
 });
 
 test('a starting supervisor keeps the usual handling of a lane that recorded its own state, of a live session and of a completed phase', async () => {

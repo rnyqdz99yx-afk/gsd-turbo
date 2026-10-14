@@ -94,6 +94,17 @@ test('e2e (spec §9, §13): a restart keeps the recorded lanes, adopts their ses
   s.lanes['1'].launchFailures = 4;
   const retried = resumableLanes(s, null, h.ctx)['1'];
   assert.deepEqual([retried.halted, retried.forceRelaunch, retried.restarts, retried.launchFailures], [undefined, true, 0, undefined]);
+  // Gap 2 (review I2): a start at logon tries again only a lane stopped by its session's failure (a crash); the others
+  // stay stopped for the owner's resume
+  s.lanes['1'].halted = { why: 'noProgress', at: h.at(), restarts: 3 };
+  const kept = resumableLanes(s, null, h.ctx, { logon: true })['1'];
+  assert.deepEqual([kept.halted.why, Boolean(kept.forceRelaunch)], ['noProgress', false]);
+  assert.ok(h.logs.includes('lane 1 stays stopped (noProgress) at logon: turbo-run resume 1 tries it again'), h.logs.join('\n'));
+  s.lanes['1'].halted = { why: 'failed', at: h.at(), id: 's1' }; // the lane's own failed record
+  assert.equal(resumableLanes(s, null, h.ctx, { logon: true })['1'].halted.why, 'failed');
+  s.lanes['1'].halted = { why: 'failed', at: h.at(), id: 's1', sessionFailed: true };
+  const crashed = resumableLanes(s, null, h.ctx, { logon: true })['1'];
+  assert.deepEqual([crashed.halted, crashed.forceRelaunch], [undefined, true]);
   // a checkout-mode lane is never resumed in slots mode; a finished run resumes nothing
   const other = lanesHarness({ phases: [P('7')] });
   assert.deepEqual(resumableLanes({ lane: { phase: '7', sessionId: 'x' }, finished: false }, null, other.ctx), {});

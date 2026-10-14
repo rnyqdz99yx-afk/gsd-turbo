@@ -23,6 +23,8 @@ const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turb
 // Far above any real pid limit (Linux 2^22, macOS 99999; Windows pids are small multiples of 4).
 const DEAD_PID = 2147483644;
 const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+// a machine up for 30 days: a heartbeat hours old is no heartbeat from before the boot (CI machines boot minutes before)
+const LONG_UP = { ...process.env, TURBO_UPTIME_SECONDS: String(30 * 24 * 3600) };
 const runDirOf = (root) => path.join(root, '.planning', 'turbo', 'run');
 const lockOf = (root) => path.join(root, '.planning', 'turbo', 'locks', 'daemon.lock');
 const readJsonFile = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
@@ -291,9 +293,16 @@ test('the heartbeat window is max(10 min, 5 x poll_seconds) with poll_seconds cl
   const cfg = path.join(root, '.planning', 'turbo', 'config.json');
   writeSup(root, { pid: process.pid, updatedAt: ago(20) });
   fs.writeFileSync(cfg, JSON.stringify({ poll_seconds: 600 }));
-  assert.equal(JSON.parse(run(['status', '--json'], root)).running, true);
+  assert.equal(JSON.parse(run(['status', '--json'], root, LONG_UP)).running, true);
   fs.writeFileSync(cfg, JSON.stringify({ poll_seconds: 'often' }));
-  assert.equal(JSON.parse(run(['status', '--json'], root)).running, false);
+  assert.equal(JSON.parse(run(['status', '--json'], root, LONG_UP)).running, false);
+});
+
+test('a heartbeat from before the machine started is a dead daemon\'s, even inside the window and with its pid taken by another process (review I1)', () => {
+  const root = plainProject();
+  writeSup(root, { pid: process.pid, updatedAt: ago(5) });
+  assert.equal(JSON.parse(run(['status', '--json'], root, { ...process.env, TURBO_UPTIME_SECONDS: '60' })).running, false);
+  assert.equal(JSON.parse(run(['status', '--json'], root, LONG_UP)).running, true);
 });
 
 test('a pid the OS refuses to signal (EPERM) still counts as an existing process', () => {
@@ -305,7 +314,7 @@ test('a pid the OS refuses to signal (EPERM) still counts as an existing process
 test('heartbeat window: poll capped at 3600 s, the daemon\'s own poll counts, a heartbeat from the future is stale', () => {
   const root = plainProject();
   const cfg = path.join(root, '.planning', 'turbo', 'config.json');
-  const running = () => JSON.parse(run(['status', '--json'], root)).running;
+  const running = () => JSON.parse(run(['status', '--json'], root, LONG_UP)).running;
   fs.mkdirSync(path.dirname(cfg), { recursive: true });
   for (const poll of ['1e999', '99999999']) {
     fs.writeFileSync(cfg, `{"poll_seconds": ${poll}}`);
@@ -1430,7 +1439,7 @@ test('start --autostart takes up a run that was going when the machine went down
   const sup = await waitFor(() => { const s = readSup(p.root); return s?.pid && s.lane?.sessionId === 'abcdef123456' ? s : null; }, 15000);
   assert.ok(sup, logOf(p.root));
   assert.deepEqual([sup.halted, sup.lane.restarts, sup.takeover], [false, 0, undefined]);
-  assert.match(logOf(p.root), /phase 4: session old111 failed while no supervisor ran \(a reboot or a crash\); relaunching it \(continuation\)/);
+  assert.match(logOf(p.root), /phase 4: session old111 failed before this supervisor started \(a reboot, a crash or a halt\); relaunching it \(continuation\)/);
   assert.ok(p.claudeCalls().some((a) => a[0] === '--bg' && a.join(' ').includes('--resume')), JSON.stringify(p.claudeCalls()));
   const stop = await runAsync(['stop'], p.root, p.env);
   assert.equal(stop.code, 0, stop.stderr);
@@ -1447,6 +1456,28 @@ test('start --autostart takes no range flags; autostart without on, off or statu
   assert.deepEqual(p.claudeCalls(), []);
 });
 
+test('the owner\'s start of a run that still goes removes a stop mark a failed stop left behind (review m10)', async (t) => {
+  const p = fakeProject();
+  const child = sleeper(t);
+  writeSup(p.root, { pid: child.pid, updatedAt: ago(0), finished: false, halted: false, lane: null });
+  fs.writeFileSync(stopMarkOf(p.root), JSON.stringify({ at: ago(1) }));
+  const r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^already running \(pid \d+\)$/m);
+  assert.equal(fs.existsSync(stopMarkOf(p.root)), false);
+});
+
+test('a start at logon that fails says why in the supervisor log, where the owner looks (review m9)', async () => {
+  const p = fakeProject();
+  writeSup(p.root, { pid: null, finished: false, halted: false, lane: null });
+  fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'config.json'), '{ broken');
+  const r = await runAsync(['start', '--autostart'], p.root, p.env);
+  assert.equal(r.code, 1);
+  const log = logOf(p.root);
+  assert.match(log, /autostart: the run was going when the machine went down; starting the supervisor/);
+  assert.match(log, /autostart: invalid turbo config /);
+});
+
 test('resume clears the owner\'s stop mark: the owner goes on with the run (Gap 2)', () => {
   const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }] });
   writeSup(p.root, { pid: null, finished: false, halted: false, lane: { phase: '4', sessionId: 'old111', restarts: 0, launchedAt: ago(5) } });
@@ -1460,9 +1491,9 @@ test('status in the owner\'s session says how to come back to it after a crash, 
   writeSup(p.root, { pid: null, finished: false, halted: false, lane: null });
   const sid = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
   const back = `back to this chat: claude -r (pick it by its title) or claude --resume ${sid}`;
-  assert.ok(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: sid }).split(/\r?\n/).includes(back));
+  assert.ok(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: sid, TURBO_LANE: '' }).split(/\r?\n/).includes(back));
   fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lang: 'ru', notify: { desktop: false, telegram: false }, lanes: { mode: 'checkout' } }));
-  assert.ok(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: sid }).split(/\r?\n/).includes(`вернуться в этот чат: claude -r (выбрать по названию) или claude --resume ${sid}`));
+  assert.ok(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: sid, TURBO_LANE: '' }).split(/\r?\n/).includes(`вернуться в этот чат: claude -r (выбрать по названию) или claude --resume ${sid}`));
   const { CLAUDE_CODE_SESSION_ID: _drop, ...outside } = p.env;
   assert.doesNotMatch(run(['status'], p.root, outside), /claude --resume/);
   assert.doesNotMatch(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: sid, TURBO_LANE: '1' }), /claude --resume/);

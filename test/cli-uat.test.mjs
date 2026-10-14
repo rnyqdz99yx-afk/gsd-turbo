@@ -180,7 +180,8 @@ test('turbo-run status lists owner requests in every view', () => {
   fs.mkdirSync(run, { recursive: true });
   fs.writeFileSync(path.join(run, 'p3-owner.md'), 'x');
   fs.writeFileSync(path.join(run, 'p3-owner.notified'), '{}');
-  const status = (...a) => execFileSync(process.execPath, [path.resolve('bin/turbo-run.mjs'), 'status', '--project', p.root, ...a], { encoding: 'utf8' });
+  // outside any Claude Code session: status ends with the owner request, no line back to a chat
+  const status = (...a) => execFileSync(process.execPath, [path.resolve('bin/turbo-run.mjs'), 'status', '--project', p.root, ...a], { encoding: 'utf8', env: { ...process.env, CLAUDE_CODE_SESSION_ID: '' } });
   const want = ['.planning/turbo/run/p3-owner.md'];
   // never started: a phase run by hand still shows its request
   assert.match(status(), /never started\)\nowner request: \.planning\/turbo\/run\/p3-owner\.md\n$/);

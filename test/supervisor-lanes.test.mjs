@@ -80,9 +80,21 @@ test('a failed session or no progress stops only its lane; the run halts once ev
   h.advance(1);
   s = await tick(s, h.ctx);
   assert.deepEqual([s.lanes['1'].halted?.why, s.lanes['2'].halted?.why], ['failed', 'noProgress']);
+  assert.equal(s.lanes['1'].halted.sessionFailed, true, 'its session failed, not the lane by its own record');
   assert.equal(s.halted, true);
+  assert.equal(s.haltedFor, undefined, 'a lane stopped for the owner: a start at logon leaves the run halted');
   assert.deepEqual(h.notes.map((x) => x.key), ['laneStopped', 'laneStopped']);
   assert.equal(msg('en', 'laneStopped', h.notes[0].vars).body, `The other lanes go on. To look inside: cd "${h.slots[0].path}" && claude. To try again: /turbo-autonomous resume 1`);
+});
+
+test('every lane stopped by its session\'s failure: the run halts with haltedFor sessionFailed, which a start at logon takes up (Gap 2, review I2)', async () => {
+  const h = lanesHarness({ phases: [P('1'), P('2')], lanes: annotated({ 1: A('a/**'), 2: A('b/**') }) });
+  let s = await tick(freshLanes(), h.ctx);
+  h.agentOf('1').state = 'failed';
+  h.agentOf('2').state = 'failed';
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.lanes['1'].halted?.sessionFailed, s.lanes['2'].halted?.sessionFailed, s.halted, s.haltedFor], [true, true, true, 'sessionFailed']);
 });
 
 test('a supervisor that starts after a reboot relaunches the slot lanes whose sessions failed or are gone, as continuations; a lane that asked the owner keeps waiting (Gap 2)', async () => {

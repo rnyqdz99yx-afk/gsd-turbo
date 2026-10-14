@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { projectHash } from '../lib/claude.mjs';
-import { RUN_KEY, autostartKey, clearOwnerStop, logonCommand, logonSkip, readOwnerStop, runAutostart, writeOwnerStop } from '../lib/autostart.mjs';
+import { RUN_KEY, autostartKey, beatBeforeBoot, clearOwnerStop, logonCommand, logonSkip, readOwnerStop, runAutostart, writeOwnerStop } from '../lib/autostart.mjs';
 
 // Gap 2 (v0.4.0): turbo-run autostart on|off|status. Every system command goes through the injected runner: no test
 // ever calls reg, launchctl or systemctl. Files land in a throwaway home and config directory.
@@ -127,9 +127,35 @@ test('Linux: a systemd user unit, enabled for the login session; without a syste
   const n = runAutostart('on', none.opts);
   assert.equal(n.code, 1);
   assert.match(n.lines.join('\n'), /not supported here \(no systemd user session\).*add this to your session's autostart/s);
-  assert.ok(n.lines.join('\n').includes(`start --autostart --project "${none.root}"`));
+  // a POSIX shell line, every path in single quotes (review m12)
+  assert.ok(n.lines.join('\n').endsWith(`'${NODE}' '${TURBO}' start --autostart --project '${none.root}'`), n.lines.join('\n'));
   assert.deepEqual(none.calls, [['systemctl', '--user', 'show-environment']]);
   assert.equal(fs.existsSync(path.join(none.home, '.config', 'systemd')), false);
+});
+
+test('a path a logon command cannot carry (a line break, a JavaScript line separator, % on Windows) is refused before anything changes (review m4, m5)', () => {
+  for (const [platform, bad] of [['linux', 'a\nExecStartPre=/bin/sh'], ['win32', 'a\u2028b'], ['win32', '%APPDATA%'], ['darwin', 'a\rb']]) {
+    const s = setup({ platform });
+    const r = runAutostart('on', { ...s.opts, root: path.join(s.root, bad) });
+    assert.equal(r.code, 1, `${platform} ${JSON.stringify(bad)}`);
+    assert.match(r.lines[0], /^autostart not set: .* has a character a logon command cannot carry/);
+    assert.deepEqual(s.calls, []);
+    assert.deepEqual(fs.readdirSync(s.home), [], 'nothing written');
+  }
+  // % is fine outside Windows
+  const mac = setup({ platform: 'darwin' });
+  assert.equal(runAutostart('on', { ...mac.opts, root: path.join(mac.root, '100%') }).code, 0);
+});
+
+test('the files carry no project path in their comments (review m4)', () => {
+  const s = setup();
+  runAutostart('on', s.opts);
+  const js = fs.readFileSync(path.join(s.env.CLAUDE_CONFIG_DIR, 'turbo', 'autostart', `${s.key}.js`)).subarray(2).toString('utf16le');
+  assert.ok(js.split('\r\n').filter((l) => l.startsWith('//')).every((l) => !l.includes(s.root)), js);
+  const mac = setup({ platform: 'darwin' });
+  runAutostart('on', mac.opts);
+  const xml = fs.readFileSync(path.join(mac.home, 'Library', 'LaunchAgents', `gsd-turbo.${mac.key}.plist`), 'utf8');
+  assert.ok(!/<!--[^>]*My App/.test(xml), xml);
 });
 
 test('an unknown action is a usage error that changes nothing', () => {
@@ -149,6 +175,18 @@ test('a start at logon comes back only for a run that was going when the machine
   assert.match(logonSkip({ sup: going, ownerStop: { at: '2026-10-14T03:00:00.000Z' }, alive: false }), /stopped by the owner at 2026-10-14T03:00:00\.000Z/);
   assert.match(logonSkip({ sup: { ...going, finished: true }, ownerStop: null, alive: false }), /finished/);
   assert.match(logonSkip({ sup: { ...going, halted: true }, ownerStop: null, alive: false }), /halted.*turbo-run status/);
+});
+
+test('a heartbeat from before the machine started is a dead daemon\'s, however recent: after a quick reboot its pid may belong to another process (review I1)', () => {
+  const now = Date.parse('2026-10-14T04:00:00.000Z');
+  // booted 3 minutes ago: a supervisor that beat 5 minutes ago died with the machine
+  assert.equal(beatBeforeBoot('2026-10-14T03:55:00.000Z', { now, uptimeSeconds: 180 }), true);
+  assert.equal(beatBeforeBoot('2026-10-14T03:59:00.000Z', { now, uptimeSeconds: 180 }), false);
+  // no heartbeat, or an unreadable one: not judged here (the heartbeat window does)
+  assert.equal(beatBeforeBoot(null, { now, uptimeSeconds: 180 }), false);
+  assert.equal(beatBeforeBoot('x', { now, uptimeSeconds: 180 }), false);
+  // an uptime that cannot be read proves nothing
+  assert.equal(beatBeforeBoot('2026-10-14T03:55:00.000Z', { now, uptimeSeconds: NaN }), false);
 });
 
 test('the owner\'s stop mark is written, read and cleared in the run directory', () => {

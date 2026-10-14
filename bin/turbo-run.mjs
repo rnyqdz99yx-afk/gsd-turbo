@@ -36,7 +36,7 @@ import { laneForPhase, laneLabel, lanesSummary, setupLines, supervisorLanes } fr
 import { loadLanePlugins } from '../lib/lane-plugins.mjs';
 import { IntegrateRefused, readyRecord } from '../lib/integrate.mjs';
 import { jobLaneStatus, runAnnotateCommand } from '../lib/cli-jobs.mjs';
-import { clearOwnerStop, logonSkip, readOwnerStop, runAutostart, writeOwnerStop } from '../lib/autostart.mjs';
+import { beatBeforeBoot, clearOwnerStop, logonSkip, readOwnerStop, runAutostart, writeOwnerStop } from '../lib/autostart.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail|autostart> [args]';
@@ -150,6 +150,10 @@ function daemonAlive(pid, updatedAt, pollSeconds) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   const at = Date.parse(updatedAt);
   if (!Number.isFinite(at) || Math.abs(Date.now() - at) > Math.max(HEARTBEAT_MIN_MS, 5 * pollSeconds * 1000)) return false;
+  // a heartbeat from before the machine started: the daemon died with it (its pid may be another process's now).
+  // TURBO_UPTIME_SECONDS stands in for the machine's uptime in tests whose heartbeats are hours old.
+  const up = process.env.TURBO_UPTIME_SECONDS;
+  if (beatBeforeBoot(updatedAt, up ? { uptimeSeconds: Number(up) } : {})) return false;
   return pidExists(pid);
 }
 // The running daemon may poll more slowly than the config now says: it records its own poll.
@@ -360,7 +364,7 @@ function logTail(root, lines = 10) {
 }
 
 // requested: rangeFlags' result (undefined keeps the range of a run that has not finished).
-async function start(root, requested = undefined, { planOnly = false } = {}) {
+async function start(root, requested = undefined, { planOnly = false, logon = false } = {}) {
   const config = runtimeConfig(loadConfig(root)); // a corrupt config fails here, not inside the detached daemon
   // reconcile R10: /turbo-plan-milestone runs start --plan-only: prep and lane markup jobs in slots, no phase
   if (planOnly && lanesSettings(config.lanes).mode !== 'slots') die(`start --plan-only needs lanes.mode slots (this project runs lanes.mode ${lanesSettings(config.lanes).mode}); nothing was started`);
@@ -376,6 +380,8 @@ async function start(root, requested = undefined, { planOnly = false } = {}) {
       process.stderr.write(`a run of the phases is going (supervisor pid ${sup.pid}); nothing was changed: run turbo-run stop first, then start --plan-only\n`);
       return 1;
     }
+    // the owner's start: a stop mark a failed stop left behind goes (Gap 2)
+    clearOwnerStop(root);
     out(`already running (pid ${sup.pid})`);
     const opts = statusOpts(root, config);
     printStatus(sup, true, opts);
@@ -415,7 +421,7 @@ async function start(root, requested = undefined, { planOnly = false } = {}) {
   if (range) out(`range: phases ${rangeLabel(range)}${kept ? ' (kept from the previous run)' : ''}`);
   // a forgotten sitting holds every lane of the daemon about to start: say so, never let it look like a run
   printAttended(attendedPhases(root));
-  const rangeArgs = [...(range?.from ? ['--from', range.from] : []), ...(range?.to ? ['--to', range.to] : []), ...(planOnly ? ['--plan-only'] : [])];
+  const rangeArgs = [...(range?.from ? ['--from', range.from] : []), ...(range?.to ? ['--to', range.to] : []), ...(planOnly ? ['--plan-only'] : []), ...(logon ? ['--autostart'] : [])];
   // reconcile R10: a later start without --plan-only clears a kept plan-only mark (a daemon restart keeps it)
   const stored = readJson(supPath(root), null);
   if (!planOnly && stored?.planOnly) {
@@ -465,23 +471,32 @@ async function start(root, requested = undefined, { planOnly = false } = {}) {
 
 // Gap 2: turbo-run start --autostart, what autostart on registers for the logon. It starts the supervisor only for a
 // run that was going when the machine went down (lib/autostart.mjs logonSkip), keeping its range and plan-only mark,
-// and says what it did in the supervisor log too: nobody sees a logon command's output.
+// and copies everything it prints, a failure of the start included, into the supervisor log: nobody sees a logon
+// command's output.
 async function startAtLogon(root) {
-  const sup = readJson(supPath(root), null);
-  const why = logonSkip({ sup, ownerStop: readOwnerStop(root), alive: supAlive(sup, pollOf(root)) });
-  const say = (line) => {
-    out(line);
+  const log = (text) => {
+    const lines = String(text).split(/\r?\n/).filter((l) => l.trim());
+    if (!lines.length) return;
     try {
       ensureDir(logsDir(root));
-      fs.appendFileSync(path.join(logsDir(root), 'supervisor.log'), `${new Date().toISOString()} ${line}\n`);
+      fs.appendFileSync(path.join(logsDir(root), 'supervisor.log'), lines.map((l) => `${new Date().toISOString()} ${l.startsWith('autostart: ') ? l : `autostart: ${l}`}\n`).join(''));
     } catch { /* logging is best-effort */ }
   };
+  for (const stream of [process.stdout, process.stderr]) {
+    const write = stream.write.bind(stream);
+    stream.write = (chunk, ...rest) => {
+      log(chunk);
+      return write(chunk, ...rest);
+    };
+  }
+  const sup = readJson(supPath(root), null);
+  const why = logonSkip({ sup, ownerStop: readOwnerStop(root), alive: supAlive(sup, pollOf(root)) });
   if (why) {
-    say(`autostart: nothing started: ${why}`);
+    out(`autostart: nothing started: ${why}`);
     return 0;
   }
-  say('autostart: the run was going when the machine went down; starting the supervisor');
-  return start(root, undefined, { planOnly: Boolean(sup.planOnly) });
+  out('autostart: the run was going when the machine went down; starting the supervisor');
+  return start(root, undefined, { planOnly: Boolean(sup.planOnly), logon: true });
 }
 
 // Gap 1: how the owner comes back to their controlling session after a crash, printed by status in that session (the
@@ -516,7 +531,7 @@ function leaseSleep(root, log) {
   };
 }
 
-async function daemon(root, mode = 'safe', range = null, { planOnly: asked = false } = {}) {
+async function daemon(root, mode = 'safe', range = null, { planOnly: asked = false, logon = false } = {}) {
   const ctx = await makeCtx(root, mode);
   const poll = ctx.config.poll_seconds;
   const lock = acquireLock(root, poll);
@@ -536,7 +551,8 @@ async function daemon(root, mode = 'safe', range = null, { planOnly: asked = fal
     // a crash), as a continuation instead of a halt (lib/supervisor.mjs takeOver)
     const base = { finished: false, halted: false, takeover: true, poll_seconds: poll, ...(range ? { range } : {}), ...(planOnly ? { planOnly: true } : {}) };
     let initial;
-    if (ctx.lanes === 'slots') initial = { lanesMode: 'slots', lanes: resumableLanes(prev, range, ctx), ...base };
+    // logon: a start at logon tries again only the lanes a crash stopped (Gap 2)
+    if (ctx.lanes === 'slots') initial = { lanesMode: 'slots', lanes: resumableLanes(prev, range, ctx, { logon }), ...base };
     else {
       if (lanesSettings(ctx.config.lanes).mode === 'slots') ctx.deps.log(`lanes.mode slots needs full mode (doctor: ${mode}); one lane runs in this checkout`);
       if (prev?.lanes && Object.keys(prev.lanes).length && !prev.finished) ctx.deps.log(`slots-mode lanes are recorded (${Object.keys(prev.lanes).join(', ')}); checkout mode does not resume them (their sessions and slots kept)`);
@@ -981,7 +997,7 @@ async function main() {
     }
     case 'daemon': {
       if (!root) die('no .planning directory found');
-      return daemon(root, flag(args, '--mode', 'safe'), rangeFlags(args) ?? null, { planOnly: args.includes('--plan-only') });
+      return daemon(root, flag(args, '--mode', 'safe'), rangeFlags(args) ?? null, { planOnly: args.includes('--plan-only'), logon: args.includes('--autostart') });
     }
     case 'status': {
       if (!root) die('no .planning directory found');
@@ -1043,7 +1059,8 @@ async function main() {
       if (!root) die('no .planning directory found');
       const action = pos[0];
       if (action === 'on' && !fs.existsSync(path.dirname(runDir(root)))) die('no .planning/turbo/ in this project: run /turbo-autonomous here first');
-      const r = runAutostart(action, { root, node: process.execPath, turboRun: SELF });
+      // node by its real path: a version manager's per-shell link (fnm) is gone after a reboot
+      const r = runAutostart(action, { root, node: fs.realpathSync(process.execPath), turboRun: SELF });
       const failing = r.code ? r.lines.at(-1) : null;
       for (const line of r.lines) (line === failing ? process.stderr : process.stdout).write(`${line}\n`);
       return r.code;

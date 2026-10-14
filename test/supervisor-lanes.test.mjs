@@ -206,3 +206,35 @@ test('slots mode records the unfinished phases of the run too (remaining), the r
   assert.deepEqual(Object.keys(s.lanes), ['1']);
   assert.deepEqual(s.remaining, ['1', '3']);
 });
+
+test('F5: the owner\'s resume N handed to the running supervisor clears that phase between lane steps and relaunches its lane; the other lanes go on untouched', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { requestResume } = await import('../lib/attend.mjs');
+  const { readProgress } = await import('../lib/phase-progress.mjs');
+  const h = lanesHarness({ phases: [P('1'), P('2')], lanes: annotated({ 1: A('a/**'), 2: A('b/**') }) });
+  h.ctx.config.max_restarts_without_progress = 0;
+  let s = await tick(freshLanes(), h.ctx);
+  h.agentOf('2').state = 'failed';
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(s.lanes['2'].halted?.why, 'failed');
+  const run = path.join(h.root, '.planning', 'turbo', 'run');
+  fs.writeFileSync(path.join(run, 'p2-owner.md'), '# Phase 2\n');
+  fs.writeFileSync(path.join(run, 'phase-p2.json'), JSON.stringify({ phase: '2', done: ['freshness'], notes: {}, attempts: { fix: 3 } }));
+  writeLaneStatus(h.root, '2', 'failed', { reason: 'tests red', at: h.at() });
+  const lane1 = structuredClone(s.lanes['1']);
+  requestResume(h.root, '2', { now: new Date(h.at()) });
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(s.lanes['2'].halted, undefined);
+  assert.deepEqual([s.lanes['2'].restarts, s.lanes['2'].forceRelaunch, s.lanes['2'].sessionId], [0, false, 's3'], 'relaunched in the same tick');
+  assert.equal(h.launched.at(-1).name, laneSessionName(h.root, '2'));
+  assert.equal(readLaneStatus(h.root, '2')?.status, 'running', 'the old failed record is gone; the relaunch wrote its own');
+  assert.equal(fs.existsSync(path.join(run, 'p2-owner.md')), false);
+  assert.deepEqual([readProgress(h.root, '2').done, readProgress(h.root, '2').attempts], [['freshness'], {}]);
+  assert.equal(fs.existsSync(path.join(run, 'p2-resume.json')), false, 'the request is taken once');
+  assert.deepEqual({ ...s.lanes['1'], notified: lane1.notified }, { ...lane1, notified: lane1.notified }, 'lane 1 is as it was');
+  assert.ok(h.logs.includes('phase 2: resumed by the owner (turbo-run resume 2); its lane is relaunched'), h.logs.join('\n'));
+  assert.equal(s.halted, false);
+});

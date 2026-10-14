@@ -27,7 +27,7 @@ Run the matching command and show its output, then stop:
 
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status`
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" stop`
-- `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" resume <phase> --start` (clears the phase's lane record and its owner request, which the resume answers, and starts the supervisor in one command)
+- `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" resume <phase> --start` (clears the phase's lane record and its owner request, which the resume answers, and starts the supervisor in one command; with several lanes and the supervisor running it prints `handed to the running supervisor`: the supervisor relaunches that lane at its next check and the other lanes go on)
 
 ## If the arguments are `answer`
 

@@ -21,15 +21,15 @@ import { msg } from '../lib/messages.mjs';
 import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, VALUE_FLAGS as PHASE_VALUE_FLAGS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
-import { clearAttempts, nextStep, readProgress } from '../lib/phase-progress.mjs';
+import { nextStep, readProgress } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, clean, formatView, openQuestions, runLineFor, withRunLine } from '../lib/view.mjs';
 import { quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
-import { ANSWERS_IGNORE_REL, answersRel, deliveryState, dropLaneQuestions, readQuestions, refreshQuestions } from '../lib/questions.mjs';
+import { ANSWERS_IGNORE_REL, answersRel, deliveryState, readQuestions } from '../lib/questions.mjs';
 import { commitAnswerPaths } from '../lib/answers.mjs';
-import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearAttend, openPlans, releaseStops, writeAttend } from '../lib/attend.mjs';
+import { attendFile, attendGates, attendedPhases, sweepLateLanes, clearResumeRequest, handBack, openPlans, releaseStops, requestResume, resumeRequests, writeAttend } from '../lib/attend.mjs';
 import { runLanesCommand } from '../lib/cli-lanes.mjs';
 import { listSlots, maxLanes, prepareSlot, releaseSlot, setupSlots, slotForPhase, slotsDir } from '../lib/slots.mjs';
 import { trustLine, trustState } from '../lib/trust.mjs';
@@ -226,17 +226,17 @@ function clearDaemonPid(root, state) {
 
 // What status prints next to the lanes: the attended phases, the open questions, the owner's language.
 function statusOpts(root, config) {
-  return { attended: attendedPhases(root), questions: openQuestions(root).length, lang: config?.lang === 'ru' ? 'ru' : 'en' };
+  return { attended: attendedPhases(root), questions: openQuestions(root).length, lang: config?.lang === 'ru' ? 'ru' : 'en', resumes: resumeRequests(root) };
 }
 
 // rangeLine false: the caller printed the range line already. attended: attendedPhases; a mark holds every lane, so
 // the lane line names the hold instead of a session to watch.
-function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en' } = {}) {
+function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en', resumes = [] } = {}) {
   const finished = sup.range ? ' · range finished' : ' · milestone finished';
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.planOnly ? ' · plan only' : ''}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
   if (sup.range && rangeLine) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
-  if (sup.lanes) return printLanes(sup, { attended, questions, lang });
+  if (sup.lanes) return printLanes(sup, { attended, questions, lang, resumes });
   if (sup.lane?.forceRelaunch) {
     // a resumed lane: its recorded session belongs to the run before the resume and is replaced at the next check
     const when = running ? "at the supervisor's next check" : 'once a supervisor runs: turbo-run start';
@@ -249,13 +249,16 @@ function printStatus(sup, running, { rangeLine = true, attended = [], questions 
 }
 
 // spec §8 (D16): the summary line, then one block per lane: what it runs, where, and what to do next.
-function printLanes(sup, { attended, questions, lang }) {
+function printLanes(sup, { attended, questions, lang, resumes = [] }) {
   const held = new Set(attended.map((a) => a.phase));
+  const asked = new Set(resumes);
   const lanes = supervisorLanes(sup);
   out(lanesSummary({ lanes: lanes.length, questions, next: sup.next || null }, lang));
   for (const l of lanes) {
     out(`lane ${l.key}: ${laneLabel(l)} · slot ${l.slot} ${l.slotPath} · session ${l.sessionId || 'none yet'} · restarts ${l.restarts ?? 0} · since ${l.launchedAt || '-'}`);
-    if (l.job === 'phase' && held.has(l.phase)) out(`  attended in the owner's session: cd "${l.slotPath}" && claude (hand it back: turbo-run attend ${l.phase} --done)`);
+    // F5: a resume handed to the running supervisor that it has not taken yet
+    if (l.job === 'phase' && asked.has(l.phase)) out('  resume asked: the running supervisor relaunches it at its next check');
+    else if (l.job === 'phase' && held.has(l.phase)) out(`  attended in the owner's session: cd "${l.slotPath}" && claude (hand it back: turbo-run attend ${l.phase} --done)`);
     else if (l.halted) out(`  stopped (${l.halted.why}): try again with turbo-run resume ${l.phase}`);
     else if (l.forceRelaunch) out('  relaunch pending (resume)');
     else if (!l.sessionId) out('  launch pending');
@@ -761,7 +764,8 @@ function readView(root) {
 
 // The owner's resume, and attend N --done (spec §8): clears the phase's lane record and its attend mark (the owner
 // hands the phase back), gives turbo-phase's bounded rounds a fresh budget, arms a forced relaunch of its lane, and
-// with andStart starts the supervisor.
+// with andStart starts the supervisor. F5 (Stage 4 §9): a slots-mode supervisor that runs is never stopped for it: the
+// resume is handed to it (requestResume) and it does the same between its lane steps, while the other lanes go on.
 async function resumePhase(root, id, andStart) {
   if (andStart) {
     // start would keep this range and never resume a phase outside it: refuse before anything changes
@@ -772,36 +776,28 @@ async function resumePhase(root, id, andStart) {
       die(`phase ${id} is outside the range ${rangeLabel(kept)} that start keeps; nothing was stopped, removed or started. To run phase ${id}, change the range: ${stopFirst}turbo-run start --only ${id} (or --from <phase>, or --all)`);
     }
   }
+  const live = readJson(supPath(root), null);
+  if (live?.lanes && supAlive(live, pollOf(root))) {
+    clearOwnerStop(root);
+    requestResume(root, id);
+    out(`phase ${id}: handed to the running supervisor (pid ${live.pid}): at its next check it clears the phase and relaunches its lane; the other lanes keep running`);
+    return 0;
+  }
   // a live daemon (for example one waiting for the owner) rewrites supervisor.json every
   // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
   stopDaemon(root, readJson(supPath(root), null));
   // the owner goes on with the run: a start at logon takes it up again (Gap 2)
   clearOwnerStop(root);
-  // the phase's own files: in its lane's slot (Stage 4), else in this checkout
+  // the phase's own files: in its lane's slot (Stage 4), else in this checkout. The questions are rebuilt as the plans
+  // are now, before any supervisor tick notifies them: a sitting may have finished plans whose questions (a released
+  // human-action stop, never answered there) would otherwise be announced again
   const phaseRoot = laneForPhase(readJson(supPath(root), null), root, id)?.slotPath || root;
-  fs.rmSync(path.join(runDir(root), `p${id}.json`), { force: true });
-  // the resume answers the phase's owner request; the lane writes it again (uat owner-request) when anything is still
-  // open. The .notified mark stays: a checklist already sent is not sent again.
-  fs.rmSync(path.join(runDir(root), `p${id}-owner.md`), { force: true });
-  clearAttend(root, id);
-  // the owner's resume gives turbo-phase's bounded rounds a fresh budget; the steps done stay done
-  clearAttempts(root, id);
+  const warn = (line) => process.stderr.write(`warn: ${line}\n`);
+  const { dropped } = handBack(root, id, { phaseRoot, lang: loadConfig(root).lang, warn });
   // review 1: the restarted step asks again; a lane question left open would block its wakes or answer another step
-  try {
-    const dropped = dropLaneQuestions(root, id);
-    if (dropped.length) out(`dropped questions: ${dropped.join(', ')} (the restarted step asks again)`);
-  } catch (err) {
-    process.stderr.write(`warn: the lane questions of phase ${id} were not dropped (${String(err?.message ?? err).split(/\r?\n/)[0]})\n`);
-  }
-  // the questions as the plans are now, before any supervisor tick notifies them: a sitting may have finished plans
-  // whose questions (a released human-action stop, never answered there) would otherwise be announced again
-  if (openPlans(phaseRoot, id) !== null) {
-    try {
-      refreshQuestions(phaseRoot, id, { lang: loadConfig(root).lang, warn: (line) => process.stderr.write(`warn: ${line}\n`) });
-    } catch (err) {
-      process.stderr.write(`warn: the questions of phase ${id} were not rebuilt (${String(err?.message ?? err).split(/\r?\n/)[0]}); the lane rebuilds them\n`);
-    }
-  }
+  if (dropped.length) out(`dropped questions: ${dropped.join(', ')} (the restarted step asks again)`);
+  // done here: a request an earlier resume left for a supervisor that stopped before it took it goes
+  clearResumeRequest(root, id);
   const sup = readJson(supPath(root), null);
   if (sup?.lanes) {
     // spec §9: only lane N is armed again (its stop cleared); the other lanes keep their state

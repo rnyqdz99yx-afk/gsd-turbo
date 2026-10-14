@@ -1473,6 +1473,10 @@ test('a damaged supervisor state: a red verdict with the command, the band says 
   assert.equal(bandLine({ ...damaged, ...RU }), 'turbo · состояние супервизора повреждено (вероятно, сбой машины) — запустите turbo-run start, он восстановит полосы');
   assert.deepEqual(bandStyle(damaged), TONES.bad);
   assert.equal(shouldAutoOpen(damaged), true);
+  // a run the owner stopped opens the pane only for a question, damaged or not
+  const stopped = { ...damaged, supervisor: { ...damaged.supervisor, stoppedByOwner: true } };
+  assert.equal(shouldAutoOpen(stopped), false);
+  assert.equal(verdict(stopped).kind, 'damaged', 'the pane still says it when opened');
   // a question still waits: the verdict stays the damaged state (nothing takes the answer to its lane)
   assert.equal(verdict({ ...damaged, questions: view().questions }).kind, 'damaged');
   // a later view without the damage raises no toast of its own

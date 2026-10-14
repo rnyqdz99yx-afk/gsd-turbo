@@ -53,6 +53,9 @@ test('a damaged supervisor.json shows as a damaged supervisor with what to do, n
   assert.deepEqual(v.lanes, []);
   assert.equal(formatView(v), 'Run — supervisor state damaged (likely a machine crash) — run turbo-run start, it rebuilds the lanes\n\nSupervisor state damaged');
   assert.equal(formatView({ ...v, ui: { ...v.ui, lang: 'ru' } }), 'Прогон — состояние супервизора повреждено (вероятно, сбой машины) — запустите turbo-run start, он восстановит полосы\n\nСостояние супервизора повреждено');
+  // the owner's stop mark rides along: the pane then does not open by itself for it
+  writeOwnerStop(root, at('10:30'));
+  assert.equal(buildView({ root, sup: null, damaged, env, now: NOW, commits: () => [] }).supervisor.stoppedByOwner, true);
   // a readable supervisor.json wins over a stale damaged mark
   assert.equal(buildView({ root, sup: { pid: null, finished: true }, damaged, env, now: NOW, commits: () => [] }).supervisor.damaged, undefined);
 });

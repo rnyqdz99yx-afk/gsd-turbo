@@ -115,12 +115,36 @@ test('slots mode in Russian, with the range this start runs; sessions that canno
   const p = slotsProject('{"lanesMode":"slots","lanes":{"38":');
   const r = recoverSupervisor(p.root, { lang: 'ru', slots: true, listSlots: () => p.slots.slice(0, 1), agents: () => { throw new Error('claude agents failed: exit status 1\nmore'); }, range: { from: '38', to: '40' }, now: NOW });
   assert.deepEqual(r.lines, [
-    'supervisor.json был повреждён (not JSON (35 bytes); вероятно, сбой машины): сохранён как .planning/turbo/run/supervisor.json.damaged-20261014T123000Z',
-    `восстановлена фаза 38 в слоте 1 (${p.slot(1)}), ветка turbo/p38; сессии полос не удалось перечислить (claude agents failed: exit status 1): супервизор посмотрит при первой проверке`,
+    'supervisor.json был повреждён (обрывок вместо JSON, 35 байт; вероятно, сбой машины): сохранён как .planning/turbo/run/supervisor.json.damaged-20261014T123000Z',
+    `восстановлена фаза 38 в слоте 1 (${p.slot(1)}), ветка turbo/p38; сессии полос не удалось перечислить: супервизор посмотрит при первой проверке`,
     'не восстановлено: диапазон прогона и пометка «только планирование» (супервизор теперь идёт по фазам 38–40), счётчики перезапусков и пометки отправленных уведомлений',
   ]);
   assert.equal(r.log[1], `recovered phase 38 in slot 1 (${p.slot(1)}), branch turbo/p38; lane sessions could not be listed (claude agents failed: exit status 1): the supervisor looks at its first check`);
   assert.equal(readNew(p.root).lanes['38'].sessionId, null);
+  // the reasons and session states in plain Russian words; the whole run is «всему этапу»
+  const q = slotsProject();
+  const ru = recoverSupervisor(q.root, { lang: 'ru', slots: true, listSlots: () => q.slots, agents: () => q.agents.map((a) => ({ ...a, state: 'failed' })), now: NOW });
+  assert.match(ru.lines[0], /^supervisor\.json был повреждён \(526 нулевых байт; вероятно, сбой машины\)/);
+  assert.match(ru.lines[1], /; сессия df2604b1 закончилась сбоем: супервизор продолжит полосу в новой сессии$/);
+  assert.match(ru.lines[3], /его собственная запись тоже повреждена \(300 нулевых байт\); его ветка turbo\/p40:/);
+  assert.match(ru.lines[4], /\(супервизор теперь идёт по всему этапу\)/);
+  assert.doesNotMatch(ru.lines.join('\n'), /bytes|milestone|failed/);
+});
+
+test('a slot record naming another slot number is not this slot\'s lane; a file another start set aside first is left to it', () => {
+  const p = slotsProject();
+  const moved = { ...p.slots[0], record: { ...p.slots[0].record, k: 7 } };
+  assert.deepEqual(recoverSupervisor(p.root, { slots: true, listSlots: () => [moved], now: NOW }).sup.lanes, {});
+  const q = project();
+  const realRename = fs.renameSync;
+  // the other start renames it between this one's read and its rename
+  fs.renameSync = (from, to) => { fs.renameSync = realRename; fs.rmSync(from); return realRename(from, to); };
+  try {
+    assert.equal(recoverSupervisor(q, { now: NOW }), null);
+  } finally {
+    fs.renameSync = realRename;
+  }
+  assert.equal(fs.existsSync(supervisorFile(q)), false, 'nothing written over the other start\'s work');
 });
 
 test('slots mode with no slot holding a job: nothing to recover is said, the run starts fresh', () => {

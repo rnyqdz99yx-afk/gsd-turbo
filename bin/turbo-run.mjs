@@ -253,6 +253,15 @@ async function supervisorLook(root, by) {
 // damaged content) is left alone and the command refuses. mode: the mode the supervisor runs in; range: what this start
 // runs. true when it recovered.
 function recoverDamaged(root, config, { mode = 'safe', range = null } = {}) {
+  const { damaged } = readSupervisor(root);
+  if (!damaged) return false;
+  if (damaged.unreadable) die(`supervisor.json cannot be read: ${damaged.why}; nothing was started or changed: look at ${supPath(root)} (move it aside by hand once the disk reads again)`);
+  // a daemon that still holds the lease would write over the rebuilt state: never next to it (the owner stops it first)
+  const lock = readJson(lockPath(root), null);
+  const up = process.env.TURBO_UPTIME_SECONDS;
+  if (Number.isInteger(lock?.pid) && lock.pid > 0 && lock.pid !== process.pid && pidExists(lock.pid) && !beatBeforeBoot(lock.at, up ? { uptimeSeconds: Number(up) } : {})) {
+    die(`supervisor.json is damaged (${damaged.why}), but daemon.lock names pid ${lock.pid}, which still runs (since ${lock.at || 'an unknown time'}): nothing was started or changed. Run turbo-run stop, then start again`);
+  }
   let r;
   try {
     const core = gsdCoreDir(root);
@@ -268,6 +277,7 @@ function recoverDamaged(root, config, { mode = 'safe', range = null } = {}) {
   } catch (e) {
     die(`${String(e?.message ?? e).split(/\r?\n/)[0]}; nothing was started or changed: look at ${supPath(root)} (move it aside by hand once the disk reads again)`);
   }
+  // null: another start set it aside first and rebuilt it
   if (!r) return false;
   for (const line of r.lines) out(line);
   try {
@@ -570,7 +580,7 @@ async function startAtLogon(root) {
   const read = readSupervisor(root);
   if (read.damaged) {
     // the owner rebuilds it (turbo-run start): told once, as the watchdog tells a dead supervisor
-    out(`autostart: nothing started: supervisor.json is damaged (${read.damaged.why}); the owner's turbo-run start rebuilds the lanes`);
+    out(read.damaged.unreadable ? `autostart: nothing started: supervisor.json cannot be read (${read.damaged.why})` : `autostart: nothing started: supervisor.json is damaged (${read.damaged.why}); the owner's turbo-run start rebuilds the lanes`);
     await supervisorLook(root, 'autostart at logon');
     return 0;
   }
@@ -826,7 +836,8 @@ function coverNestedPackages(root, res, known) {
 function readView(root) {
   const config = runtimeConfig(loadConfig(root));
   const { sup, damaged } = readSupervisor(root);
-  return buildView({ root, sup, damaged, running: supAlive(sup, config.poll_seconds), config });
+  // a file that cannot be read now (not damaged content) draws no red state: the next read decides
+  return buildView({ root, sup, damaged: damaged?.unreadable ? null : damaged, running: supAlive(sup, config.poll_seconds), config });
 }
 
 // The owner's resume, and attend N --done (spec §8): clears the phase's lane record and its attend mark (the owner
@@ -941,6 +952,7 @@ function attendSettleMs() {
 // keeps the conversation). The checkpoints the lane stopped at are asked ahead again.
 async function attend(root, id) {
   const damaged = readSupervisor(root).damaged;
+  if (damaged?.unreadable) die(`supervisor.json cannot be read (${damaged.why}): no lane is known to attend; nothing was stopped. Check the file and the disk, then attend ${id}`);
   if (damaged) die(`supervisor.json is damaged (${damaged.why}), most likely by a machine crash: no lane is known to attend; nothing was stopped. Run turbo-run start first (it keeps the file aside and rebuilds the lanes), then attend ${id}`);
   const current = readJson(supPath(root), null);
   // spec §8 (D11): in slots mode only lane N stops; the supervisor and the other lanes go on
@@ -1153,7 +1165,8 @@ async function main() {
       const leftovers = gatesLeftovers(root);
       const attended = attendedPhases(root); // spec §8: phases the owner runs in their session; no lane runs meanwhile
       if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ...(damaged ? { damaged } : {}), ownerRequests, gatesOff: leftovers.gates, attended }, null, 2)); return 0; }
-      if (damaged) out(damagedLine(damaged));
+      if (damaged?.unreadable) out(`supervisor: state cannot be read now (supervisor.json: ${damaged.why}); look again in a moment; if it stays so, check the file and the disk`);
+      else if (damaged) out(damagedLine(damaged));
       else if (!sup) out('supervisor: not running (never started)');
       else printStatus(sup, running, { ...statusOpts(root, config), attended });
       for (const f of ownerRequests) out(`owner request: ${f}`);
@@ -1186,7 +1199,7 @@ async function main() {
       const code = stopLanes(root, sup);
       printLeftovers(gatesLeftovers(root));
       const damaged = readSupervisor(root).damaged;
-      if (damaged) out(`supervisor.json is damaged (${damaged.why}): kept as it is; turbo-run start keeps it aside and rebuilds the lanes`);
+      if (damaged) out(damaged.unreadable ? `supervisor.json cannot be read (${damaged.why}): kept as it is` : `supervisor.json is damaged (${damaged.why}): kept as it is; turbo-run start keeps it aside and rebuilds the lanes`);
       return code;
     }
     case 'autostart': {

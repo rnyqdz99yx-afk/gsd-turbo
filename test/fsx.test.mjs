@@ -80,7 +80,7 @@ test('readJsonState tells missing, valid and damaged apart (empty, zero bytes, t
   };
   assert.deepEqual(readJsonState(file('none.json')), { state: 'missing', value: null, why: null });
   assert.deepEqual(readJsonState(path.join(file('plain.txt', 'x'), 'sub.json')), { state: 'missing', value: null, why: null }, 'a file where a directory should be');
-  assert.deepEqual(readJsonState(file('ok.json', '﻿{"pid":42}\n')), { state: 'valid', value: { pid: 42 }, why: null });
+  assert.deepEqual(readJsonState(file('ok.json', '\uFEFF{"pid":42}\n')), { state: 'valid', value: { pid: 42 }, why: null });
   assert.deepEqual(readJsonState(file('empty.json', '')), { state: 'damaged', value: null, why: 'empty (0 bytes)', bytes: 0 });
   assert.deepEqual(readJsonState(file('nul.json', Buffer.alloc(526))), { state: 'damaged', value: null, why: '526 zero bytes', bytes: 526 });
   const full = JSON.stringify({ pid: 42, lanes: { 38: { phase: '38', slot: 1 } } }, null, 2);
@@ -96,4 +96,32 @@ test('readJsonState tells missing, valid and damaged apart (empty, zero bytes, t
   assert.match(unreadable.why, /^unreadable \(E[A-Z]+\)$/);
   // readJson reads every damaged file as its fallback, as before
   assert.equal(readJson(path.join(dir, 'nul.json'), 'fallback'), 'fallback');
+});
+
+test('readJsonState tries a read Windows refuses for a moment (EBUSY, EPERM, EACCES) again before it calls the file unreadable', () => {
+  const file = path.join(tmpDir('fsx'), 'supervisor.json');
+  fs.writeFileSync(file, '{"pid":1}');
+  const real = fs.readFileSync;
+  const slept = [];
+  const refuse = (codes) => {
+    const left = [...codes];
+    fs.readFileSync = function (f, ...rest) {
+      if (f === file && left.length) throw Object.assign(new Error('busy'), { code: left.shift() });
+      return real.call(this, f, ...rest);
+    };
+  };
+  try {
+    refuse(['EBUSY', 'EPERM', 'EACCES']);
+    assert.deepEqual(readJsonState(file, { sleep: (ms) => slept.push(ms) }), { state: 'valid', value: { pid: 1 }, why: null });
+    assert.deepEqual(slept, [20, 40, 60]);
+    refuse(['EBUSY', 'EBUSY', 'EBUSY', 'EBUSY']);
+    assert.deepEqual(readJsonState(file, { sleep: () => {} }), { state: 'damaged', value: null, why: 'unreadable (EBUSY)', unreadable: true });
+    // an error no retry helps is not tried again
+    slept.length = 0;
+    refuse(['EIO']);
+    assert.equal(readJsonState(file, { sleep: (ms) => slept.push(ms) }).why, 'unreadable (EIO)');
+    assert.deepEqual(slept, []);
+  } finally {
+    fs.readFileSync = real;
+  }
 });

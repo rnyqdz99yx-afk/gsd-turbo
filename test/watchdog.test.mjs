@@ -261,6 +261,21 @@ test('a damaged supervisor.json is told to the owner once per damaged file, with
   assert.equal(s.sent.length, 2);
 });
 
+test('a supervisor.json that cannot be read at all is told once with its own words: no start rebuilds it', async () => {
+  const root = project('my-app', null);
+  fs.mkdirSync(supFile(root));
+  const damaged = readSupervisor(root).damaged;
+  assert.equal(damaged.unreadable, true);
+  const s = spy(root);
+  const r = await s.watch(null, false, { damaged });
+  assert.equal(r.line, `warn: the supervisor's state file cannot be read (${damaged.why}); turbo tells the owner. Go on: only the owner starts it`);
+  assert.equal(s.sent[0].title, 'The supervisor state cannot be read');
+  assert.match(s.sent[0].body, /cannot be read \(unreadable \(E[A-Z]+\)\), and nothing runs the lanes now\. Check the file and the disk/);
+  assert.doesNotMatch(s.sent[0].body, /rebuilds/);
+  assert.equal(s.logged[0], `watchdog: supervisor.json cannot be read (${damaged.why}); nothing runs the lanes until the owner makes it readable or moves it aside (seen by the owner's view)`);
+  assert.equal((await s.watch(null, false, { damaged })).told, false, 'once');
+});
+
 test('a damaged supervisor.json: the owner\'s stop keeps the watchdog silent; a file set aside meanwhile tells nobody; in Russian', async () => {
   const stopped = project('stopped', null);
   const s = spy(stopped);

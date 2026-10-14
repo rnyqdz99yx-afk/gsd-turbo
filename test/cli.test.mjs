@@ -1704,6 +1704,29 @@ test('resume over a damaged supervisor.json rebuilds first and arms the phase\'s
   assert.ok(!q.claudeCalls().some((a) => a[0] === '--bg'));
 });
 
+test('start over a damaged supervisor.json refuses while daemon.lock names a live daemon; an unreadable one draws no damaged state in the view (review)', async (t) => {
+  const p = fakeProject();
+  damageSup(p.root, Buffer.alloc(526));
+  const holder = sleeper(t);
+  writeLock(p.root, { pid: holder.pid, at: ago(1) });
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  const r = await runAsync(['start'], p.root, { ...p.env, TURBO_UPTIME_SECONDS: LONG_UP.TURBO_UPTIME_SECONDS });
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, new RegExp(`^supervisor\\.json is damaged \\(526 zero bytes\\), but daemon\\.lock names pid ${holder.pid}, which still runs \\(since \\S+\\): nothing was started or changed\\. Run turbo-run stop, then start again$`, 'm'));
+  assert.deepEqual(asideOf(p.root), []);
+  assert.ok(!p.claudeCalls().some((a) => a[0] === '--bg'));
+  // a lock from before the machine started names no daemon of this boot (its pid is another process now): the start
+  // recovers and goes on
+  writeLock(p.root, { pid: holder.pid, at: ago(120) });
+  const after = await runAsync(['start'], p.root, { ...p.env, TURBO_UPTIME_SECONDS: '600' });
+  assert.match(after.stdout, /^supervisor\.json was damaged \(526 zero bytes; most likely a machine crash\)/m, after.stdout + after.stderr);
+  // unreadable: status says so plainly, the view shows no damaged state
+  const q = fakeProject();
+  fs.mkdirSync(path.join(runDirOf(q.root), 'supervisor.json'), { recursive: true });
+  assert.match(run(['status'], q.root, q.env), /^supervisor: state cannot be read now \(supervisor\.json: unreadable \(E[A-Z]+\)\); look again in a moment; if it stays so, check the file and the disk$/m);
+  assert.equal(JSON.parse(run(['view', '--json'], q.root, q.env)).supervisor, null);
+});
+
 test('start --autostart over a damaged supervisor.json starts nothing, leaves the file to the owner\'s start and has the owner told (Gap 2)', async () => {
   const p = fakeProject({ config: { notify: { desktop: false, telegram: false } } });
   damageSup(p.root, Buffer.alloc(526));

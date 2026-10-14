@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { DECISION_PLAN, VERIFY_PLAN, ACTION_PLAN, writePhase } from './helpers/plans.mjs';
+import { DECISION_PLAN, VERIFY_PLAN, ACTION_PLAN, SITTING_PLAN, writePhase } from './helpers/plans.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
-import { askOwner, classifyQuestions, readAnswers, readQuestions, refreshQuestions, stopQuestion, writeQuestions } from '../lib/questions.mjs';
+import { askOwner, buildQuestion, classifyQuestions, readAnswers, readQuestions, refreshQuestions, stopQuestion, writeQuestions } from '../lib/questions.mjs';
+import { parseCheckpoints } from '../lib/checkpoints.mjs';
 import { AnswerRefused, answerQuestion, deliveryMessage, laneDeliveryMessage, preAnswerText, undoAutoAnswer } from '../lib/answers.mjs';
 import { autoAnswerMinutes, autoChoice, autoTick, denied, deniedPlan } from '../lib/auto-answer.mjs';
 import { readInbox } from '../lib/inbox.mjs';
@@ -258,4 +259,12 @@ test('review I1/I2: undo of a stop the lane is being woken for, of a finished pl
   r = undoAutoAnswer({ root, phase: 'annotate', id: 'ask-1', now: later(130), laneRunning: true });
   assert.deepEqual([r.status, r.markup, r.inbox], ['reopened', true, false]);
   assert.deepEqual(readInbox(root, 'annotate'), []);
+});
+
+test('a live sitting is never answered automatically, ahead or at its stop, whatever class a lane gave it (journal 2026-10-14)', () => {
+  const cp = parseCheckpoints(SITTING_PLAN)[0];
+  for (const stopped of [false, true]) {
+    const q = { ...buildQuestion(cp, { phase: '32', plan: '32-16', stopped }), classified: true, class: 'decision' };
+    assert.deepEqual(autoChoice(q, []), { skip: 'physical: only the owner can do it' }, `stopped ${stopped}`);
+  }
 });

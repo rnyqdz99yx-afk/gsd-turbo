@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
-import { askOwner, deliveryState, markDelivered, readAnswers, readQuestions, refreshQuestions, stopQuestion, writeAnswers } from '../lib/questions.mjs';
+import { ACTION_PLAN, DECISION_PLAN, SITTING_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
+import { askOwner, deliveryState, markDelivered, readAnswers, readQuestions, refreshQuestions, stopQuestion, writeAnswers, writeQuestions } from '../lib/questions.mjs';
 import { answerQuestion, preAnswerText } from '../lib/answers.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 import { attendFile, attendGates, attendedPhases, clearAttend, openPlans, releaseStops, sweepLateLanes, writeAttend } from '../lib/attend.mjs';
@@ -45,7 +45,7 @@ test('releaseStops: the checkpoints a stopped lane waits at are asked ahead agai
   assert.deepEqual(deliveryState(root, '32').ready.map((q) => q.id), ['32-10-t3'], 'without the release the next lane session would deliver it');
   assert.equal(preAnswerText(root, '32', '32-10'), '', 'a stop is delivered, never pre-answered');
 
-  assert.deepEqual(releaseStops(root, '32'), { ids: ['32-10-t3', '32-11-t2'], kept: [] }, 'an answer given at the stop stands as it is');
+  assert.deepEqual(releaseStops(root, '32'), { ids: ['32-10-t3', '32-11-t2'], kept: [], dropped: [] }, 'an answer given at the stop stands as it is');
   assert.deepEqual(deliveryState(root, '32'), { waiting: [], ready: [] });
   const list = refreshQuestions(root, '32');
   const v = list.find((q) => q.id === '32-10-t3');
@@ -54,7 +54,7 @@ test('releaseStops: the checkpoints a stopped lane waits at are asked ahead agai
   const a = list.find((q) => q.id === '32-11-t2');
   assert.deepEqual([a.stopped, a.state, a.options.map((o) => o.defer)], [false, 'open', [true]], 'a physical action is asked ahead as a preference again');
   assert.deepEqual(releaseStops(root, '32').ids, []);
-  assert.deepEqual(releaseStops(tmpDir('att-none'), '3'), { ids: [], kept: [] });
+  assert.deepEqual(releaseStops(tmpDir('att-none'), '3'), { ids: [], kept: [], dropped: [] });
 });
 
 test('attendGates: off only while a full lane\'s restore and fan-out lie ahead; on after them and in safe mode; refused before the plans are checked (F1)', () => {
@@ -142,7 +142,7 @@ test('a released stop keeps the owner\'s last real answer as the sitting\'s pre-
   stopQuestion(root, '32', '32-11-t2', { agentId: AG, now: new Date('2026-01-01T08:26:09Z') });
   assert.equal(readQuestions(root, '32')[0].state, 'open');
   assert.equal(readAnswers(root, '32')[0].supersededBy, 'stop');
-  assert.deepEqual(releaseStops(root, '32', { now: new Date('2026-01-01T08:30:00Z') }), { ids: ['32-11-t2'], kept: ['32-11-t2'] });
+  assert.deepEqual(releaseStops(root, '32', { now: new Date('2026-01-01T08:30:00Z') }), { ids: ['32-11-t2'], kept: ['32-11-t2'], dropped: [] });
   for (const list of [readQuestions(root, '32'), refreshQuestions(root, '32')]) {
     const q = list[0];
     assert.deepEqual([q.stopped, q.agentId, q.state, q.answer.answer, q.answer.by, q.answer.at], [false, null, 'answered', 'go', 'pane', '2026-01-01T08:22:11.000Z']);
@@ -152,7 +152,7 @@ test('a released stop keeps the owner\'s last real answer as the sitting\'s pre-
   assert.equal(records.length, 2, 'the set-aside record stays as it was');
   assert.deepEqual([records[0].superseded, records[1].superseded, records[1].at, records[1].keptAt], ['2026-01-01T08:26:09.000Z', undefined, '2026-01-01T08:22:11.000Z', '2026-01-01T08:30:00.000Z']);
   assert.deepEqual(deliveryState(root, '32'), { waiting: [], ready: [] }, 'nothing to deliver: the sitting\'s executor takes it ahead');
-  assert.deepEqual(releaseStops(root, '32'), { ids: [], kept: [] });
+  assert.deepEqual(releaseStops(root, '32'), { ids: [], kept: [], dropped: [] });
 });
 
 test('a released stop asks again when its condition changed: an unmet answer, the lane\'s new diagnosis, a preference, turbo\'s own answer, a newer preference, a changed plan', () => {
@@ -208,4 +208,45 @@ test('a released stop asks again when its condition changed: an unmet answer, th
   const dir = path.join(root, '.planning', 'phases', '32-auth');
   fs.writeFileSync(path.join(dir, '32-09-PLAN.md'), DECISION_PLAN.replace('Clerk', 'Clerk Pro'));
   assert.equal(refreshQuestions(root, '32').find((q) => q.id === '32-09-t2').state, 'open');
+});
+
+// journal 2026-10-14 (15:19:48Z): the owner pressed the Done a sitting's v0.3.3 card offered; attend must drop it
+test('releaseStops drops a done on a live sitting, released or released before, and never keeps one: the question opens and no executor gets it', () => {
+  const root = tmpDir('att-sit');
+  // the plans in the lane's slot (phaseRoot), the questions and answers in the control root
+  const slot = tmpDir('att-sit-slot');
+  writePhase(slot, '33-live', { '33-11-PLAN.md': ACTION_PLAN, '33-16-PLAN.md': SITTING_PLAN });
+  refreshQuestions(slot, '33');
+  const done = { id: '33-16-t2', plan: '33-16', task: '2', option: 1, label: 'Сделано', answer: 'done', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false, condition: null, defer: false };
+  const setup = (q) => {
+    // the stop as v0.3.3 wrote it: no sitting mark
+    const list = readQuestions(slot, '33').map((x) => (x.id === '33-16-t2' ? (({ sitting: _m, ...rest }) => ({ ...rest, ...q }))(x) : x));
+    writeQuestions(root, '33', list);
+    writeAnswers(root, '33', [done]);
+  };
+  const answered = { state: 'answered', answer: { option: 1, label: 'Сделано', answer: 'done', by: 'pane', at: done.at, conditional: false }, rev: 3 };
+  setup({ ...answered, stopped: true, agentId: AG });
+  const r = releaseStops(root, '33', { now: new Date('2026-01-01T16:00:00Z'), phaseRoot: slot });
+  assert.deepEqual(r, { ids: ['33-16-t2'], kept: [], dropped: [{ id: '33-16-t2', label: 'Сделано', answer: 'done', by: 'pane', at: '2026-01-01T15:19:48.000Z' }] });
+  const q = readQuestions(root, '33').find((x) => x.id === '33-16-t2');
+  assert.deepEqual([q.state, q.answer, q.stopped, q.agentId, q.rev], ['open', null, false, null, 4]);
+  assert.deepEqual([readAnswers(root, '33')[0].superseded, readAnswers(root, '33')[0].supersededBy], ['2026-01-01T16:00:00.000Z', 'sitting']);
+  assert.equal(preAnswerText(root, '33', '33-16'), '');
+  assert.deepEqual(releaseStops(root, '33', { phaseRoot: slot }), { ids: [], kept: [], dropped: [] });
+  // released by an older attend (it kept the done as a pre-answer): dropped all the same
+  setup({ ...answered, stopped: false, agentId: null });
+  assert.deepEqual(releaseStops(root, '33', { phaseRoot: slot }).dropped.map((d) => d.id), ['33-16-t2']);
+  assert.equal(readQuestions(root, '33').find((x) => x.id === '33-16-t2').state, 'open');
+  // a done set aside at the stop (the stop came back) is never kept for the sitting
+  setup({ state: 'open', answer: null, stopped: true, agentId: AG });
+  writeAnswers(root, '33', [{ ...done, superseded: '2026-01-01T15:25:00.000Z', supersededBy: 'stop' }]);
+  assert.deepEqual(releaseStops(root, '33', { phaseRoot: slot }), { ids: ['33-16-t2'], kept: [], dropped: [] });
+  // the same done on a plain action stands as before
+  setup({});
+  writeAnswers(root, '33', [{ ...done, id: '33-11-t2', plan: '33-11', label: 'Done' }]);
+  const plain = readQuestions(root, '33');
+  Object.assign(plain.find((x) => x.id === '33-11-t2'), { ...answered, stopped: true, agentId: AG });
+  writeQuestions(root, '33', plain);
+  assert.deepEqual(releaseStops(root, '33', { phaseRoot: slot }), { ids: ['33-11-t2'], kept: [], dropped: [] });
+  assert.match(preAnswerText(root, '33', '33-11'), /the owner's answer is: done/);
 });

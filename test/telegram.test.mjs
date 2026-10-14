@@ -798,3 +798,20 @@ test('review I1, M1: the markup card is titled Lane markup / Разметка п
     assert.deepEqual(titles, [markup, prep].sort());
   }
 });
+
+test('a live sitting\'s stop goes out with no Done button, the way in as its text; done in own words is refused in the owner\'s words (journal 2026-10-14)', async () => {
+  const { root, ctx, bot } = project();
+  const q = Q('03-01-t2', { kind: 'human-action', sitting: true, stopped: true, question: 'A live sitting with you: run /turbo-autonomous attend 3 in a new Claude Code window, and the phase conducts this step there together with you.', context: 'The step: Live check of the tray app.', options: [], allowOther: true, class: 'owner-only' });
+  writeQuestions(root, '3', [q]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  const [msg] = bot.sent();
+  const buttons = msg.body.reply_markup.inline_keyboard.flat();
+  assert.deepEqual(buttons.map((b) => b.callback_data.split(':')[2]), ['o'], 'only the own-words button');
+  assert.match(msg.body.text, /run \/turbo-autonomous attend 3 in a new Claude Code window/);
+  bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:o:00000001`, 1));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  bot.updates.push(reply('done', 2, 102));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(readAnswers(root, '3'), []);
+  assert.match(bot.sent().at(-1).body.text, /^Not recorded: this is a live sitting, never answered done: run \/turbo-autonomous attend 3 in a new Claude Code window/);
+});

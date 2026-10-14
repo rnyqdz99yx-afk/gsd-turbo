@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { ACTION_PLAN, DECISION_PLAN, OWNER_ACTION_PLAN, OWNER_CONTEXT_PLAN, OWNER_DECISION_PLAN, OWNER_VERIFY_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
+import { ACTION_PLAN, DECISION_PLAN, ORCHESTRATED_PLAN, OWNER_ACTION_PLAN, OWNER_CONTEXT_PLAN, OWNER_DECISION_PLAN, OWNER_VERIFY_PLAN, SITTING_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
 import { parseCheckpoints } from '../lib/checkpoints.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
 import { completeStep, readProgress } from '../lib/phase-progress.mjs';
@@ -11,7 +11,7 @@ import { answerQuestion } from '../lib/answers.mjs';
 import {
   CLASSES, answersRel, buildQuestion, classifyQuestions, deliveryState, dynamicQuestion, liveAnswer, lockFile, markDelivered,
   questionId, questionsFile, readAnswers, readQuestions, refreshQuestions, stopQuestion, withPhaseLock, writeAnswers, writeQuestions,
-  askOwner, dropLaneQuestions, jargonIn, laneQuestion,
+  askOwner, dropLaneQuestions, jargonIn, laneQuestion, doneAnswer, sittingQuestion,
 } from '../lib/questions.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
 
@@ -634,4 +634,80 @@ test('owner cards: a re-extraction with new text keeps the id, the rev and the a
   assert.deepEqual([d.rev, d.state, d.answer.label], [1, 'answered', 'a — включить сжатие']);
   assert.match(d.context, /^Коротко: /);
   assert.deepEqual(list.map((q) => [q.id, q.rev]), [['32-12-t1', 1], ['32-15-t2', 1]]);
+});
+
+test('a live sitting\'s card never offers Done: ahead the wish to join it when the phase asks; at the stop the way in (attend N in a new window), the step as context, own words kept (journal 2026-10-14)', () => {
+  const cp = cpOf(SITTING_PLAN);
+  const ahead = buildQuestion(cp, { phase: '33', plan: '33-16', lang: 'ru' });
+  assert.equal(ahead.question, 'Живой сеанс: живая проверка приложения: я запускаю его и веду проверку, ты смотришь и отвечаешь на мои вопросы.');
+  assert.deepEqual(ahead.options.map((o) => [o.label, o.signal, o.defer]), [['Проведу сеанс, когда фаза попросит', null, true]]);
+  assert.match(ahead.options[0].description, /запустите \/turbo-autonomous attend 33 в новом окне Claude Code/);
+  assert.deepEqual([ahead.allowOther, ahead.sitting, ahead.class, ahead.kind], [false, true, 'owner-only', 'human-action']);
+  const stop = buildQuestion(cp, { phase: '33', plan: '33-16', lang: 'ru', stopped: true });
+  assert.equal(stop.question, 'Нужен живой сеанс с вами: запустите /turbo-autonomous attend 33 в новом окне Claude Code — там фаза проведёт этот шаг вместе с вами. Кнопки «Сделано» здесь нет: шаг проходит только в таком сеансе.');
+  assert.match(stop.context, /^Шаг: живая проверка приложения: я запускаю его и веду проверку, ты смотришь и отвечаешь на мои вопросы\. 1\. Закрой другие копии приложения\./);
+  assert.deepEqual([stop.options, stop.allowOther, stop.sitting], [[], true, true]);
+  const en = buildQuestion(cpOf(ORCHESTRATED_PLAN), { phase: '33', plan: '33-17', stopped: true });
+  assert.match(en.question, /^A live sitting with you: run \/turbo-autonomous attend 33 in a new Claude Code window/);
+  assert.equal(en.context, 'The step: Live check of the tray app. Keep the app window on screen and answer the questions while the check runs.');
+  assert.deepEqual(en.options, []);
+  // the lane's own words at the stop (a diagnosis) change the step, never the way in
+  const own = buildQuestion(cp, { phase: '33', plan: '33-16', lang: 'ru', stopped: true, own: 'Приложение не запустилось', again: true });
+  assert.deepEqual([own.options, own.context.startsWith('Шаг: Приложение не запустилось.')], [[], true]);
+  // a plain action keeps its cards, with no sitting mark
+  const plain = buildQuestion(cpOf(ACTION_PLAN), { phase: '32', plan: '32-11', stopped: true });
+  assert.deepEqual([plain.options.map((o) => o.label), 'sitting' in plain], [['Done'], false]);
+});
+
+test('doneAnswer: turbo\'s Done and Check again in either language and the owner\'s own word for done; a preference or other words are none', () => {
+  for (const r of [{ label: 'Сделано', answer: 'go' }, { label: 'Done', answer: 'done' }, { label: 'Check again', answer: 'x' }, { label: null, answer: 'Сделано.' }, { label: null, answer: ' done! ' }, { answer: 'готово' }]) assert.equal(doneAnswer(r), true, JSON.stringify(r));
+  for (const r of [null, { label: 'Проведу сеанс, когда фаза попросит', answer: null, defer: true }, { label: 'Done', answer: 'done', defer: true }, { label: null, answer: 'go' }, { label: null, answer: 'done, but the tray hangs' }]) assert.equal(doneAnswer(r), false, JSON.stringify(r));
+});
+
+// A phase 33 with the sitting plan 16 and the plain action plan 11.
+function sittingProject() {
+  const root = tmpDir('q-sit');
+  writePhase(root, '33-live', { '33-11-PLAN.md': ACTION_PLAN, '33-16-PLAN.md': SITTING_PLAN });
+  return root;
+}
+
+test('refresh and stop build the sitting card from the plan; a question written before the mark is told a sitting by its plan', () => {
+  const root = sittingProject();
+  const list = refreshQuestions(root, '33', { lang: 'ru' });
+  const sit = list.find((q) => q.id === '33-16-t2');
+  assert.deepEqual([sit.sitting, sit.options.map((o) => o.defer)], [true, [true]]);
+  assert.equal('sitting' in list.find((q) => q.id === '33-11-t2'), false);
+  const r = stopQuestion(root, '33', '33-16-t2', { agentId: AG, lang: 'ru' });
+  assert.deepEqual([r.status, r.question.options, r.question.sitting, r.question.allowOther], ['stopped', [], true, true]);
+  // the lane's words on a sitting are no diagnosis: the card stays the way in
+  const again = stopQuestion(root, '33', '33-16-t2', { agentId: AG, unmet: true, question: 'Запусти приложение снова', lang: 'ru' });
+  assert.deepEqual([again.question.diagnosis, again.question.options], [0, []]);
+  const planned = () => ({ items: parseCheckpoints(SITTING_PLAN).map((cp) => ({ plan: '33-16', cp })) });
+  const { sitting: _s, ...old } = sit;
+  assert.equal(sittingQuestion(old, planned), true, 'v0.3.3: no mark, the plan tells it');
+  assert.equal(sittingQuestion({ ...old, id: '33-16-t9' }, planned), false, 'no such checkpoint');
+  assert.equal(sittingQuestion({ ...old, source: 'lane' }, planned), false);
+  assert.equal(sittingQuestion(list.find((q) => q.id === '33-11-t2'), () => ({ items: parseCheckpoints(ACTION_PLAN).map((cp) => ({ plan: '33-11', cp })) })), false, 'a plain action');
+  assert.equal(sittingQuestion({ ...old, kind: 'decision' }, () => assert.fail('a decision needs no plan read')), false);
+});
+
+test('a done recorded on a sitting before it was told apart (v0.3.3 card) is never delivered: the stop waits again and the record is set aside as sitting', () => {
+  const root = sittingProject();
+  refreshQuestions(root, '33');
+  stopQuestion(root, '33', '33-16-t2', { agentId: AG });
+  // the stopped question as v0.3.3 wrote it: no mark, the Done option
+  const list = readQuestions(root, '33');
+  const q = list.find((x) => x.id === '33-16-t2');
+  delete q.sitting;
+  Object.assign(q, { options: [{ label: 'Done', description: '', recommended: false, signal: 'go', defer: false }], state: 'answered', answer: { option: 1, label: 'Done', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false } });
+  writeQuestions(root, '33', list);
+  writeAnswers(root, '33', [{ id: '33-16-t2', plan: '33-16', task: '2', option: 1, label: 'Done', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false, condition: null, defer: false }]);
+  const r = stopQuestion(root, '33', '33-16-t2', { agentId: AG, now: new Date('2026-01-01T15:20:00Z') });
+  assert.deepEqual([r.status, r.question.state, r.question.sitting, r.question.options], ['stopped', 'open', true, []]);
+  assert.deepEqual([readAnswers(root, '33')[0].superseded, readAnswers(root, '33')[0].supersededBy], ['2026-01-01T15:20:00.000Z', 'sitting']);
+  // a marked stop that still holds such a done waits: deliveryState never makes it ready
+  const marked = readQuestions(root, '33');
+  Object.assign(marked.find((x) => x.id === '33-16-t2'), { state: 'answered', answer: { option: null, label: null, answer: 'сделано', by: 'session', at: 'x', conditional: false } });
+  writeQuestions(root, '33', marked);
+  assert.deepEqual([deliveryState(root, '33').waiting.map((x) => x.id), deliveryState(root, '33').ready], [['33-16-t2'], []]);
 });

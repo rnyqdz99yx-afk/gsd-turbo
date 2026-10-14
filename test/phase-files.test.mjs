@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { findPhaseDir, phaseDirMatches, phaseArtifacts, allPlansSummarized } from '../lib/phase-files.mjs';
+import { findPhaseDir, phaseDirMatches, phaseArtifacts, allPlansSummarized, outlinePlanIds } from '../lib/phase-files.mjs';
 
 const mkPhases = (dirs) => {
   const root = tmpDir('pf');
@@ -116,4 +116,14 @@ test('directory read errors other than a missing directory surface', () => {
   fs.mkdirSync(path.join(root, '.planning'));
   fs.writeFileSync(path.join(root, '.planning', 'phases'), '');
   assert.throws(() => findPhaseDir(root, '3'), { code: 'ENOTDIR' });
+});
+
+test('outlinePlanIds reads the Plan ID column of GSD\'s chunked outline: any column position, bold or code cells, aligned separators, each id once; other tables are not plans', () => {
+  const text = [
+    '| Wave | **Plan ID** | Objective |', '|:---:|:---|---:|', '| 1 | `05-01` | a |', '| 1 | 05-02 | b |', '| 2 | 05-01 | again |', '',
+    'Notes', '| Risk | Owner |', '|---|---|', '| 05-09 | x |', '',
+    '| plan_id | Objective |', '|---|---|', '| 05-03 | c |', '| not an id! | d |',
+  ].join('\r\n');
+  assert.deepEqual(outlinePlanIds(text), ['05-01', '05-02', '05-03']);
+  assert.deepEqual(outlinePlanIds('no table here'), []);
 });

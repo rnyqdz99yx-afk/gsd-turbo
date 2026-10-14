@@ -337,3 +337,13 @@ test('turbo-phase skill: step integrate (Stage 4 §7.1) — the lane takes in ma
   assert.ok(s.includes('push in slots'), 'CI red and close know the slot line');
   assert.ok(s.includes('`reintegrate` messages'), 'the inbox paragraph');
 });
+
+test('turbo-phase skill: the plan step is done only with the whole plan set, so a lane interrupted inside chunked planning resumes it', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const plan = section(s, 'plan').split('\n');
+  const p1 = plan.find((l) => l.startsWith('1. '));
+  const p3 = plan.find((l) => l.startsWith('3. '));
+  for (const n of ['`has_plans` true', '`turbo-run phase-step N --check plan`', '`plan set complete`', '`plan set incomplete: …`', 'point 2']) assert.ok(p1.includes(n), n);
+  for (const n of ['`has_plans` still false', '**fail**', '`plan set incomplete: …`']) assert.ok(p3.includes(n), n);
+  assert.ok(!/`has_plans` true → done/.test(p1), 'has_plans alone no longer marks the step done');
+});

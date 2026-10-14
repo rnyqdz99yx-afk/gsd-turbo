@@ -49,6 +49,25 @@ test('turbo-run lanes setup creates and trusts the slots, then keeps them; remov
   assert.equal(fs.existsSync(s1), true);
 });
 
+test('turbo-run lanes remove makes one backup per command: with more slots than backups kept, the one from before the command stays', () => {
+  const p = mainProject();
+  const t = slotFixture(p.root, { max: 6 });
+  assert.equal(lanes(p.root, t, ['setup']).code, 0);
+  const before = fs.readFileSync(t.claudeJson, 'utf8');
+  const baks = () => fs.readdirSync(t.home).filter((n) => n.startsWith('.claude.json.turbo-bak-')).sort();
+  const had = baks();
+  const r = lanes(p.root, t, ['remove']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.equal(r.out.filter((l) => l.startsWith('lane-') && l.includes(': removed ')).length, 6, r.out.join('\n'));
+  const lines = r.out.filter((l) => l.startsWith('backup of '));
+  assert.equal(lines.length, 1, r.out.join('\n'));
+  const made = baks().filter((n) => !had.includes(n));
+  assert.equal(made.length, 1, baks().join('\n'));
+  assert.equal(lines[0], `backup of ${t.claudeJson}: ${path.join(t.home, made[0])}`);
+  assert.equal(fs.readFileSync(path.join(t.home, made[0]), 'utf8'), before, 'the backup holds the file from before the command');
+  assert.deepEqual(baks(), [...had, ...made].sort(), 'no earlier backup pruned');
+});
+
 test('turbo-run lanes refuses inside a lane and inside a slot; a bad subcommand prints its usage (exit 2)', () => {
   const p = mainProject();
   const t = slotFixture(p.root);

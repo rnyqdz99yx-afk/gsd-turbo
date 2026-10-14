@@ -119,6 +119,15 @@ test('turbo-autonomous attend: GSD\'s gates follow the gates: line of turbo-run 
   assert.ok(!a.includes('as a lane does before it executes; the lane runs those gates in parallel after the hand-back'), 'no unconditional claim');
 });
 
+test('turbo-autonomous attend: a released stop with an interim commit is the checkpoint\'s continuation, not GSD\'s recovery menu; a task the plan gives the orchestrator runs in this session', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const a = s.slice(s.indexOf('## If the arguments are `attend <phase>`'), s.indexOf('## Otherwise'));
+  const six = a.slice(a.indexOf('6. **Execute.**'), a.indexOf('7. **Hand back.**'));
+  const gate = six.slice(six.indexOf('`safe_resume_gate`'));
+  for (const n of ['production commits exist and SUMMARY.md is missing', '`released stops:` or `already delivered:`', '`<plan id>-t<task>`', 'interim commit', 'recovery menu', 'at the task of its stop', 'completed tasks you take from the commits the gate listed', 'every other point of this list applies to it']) assert.ok(gate.includes(n), n);
+  for (const n of ['conducts itself', 'with the plan\'s scripts, never in an executor', 'take only the plan\'s other tasks']) assert.ok(six.includes(n), n);
+});
+
 test('turbo-autonomous start flow: an attended: line means no lane runs; the user hears how to hand the phase back (F5)', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
   const start = s.slice(s.indexOf('## Otherwise'), s.indexOf('## Answer the open questions'));

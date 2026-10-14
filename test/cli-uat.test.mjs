@@ -378,3 +378,52 @@ test('uat record of an empty results array leaves the UAT file as it is', async 
   assert.match(p.lines.at(-1), /^recorded 0 result\(s\) in \.planning\/phases\/03-demo\/03-UAT\.md: /);
   assert.equal(fs.readFileSync(uatFile, 'utf8'), before);
 });
+
+// F1 (controller): a lane can clear TURBO_LANE, so the owner's sign-off also checks the calling session against the
+// lane sessions turbo recorded (supervisor.json): the lane's job id, a transcript named after it, and the session ids its
+// job state names. Empty TURBO_LANE still means "not a lane" for everything else.
+test('F1: a sign-off card refuses an answer from a recorded lane session even with TURBO_LANE empty; the owner\'s own session answers it', async () => {
+  const p = project();
+  fs.writeFileSync(path.join(p.root, 'r.json'), JSON.stringify([{ test: 2, result: 'owner', class: 'D' }]));
+  assert.equal(await p.run('record', '3', '--results', path.join(p.root, 'r.json')), 0);
+  // the claude home the lane's background job writes its state to
+  const home = path.join(p.root, 'claude-home');
+  const JOB = 'c0ffee12';
+  const RESUMED = '9b1d2e3f-0000-4000-8000-000000000001';
+  fs.mkdirSync(path.join(home, 'jobs', JOB), { recursive: true });
+  fs.writeFileSync(path.join(home, 'jobs', JOB, 'state.json'), JSON.stringify({ sessionId: RESUMED }));
+  fs.mkdirSync(path.join(p.root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lane: { phase: '3', sessionId: JOB } }));
+  const cmd = async (env, name, ...a) => {
+    const lines = [];
+    const code = await runPhaseCommand(name, a, { root: p.root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`), deps: { env: { CLAUDE_CONFIG_DIR: home, TURBO_LANE: '', ...env }, supervisorAlive: () => false, commit: () => ({ committed: true }) } });
+    return { code, text: lines.join('\n') };
+  };
+  const Q = ['--question', 'The release needs your signature: do you accept it as it is?'];
+  assert.equal((await cmd({}, 'ask', '3', '--sign', '2', ...Q)).code, 0);
+  // the lane's own session, by the transcript named after its job, by the session its job state names, by its job dir
+  for (const env of [
+    { CLAUDE_CODE_SESSION_ID: `${JOB}-1111-4111-8111-111111111111` },
+    { CLAUDE_CODE_SESSION_ID: RESUMED },
+    { CLAUDE_JOB_DIR: path.join(home, 'jobs', JOB) },
+  ]) {
+    const r = await cmd(env, 'answer', '3', 'ask-1', '--option', '1', '--by', 'session');
+    assert.equal(r.code, 1, JSON.stringify(env));
+    assert.match(r.text, /^refused: this is the session of the lane of phase 3: a sign-off card is the owner's to answer/);
+  }
+  assert.equal(readQuestions(p.root, '3').find((q) => q.id === 'ask-1').state, 'open', 'nothing recorded');
+  // the owner's own session answers it, and the answer keeps that session
+  const OWNER = '5e55a0e0-2222-4222-8222-222222222222';
+  const r = await cmd({ CLAUDE_CODE_SESSION_ID: OWNER }, 'answer', '3', 'ask-1', '--option', '1', '--by', 'session');
+  assert.equal(r.code, 0, r.text);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(p.root, '.planning', 'turbo', 'answers', 'p3.json'), 'utf8')).at(-1).session, OWNER);
+  // uat sign checks the recorded answer again: an Accept recorded from a lane session signs nothing
+  assert.equal((await cmd({}, 'ask', '3', '--sign', '2', ...Q)).code, 0);
+  answerQuestion({ root: p.root, phase: '3', id: 'ask-2', option: 1, by: 'session', session: RESUMED, commit: () => ({ committed: true }) });
+  let s = await cmd({}, 'uat', 'sign', '3', '--answer', 'ask-2');
+  assert.equal(s.code, 1);
+  assert.match(s.text, /ask-2 was answered from the session of the lane of phase 3, not by the owner: nothing signed/);
+  s = await cmd({}, 'uat', 'sign', '3', '--answer', 'ask-1');
+  assert.equal(s.code, 0, s.text);
+  assert.match(s.text, /^signed 1 row\(s\) in .*: 2 \(owner answer ask-1\)$/);
+});

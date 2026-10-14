@@ -352,6 +352,8 @@ test('turbo-phase skill: a UAT stop for the owner\'s signature is a sign-off car
   // review 1: a sign-off card that signs nothing stops the way every stop does (answers committed, gates and STATE.md
   // restored), without a new card; a step run again after the signature does not dispatch turbo-uat for nothing
   assert.match(lane, /points 0 and 1 of \*\*Stopping early\*\*, then `turbo-run lane-status N needs-owner --reason [^`]+` \(no new card\), then its point 3/);
+  // controller: the env marker is the lane's to keep, never to clear
+  assert.ok(s.includes('never set, clear or override `TURBO_LANE`'));
   const p2 = section(s, 'uat').split('\n').find((l) => l.startsWith('2. '));
   assert.ok(p2.indexOf('`turbo-run uat plan N`') > 0 && p2.indexOf('`turbo-run uat plan N`') < p2.indexOf('Agent(subagent_type="turbo-uat"'), p2);
   assert.ok(p2.includes('no `items`'), p2);

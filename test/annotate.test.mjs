@@ -202,3 +202,13 @@ test('review: an answer applied while only a finished phase changed leaves the m
   assert.deepEqual(applyAnswer(root, 'all', { phases: PH, config: {}, now: NOW }).applied, ['r1']);
   assert.equal(readLanesFile(root).fresh, true);
 });
+
+test('v0.4.0: the dependency card may be taken automatically (autoOk: its decision record undoes it), and the record says turbo decided', () => {
+  const root = project();
+  applyAnalysis(root, { ...GOOD, relax: [{ phase: '4', drop: ['3'], kind: 'prose', reason: 'wording only' }] }, { phases: PH, config: { autonomy: 'standard', lang: 'en' }, now: NOW });
+  const [q] = readQuestions(root, 'annotate');
+  assert.equal(q.autoOk, true);
+  answerQuestion({ root, phase: 'annotate', id: 'ask-1', option: 1, by: 'auto', commit: () => ({ committed: false, reason: 'test' }) });
+  applyAnswer(root, 'all', { phases: PH, config: {}, now: NOW });
+  assert.match(fs.readFileSync(path.join(root, '.planning', 'turbo', 'DECISIONS.md'), 'utf8'), /Decided by: gsd-turbo automatically, the owner did not answer in time \(answer ask-1\)/);
+});

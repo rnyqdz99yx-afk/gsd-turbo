@@ -68,6 +68,8 @@ function fakeClaude() {
     if (id.startsWith('gone')) { console.error(`No job matching '${id}'. Run 'claude agents' to list running sessions.`); process.exitCode = 1; }
     if (id.startsWith('stuck')) { console.error('permission denied'); process.exitCode = 1; }
     if (id.startsWith('lost')) { console.error(`session ${id} not found`); process.exitCode = 1; }
+    // Claude Code's background service idle-exited: every stop and rm fails until a claude --bg starts it
+    if (id.startsWith('retired')) { console.error(`couldn't confirm ${id} was stopped — the background service may be restarting. Try again in a moment.`); process.exitCode = 1; }
   } else process.exitCode = 2;
 }
 // Preloaded with --require: records every execFileSync call (command, first args, timeout) and
@@ -366,6 +368,16 @@ test('stop counts a lane session as stopped only when claude no longer lists it 
   r = await stopWith('lost1', [{ id: 'lost1', name: 'x', cwd: p.root, state: 'working' }]);
   assert.notEqual(r.code, 0);
   assert.match(r.stderr, /^warn: lane session lost1 not stopped: .*not found/m);
+});
+
+test('stop counts a job the idle-exited background service no longer runs (listed blocked, no pid) as stopped, with no kick', async () => {
+  const p = fakeProject();
+  p.setClaude({ agents: [{ id: 'retired1', name: 'x', cwd: p.root, state: 'blocked' }] });
+  writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: 'retired1' } });
+  const r = await runAsync(['stop'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /stopped/);
+  assert.ok(!p.claudeCalls().some((a) => a[0] === '--bg'), 'no kick for a job that is not running');
 });
 
 test('stop also stops alive lane sessions of this project that supervisor.json never recorded', async () => {

@@ -201,12 +201,13 @@ test('an outline GSD stopped writing (no ## OUTLINE COMPLETE line) is an incompl
   fs.mkdirSync(dir, { recursive: true });
   const lines = [];
   const run = (...a) => runPhaseCommand('phase-step', ['3', ...a], { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) });
+  // GSD writes plans only once the outline is finished: an unfinished one with no plan yet is planning cut short
   fs.writeFileSync(path.join(dir, '03-PLAN-OUTLINE.md'), OUTLINE.replace('## OUTLINE COMPLETE', '').replace(/\n/g, '\r\n'));
-  fs.writeFileSync(path.join(dir, '03-01-PLAN.md'), planFile('03-01'));
   assert.equal(await run('--check', 'plan'), 0);
   assert.equal(lines.at(-1), 'phase 3: plan set incomplete: GSD\'s chunked plan outline 03-PLAN-OUTLINE.md is unfinished (no ## OUTLINE COMPLETE line)');
   // CRLF and the marker GSD's resume check greps for
   fs.writeFileSync(path.join(dir, '03-PLAN-OUTLINE.md'), OUTLINE.replace(/\n/g, '\r\n'));
+  fs.writeFileSync(path.join(dir, '03-01-PLAN.md'), planFile('03-01'));
   assert.equal(await run('--check', 'plan'), 0);
   assert.match(lines.at(-1), /plan set incomplete: .*lists 3 plans, 2 not written yet: 03-02, 03-03$/);
   // a non-chunked run writes every plan at once and no outline
@@ -215,6 +216,41 @@ test('an outline GSD stopped writing (no ## OUTLINE COMPLETE line) is an incompl
   assert.equal(lines.at(-1), 'phase 3: plan set complete: no chunked plan outline (gsd-tools has_plans decides)');
   assert.equal(await run('--check', 'close'), 2);
   assert.match(lines.at(-1), /^ERR usage: turbo-run phase-step <phase> .*--check plan/);
+});
+
+test('review: an outline an earlier planning run left never blocks the plan step: another phase\'s outline, one beside plans it does not list, an unfinished one beside plans', async () => {
+  const root = project();
+  const dir = path.join(root, '.planning', 'phases', '03-demo');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const s of STEPS.slice(0, STEPS.indexOf('plan'))) completeStep(root, '3', s);
+  const lines = [];
+  const run = (...a) => runPhaseCommand('phase-step', ['3', ...a], { root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`) });
+  fs.writeFileSync(path.join(dir, '03-01-PLAN.md'), planFile('03-01'));
+  // GSD reads only <padded phase>-PLAN-OUTLINE.md: another number's outline is not this phase's
+  fs.writeFileSync(path.join(dir, '04-PLAN-OUTLINE.md'), OUTLINE.replace(/03-/g, '04-'));
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.equal(lines.at(-1), 'phase 3: plan set complete: no chunked plan outline (gsd-tools has_plans decides)');
+  // a finished outline none of whose plans exist, while the phase has others (replanned without --chunked)
+  fs.writeFileSync(path.join(dir, '03-PLAN-OUTLINE.md'), OUTLINE.replace(/03-0(\d)/g, '03-1$1'));
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.match(lines.at(-1), /^phase 3: plan set complete: .*does not match the phase's plans: a leftover of an earlier planning run/);
+  // an unfinished outline beside plans: GSD writes plans only after the outline, so it is a leftover too
+  fs.writeFileSync(path.join(dir, '03-PLAN-OUTLINE.md'), OUTLINE.replace('## OUTLINE COMPLETE', ''));
+  assert.equal(await run('--check', 'plan'), 0);
+  assert.match(lines.at(-1), /plan set complete: .*a leftover of an earlier planning run/);
+  assert.equal(await run('--done', 'plan'), 0);
+});
+
+test('review: GSD\'s own resume check decides what is written: a plan whose first line is not --- (a byte order mark included) is planned again', async () => {
+  const root = project();
+  const dir = path.join(root, '.planning', 'phases', '03-demo');
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = [];
+  fs.writeFileSync(path.join(dir, '03-PLAN-OUTLINE.md'), OUTLINE);
+  for (const id of ['03-01', '03-02']) fs.writeFileSync(path.join(dir, `${id}-PLAN.md`), planFile(id));
+  fs.writeFileSync(path.join(dir, '03-03-PLAN.md'), `\uFEFF${planFile('03-03')}`);
+  assert.equal(await runPhaseCommand('phase-step', ['3', '--check', 'plan'], { root, out: (l) => lines.push(l), err: (l) => lines.push(l) }), 0);
+  assert.match(lines.at(-1), /plan set incomplete: .*1 not written yet: 03-03$/);
 });
 
 test('activePhase in slots mode: no lane works in the main checkout while lanes run; with none, the newest unfinished run (Stage 4 L1)', () => {

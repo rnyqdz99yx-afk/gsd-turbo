@@ -345,6 +345,8 @@ test('turbo-phase skill: the plan step is done only with the whole plan set, so 
   const p3 = plan.find((l) => l.startsWith('3. '));
   for (const n of ['`has_plans` true', '`turbo-run phase-step N --check plan`', '`plan set complete`', '`plan set incomplete: …`', 'point 2']) assert.ok(p1.includes(n), n);
   for (const n of ['`has_plans` still false', '**fail**', '`plan set incomplete: …`']) assert.ok(p3.includes(n), n);
+  // review: a plan GSD wrote but an interruption kept from its commit is committed before the step counts as done
+  for (const n of ['`git status --porcelain -- <phase dir>`', 'committed first', '`gsd-tools commit']) assert.ok(p1.includes(n), n);
   assert.ok(!/`has_plans` true → done/.test(p1), 'has_plans alone no longer marks the step done');
 });
 
@@ -353,5 +355,5 @@ test('turbo-phase skill: the lane hands its temporary-files rule (rule 7) to eve
   const conv = s.slice(s.indexOf('\n## Conventions\n'), s.indexOf('\n## The step loop\n')).split('\n');
   const line = conv.find((l) => l.startsWith('- Temporary files'));
   assert.ok(line, 'a Conventions bullet');
-  for (const n of ['rule 7', 'unchanged', 'every subagent prompt', 'executors', 'continuation agents', 'planners', 'turbo-uat', 'by hand', 'never outside the checkout']) assert.ok(line.includes(n), n);
+  for (const n of ['rule 7', 'unchanged', 'every subagent prompt', 'executors', 'continuation agents', 'planners', 'turbo-uat', 'by hand', 'nothing else goes outside the checkout', '`.planning/turbo/run/tdd/`']) assert.ok(line.includes(n), n);
 });

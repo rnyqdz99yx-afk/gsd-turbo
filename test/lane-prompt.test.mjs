@@ -90,7 +90,7 @@ test('the temporary-files rule confines writes to the checkout and the lane\'s t
     const rule = s.split('\n').find((l) => l.startsWith('7. '));
     assert.ok(rule.includes(`7. ${TMP_RULE_LEAD}`), mode);
     assert.ok(rule.includes(tmpRule(dir)), 'rule 7 carries the rule the subagents get, unchanged');
-    for (const n of ['never outside the checkout you work in', 'not next to it', 'not in a folder above it', 'the home directory', 'in Git Bash on Windows /tmp is not that directory', 'TDD RED evidence record']) assert.ok(tmpRule(dir).includes(n), n);
+    for (const n of ['nothing of yours goes anywhere else outside the checkout you work in', 'not next to the checkout', 'not in a folder above it', 'not the home directory', 'in Git Bash on Windows /tmp is not that directory', 'TDD RED evidence record', '.planning/turbo/run/tdd/ in the checkout (git ignores that folder)']) assert.ok(tmpRule(dir).includes(n), n);
     assert.ok(tmpRule(dir).includes('C:/Users/dev/cfg/turbo/tmp/0123456789abcdef/p3'));
     for (const n of ['at the end of every subagent prompt', 'executors', 'continuation agents', 'planners', 'pass it on']) assert.ok(rule.includes(n), n);
     assert.ok(!/["%<>]/.test(tmpRule(dir)) && !tmpRule(dir).startsWith('-'), 'a plain argv value');

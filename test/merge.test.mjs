@@ -398,3 +398,61 @@ test('a restart after a crash that left the published state.json: main\'s record
   assert.equal(r.outcome, 'merged', r.reason);
   assert.equal(fs.existsSync(path.join(p.root, '.planning', 'state.json')), false);
 });
+
+test('review: the published state.json goes on every way out of the complete stage (a failure for the owner too), and also when the project ignores it', async () => {
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  const base = publishing(fakeGsd());
+  const failing = (args, o) => {
+    const out = base(args, o);
+    if (args[1] === 'phase.complete') throw new Error('gsd-tools query phase.complete failed: Error: disk full');
+    return out;
+  };
+  const r = await mergeReady(mergeCtx(p, { gsd: failing }).ctx, laneOf(p));
+  assert.equal(r.outcome, 'needs-owner');
+  assert.equal(fs.existsSync(path.join(p.root, '.planning', 'state.json')), false);
+
+  const q = laneProject({ files: { '.planning/.gitignore': 'state.json\n' } });
+  finishPhase(q);
+  reportReady(q);
+  assert.equal((await mergeReady(mergeCtx(q, { gsd: publishing(fakeGsd()) }).ctx, laneOf(q))).outcome, 'merged');
+  assert.equal(fs.existsSync(path.join(q.root, '.planning', 'state.json')), false, 'ignored, but main had none before');
+});
+
+test('review: a removal that failed leaves a mark and is logged (POSIX); the next merge counts that state.json as turbo\'s, removes it and clears the mark', async (t) => {
+  const p = laneProject();
+  finishPhase(p);
+  reportReady(p);
+  const file = path.join(p.root, '.planning', 'state.json');
+  const mark = path.join(p.root, '.planning', 'turbo', 'run', 'gsd-state-left');
+  // a read-only file on Windows, a read-only folder elsewhere: the removal fails (unless this runs as root)
+  const lock = process.platform === 'win32' ? file : path.dirname(file);
+  const base = publishing(fakeGsd());
+  const locking = (args, o) => {
+    const out = base(args, o);
+    if (args[1] === 'phase.complete') fs.chmodSync(lock, process.platform === 'win32' ? 0o444 : 0o555);
+    return out;
+  };
+  const m = mergeCtx(p, { gsd: locking });
+  try {
+    assert.equal((await mergeReady(m.ctx, laneOf(p))).outcome, 'merged');
+  } finally {
+    if (fs.existsSync(lock)) fs.chmodSync(lock, process.platform === 'win32' ? 0o666 : 0o755);
+  }
+  if (fs.existsSync(file)) {
+    assert.ok(fs.existsSync(mark), 'the failed removal is marked');
+    assert.ok(m.logs.some((l) => l.startsWith('merge p3: .planning/state.json not removed: ')), m.logs.join('\n'));
+  } else t.diagnostic('the removal did not fail here: Node removes a read-only file on Windows, and root may remove anything');
+
+  // the next merge: main seems to have a state.json of its own, but the mark says it is the one turbo left
+  const q = laneProject();
+  finishPhase(q);
+  reportReady(q);
+  q.writeMain('.planning/state.json', '{"left":true}\n');
+  fs.mkdirSync(path.dirname(path.join(q.root, '.planning', 'turbo', 'run', 'gsd-state-left')), { recursive: true });
+  fs.writeFileSync(path.join(q.root, '.planning', 'turbo', 'run', 'gsd-state-left'), 'earlier\n');
+  assert.equal((await mergeReady(mergeCtx(q, { gsd: publishing(fakeGsd()) }).ctx, laneOf(q))).outcome, 'merged');
+  assert.equal(fs.existsSync(path.join(q.root, '.planning', 'state.json')), false);
+  assert.equal(fs.existsSync(path.join(q.root, '.planning', 'turbo', 'run', 'gsd-state-left')), false, 'the mark goes with it');
+});

@@ -118,12 +118,23 @@ test('directory read errors other than a missing directory surface', () => {
   assert.throws(() => findPhaseDir(root, '3'), { code: 'ENOTDIR' });
 });
 
-test('outlinePlanIds reads the Plan ID column of GSD\'s chunked outline: any column position, bold or code cells, aligned separators, each id once; other tables are not plans', () => {
+test('outlinePlanIds reads the plan column of GSD\'s chunked outline: any column position, bold or code cells, aligned separators, each id once; other tables are not plans', () => {
   const text = [
     '| Wave | **Plan ID** | Objective |', '|:---:|:---|---:|', '| 1 | `05-01` | a |', '| 1 | 05-02 | b |', '| 2 | 05-01 | again |', '',
     'Notes', '| Risk | Owner |', '|---|---|', '| 05-09 | x |', '',
     '| plan_id | Objective |', '|---|---|', '| 05-03 | c |', '| not an id! | d |',
   ].join('\r\n');
-  assert.deepEqual(outlinePlanIds(text), ['05-01', '05-02', '05-03']);
-  assert.deepEqual(outlinePlanIds('no table here'), []);
+  assert.deepEqual(outlinePlanIds(text, '05'), ['05-01', '05-02', '05-03']);
+  assert.deepEqual(outlinePlanIds('no table here', '05'), []);
+});
+
+test('review: outlinePlanIds takes only <prefix>-<NN> from the plan column: totals, TBD and other words are no plans; file names, links and notes around an id are dropped; escaped pipes, code fences and tables without outer pipes are handled', () => {
+  const text = [
+    '```markdown', '| Plan ID | Objective |', '|---|---|', '| 03-99 | an example in a fence |', '```', '',
+    'Plan | Objective | Wave', '--- | --- | ---', '03-01 (TDD) | parse a \\| b | 1', '[03-02](./03-02-PLAN.md) | store | 1',
+    '| **Total** | 3 plans | |', '| TBD | later | |', '| none | - | |', '',
+    '| ID | Objective |', '|---|---|', '| 03-03-PLAN.md | wire |', '| 103-04 | another phase |', '| 03.1-01 | a decimal phase |', '| 03-05a | a suffix |',
+  ].join('\n');
+  assert.deepEqual(outlinePlanIds(text, '03'), ['03-01', '03-02', '03-03', '03-05a']);
+  assert.deepEqual(outlinePlanIds('| Plan ID |\n|---|\n| 03.1-01 |\n| 03.1-02 |\n| 03-01 |', '03.1'), ['03.1-01', '03.1-02']);
 });

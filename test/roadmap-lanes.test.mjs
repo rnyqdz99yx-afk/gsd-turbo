@@ -84,6 +84,15 @@ test('G4: setDependsOn writes Phase 3, Phase 4, keeps the label form, and GSD re
   assert.equal(depsText([]), 'Nothing');
 });
 
+test('a no-dependency line that names a phase is a dependency to GSD; a prose relaxation of it writes Nothing alone', () => {
+  const text = ROADMAP.replace('**Depends on**: Phase 1', '**Depends on**: Nothing (independent of Phase 1)');
+  assert.deepEqual(gsdDeps(gsdDepends(gsdSection(text, '2'))), ['1']);
+  // a relaxation dropping 1 (lib/annotate.mjs applyAnalysis, applyAnswer): no phase number is left in the line
+  const t = setDependsOn(text, '2', []);
+  assert.equal(gsdDepends(gsdSection(t, '2')), 'Nothing');
+  assert.deepEqual(gsdDeps(gsdDepends(gsdSection(t, '2'))), []);
+});
+
 test('review: a multi-line Depends on keeps its continuation; a value with a line break is refused', () => {
   const text = ROADMAP.replace('**Depends on**: Phase 1', '**Depends on**: Phase 1,\n  and the base docs');
   const ls = writeLaneLines(text, '2', { areas: ['a/**'] }).split('\n');

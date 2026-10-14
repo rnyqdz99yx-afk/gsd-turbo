@@ -15,7 +15,7 @@ test('turbo-lane-analyst: frontmatter, its limits, the rules of each field', () 
     '`*` matches within one path segment', '`**` any number of segments', 'no `{a,b}` braces', 'never `.planning/**`', 'Err broad',
     '`high`', '`low`', 'counts the phase as everything', ...GATES.map((g) => `\`${g}\``),
     '`conflict`', '`ok`', 'declared dependencies are checked by the scheduler itself',
-    '`prose`', '`imaginary`', 'Must land before Phase 28', 'turbo-run annotate apply checks all of it',
+    '`prose`', '`imaginary`', 'Must land before Phase 28', 'Nothing (independent of Phase 1)', 'turbo-run annotate apply checks all of it',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
   assert.ok(!/gsd-turbo-/.test(s));

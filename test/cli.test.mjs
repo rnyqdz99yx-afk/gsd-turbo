@@ -392,6 +392,22 @@ test('stop counts a job the idle-exited background service no longer runs (liste
   assert.ok(!p.claudeCalls().some((a) => a[0] === '--bg'), 'no kick for a job that is not running');
 });
 
+// journal 2026-10-14 15:34Z: claude stop failed «… the background service may be restarting» at every retry while claude
+// agents still listed the lane alive (a stale record); no service of this config directory (the test's own, which no
+// Claude Code ever ran) and no process carried the session. The real probe runs here: no control pipe or socket of
+// CLAUDE_CONFIG_DIR, and the process table has no process with the session id or the listed pid.
+test('stop counts a lane session listed alive as stopped when no background service of this config directory runs and no process carries it, and says so in one line', async () => {
+  const p = fakeProject();
+  p.setClaude({ agents: [{ id: 'retired2', name: 'x', cwd: p.root, state: 'blocked', pid: DEAD_PID }] });
+  writeSup(p.root, { pid: null, lane: { phase: '4', sessionId: 'retired2' } });
+  const r = await runAsync(['stop'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^Claude Code's background service is not running and no process carries lane session retired2: counted as stopped$/m);
+  assert.match(r.stdout, /^stopped$/m);
+  assert.doesNotMatch(r.stderr, /not stopped/);
+  assert.ok(!p.claudeCalls().some((a) => a[0] === '--bg'), 'no kick to stop a session nothing runs');
+});
+
 test('stop also stops alive lane sessions of this project that supervisor.json never recorded', async () => {
   const p = fakeProject();
   const lane = (phase) => laneSessionName(p.root, phase);
@@ -1283,6 +1299,21 @@ test('attend stops a lane session the killed supervisor registers after the firs
   assert.equal(r.code, 0, r.stderr);
   assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop'), [['stop', 'abc123'], ['stop', 'late01']]);
   assert.match(r.stdout, /^stopped late lane session late01 \(started by the stopped supervisor\)$/m);
+});
+
+test('attend goes on when the lane session is a stale record of a stopped background service with no process: one plain line in lang, exit 0 (journal 2026-10-14 15:34Z)', async (t) => {
+  const { p, env } = attendProject(t);
+  const cfg = path.join(p.root, '.planning', 'turbo', 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ ...readJsonFile(cfg), lang: 'ru' }));
+  writeSup(p.root, { ...readSup(p.root), lane: { ...readSup(p.root).lane, sessionId: 'retired3' } });
+  p.setClaude({ agents: [{ id: 'retired3', name: laneSessionName(p.root, '4'), cwd: p.root, state: 'working', pid: DEAD_PID }] });
+  const r = await runAsync(['attend', '4'], p.root, { ...env, TURBO_ATTEND_SETTLE_MS: '1200' });
+  assert.equal(r.code, 0, r.stderr);
+  const said = r.stdout.split('\n').filter((l) => l.includes('retired3'));
+  assert.deepEqual(said, ['фоновая служба Claude Code не работает и процесса сессии retired3 нет — считаю полосу остановленной'], 'said once, never as a late lane');
+  assert.match(r.stdout, /^phase 4: attended in this session/m);
+  assert.doesNotMatch(r.stderr, /did not stop|not stopped/);
+  assert.deepEqual(p.claudeCalls().filter((a) => a[0] === 'stop'), [['stop', 'retired3'], ['stop', 'retired3']], 'attend\'s stop, then the sweep once (the record stays listed the same way)');
 });
 
 test('lane-status N needs-owner with no owner question waiting hints at turbo-run ask and still records; status lists the questions the phases wait for (v0.3.3)', () => {

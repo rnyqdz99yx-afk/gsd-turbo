@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveBin, parseAgents, laneSessionName, buildBgArgs, buildResumeArgs, parseBgLaunch, parseResume, createClaude, sessionFreeEnv, isDaemonDown, daemonAware, buildKickArgs, KICK_NAME, NOT_RUNNING } from '../lib/claude.mjs';
+import { resolveBin, parseAgents, laneSessionName, buildBgArgs, buildResumeArgs, parseBgLaunch, parseResume, createClaude, sessionFreeEnv, isDaemonDown, daemonAware, buildKickArgs, KICK_NAME, NOT_RUNNING, SERVICE_GONE, goneLine } from '../lib/claude.mjs';
 
 const BG_OPTS = { name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto' };
 const PLAIN_BIN = { cmd: 'claude', prefix: [], shell: false };
@@ -488,6 +488,54 @@ test('daemonAware stop: a job listed alive (working) without a pid is no proof i
 test('daemonAware: a kick Claude Code refuses for an untrusted folder is thrown as it is, never as an outage', () => {
   const f = Object.assign(downClaude({ kickWorks: false }), { kickError: 'claude --bg failed: workspace not trusted' });
   assert.throws(() => daemonAware(f).rm('a1b2c3'), (e) => /workspace not trusted/.test(e.message) && !isDaemonDown(e));
+});
+
+// journal 2026-10-14 15:34Z: claude agents still listed the lane (a stale record) while the background service of this
+// config directory was gone and no process carried the session; claude stop failed the same way at every retry.
+test('daemonAware stop: a job listed alive while the service is gone and no process carries it counts as stopped (SERVICE_GONE), said once, with no kick; the next resume is made inside a kick', () => {
+  const asked = [];
+  const told = [];
+  const f = Object.assign(downClaude({ agents: [{ id: 'a1b2c3', state: 'blocked', pid: 4242 }] }), { idleExit: true, serviceGone: (id, agent) => { asked.push([id, agent?.pid]); return true; } });
+  const c = daemonAware(f, { onGone: (id) => told.push(id) });
+  assert.equal(c.stop('a1b2c3'), SERVICE_GONE);
+  assert.deepEqual(asked, [['a1b2c3', 4242]], 'the probe gets the listed entry');
+  assert.deepEqual(told, ['a1b2c3']);
+  assert.deepEqual(f.calls, [['stop', 'a1b2c3']], 'no kick for a stop');
+  assert.match(c.resume('a1b2c3-uuid', 'P', '/p'), /woke session/);
+  assert.deepEqual(f.calls.slice(1), [['kick'], ['resume', 'a1b2c3-uuid'], ['kick-cleanup']]);
+  // working without a pid, or a list that cannot be read: the probe decides too
+  const g = Object.assign(downClaude({ agents: [{ id: 'a1b2c3', state: 'working' }] }), { serviceGone: () => true });
+  assert.equal(daemonAware(g).stop('a1b2c3'), SERVICE_GONE);
+  const h = Object.assign(downClaude(), { list: () => { throw new Error('agents broke'); }, serviceGone: (id, agent) => agent === undefined });
+  assert.equal(daemonAware(h).stop('a1b2c3'), SERVICE_GONE);
+});
+
+test('daemonAware stop: by default the stale record is told in one log line', () => {
+  const logs = [];
+  const f = Object.assign(downClaude({ agents: [{ id: 'a1b2c3', state: 'working', pid: 9 }] }), { serviceGone: () => true });
+  daemonAware(f, { log: (l) => logs.push(l) }).stop('a1b2c3');
+  assert.deepEqual(logs, [goneLine('a1b2c3')]);
+  assert.match(logs[0], /background service is not running and no process carries session a1b2c3: counted as stopped/);
+});
+
+test('daemonAware stop: a service that may run, or a probe that fails, keeps the kick and its retry', () => {
+  for (const serviceGone of [() => false, () => { throw new Error('WMI broke'); }]) {
+    const f = Object.assign(downClaude({ agents: [{ id: 'a1b2c3', state: 'working', pid: 42 }] }), { serviceGone });
+    daemonAware(f).stop('a1b2c3');
+    assert.deepEqual(f.calls, [['stop', 'a1b2c3'], ['kick'], ['stop', 'a1b2c3'], ['kick-cleanup']]);
+  }
+  // a stop that fails for another reason never asks the probe
+  let asked = false;
+  const g = { list: () => [], stop: () => { throw new Error('claude stop failed: permission denied'); }, rm: () => '', serviceGone: () => { asked = true; return true; } };
+  assert.throws(() => daemonAware(g).stop('a1b2c3'), /permission denied/);
+  assert.equal(asked, false);
+});
+
+test('createClaude: serviceGone asks the injected probe with the job id and its listed entry', () => {
+  const seen = [];
+  const c = createClaude({ bin: PLAIN_BIN, exec: () => '', probe: (id, agent) => { seen.push([id, agent]); return true; } });
+  assert.equal(c.serviceGone('a1b2c3', { id: 'a1b2c3', pid: 7 }), true);
+  assert.deepEqual(seen, [['a1b2c3', { id: 'a1b2c3', pid: 7 }]]);
 });
 
 test('kick(during) runs during while its session is listed, returns its result, and removes the session even when during throws', () => {

@@ -166,6 +166,38 @@ test('an attended lane is held alone: a late session of it is stopped, nothing r
   assert.equal(s.lanes['1'].sessionId, 's1');
 });
 
+test('an attended lane whose late session is a stale record of a stopped background service: counted as stopped once, never probed again while listed the same way (journal 2026-10-14 15:34Z)', async () => {
+  const h = lanesHarness({ phases: [P('1')], lanes: annotated({ 1: A('a/**') }) });
+  const inner = h.ctx.deps.claude;
+  let s = await tick(freshLanes(), h.ctx);
+  writeAttend(h.root, '1', { sessionId: 's1' });
+  h.agentOf('1').state = 'stopped';
+  h.agents.push({ id: 'late', name: laneSessionName(h.root, '1'), cwd: h.slots[0].path, state: 'blocked', pid: 4242 });
+  let probes = 0;
+  inner.serviceGone = () => { probes++; return true; };
+  const stop = inner.stop;
+  inner.stop = (id) => {
+    if (id === 'late') {
+      h.stopped.push(id);
+      throw new Error("claude stop failed: couldn't confirm late was stopped — the background service may be restarting. Try again in a moment.");
+    }
+    return stop(id);
+  };
+  for (let i = 0; i < 3; i++) {
+    h.advance(1);
+    s = await tick(s, h.ctx);
+  }
+  assert.deepEqual(h.stopped, ['late']);
+  assert.equal(probes, 1);
+  assert.equal(h.logs.filter((l) => /no process carries session late: counted as stopped/.test(l)).length, 1, h.logs.join('\n'));
+  // listed running again (a wake that registered late): stopped again
+  Object.assign(h.agents.find((a) => a.id === 'late'), { state: 'working', pid: 5150 });
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.stopped, ['late', 'late']);
+  assert.equal(s.lanes['1'].sessionId, 's1');
+});
+
 test('Gates: a phase whose gate a running phase declares waits; one whose gate a lock holds waits until it is unlocked (spec §5)', async () => {
   const h = lanesHarness({ phases: [P('1'), P('2'), P('3')], lanes: annotated({ 1: A('a/**', ['prod-deploy']), 2: A('b/**', ['prod-deploy']), 3: A('c/**', ['packaged-build']) }) });
   await acquireGate(h.root, 'packaged-build', '9'); // the owner's own lock: only unlock frees it (D13)

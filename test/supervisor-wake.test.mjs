@@ -657,6 +657,45 @@ test('a lane the background service retired while it waited for the owner: its s
   assert.ok(!h.logs.some((l) => /waiting for the owner/.test(l)));
 });
 
+// journal 2026-10-14 15:34Z: the wake failed «did not reach session … in 2 tries» while claude agents still listed the
+// lane (a stale record, here with a pid) and neither the service of this config directory nor any process of the
+// session existed. The stop counts as done, the same conversation is resumed inside a kick (as for a job listed
+// without a pid), and the log says why in one line.
+test('a lane listed alive while the background service is gone and no process carries it: its stop counts as done without a kick, its own session is resumed inside one', async () => {
+  const h = harness();
+  const probed = [];
+  h.ctx.deps.claude.serviceGone = (id, agent) => { probed.push([id, agent?.pid]); return true; };
+  let s = await stoppedLane(h);
+  h.agents[0].pid = 4242;
+  h.down = true;
+  owner(h, '02-01-t2', 1);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(probed, [['1a2b3c4d', 4242]]);
+  assert.deepEqual(h.stopped, ['1a2b3c4d'], 'stopped once: no kick for the stop');
+  assert.equal(h.kicks, 1, 'the resume is made inside a kick');
+  assert.deepEqual(h.resumed.map((r) => r.target), ['1a2b3c4d-2222-4333-8444-555555555555']);
+  assert.equal(h.launched.length, 1, 'no new session');
+  assert.ok(h.logs.includes("Claude Code's background service is not running and no process carries session 1a2b3c4d: counted as stopped"), h.logs.join('\n'));
+  assert.ok(h.logs.includes('wake phase 2: woke session 1a2b3c4d'), h.logs.join('\n'));
+  assert.ok(!h.logs.some((l) => /did not reach session|waiting for the owner/.test(l)));
+});
+
+test('a lane listed alive with a pid while the service is down and a process may carry it: the stop waits for the kick as before', async () => {
+  const h = harness();
+  h.ctx.deps.claude.serviceGone = () => false;
+  let s = await stoppedLane(h);
+  h.agents[0].pid = 4242;
+  h.down = true;
+  owner(h, '02-01-t2', 1);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.stopped, ['1a2b3c4d', '1a2b3c4d'], 'stop, kick, stop again');
+  assert.equal(h.kicks, 1);
+  assert.equal(h.resumed.length, 1);
+  assert.ok(!h.logs.some((l) => /counted as stopped/.test(l)));
+});
+
 test('a service that stays down is no wake attempt: nothing relaunches, the owner is not told, one line is logged; once it is up the answers wake the lane', async () => {
   const h = harness();
   let s = await stoppedLane(h);

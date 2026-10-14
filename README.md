@@ -103,8 +103,8 @@ The [full reference](docs/reference.md) covers every command, the config, owner 
 
 1. ✅ **Core** — supervisor, automatic continuation, targeted tests, safe mode.
 2. ✅ **Faster phases** — `/turbo-phase` with a parallel prologue, gates in parallel, `turbo-uat`.
-3. ✅ **The owner in the loop** — question cards answered ahead (session, pane, Telegram), push and CI, the live view, live sittings. *(v0.3.x, current)*
-4. **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging.
+3. ✅ **The owner in the loop** — question cards answered ahead (session, pane, Telegram), push and CI, the live view, live sittings.
+4. ✅ **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging. *(v0.4.x, current)*
 5. **Adoption** — `/turbo-adopt`: plug turbo into a milestone that is already in progress — where it stands, what was skipped, all questions up front, a plan for the rest.
 6. **Execution graph** — each plan starts as soon as its dependencies are done instead of waiting for whole waves.
 

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
+import { SITTING_PLAN } from './helpers/plans.mjs';
 import { laneSessionName, projectHash } from '../lib/claude.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 import { askOwner } from '../lib/questions.mjs';
@@ -1156,6 +1157,31 @@ test('attend names the released stops that keep the owner\'s answer, with its ti
   const records = readJsonFile(path.join(answers, 'p4.json'));
   assert.deepEqual([records.length, records[1].answer, records[1].superseded, typeof records[1].keptAt], [2, 'go\nnow', undefined, 'string']);
   assert.equal(readJsonFile(path.join(runDirOf(p.root), 'p4-questions.json'))[0].state, 'answered');
+});
+
+test('attend drops a done answer on a live sitting stop and says so; the stop is asked ahead again and no pre-answer carries it (journal 2026-10-14)', async (t) => {
+  const { p, env } = attendProject(t);
+  // 04-02 is the sitting plan: its task 2 is the live sitting the lane stopped at, answered Done on a v0.3.3 card
+  fs.writeFileSync(path.join(p.root, '.planning', 'phases', '04-four', '04-02-PLAN.md'), SITTING_PLAN);
+  fs.writeFileSync(path.join(runDirOf(p.root), 'p4-questions.json'), JSON.stringify([
+    { id: '04-02-t2', phase: '4', plan: '04-02', task: '2', kind: 'human-action', source: 'plan', options: [{ label: 'Сделано', signal: 'go', defer: false }], stopped: true, agentId: 'a0123456789abcdef', state: 'answered', answer: { option: 1, label: 'Сделано', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false }, rev: 2 },
+  ]));
+  const answers = path.join(p.root, '.planning', 'turbo', 'answers');
+  fs.mkdirSync(answers, { recursive: true });
+  fs.writeFileSync(path.join(answers, 'p4.json'), JSON.stringify([{ id: '04-02-t2', plan: '04-02', task: '2', option: 1, label: 'Сделано', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false, condition: null, defer: false }]));
+  const r = await runAsync(['attend', '4'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^released stops: 04-02-t2 \(asked ahead again\)$/m);
+  assert.match(r.stdout, /^dropped done answers: 04-02-t2 \(Сделано, pane, 2026-01-01T15:19:48\.000Z\) \(a live sitting is never answered done: it runs in this session, with you\)$/m);
+  assert.doesNotMatch(r.stdout, /released stops with your answer/);
+  // no repository here: the change stays, and the warning says it is not committed
+  assert.match(r.stderr, /^warn: the dropped done answer of 04-02-t2 is not committed \(/m);
+  assert.equal(readJsonFile(path.join(answers, 'p4.json'))[0].supersededBy, 'sitting');
+  assert.equal(run(['questions', '4', '--preanswers', '04-02'], p.root, env).trim(), '', 'no pre-answer for the sitting');
+  // the v0.3.3 card still on file (no refresh yet): its Done is refused
+  const refused = spawnSync(process.execPath, [CLI, 'answer', '4', '04-02-t2', '--option', '1', '--by', 'pane'], { cwd: p.root, env, encoding: 'utf8' });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stdout, /^refused: question 04-02-t2 is a live sitting: .* Run \/turbo-autonomous attend 4 in a new Claude Code window; nothing was recorded$/m);
 });
 
 test('attend refuses, changing nothing, for a phase that is not the lane, a phase with every plan summarized, and inside a lane (S4)', async (t) => {

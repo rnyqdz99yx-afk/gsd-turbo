@@ -58,7 +58,7 @@ test('laneHalted, laneFailed and phaseMissing end with the resume command in en 
 });
 
 test('every message exists in en and ru with the same placeholders', () => {
-  const keys = ['laneNeedsOwner', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'supervisorFailing'];
+  const keys = ['laneNeedsOwner', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'supervisorFailing', 'supervisorDown'];
   const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` }); // renders each {name} as itself
   const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
   for (const key of keys) {
@@ -294,7 +294,7 @@ test('a session id shows only inside the command that needs it', () => {
 
 test('the Russian notifications hold no English but commands, paths, names and the variables', () => {
   const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
-  const keys = ['laneNeedsOwner', 'laneStalled', 'questionsReady', 'laneDowngraded', 'ownerChecklist', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'workspaceUntrusted', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'rangeBlocked', 'supervisorFailing', 'pushDiverged', 'pushRefused', 'pushAllowed', 'pushFailed', 'ciRed', 'ciTimeout', 'ciUnavailable'];
+  const keys = ['laneNeedsOwner', 'laneStalled', 'questionsReady', 'laneDowngraded', 'ownerChecklist', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'workspaceUntrusted', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'rangeBlocked', 'supervisorFailing', 'supervisorDown', 'pushDiverged', 'pushRefused', 'pushAllowed', 'pushFailed', 'ciRed', 'ciTimeout', 'ciUnavailable'];
   // commands the owner runs, as printed, and the names of tools and files
   const COMMANDS = [/\/turbo-autonomous [a-z]+(?: \{\w+\})?/g, /\/turbo-autonomous --only \{dep\}/g, /--(?:from|to|all)\b/g, /claude attach \{id\}/g, /\{turboRun\} doctor/g, /\{turboRun\} lane-status \{phase\} done/g, /turbo-phase restore, fanout, fix, final-gate и uat/g, /git push \{remote\} \{branch\}/g, /turbo-run push-allow \{phase\}(?: \{refusal\})?/g, /gh run list\{repo\} --commit \{commit\}/g, /\.planning\/turbo\/logs\/supervisor\.log/g, /ROADMAP\.md/g];
   const NAMES = new Set(['CI', 'GSD', 'Claude', 'Code', 'claude', 'turbo', 'turbo-phase', 'doctor', 'gh', 'Telegram']);
@@ -333,4 +333,27 @@ test('integration (reconcile R12): every owner notification of the annotate pseu
   assert.equal(msg('ru', 'laneNeedsOwner', { phase: 'annotate', reason: 'x' }).title, 'Разметка полос ждёт вас');
   // a real phase keeps its words
   assert.equal(msg('en', 'questionsReady', { phase: '3', n: 1, list: 'x' }).title, 'Phase 3: needs your answer (1)');
+});
+
+test('supervisorDown in en and ru: a restart and a death without an exit line, the start command and the log', () => {
+  for (const reboot of ['1', '']) {
+    const en = msg('en', 'supervisorDown', { project: 'my-app', since: '12:20', reboot, start: '/turbo-autonomous' });
+    const ru = msg('ru', 'supervisorDown', { project: 'my-app', since: '12:20', reboot, start: '/turbo-plan-milestone' });
+    assert.match(en.body, reboot ? /since 12:20: the machine restarted\./ : /since 12:20 and left no exit line: its process ended or hung\./);
+    assert.match(ru.body, reboot ? /с 12:20: компьютер перезагрузился\./ : /с 12:20 и не оставил строки о выходе: его процесс завершился или завис\./);
+    assert.match(en.body, /To start it again: \/turbo-autonomous in my-app\. Log: \.planning\/turbo\/logs\/supervisor\.log$/);
+    assert.match(ru.body, /Запустить снова: \/turbo-plan-milestone в проекте my-app\. Лог: \.planning\/turbo\/logs\/supervisor\.log$/);
+    const english = ru.body.replace(/\/turbo-plan-milestone|my-app|\.planning\/turbo\/logs\/supervisor\.log/g, ' ').match(/[A-Za-z][A-Za-z-]*/g) || [];
+    assert.deepEqual(english, [], ru.body);
+  }
+});
+
+test('notify sends desktop and Telegram at once: a slow desktop notifier never holds Telegram back', async () => {
+  let fetched = false;
+  let desktopEndedFirst = null;
+  const exec = () => new Promise((resolve) => setTimeout(() => { desktopEndedFirst = !fetched; resolve(); }, 50));
+  const fetchImpl = async () => { fetched = true; return { ok: true }; };
+  const r = await notify({ notify: { desktop: true, telegram: true } }, { title: 't', body: 'b' }, { platform: 'linux', exec, fetchImpl, env: { TURBO_TELEGRAM_TOKEN: 'T', TURBO_TELEGRAM_CHAT: '42' } });
+  assert.deepEqual(r, { desktop: true, telegram: true });
+  assert.equal(desktopEndedFirst, false, 'Telegram was sent while the desktop notifier still ran');
 });

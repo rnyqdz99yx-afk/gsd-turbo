@@ -41,6 +41,7 @@ import { runAwayCommand } from '../lib/away.mjs';
 import { autoAnswers, readAway } from '../lib/away-state.mjs';
 import { beatBeforeBoot, clearOwnerStop, logonSkip, readOwnerStop, runAutostart, writeOwnerStop } from '../lib/autostart.mjs';
 import { runWorktreesCommand } from '../lib/worktrees.mjs';
+import { watchSupervisor } from '../lib/watchdog.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail|away|back|autostart|worktrees> [args]';
@@ -222,6 +223,25 @@ function clearDaemonPid(root, state) {
     if (cur && cur.pid !== process.pid) return;
     writeJsonAtomic(supPath(root), { ...(state || cur || {}), pid: null, updatedAt: new Date().toISOString() });
   } catch { /* best-effort */ }
+}
+
+// The watchdog's look (lib/watchdog.mjs): a supervisor that died without a word is told to the owner once. root: the
+// command's project (a lane's slot names its control root). Its line, or null; a look never fails the command it rides on.
+const LANE_LOOKS = new Set(['inbox', 'ask', 'lane-status']);
+// The owner's commands that start the supervisor (start, resume): a lane hears from the watchdog that it died and never
+// starts it, since a lane's environment (its TURBO_LANE, its own temp directory) is no daemon's.
+const refuseInLane = (cmd) => { if (process.env.TURBO_LANE) die(`refused: ${cmd} is the owner's: a lane never runs it`); };
+async function supervisorLook(root, by) {
+  try {
+    const control = stateRoot(root);
+    const config = runtimeConfig(loadConfig(control));
+    const sup = readJson(supPath(control), null);
+    const up = process.env.TURBO_UPTIME_SECONDS;
+    const r = await watchSupervisor(control, { sup, alive: supAlive(sup, config.poll_seconds), config, by, ...(up ? { uptimeSeconds: Number(up) } : {}) });
+    return r?.line ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // What status prints next to the lanes: the attended phases, the open questions, the owner's language.
@@ -957,6 +977,11 @@ async function main() {
   const found = projectArg(cmd === 'attend' ? args.filter((a) => a !== '--done') : args);
   const root = found && OWNER_COMMANDS.has(cmd) ? stateRoot(found) : found;
   const pos = positional(args);
+  // the watchdog's lane side: a lane looks at its inbox (every step and wave), ask and lane-status (it stops for the owner)
+  if (root && process.env.TURBO_LANE && LANE_LOOKS.has(cmd)) {
+    const line = await supervisorLook(root, `the lane of phase ${pos[0] && PHASE_ID.test(pos[0]) ? normalizePhaseId(pos[0]) : '?'} (${cmd})`);
+    if (line) process.stderr.write(`${line}\n`);
+  }
   if (PHASE_COMMANDS.has(cmd)) {
     if (!root) die('no .planning directory found');
     // push-request --wait waits only while a supervisor is alive to push and watch CI
@@ -1036,6 +1061,7 @@ async function main() {
     }
     case 'start': {
       if (!root) die('no .planning directory found');
+      refuseInLane('start');
       if (args.includes('--autostart')) {
         if (rangeFlags(args) !== undefined || args.includes('--plan-only')) die('start --autostart takes no range flags and no --plan-only: it takes up the run as it was');
         return startAtLogon(root);
@@ -1086,6 +1112,8 @@ async function main() {
     case 'view': {
       if (!root) die('no .planning directory found');
       const view = readView(root);
+      // the mod's clock (--watchdog): the owner's view looks after the supervisor too (lib/watchdog.mjs)
+      if (args.includes('--watchdog')) await supervisorLook(root, "the owner's view");
       out(args.includes('--json') ? JSON.stringify(view) : formatView(view));
       return 0;
     }
@@ -1148,6 +1176,7 @@ async function main() {
       return 0;
     }
     case 'resume': {
+      refuseInLane('resume');
       const [phase] = pos;
       if (!root || !phase || !PHASE_ID.test(phase)) die('resume <phase> [--start]');
       return resumePhase(root, normalizePhaseId(phase), args.includes('--start'));

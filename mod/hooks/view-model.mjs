@@ -1119,8 +1119,9 @@ export function answerArgv({ node, turboRun, root, question, option = null, text
   return text !== null ? [...head, ...tail, '--text', String(text)] : [...head, '--option', String(option), ...tail];
 }
 
-// The argv of the view read: the project is named, never taken from the working directory.
-export const viewArgv = ({ node, turboRun, root }) => [node, turboRun, 'view', '--project', root, '--json'];
+// The argv of the view read: the project is named, never taken from the working directory. --watchdog: the read on
+// the clock also tells the owner once when the supervisor died without a word (lib/watchdog.mjs).
+export const viewArgv = ({ node, turboRun, root }) => [node, turboRun, 'view', '--project', root, '--json', '--watchdog'];
 
 // The directory turbo-run runs in: its install directory (<dir>/bin/turbo-run.mjs → <dir>), never the project, where
 // a node version manager (Volta, asdf, mise) would follow the project's pin. A network share keeps its //server/share

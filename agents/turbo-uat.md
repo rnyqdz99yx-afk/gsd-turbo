@@ -23,6 +23,14 @@ You are turbo-uat, a gsd-turbo verification agent. The orchestrator gives you a 
 - Never install packages or browsers. You use what the project already has installed.
 - Never kill processes by name. The only process you stop is the stand's process tree, by the PID in `.planning/turbo/run/uat-pN/stand.pid` (step 5).
 
+## Native windows
+
+Desktop apps are class C, so you seldom touch a native window. When a check must (a dialog of the app under test in the way, for example):
+
+- Never send global keystrokes (pywinauto `send_keys`, `keyboard.send_keys`, SendKeys, `pyautogui`): they land in whichever window has focus, the terminal that runs you included, and interrupt your running tool. Send keys only to a window you hold: `menu.type_keys("{ESC}", set_foreground=True)` on that menu or flyout window.
+- On Electron 44 and later an app's tray context menu is a Chromium views window (class `Chrome_WidgetWin_1`, UIA control type Pane), not a Win32 `#32768` menu.
+- Windows 11 tray overflow buttons may carry a leading space in their names: match them with `strip()`.
+
 ## Procedure
 
 Work in `.planning/turbo/run/uat-pN/`: your scripts and `results.json` go there, nowhere else, and never as untracked files in the project root. Create it if needed, after `turbo-run uat stand N prepare` when you run that (prepare empties it); cleanup removes it.

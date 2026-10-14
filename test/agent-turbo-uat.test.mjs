@@ -43,7 +43,8 @@ test('turbo-uat agent: owner-only list, refusal handling, isolation and record o
 });
 
 // F1: GSD's review wording on a plan's prohibition is no owner decision; such items are static checks with evidence.
-test("turbo-uat agent: static code properties are checked with git grep and git diff, never stopped on GSD's review wording (F1)", () => {
+// A native window gets keys only through a window the agent holds: a global keystroke reaches the terminal that runs it.
+test("turbo-uat agent: static code properties are checked with git grep and git diff, never stopped on GSD's review wording (F1); no global keystrokes", () => {
   const s = fs.readFileSync('agents/turbo-uat.md', 'utf8');
   const needles = [
     "An owner's decision is a call only the owner may make on their own rights", 'A review GSD asks for is none',
@@ -51,6 +52,7 @@ test("turbo-uat agent: static code properties are checked with git grep and git 
     '`static code property`', '`git grep`', 'never a recursive grep of the working tree', '`git diff`', '`harness: static`',
     '`playwright-script`, `http`, `socket` or `static`', 'needs a person to read: <what>', 'never a stop',
     'Static checks need only `prepare`',
+    'Never send global keystrokes', 'set_foreground=True', '`Chrome_WidgetWin_1`', '`#32768`', 'strip()',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);
   // the old D trigger stays, but never for GSD's wording on a code property

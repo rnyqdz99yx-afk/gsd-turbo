@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { STEPS } from '../lib/phase-progress.mjs';
-import { ASK_RULE, GAP_PLAN_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
+import { ASK_RULE, GAP_PLAN_RULE, HUMAN_ACTION_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
 
 test('turbo-phase skill: frontmatter, every step in order, the commands it drives', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
@@ -262,6 +262,26 @@ test('turbo-phase skill (v0.3.3): every stop for the owner is asked with turbo-r
   const fixes = s.slice(s.indexOf('**Owner-chosen fixes.**'));
   for (const needle of ['turbo-run phase-step N --attempt owner-gaps', 'turbo-run owner-gaps N --review', '--gap', 'Skill(skill="gsd-plan-phase", args="N --gaps")', 'args="N --gaps-only --no-transition"', 'no hand-made UAT row']) assert.ok(fixes.includes(needle), needle);
   assert.ok(!/stop for the owner\*\* \("[^"]*\bWR-\d/.test(s), 'no finding codes in stop reasons');
+});
+
+test('turbo-phase skill: a human action that did not work goes back to the owner with the lane\'s own diagnosis and shortest fix, never the same instructions; the second identical failure stops with the diagnosis', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const owner = s.slice(s.indexOf('### Owner questions'), s.indexOf('### Stale report'));
+  const at = owner.slice(owner.indexOf('**At a checkpoint.**'), owner.indexOf('**Delivery.**'));
+  assert.ok(at.includes('**A step that did not work**'), 'At a checkpoint sends a failed human action there');
+  const lane = owner.slice(owner.indexOf('**Lane questions.**'), owner.indexOf('**Owner-chosen fixes.**'));
+  assert.match(lane, /Done \(owner-only work\) → check the result and run the step again; a check that still fails: \*\*A step that did not work\*\*/);
+  const p = owner.slice(owner.indexOf('**A step that did not work.**'), owner.indexOf('**Delivery.**'));
+  assert.ok(p.length > 200, 'its own paragraph, before Delivery');
+  assert.ok(p.includes(HUMAN_ACTION_RULE), 'the rule verbatim, as the lanes get it');
+  for (const n of [
+    'read-only', 'turbo-run questions N --json', '`diagnosis`',
+    'turbo-run questions N --stop <plan id>-t<task number> --agent <agent id> --unmet --question "<', '--context "<',
+    'turbo-run ask N --action "<', 'elevated', 'one command', 'never the plan\'s instructions again',
+    'the second identical failure', 'owner question <plan id>-t<task number>: <',
+  ]) assert.ok(p.includes(n), n);
+  // a diagnosis never changes what it looks at
+  assert.match(p, /[Nn]ever change/);
 });
 
 test('turbo-phase skill (review 1, MAJOR 2): no "go on" past the hard gates — final-gate, uat, close, open threats, failed verification; close refuses in code too', () => {

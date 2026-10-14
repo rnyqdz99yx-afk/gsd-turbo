@@ -208,6 +208,40 @@ test('a deferred checkpoint opens at the stop; a checkpoint that is no plan task
   assert.throws(() => stopQuestion(root, '32', '32-09-t2', { agentId: '../x' }), /--agent/);
 });
 
+test('a human action whose check failed after the owner\'s Done: the lane\'s diagnosis and fix replace the plan\'s instructions on the card, a refresh keeps them, diagnosis counts the repeats', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  stopQuestion(root, '32', '32-11-t2', { agentId: AG });
+  const done = () => {
+    owner(root, '32-11-t2', { option: 1 });
+    markDelivered(root, '32', '32-11-t2', 'same-agent');
+  };
+  done();
+  const fix = 'Run Stop-Service demo-sync in an administrator terminal, then answer Done';
+  const why = 'The window is closed, but the sync service still runs in the background: closing the window does not stop it.';
+  const r = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: fix, context: why });
+  assert.deepEqual([r.status, r.question.state, r.question.question, r.question.context, r.question.diagnosis], ['stopped', 'open', `Action: ${fix}`, why, 1]);
+  assert.deepEqual(r.question.options.map((o) => o.signal), ['done']);
+  const kept = refreshQuestions(root, '32').find((q) => q.id === '32-11-t2');
+  assert.deepEqual([kept.question, kept.context, kept.diagnosis], [`Action: ${fix}`, why, 1], 'a refresh keeps the lane\'s words while the stop stands');
+  done();
+  const again = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'The service starts again by itself each time: tell me how you want it handled', context: 'Stopped twice, running again a minute later both times.' });
+  assert.deepEqual([again.question.diagnosis, again.question.question], [2, 'Action: The service starts again by itself each time: tell me how you want it handled']);
+  done();
+  const plain = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true });
+  assert.deepEqual([plain.question.question, plain.question.diagnosis], ['Action: Complete the email verification for the mail service account', 0], 'without words the plan\'s text again');
+  // the lane never rewords a decision or a verification: their cards keep the plan's text and options
+  const d = stopQuestion(root, '32', '32-09-t2', { agentId: AG, question: 'Pick one' });
+  assert.equal(d.question.question, 'Select the authentication provider');
+  assert.equal(d.question.diagnosis, 0);
+  // a checkpoint that is no plan task takes the new words the same way
+  stopQuestion(root, '32', '32-09-t7', { agentId: AG, kind: 'human-action', question: 'Log in to the deploy CLI' });
+  owner(root, '32-09-t7', { option: 1 });
+  markDelivered(root, '32', '32-09-t7', 'same-agent');
+  const gate = stopQuestion(root, '32', '32-09-t7', { agentId: AG, unmet: true, question: 'Run deploy-cli login --device, then answer Done', context: 'The saved login expired an hour ago.' });
+  assert.deepEqual([gate.question.question, gate.question.context, gate.question.diagnosis, gate.question.source], ['Action: Run deploy-cli login --device, then answer Done', 'The saved login expired an hour ago.', 1, 'stop']);
+});
+
 test('markDelivered records the path on the question and as a note of the step in progress', () => {
   const { root } = project();
   refreshQuestions(root, '32');

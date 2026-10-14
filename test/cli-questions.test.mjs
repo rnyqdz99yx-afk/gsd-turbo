@@ -103,6 +103,19 @@ test('the lane\'s side: --preanswers, --stop, --deliver, --delivered; --open lis
   assert.equal((await run(root, ['questions', '32', '--delivered', '32-09-t2', '--path', 'x'])).code, 1);
 });
 
+test('turbo-run questions --stop --unmet --question --context: a human action that failed its check after Done goes back to the owner with the lane\'s diagnosis', async () => {
+  const root = project();
+  withLane(root);
+  await run(root, ['questions', '32']);
+  await run(root, ['questions', '32', '--stop', '32-11-t2', '--agent', AG]);
+  await run(root, ['answer', '32', '32-11-t2', '--option', '1', '--by', 'session']);
+  await run(root, ['questions', '32', '--delivered', '32-11-t2', '--path', 'same-agent']);
+  const r = await run(root, ['questions', '32', '--stop', '32-11-t2', '--agent', AG, '--unmet', '--question', 'Run Stop-Service demo-sync in an administrator terminal', '--context', 'The sync service still runs after the window closed.']);
+  assert.equal(r.text, 'stopped: 32-11-t2 waits for the owner with your diagnosis (1); stop for the owner with the reason: owner question 32-11-t2');
+  const q = JSON.parse((await run(root, ['questions', '32', '--json'])).text).find((x) => x.id === '32-11-t2');
+  assert.deepEqual([q.question, q.context, q.diagnosis, q.state], ['Action: Run Stop-Service demo-sync in an administrator terminal', 'The sync service still runs after the window closed.', 1, 'open']);
+});
+
 // Runs bin/turbo-run.mjs with the given arguments at a moment both racers wait for: turbo-run's modules are loaded
 // first, so the two answers meet at the lock, not at start-up.
 const AT_BARRIER = `

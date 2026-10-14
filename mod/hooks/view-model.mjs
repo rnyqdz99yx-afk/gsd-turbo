@@ -1044,7 +1044,8 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
     const phase = String(n.phase);
     const last = seen[phase] ?? { status: null, red: null };
     if (n.status === 'done' && last.status !== 'done') out.push(t.phaseDone(phase));
-    if (STOPPED.has(n.status) && n.status !== last.status) out.push((n.status === 'failed' ? t.laneFailed : t.laneNeedsOwner)(phase, cut(laneReason(n.reason), 80)));
+    // an attended phase's lane record is its stopped session's: the owner is with the phase in their own session
+    if (STOPPED.has(n.status) && n.status !== last.status && !attendedLane(next, n)) out.push((n.status === 'failed' ? t.laneFailed : t.laneNeedsOwner)(phase, cut(laneReason(n.reason), 80)));
     const red = redOf(n);
     if (red !== null && red !== last.red) out.push(t.ciRed(phase, sup?.running ? ciFixing(n) : null, shownQuestions(next).length));
     after[phase] = { status: n.status, red, slot: slotOf(n) };

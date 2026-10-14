@@ -1457,6 +1457,9 @@ test('an attended phase\'s questions are the sitting\'s (journal 15:34Z): hidden
   // the hand-back brings the question back (a toast says so); while attended it raises none
   assert.deepEqual(toastsFor(calm({ attended: ['32'], questions: [] }), calm({ attended: ['32'], questions: [ask] })), []);
   assert.deepEqual(toastsFor(calm({ attended: ['32'], questions: [ask] }), calm({ attended: [], questions: [ask] })), ['New question (phase 32): “Run the live check now?”']);
+  // the stopped lane's record raises no "stopped — needs your answer" toast for an attended phase
+  assert.deepEqual(toastsFor(calm({ attended: ['32'] }), calm({ attended: ['32'] }, { status: 'needs-owner', reason: 'checkpoint 32-13 Task 2' })), []);
+  assert.equal(toastsFor(calm({}), calm({}, { status: 'needs-owner', reason: 'x' })).length, 1);
   const two = { ...lanes3({ attended: ['33'], questions: [{ ...ask, phase: '33' }] }, { status: 'done', step: null }, { status: 'needs-owner' }), lanes: lanes3({}, { status: 'done', step: null }, { status: 'needs-owner' }).lanes.slice(0, 2) };
   assert.ok(!lines(two).some((x) => /waits for this answer|Needed from you|Needs your answer/.test(x)), lines(two).join('\n'));
   assert.deepEqual([verdict(two).kind, verdict(two).text], ['attended', 'phase 33 is running in your session']);

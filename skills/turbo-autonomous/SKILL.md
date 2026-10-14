@@ -60,7 +60,7 @@ The rest of the phase's plans run here, in this session, with the user, and then
    2. Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" state-sync <N>` (best effort: a warning from it changes nothing).
    3. Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" attend <N> --done`. It clears the mark and runs `resume <N> --start` (with several lanes and the supervisor running, it prints `handed to the running supervisor`: the supervisor clears the mark and relaunches the lane at its next check). Show its output: the lane goes on with verification, the gates, UAT and close, and the next phases follow.
 
-   To pause the sitting instead, leave the mark: `/turbo-autonomous attend <N>` goes on here later, and `turbo-run attend <N> --done` (or `/turbo-autonomous resume <N>`) gives the phase back to its lane. While the mark stands no lane runs.
+   To pause the sitting instead, leave the mark: `/turbo-autonomous attend <N>` goes on here later, and `turbo-run attend <N> --done` (or `/turbo-autonomous resume <N>`) gives the phase back to its lane. While the mark stands no lane runs. After `/clear`, or in a new session, run `/turbo-autonomous attend <N>` again first: point 1 then names this session in the mark, and the turbo pane follows the sitting here.
 
 ## Otherwise: start the milestone run
 

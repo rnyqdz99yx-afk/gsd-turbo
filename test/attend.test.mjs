@@ -7,15 +7,15 @@ import { ACTION_PLAN, DECISION_PLAN, SITTING_PLAN, VERIFY_PLAN, writePhase } fro
 import { askOwner, deliveryState, markDelivered, readAnswers, readQuestions, refreshQuestions, stopQuestion, writeAnswers, writeQuestions } from '../lib/questions.mjs';
 import { answerQuestion, preAnswerText } from '../lib/answers.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
-import { attendFile, attendGates, attendedPhases, clearAttend, openPlans, releaseStops, sweepLateLanes, writeAttend } from '../lib/attend.mjs';
+import { attendFile, attendGates, attendMark, attendedPhases, clearAttend, openPlans, releaseStops, sweepLateLanes, writeAttend } from '../lib/attend.mjs';
 
 const AG = 'a0123456789abcdef';
 
 test('the attend mark: written once with its first time, listed in phase order, a broken one still listed, cleared once (Review Focus 1)', () => {
   const root = tmpDir('att');
   assert.deepEqual(attendedPhases(root), []);
-  assert.deepEqual(writeAttend(root, '10', { sessionId: '1a2b3c4d', now: new Date('2026-01-01T10:00:00Z') }), { phase: '10', at: '2026-01-01T10:00:00.000Z', sessionId: '1a2b3c4d' });
-  assert.deepEqual(writeAttend(root, '10', { now: new Date('2026-01-01T11:00:00Z') }), { phase: '10', at: '2026-01-01T10:00:00.000Z', sessionId: '1a2b3c4d' }, 'a second attend keeps the first mark');
+  assert.deepEqual(writeAttend(root, '10', { sessionId: '1a2b3c4d', now: new Date('2026-01-01T10:00:00Z') }), { phase: '10', at: '2026-01-01T10:00:00.000Z', sessionId: '1a2b3c4d', owner: null });
+  assert.deepEqual(writeAttend(root, '10', { now: new Date('2026-01-01T11:00:00Z') }), { phase: '10', at: '2026-01-01T10:00:00.000Z', sessionId: '1a2b3c4d', owner: null }, 'a second attend keeps the first mark');
   writeAttend(root, '4', { now: new Date('2026-01-01T12:00:00Z') });
   fs.writeFileSync(attendFile(root, '7'), ''); // broken
   fs.writeFileSync(`${attendFile(root, '9')}.tmp-123`, '{}'); // a half-written temp file is no mark
@@ -24,6 +24,17 @@ test('the attend mark: written once with its first time, listed in phase order, 
   assert.equal(clearAttend(root, '4'), true);
   assert.equal(clearAttend(root, '4'), false);
   assert.deepEqual(attendedPhases(root).map((a) => a.phase), ['7', '10']);
+});
+
+test('the attend mark names the owner\'s session that runs the sitting: a later attend from another session names that one, one without a session keeps it; attendMark reads it (journal ~12:05Z)', () => {
+  const root = tmpDir('att');
+  assert.equal(attendMark(root, '10'), null);
+  writeAttend(root, '10', { sessionId: '1a2b3c4d', owner: 'owner-1', now: new Date('2026-01-01T10:00:00Z') });
+  assert.deepEqual(attendMark(root, '10'), { at: '2026-01-01T10:00:00.000Z', owner: 'owner-1' });
+  assert.deepEqual(writeAttend(root, '10', { sessionId: 'ffff0000', owner: 'owner-2' }), { phase: '10', at: '2026-01-01T10:00:00.000Z', sessionId: '1a2b3c4d', owner: 'owner-2' }, 'the sitting goes on in a new session');
+  assert.equal(writeAttend(root, '10', { owner: null }).owner, 'owner-2');
+  fs.writeFileSync(attendFile(root, '7'), 'not json');
+  assert.deepEqual(attendMark(root, '7'), { at: null, owner: null }, 'a broken mark is still a mark, with no session');
 });
 
 test('openPlans: the plans without a SUMMARY; null without a single phase directory', () => {

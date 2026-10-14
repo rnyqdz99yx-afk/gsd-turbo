@@ -1390,25 +1390,31 @@ test('an attended phase (turbo-run attend N) is in the owner\'s session: a neutr
   const lane = { status: 'needs-owner', reason: 'checkpoint 32-10 Task 2', quiet: true, lastAt: '2026-01-01T10:01:00.000Z', agents: [agent({ state: 'quiet', lastAt: '2026-01-01T10:01:00.000Z' })] };
   const v = calm({ supervisor: STOPPED_SUP, attended: ['32'] }, lane);
   const l = lines(v);
-  assert.equal(l[0], 'Phase 32 is running in your session · step: plan execution · 5 of 9 plans done');
+  assert.equal(l[0], 'Phase 32 is running in your session · 5 of 9 plans done', 'the step is the stopped lane\'s: no step on the line');
   assert.ok(!l.some((x) => /last activity|silent|Reason|Executor|stopped|Needed from you/.test(x)), l.join('\n'));
   assert.ok(l.includes('  Nothing needed from you now'), l.join('\n'));
-  assert.ok(l.includes('  ▶ running plans — now'), l.join('\n'));
+  assert.ok(!l.some((x) => /Phase steps|— now|→/.test(x)), 'no steps or chain from the stopped lane\'s step');
   assert.deepEqual([verdict(v).kind, verdict(v).tone], ['attended', 'plain']);
   assert.deepEqual(bandStyle(v), {});
   assert.equal(textNode(render(v), 'Phase 32').children[0].props.color, undefined);
   assert.equal(bandLine(v), 'turbo · phase 32 is running in your session · CI ✓');
   const ru = lines({ ...v, ...RU });
-  assert.equal(ru[0], 'Фаза 32 идёт у вас в этой сессии · шаг: выполнение планов · 5 из 9 планов готово');
-  assert.ok(!ru.some((x) => /Нужны вы|остановилась|последнее действие|тишина|молчит/.test(x)), ru.join('\n'));
+  assert.equal(ru[0], 'Фаза 32 идёт у вас в этой сессии · 5 из 9 планов готово');
+  assert.ok(!ru.some((x) => /Нужны вы|остановилась|последнее действие|тишина|молчит|не работает/.test(x)), ru.join('\n'));
   assert.equal(bandLine({ ...v, ...RU }), 'turbo · фаза 32 идёт у вас в этой сессии · CI ✓');
-  // its own questions are still asked ahead
-  assert.equal(bandLine({ ...v, ...RU, questions: view().questions }), 'turbo · фаза 32 идёт у вас в этой сессии · ❓ 1 вопрос ждёт вас · CI ✓');
+  // attend stopped the supervisor (checkout mode): paused for the sitting, not down
+  assert.equal(l.at(-1), 'Supervisor paused: phase 32 is running in your session · phases 32–34');
+  assert.equal(ru.at(-1), 'Супервизор на паузе: фаза 32 идёт у вас в сессии · фазы 32–34');
+  assert.equal(textNode(render(v), 'Supervisor paused').props.color, undefined);
+  // its own questions are the sitting's, asked in the owner's session: not in the pane, the band or the count
+  assert.equal(bandLine({ ...v, ...RU, questions: view().questions }), 'turbo · фаза 32 идёт у вас в этой сессии · CI ✓');
   // slots mode: the other lanes are judged as ever; the attended one neither alarms nor hides them
   const two = { ...lanes3({ questions: [], attended: ['33'] }, { agents: [agent()] }, lane), lanes: lanes3({}, { agents: [agent()] }, lane).lanes.slice(0, 2) };
   assert.equal(verdict(two).kind, 'fine');
   const tl = lines(two);
-  assert.ok(tl.includes('Phase 33 · lane 2 is running in your session · step: quality checks · 2 of 4 plans done'), tl.join('\n'));
+  assert.ok(tl.includes('Phase 33 · lane 2 is running in your session · 2 of 4 plans done'), tl.join('\n'));
+  // another lane goes on: a supervisor that does not run is down, whatever the sitting
+  assert.equal(lines({ ...two, supervisor: STOPPED_SUP }).at(-1), 'Supervisor not running · phases 32–34');
   assert.ok(!tl.some((x) => /Needed from you/.test(x)), tl.join('\n'));
   assert.equal(bandLine(two), 'turbo · phase 32: running plans 5/9 · phase 33 is running in your session · all fine · CI ✓');
   const failed = { ...two, lanes: [{ ...two.lanes[0], status: 'failed' }, two.lanes[1]] };
@@ -1436,17 +1442,83 @@ test('gap planning: a lane past its planning whose planner works again says so i
   assert.equal(bandLine(calm({}, { step: 'execute', agents: [{ ...planner, state: 'completed' }] })), 'turbo · phase 32: running plans 5/9 · all fine · CI ✓');
 });
 
-test('review: an attended phase\'s own stopped question is answered in the sitting, never "the phase waits"; an attended phase beside finished lanes is not "done"', () => {
+test('an attended phase\'s questions are the sitting\'s (journal 15:34Z): hidden in the pane, its count, the band and the toasts until attend N --done; never "the phase waits"; beside finished lanes it is not "done"', () => {
   const ask = { id: 'ask-2', phase: '32', kind: 'decision', question: 'Run the live check now?', options: [{ label: 'Yes' }, { label: 'Later' }], stopped: true, state: 'open', rev: 1 };
   const v = calm({ supervisor: STOPPED_SUP, attended: ['32'], questions: [ask] }, { status: 'needs-owner', reason: 'owner question ask-2' });
   const l = lines(v);
-  assert.ok(!l.some((x) => /waits for this answer|Needed from you/.test(x)), l.join('\n'));
-  assert.ok(l.includes('│ you can answer ahead'), l.join('\n'));
-  assert.ok(l.includes('  You can answer the question above ahead'), l.join('\n'));
+  assert.ok(!l.some((x) => /waits for this answer|Needed from you|Needs your answer|Run the live check|answer ahead/.test(x)), l.join('\n'));
+  assert.ok(l.includes('  Nothing needed from you now'), l.join('\n'));
+  assert.equal(controls(render(v)).length, 0, 'no buttons');
+  assert.equal(verdict(v).kind, 'attended');
+  // another phase's question stays, and counts
+  const other = { ...ask, id: 'q9', phase: '34', stopped: false };
+  const both = calm({ supervisor: STOPPED_SUP, attended: ['32'], questions: [ask, other] }, { status: 'needs-owner' });
+  assert.ok(lines(both).includes('Needs your answer (1):'), lines(both).join('\n'));
+  assert.equal(bandLine(both), 'turbo · phase 32 is running in your session · ❓ 1 question waits for you · CI ✓');
+  // the hand-back brings the question back (a toast says so); while attended it raises none
+  assert.deepEqual(toastsFor(calm({ attended: ['32'], questions: [] }), calm({ attended: ['32'], questions: [ask] })), []);
+  assert.deepEqual(toastsFor(calm({ attended: ['32'], questions: [ask] }), calm({ attended: [], questions: [ask] })), ['New question (phase 32): “Run the live check now?”']);
+  // the stopped lane's record raises no "stopped — needs your answer" toast for an attended phase
+  assert.deepEqual(toastsFor(calm({ attended: ['32'] }), calm({ attended: ['32'] }, { status: 'needs-owner', reason: 'checkpoint 32-13 Task 2' })), []);
+  assert.equal(toastsFor(calm({}), calm({}, { status: 'needs-owner', reason: 'x' })).length, 1);
   const two = { ...lanes3({ attended: ['33'], questions: [{ ...ask, phase: '33' }] }, { status: 'done', step: null }, { status: 'needs-owner' }), lanes: lanes3({}, { status: 'done', step: null }, { status: 'needs-owner' }).lanes.slice(0, 2) };
-  assert.ok(!lines(two).some((x) => /waits for this answer|Needed from you/.test(x)), lines(two).join('\n'));
-  assert.deepEqual([verdict({ ...two, questions: [] }).kind, verdict({ ...two, questions: [] }).text], ['attended', 'phase 33 is running in your session']);
-  assert.equal(verdict({ ...two, ...RU, questions: [] }).text, 'фаза 33 идёт у вас в этой сессии');
+  assert.ok(!lines(two).some((x) => /waits for this answer|Needed from you|Needs your answer/.test(x)), lines(two).join('\n'));
+  assert.deepEqual([verdict(two).kind, verdict(two).text], ['attended', 'phase 33 is running in your session']);
+  assert.equal(verdict({ ...two, ...RU }).text, 'фаза 33 идёт у вас в этой сессии');
+});
+
+test('an attended phase shows its sitting (lane.sitting, the owner\'s session): what it does now, its last activity and helpers at work, calm whatever the silence; nothing of the stopped lane; no sitting known: the neutral line alone', () => {
+  const stopped = { status: 'needs-owner', reason: 'checkpoint 32-10 Task 2', quiet: true, step: 'fix', lastAt: '2026-01-01T10:01:00.000Z', agents: [agent({ state: 'quiet', lastAt: '2026-01-01T10:01:00.000Z' })] };
+  const sit = (over) => calm({ supervisor: STOPPED_SUP, attended: ['32'] }, { ...stopped, ...over });
+  // its executor at work: Now counts it, the helper row is drawn, the last activity is the session's
+  const exec = sit({ lastAt: '2026-01-01T10:59:30.000Z', sitting: { sessionId: 'owner-1', action: { tool: 'Agent', detail: 'Execute plan 13 of phase 32' } }, agents: [agent({ plan: '32-13', task: '1' })] });
+  assert.deepEqual(lines(exec).slice(0, 4), [
+    'Phase 32 is running in your session · 5 of 9 plans done',
+    '  Now: writing code for a plan',
+    '  last activity 10s ago',
+    '  Executor · plan 32-13, task 1 · editing lib/x.mjs · 6m',
+  ]);
+  assert.equal(textNode(render(exec), 'last activity').props.dimColor, true);
+  // its own last action while it works; a silent sitting (the owner thinks, or is away): its age alone, dim, no alarm
+  const own = sit({ lastAt: '2026-01-01T10:59:00.000Z', sitting: { sessionId: 'owner-1', action: { tool: 'Bash', detail: 'node scripts/live-check.mjs' } }, agents: [] });
+  assert.deepEqual(lines({ ...own, ...RU }).slice(1, 3), ['  Сейчас: выполняет команду: node scripts/live-check.mjs', '  последнее действие 1 мин назад']);
+  const idle = sit({ lastAt: '2026-01-01T10:20:00.000Z', sitting: { sessionId: 'owner-1', action: null }, agents: [agent({ state: 'completed', lastAt: '2026-01-01T10:15:00.000Z' })] });
+  assert.deepEqual(lines({ ...idle, ...RU }).slice(1, 2), ['  последнее действие 40 мин назад']);
+  assert.ok(!lines({ ...idle, ...RU }).some((x) => /тишина|молчит|Нужны вы|Сейчас|закончил/.test(x)), lines({ ...idle, ...RU }).join('\n'));
+  assert.equal(textNode(render({ ...idle, ...RU }), 'последнее действие').props.dimColor, true);
+  assert.deepEqual([verdict(idle).kind, bandStyle(idle)], ['attended', {}]);
+  // the sitting's gap planner: Now names it; the band stays neutral
+  const gap = sit({ step: 'uat', sitting: { sessionId: 'owner-1', action: null }, agents: [agent({ type: 'gsd-planner', plan: null, task: null })] });
+  assert.equal(lines(gap)[1], '  Now: writing plans to close the gaps the checks found');
+  assert.equal(bandLine(gap), 'turbo · phase 32 is running in your session · CI ✓');
+  // no sitting in the view (an older turbo-run, or a session not known): the stopped lane's life is never drawn
+  assert.ok(!lines(sit({})).some((x) => x.startsWith('  ')  && !/Nothing needed|→|✓|▶|·/.test(x)), lines(sit({})).join('\n'));
+  assert.equal(lines(sit({}))[1], '');
+});
+
+test('review: a paused or cut-off sitting keeps its hidden questions in sight (lane.sitting.questions): a dim line with how to go on, never a green "nothing needed"; its question to the owner in flight says so; unknown tools read as working', () => {
+  const paused = calm({ supervisor: STOPPED_SUP, attended: ['32'] }, { status: 'needs-owner', lastAt: null, agents: [], sitting: { sessionId: null, action: null, questions: 2 } });
+  const ru = lines({ ...paused, ...RU });
+  assert.equal(ru[1], '  2 вопроса фазы — в вашей сессии · продолжить: /turbo-autonomous attend 32 · вернуть фазу: turbo-run attend 32 --done');
+  assert.equal(textNode(render({ ...paused, ...RU }), '2 вопроса фазы').props.dimColor, true);
+  assert.ok(ru.includes('  Вопросы фазы (2) ждут вас в вашей сессии') && !ru.some((x) => /ничего не нужно|Нужны вы/.test(x)), ru.join('\n'));
+  assert.equal(textNode(render({ ...paused, ...RU }), 'Вопросы фазы (2)').props.color, undefined, 'plain, not red, not green');
+  assert.equal(whatNext(paused, paused.lanes[0]).chain, null);
+  // its session asks the owner now
+  const asking = calm({ supervisor: STOPPED_SUP, attended: ['32'] }, { status: 'needs-owner', lastAt: '2026-01-01T10:59:00.000Z', agents: [], sitting: { sessionId: 'o1', action: { tool: 'AskUserQuestion', detail: 'Go?' }, questions: 0 } });
+  const ra = lines({ ...asking, ...RU });
+  assert.equal(ra[1], '  Сейчас: ждёт вашего ответа в сессии');
+  assert.ok(ra.includes('  Ваша сессия ждёт вашего ответа') && !ra.some((x) => /ничего не нужно|AskUserQuestion/.test(x)), ra.join('\n'));
+  // a tool without words (an MCP tool, say): the generic word, never its raw name
+  const mcp = calm({ supervisor: STOPPED_SUP, attended: ['32'] }, { status: 'needs-owner', lastAt: '2026-01-01T10:59:00.000Z', agents: [], sitting: { sessionId: 'o1', action: { tool: 'mcp__db__query', detail: 'select 1' }, questions: 0 } });
+  assert.equal(lines(mcp)[1], '  Now: working');
+  assert.ok(lines(mcp).includes('  Nothing needed from you now'));
+  // slots mode: the run's needs say it too
+  const two = { ...lanes3({ questions: [], attended: ['33'] }, { agents: [agent()] }, { sitting: { sessionId: null, action: null, questions: 1 } }), lanes: lanes3({}, { agents: [agent()] }, { sitting: { sessionId: null, action: null, questions: 1 } }).lanes.slice(0, 2) };
+  assert.ok(lines(two).includes("  The phase's questions (1) wait for you in your session"), lines(two).join('\n'));
+  // the supervisor line: an annotate lane or a finished lane beside the sitting does not make the supervisor "not running"
+  const withDone = { ...paused, lanes: [paused.lanes[0], { ...paused.lanes[0], phase: '31', status: 'done' }, { ...paused.lanes[0], job: 'annotate', phase: null, key: 'annotate' }] };
+  assert.ok(lines(withDone).includes('Supervisor paused: phase 32 is running in your session · phases 32–34'), lines(withDone).join('\n'));
 });
 
 test('review: remaining [] says nothing about the end of the run; a lane being merged while its phase asks the owner waits there', () => {

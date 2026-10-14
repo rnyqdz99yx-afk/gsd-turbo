@@ -4,7 +4,8 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
+import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
+import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
 import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
 import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
@@ -876,6 +877,14 @@ function cancelResume(root, id) {
   if (clearResumeRequest(root, id)) out(`cancelled the resume of phase ${id} that the supervisor had not taken yet`);
 }
 
+// spec §8: the owner's session this attend runs in (CLAUDE_CODE_SESSION_ID), recorded in the mark: the view reads the
+// sitting's progress from its transcript. dir: the checkout the sitting runs in; an attend run from elsewhere (slots
+// mode: the skill then runs attend again in the slot) names no session. null when none is known (the view then shows
+// the phase without its progress).
+function sittingSession(dir) {
+  return cwdInside(process.cwd(), dir) ? ownSessionId({ env: process.env }) : null;
+}
+
 // How long attend watches for a lane session that a killed supervisor's claude child registers late: 5 s, or
 // TURBO_ATTEND_SETTLE_MS (0 to 60000).
 function attendSettleMs() {
@@ -904,7 +913,7 @@ async function attend(root, id) {
   // a daemon that ran (or a lease that named one) may have left a claude --bg child that registers a lane late
   const hadDaemon = [sup.pid, readJson(lockPath(root), null)?.pid].some((p) => Number.isInteger(p) && p > 0);
   stopDaemon(root, sup);
-  writeAttend(root, id, { sessionId: sup.lane.sessionId || null });
+  writeAttend(root, id, { sessionId: sup.lane.sessionId || null, owner: sittingSession(root) });
   cancelResume(root, id);
   let code = stopLanes(root, sup);
   if (hadDaemon) {
@@ -938,7 +947,7 @@ async function attendLane(root, id, sup) {
   if (!plans.length) die(`phase ${id} has no plan without a summary: nothing to attend. For owner-only UAT items run /gsd-verify-work ${id} in ${lane.slotPath}, then /turbo-autonomous resume ${id}`);
   const gates = attendGates({ mode: lane.mode, next: nextStep(readProgress(root, id)) });
   if (gates.refuse) die(`phase ${id} is not ready to attend: ${gates.refuse}; nothing was stopped`);
-  writeAttend(root, id, { sessionId: lane.sessionId || null });
+  writeAttend(root, id, { sessionId: lane.sessionId || null, owner: sittingSession(lane.slotPath) });
   cancelResume(root, id);
   const warn = (line) => process.stderr.write(`warn: ${line}\n`);
   const claude = daemonAware(createClaude({ root }), { log: warn });

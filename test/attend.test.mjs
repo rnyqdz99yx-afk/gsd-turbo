@@ -8,6 +8,7 @@ import { askOwner, deliveryState, markDelivered, readAnswers, readQuestions, ref
 import { answerQuestion, preAnswerText } from '../lib/answers.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 import { attendFile, attendGates, attendMark, attendedPhases, clearAttend, openPlans, releaseStops, sweepLateLanes, writeAttend } from '../lib/attend.mjs';
+import { NOT_RUNNING, SERVICE_GONE } from '../lib/claude.mjs';
 
 const AG = 'a0123456789abcdef';
 
@@ -132,6 +133,26 @@ test('sweepLateLanes keeps to its window by the clock: slow session lists eat in
   });
   assert.deepEqual([lists, slept], [2, [1000, 1000]]);
   assert.ok(clock <= 5000 + 2000, `ended at ${clock} ms: within the window plus the last list`);
+});
+
+test('sweepLateLanes: a session the stop finds not running (a stale record of a stopped background service) is no late lane: not reported, not stopped again while listed the same way; stopped once it is listed running again', async () => {
+  const lane = (id, state, pid = 0) => ({ id, name: 'lane', state, pid });
+  const seq = [[lane('old1', 'blocked', 4242), lane('old2', 'blocked')], [lane('old1', 'blocked', 4242), lane('old2', 'blocked')], [lane('old1', 'working', 5150), lane('old2', 'blocked')]];
+  let calls = 0;
+  const stops = [];
+  let clock = 0;
+  const r = await sweepLateLanes({
+    list: () => seq[Math.min(calls++, seq.length - 1)],
+    stop: (id) => {
+      stops.push(id);
+      if (stops.length > 2) return 'stopped';
+      return id === 'old1' ? SERVICE_GONE : NOT_RUNNING;
+    },
+    isLane: () => true,
+    settleMs: 3000, stepMs: 1000, now: () => clock, sleep: async (ms) => { clock += ms; },
+  });
+  assert.deepEqual(stops, ['old1', 'old2', 'old1'], 'the second list changes nothing; the third lists old1 running under a new pid');
+  assert.deepEqual(r, { stopped: ['old1'], failed: [] });
 });
 
 test('releaseStops leaves a lane\'s own question alone: it belongs to no agent, and the owner answers it in the sitting or after (v0.3.3)', () => {

@@ -670,16 +670,33 @@ function printLeftovers({ gates, docs }) {
   for (const p of docs) out(`docs commits off: phase ${p} (run: turbo-run gates docs-restore ${p})`);
 }
 
+// The claude of the owner's commands that stop lane sessions (stop, attend): stop and rm bring Claude Code's idle-exited
+// background service up (lib/claude.mjs daemonAware); a session whose service is gone for this config directory and that
+// no process carries counts as stopped, said once per session in one plain line (in lang). Warnings go to stderr.
+const goneTold = new Set();
+function ownerClaude(root) {
+  let ru = false;
+  try { ru = loadConfig(root).lang === 'ru'; } catch { /* broken config: English */ }
+  const warn = (line) => process.stderr.write(`warn: ${line}\n`);
+  const onGone = (id) => {
+    if (goneTold.has(id)) return;
+    goneTold.add(id);
+    out(ru ? `фоновая служба Claude Code не работает и процесса сессии ${id} нет — считаю полосу остановленной` : `Claude Code's background service is not running and no process carries lane session ${id}: counted as stopped`);
+  };
+  return daemonAware(createClaude({ root }), { log: warn, onGone });
+}
+
 // Runs once the daemon is gone. Stops the lane recorded before and after its death, and every
 // alive lane session of this project: a daemon stopped while launching never records the session
 // it started. A failed `claude stop` counts as stopped only when claude no longer lists the
 // session alive.
-// A job that Claude Code's idle-exited background service no longer runs (no pid) is stopped as it is; one it runs
-// gets the service kicked up and its stop tried once more (lib/claude.mjs daemonAware).
+// A job that Claude Code's idle-exited background service no longer runs (no pid) is stopped as it is, and so is one
+// listed alive when the service is gone and no process carries it; one it may run gets the service kicked up and its
+// stop tried once more (lib/claude.mjs daemonAware).
 function stopLanes(root, before) {
   const after = readJson(supPath(root), null);
   const warn = (line) => process.stderr.write(`warn: ${line}\n`);
-  const claude = daemonAware(createClaude({ root }), { log: warn });
+  const claude = ownerClaude(root);
   const list = () => { try { return claude.list(); } catch (e) { return e; } };
   let ok = true;
   const ids = new Set([...supervisorLanes(before, root), ...supervisorLanes(after, root)].map((l) => l.sessionId).filter(Boolean));
@@ -917,7 +934,7 @@ async function attend(root, id) {
   cancelResume(root, id);
   let code = stopLanes(root, sup);
   if (hadDaemon) {
-    const claude = daemonAware(createClaude({ root }), { log: (line) => process.stderr.write(`warn: ${line}\n`) });
+    const claude = ownerClaude(root);
     const late = await sweepLateLanes({ list: () => claude.list(), stop: (x) => claude.stop(x), isLane: (a) => projectLaneAgents([a], root).length === 1, settleMs: attendSettleMs() });
     for (const x of late.stopped) out(`stopped late lane session ${x} (started by the stopped supervisor)`);
     for (const f of late.failed) process.stderr.write(`warn: ${f.id ? `late lane session ${f.id} not stopped` : 'cannot list sessions after the stop'}: ${f.error}
@@ -950,7 +967,7 @@ async function attendLane(root, id, sup) {
   writeAttend(root, id, { sessionId: lane.sessionId || null, owner: sittingSession(lane.slotPath) });
   cancelResume(root, id);
   const warn = (line) => process.stderr.write(`warn: ${line}\n`);
-  const claude = daemonAware(createClaude({ root }), { log: warn });
+  const claude = ownerClaude(root);
   let code = 0;
   const ids = new Set([lane.sessionId].filter(Boolean));
   const name = laneSessionName(root, lane.key);

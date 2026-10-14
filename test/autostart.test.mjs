@@ -172,13 +172,36 @@ test('a path a logon command cannot carry (a line break, a JavaScript line separ
   const mac = setup({ platform: 'darwin' });
   assert.equal(runAutostart('on', { ...mac.opts, root: path.join(mac.root, '100%') }).code, 0);
   // the config directory a launcher sets (a line break would add lines to a unit file)
-  for (const [platform, bad] of [['linux', 'a\nExecStartPre=/bin/sh'], ['win32', 'a b'], ['win32', '%APPDATA%'], ['darwin', 'a\rb']]) {
+  for (const [platform, bad] of [['linux', 'a\nExecStartPre=/bin/sh'], ['win32', 'a\u2028b'], ['win32', '%APPDATA%'], ['darwin', 'a\rb']]) {
     const s = setup({ platform });
     s.env.CLAUDE_CONFIG_DIR = path.join(s.home, bad);
     const r = runAutostart('on', s.opts);
     assert.equal(r.code, 1, `${platform} ${JSON.stringify(bad)}`);
     assert.match(r.lines[0], /^autostart not set: the path of the Claude Code config directory has a character/);
     assert.deepEqual([s.calls, fs.readdirSync(s.home)], [[], []]);
+  }
+  // no config directory set: the launcher's own directory, ~/.claude, is checked
+  const w = setup();
+  delete w.env.CLAUDE_CONFIG_DIR;
+  const pct = runAutostart('on', { ...w.opts, home: path.join(w.home, '100%') });
+  assert.equal(pct.code, 1);
+  assert.match(pct.lines[0], /the Claude Code config directory has a character/);
+  assert.deepEqual([w.calls, fs.readdirSync(w.home)], [[], []]);
+});
+
+test('macOS and Linux: a relative CLAUDE_CONFIG_DIR goes into the login job as the directory turbo uses now', () => {
+  for (const platform of ['darwin', 'linux']) {
+    const s = setup({ platform, answers: { 'systemctl is-enabled': { stdout: 'enabled\n' } } });
+    const abs = path.join(s.home, 'rel-cfg');
+    s.env.CLAUDE_CONFIG_DIR = path.relative(process.cwd(), abs);
+    assert.equal(runAutostart('on', s.opts).code, 0, platform);
+    if (platform === 'darwin') {
+      const xml = fs.readFileSync(path.join(s.home, 'Library', 'LaunchAgents', `gsd-turbo.${s.key}.plist`), 'utf8');
+      assert.ok(xml.includes(`<key>CLAUDE_CONFIG_DIR</key>\n    <string>${abs}</string>`), xml);
+    } else {
+      const unit = fs.readFileSync(path.join(s.home, '.config', 'systemd', 'user', `gsd-turbo-${s.key}.service`), 'utf8');
+      assert.ok(unit.includes(`Environment="CLAUDE_CONFIG_DIR=${abs.replace(/\\/g, '\\\\')}"`), unit);
+    }
   }
 });
 

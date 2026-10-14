@@ -302,6 +302,9 @@ test('F1: ask --sign asks for the rows that wait for a signature; uat sign signs
   assert.equal(r.code, 0, r.text);
   const q = JSON.parse(r.text).question;
   assert.deepEqual([q.id, q.kind, q.sign, q.autoOk, q.options.map((o) => [o.label, o.recommended])], ['ask-1', 'decision', [2], false, [['Accept', false], ['Not now', false]]]);
+  // review 1: the card names the rows its Accept signs, in turbo's words, and the signature is bound to them
+  assert.equal(q.context, 'The automatic checks passed; only your signature is left. To sign: 2. Owner signs the release. the release is signed');
+  assert.deepEqual(q.signText, ['Owner signs the release. the release is signed']);
   const sign = async (id) => [await p.run('sign', '3', '--answer', id), p.lines.at(-1)];
   let [code, line] = await sign('ask-1');
   assert.equal(code, 1);
@@ -317,28 +320,61 @@ test('F1: ask --sign asks for the rows that wait for a signature; uat sign signs
   [code, line] = await sign('ask-2');
   assert.equal(code, 1);
   assert.match(line, /ask-2 was answered by auto, not by the owner/);
-  // an Accept on another kind of question signs nothing
-  assert.equal((await cmd('ask', '3', '--question', 'Go on with the next step?', '--option', 'Accept|Go on', '--option', 'Stop|Stop here', '--recommended', '1')).code, 0);
-  assert.equal((await cmd('answer', '3', 'ask-3', '--option', '1', '--by', 'session')).code, 0);
+  // nor does a standing rule
+  assert.equal((await cmd('ask', '3', '--sign', '2', ...Q)).code, 0);
+  answerQuestion({ root: p.root, phase: '3', id: 'ask-3', option: 1, by: 'standing-rule', commit: () => ({ committed: true }) });
   [code, line] = await sign('ask-3');
   assert.equal(code, 1);
-  assert.match(line, /ask-3 is no sign-off card/);
-  const before = fs.readFileSync(path.join(p.dir, '03-UAT.md'), 'utf8');
+  assert.match(line, /ask-3 was answered by standing-rule, not by the owner/);
+  // an Accept on another kind of question signs nothing
+  assert.equal((await cmd('ask', '3', '--question', 'Go on with the next step?', '--option', 'Accept|Go on', '--option', 'Stop|Stop here', '--recommended', '1')).code, 0);
+  assert.equal((await cmd('answer', '3', 'ask-4', '--option', '1', '--by', 'session')).code, 0);
+  [code, line] = await sign('ask-4');
+  assert.equal(code, 1);
+  assert.match(line, /ask-4 is no sign-off card/);
+  const uatFile = path.join(p.dir, '03-UAT.md');
+  const before = fs.readFileSync(uatFile, 'utf8');
   assert.equal(parseUat(before).tests[1].result, 'pending', 'nothing signed so far');
   // the owner's Accept signs test 2, and only test 2
   assert.equal((await cmd('ask', '3', '--sign', '2', ...Q)).code, 0);
-  assert.equal((await cmd('answer', '3', 'ask-4', '--option', '1', '--by', 'telegram')).code, 0);
-  [code, line] = await sign('ask-4');
+  assert.equal((await cmd('answer', '3', 'ask-5', '--option', '1', '--by', 'telegram')).code, 0);
+  // the row changed after the owner was asked: nothing is signed until it is as they saw it
+  fs.writeFileSync(uatFile, before.replace('expected: the release is signed', 'expected: the contract is signed'));
+  [code, line] = await sign('ask-5');
+  assert.equal(code, 1);
+  assert.match(line, /test 2 changed since the owner was asked/);
+  fs.writeFileSync(uatFile, before);
+  // the lane takes the answer (deliver), signs, then marks it delivered
+  assert.match((await cmd('questions', '3', '--deliver')).text, /^ask-5 · your own question/m);
+  [code, line] = await sign('ask-5');
   assert.equal(code, 0, line);
-  assert.equal(line, 'signed 1 row(s) in .planning/phases/03-demo/03-UAT.md: 2 (owner answer ask-4)');
-  const tests = parseUat(fs.readFileSync(path.join(p.dir, '03-UAT.md'), 'utf8')).tests;
-  assert.deepEqual([tests[1].result, tests[1].fields.source], ['pass', 'owner']);
-  assert.match(tests[1].fields.signed, /^owner answer ask-4 \(telegram, \d{4}-\d\d-\d\dT[\d:.]+Z\)$/);
+  assert.equal(line, 'signed 1 row(s) in .planning/phases/03-demo/03-UAT.md: 2 (owner answer ask-5)');
+  const tests = parseUat(fs.readFileSync(uatFile, 'utf8')).tests;
+  assert.deepEqual([tests[1].result, tests[1].fields.source, tests[1].fields.class], ['pass', 'owner', 'D']);
+  assert.match(tests[1].fields.signed, /^owner answer ask-5 \(telegram, \d{4}-\d\d-\d\dT[\d:.]+Z\)$/);
   assert.deepEqual([tests[0].fields.source, tests[0].fields.harness], ['turbo-uat', 'static']);
   assert.equal(await p.run('owner-request', '3', '--json'), 0);
   assert.equal(JSON.parse(p.lines.at(-1)).needsOwner, false);
-  [code, line] = await sign('ask-4');
+  [code, line] = await sign('ask-5');
   assert.deepEqual([code, line], [0, 'nothing to sign in .planning/phases/03-demo/03-UAT.md: 2 already closed']);
+  assert.equal((await cmd('questions', '3', '--delivered', 'ask-5', '--path', 'lane')).code, 0);
+  // a delivered lane question is gone at the next refresh: it signs nothing any more
+  assert.equal((await cmd('questions', '3')).code, 0);
+  [code, line] = await sign('ask-5');
+  assert.equal(code, 1);
+  assert.match(line, /no question ask-5 in phase 3/);
   assert.equal(await p.run('sign', '3'), 2);
   assert.equal(await p.run('sign', '3', '--answer', 'x'), 2);
+});
+
+// review 1 (F1): a uat step that runs again after the owner signed has nothing left to record: an empty record
+// writes nothing, so it never stales the report with a new updated: line
+test('uat record of an empty results array leaves the UAT file as it is', async () => {
+  const p = project();
+  const uatFile = path.join(p.dir, '03-UAT.md');
+  const before = fs.readFileSync(uatFile, 'utf8');
+  fs.writeFileSync(path.join(p.root, 'r.json'), '[]');
+  assert.equal(await p.run('record', '3', '--results', path.join(p.root, 'r.json')), 0);
+  assert.match(p.lines.at(-1), /^recorded 0 result\(s\) in \.planning\/phases\/03-demo\/03-UAT\.md: /);
+  assert.equal(fs.readFileSync(uatFile, 'utf8'), before);
 });

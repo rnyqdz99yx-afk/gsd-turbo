@@ -349,4 +349,11 @@ test('turbo-phase skill: a UAT stop for the owner\'s signature is a sign-off car
   const lane = s.slice(s.indexOf('**Lane questions.**'), s.indexOf('**Owner-chosen fixes.**'));
   for (const n of ['turbo-run uat sign N --answer <id>', 'gsd-tools commit', 'Not now', 'never sign rows any other way']) assert.ok(lane.includes(n), n);
   assert.ok(lane.indexOf('turbo-run uat sign N --answer <id>') < lane.lastIndexOf('--path lane'), 'signed before it is marked delivered');
+  // review 1: a sign-off card that signs nothing stops the way every stop does (answers committed, gates and STATE.md
+  // restored), without a new card; a step run again after the signature does not dispatch turbo-uat for nothing
+  assert.match(lane, /points 0 and 1 of \*\*Stopping early\*\*, then `turbo-run lane-status N needs-owner --reason [^`]+` \(no new card\), then its point 3/);
+  const p2 = section(s, 'uat').split('\n').find((l) => l.startsWith('2. '));
+  assert.ok(p2.indexOf('`turbo-run uat plan N`') > 0 && p2.indexOf('`turbo-run uat plan N`') < p2.indexOf('Agent(subagent_type="turbo-uat"'), p2);
+  assert.ok(p2.includes('no `items`'), p2);
+  assert.ok(section(s, 'uat').split('\n').find((l) => l.startsWith('1. ')).includes("the owner's answers"));
 });

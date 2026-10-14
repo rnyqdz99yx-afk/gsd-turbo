@@ -422,10 +422,12 @@ test('verificationRoute: only planning files changed since the report → verifi
   r.commit('uat');
   r.write('.planning/STATE.md', 's2\n');
   r.write('.planning/turbo/run/p3.json', '{}');
+  // the owner's answers (a sign-off card's Accept among them, F1 review 1) change no human item either
+  r.write('.planning/turbo/answers/p3.json', '[]');
   const ok = verificationRoute({ root: r.root, phaseDir });
   assert.deepEqual({ ...ok, planning: ok.planning.sort() }, {
     route: 'verifier-only', uatOnly: true, report: `${dir}/03-VERIFICATION.md`, reported: 'human_needed', since, review, code: [],
-    planning: ['.planning/STATE.md', `${dir}/03-UAT.md`, '.planning/turbo/run/p3.json'].sort(),
+    planning: ['.planning/STATE.md', `${dir}/03-UAT.md`, '.planning/turbo/run/p3.json', '.planning/turbo/answers/p3.json'].sort(),
     note: `regression gate and code review not re-run: counted from the code review at ${review.slice(0, 12)}`,
   });
   // a planning change beyond the UAT file, STATE.md and turbo's run files (a plan, the roadmap): still verifier-only,

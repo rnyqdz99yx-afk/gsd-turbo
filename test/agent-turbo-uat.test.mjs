@@ -51,7 +51,7 @@ test("turbo-uat agent: static code properties are checked with git grep and git 
     '"judgment-tier"', '"unverified-prohibition"', '"human review recommended"', '"accept or reject"', 'never C or D for that wording alone',
     '`static code property`', '`git grep`', 'never a recursive grep of the working tree', '`git diff`', '`harness: static`',
     '`playwright-script`, `http`, `socket` or `static`', 'needs a person to read: <what>', 'never a stop',
-    'Static checks need only `prepare`',
+    'Static checks need only `prepare`', 'a search never proves behaviour', 'keeps the rule `observable` and is checked on the stand',
     'Never send global keystrokes', 'set_foreground=True', '`Chrome_WidgetWin_1`', '`#32768`', 'strip()',
   ];
   for (const n of needles) assert.ok(s.includes(n), n);

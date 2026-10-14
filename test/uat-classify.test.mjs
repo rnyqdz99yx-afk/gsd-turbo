@@ -221,9 +221,9 @@ test('F1: a static code property is class A with its own rule, never left to the
     'No source changes outside lib/a.mjs and test/a.test.mjs',
     'MUST NOT store the raw card number in plaintext',
     'git grep finds no TODO left in the parser',
-    'The config loader has no hard-coded fallback URL',
+    'The config loader has no hard-coded fallback address',
     'No new dependency is added for the date math',
-    'MUST NOT add a third-party dependency for the date math',
+    'По запрету 2 модуль расчёта не трогают',
     'В исходном коде нет захардкоженного адреса',
     'Запрет 2: правки вне модуля расчёта не нужны',
   ]) assert.deepEqual(rule(t), STATIC, t);
@@ -231,9 +231,20 @@ test('F1: a static code property is class A with its own rule, never left to the
   assert.deepEqual(rule('MUST NOT commit private keys to the repository'), ['D', 'keys']);
   assert.deepEqual(rule('MUST NOT query the production database from the job'), ['C', 'production']);
   assert.deepEqual(rule('Message appears on the partner platform via a third-party API'), ['C', 'third-party platform']);
+  // review 1: anything third-party stays live, a dependency too (a checklist line, never a stop)
+  for (const t of ['The third-party package uploads the clip and the page shows its link', 'The third-party library posts the chat message to the streaming site', 'MUST NOT add a third-party dependency for the date math']) {
+    assert.deepEqual(rule(t), ['C', 'third-party platform'], t);
+  }
   assert.deepEqual(rule('MUST NOT log the session token'), ['B', 'authenticated']);
-  // runtime wording without a static marker stays observable; a lowercase "must not" is ordinary prose
-  assert.deepEqual(rule('The settings page must not show the password'), ['A', 'observable']);
+  // review 1: an item that names what the running app shows or serves stays observable, static hints and MUST NOT
+  // included; only an explicit search or diff of the code goes before it
+  for (const t of [
+    'The settings page must not show the password', 'The page MUST NOT show the password',
+    'Files outside the upload limit show an error toast', 'The browser loads /static/app.js with status 200',
+    'The source code viewer page renders', 'The page shows a prohibition notice',
+    'Prohibition 3 (unverified-prohibition): the receipt page MUST NOT show the full card number',
+  ]) assert.deepEqual(rule(t), ['A', 'observable'], t);
+  assert.deepEqual(rule('git grep finds no TODO in the response handler'), STATIC);
   assert.equal(cls('Everything feels fast'), null);
   assert.deepEqual(uatPlan([{ number: 1, name: 'Prohibition 2: no source changes outside lib/a.mjs', expected: 'accept or reject', result: 'pending' }])
     .map((i) => [i.test, i.class, i.rule]), [[1, 'A', 'static code property']]);

@@ -110,6 +110,16 @@ test('unsupported without a .planning project', () => {
   const e = env();
   const r = doctor({ root: null, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.291'), claudeBin: BIN });
   assert.equal(r.mode, 'unsupported');
+  // outside a project only the project check fails: the installed gsd-core and its version are still found
+  const by = Object.fromEntries(r.checks.map((c) => [c.name, c]));
+  assert.deepEqual([by.project.ok, by.project.detail], [false, 'no .planning directory found']);
+  assert.deepEqual([by['gsd-core'].ok, by['gsd-core'].detail], [true, e.core]);
+  assert.equal(by['gsd-version'].ok, true, by['gsd-version'].detail);
+  assert.equal(by['gsd-init-manager'], undefined, 'nothing to init without a project');
+  // no gsd-core installed: that one fails too
+  fs.rmSync(e.core, { recursive: true });
+  const none = doctor({ root: null, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.291'), claudeBin: BIN });
+  assert.deepEqual(none.checks.filter((c) => c.name === 'gsd-core').map((c) => [c.ok, c.detail]), [[false, 'gsd-core not found']]);
 });
 
 test('claude runs as cmd + prefix args without a shell', () => {

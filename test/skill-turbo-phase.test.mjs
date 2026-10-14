@@ -284,6 +284,16 @@ test('turbo-phase skill: a human action that did not work goes back to the owner
   assert.match(p, /[Nn]ever change/);
 });
 
+test('turbo-phase skill: the merged Nyquist worktree goes through turbo-run worktrees prune, dry run first, never forced; a conflict keeps the unmerged work', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const point = section(s, 'fanout').split('\n').find((l) => l.startsWith('6. '));
+  const dry = point.indexOf('`turbo-run worktrees prune <path> --dry-run`');
+  const real = point.indexOf('`turbo-run worktrees prune <path>`');
+  assert.ok(dry > point.indexOf('git merge --no-ff <branch>') && real > dry, 'merge, dry run, then the removal');
+  for (const n of ['locks', 'this session', '`kept <path>: <why>`', 'name the line in the note', 'never force', 'never delete it by hand', 'git merge --abort', 'leave the worktree and its branch']) assert.ok(point.includes(n), n);
+  assert.ok(!point.includes('git worktree remove') && !point.includes('git branch -d'), 'no hand removal the harness lock refuses');
+});
+
 test('turbo-phase skill (review 1, MAJOR 2): no "go on" past the hard gates — final-gate, uat, close, open threats, failed verification; close refuses in code too', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
   const early = s.slice(s.indexOf('### Stopping early'), s.indexOf('### Push and CI'));

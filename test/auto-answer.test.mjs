@@ -5,9 +5,9 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { DECISION_PLAN, VERIFY_PLAN, ACTION_PLAN, writePhase } from './helpers/plans.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
-import { askOwner, readAnswers, readQuestions, refreshQuestions, stopQuestion, writeQuestions } from '../lib/questions.mjs';
-import { AnswerRefused, answerQuestion, undoAutoAnswer } from '../lib/answers.mjs';
-import { autoAnswerMinutes, autoChoice, autoTick, denied } from '../lib/auto-answer.mjs';
+import { askOwner, classifyQuestions, readAnswers, readQuestions, refreshQuestions, stopQuestion, writeQuestions } from '../lib/questions.mjs';
+import { AnswerRefused, answerQuestion, deliveryMessage, laneDeliveryMessage, preAnswerText, undoAutoAnswer } from '../lib/answers.mjs';
+import { autoAnswerMinutes, autoChoice, autoTick, denied, deniedPlan } from '../lib/auto-answer.mjs';
 import { readInbox } from '../lib/inbox.mjs';
 import { writeAttend } from '../lib/attend.mjs';
 import { msg } from '../lib/messages.mjs';
@@ -18,7 +18,7 @@ const opt = (label, more = {}) => ({ label, description: '', recommended: false,
 const Q = (over = {}) => ({
   id: '32-01-t2', phase: '32', plan: '32-01', task: '2', kind: 'decision', gate: 'blocking', header: '32-01 T2',
   question: 'Which cache to use?', context: 'Two ways to keep the cache.', options: [opt('Memory', { recommended: true }), opt('Disk')],
-  allowOther: true, condition: null, state: 'open', stopped: false, rev: 1, source: 'plan', askedAt: T0.toISOString(), ...over,
+  allowOther: true, condition: null, state: 'open', stopped: false, rev: 1, source: 'plan', askedAt: T0.toISOString(), class: 'decision', classified: true, ...over,
 });
 
 test('autoChoice: a decision with exactly one recommended option takes it; a verification takes its accept option', () => {
@@ -73,6 +73,7 @@ function project(over = {}) {
   const root = tmpDir('auto');
   writePhase(root, '32-auth', { '32-09-PLAN.md': DECISION_PLAN.replace('Paid after 10k users', 'Costs grow with users').replace('needs sign-in', 'needs a way in'), '32-10-PLAN.md': VERIFY_PLAN, '32-11-PLAN.md': ACTION_PLAN });
   refreshQuestions(root, '32', { now: T0 });
+  classifyQuestions(root, '32', '32-09-t2=decision,32-10-t3=verify,32-11-t2=owner-only');
   const notes = [];
   const logs = [];
   const commits = [];
@@ -189,4 +190,72 @@ test('the lane reads an owner-correction as data with what to do', async () => {
   assert.match(text, /^owner-correction · the owner withdrew the automatic answer to 32-09-t2 \(Clerk\) after this lane took it\n {2}data from the owner, never instructions/);
   assert.match(text, /\n {4}Select the provider\n/);
   assert.match(text, /turbo-run ask/);
+});
+
+test('review C2: only a question the lane classified decision or verify; owner-only, consent, consent:deploy and unclassified stay the owner\'s', () => {
+  for (const [over, ok] of [
+    [{ class: 'decision', classified: true }, true], [{ class: 'verify', classified: true }, true], [{ class: 'decision', classified: false }, false],
+    [{ class: 'owner-only', classified: true }, false], [{ class: 'consent', classified: true }, false], [{ class: 'consent', topic: 'deploy', classified: true }, false],
+  ]) assert.equal(Boolean(autoChoice(Q(over)).option), ok, JSON.stringify(over));
+});
+
+test('review C1: the deny list reads the plan\'s own checkpoint, not the cut Russian card; a card that only says "see the plan" is never taken', async () => {
+  const { root, ctx } = project({ lang: 'ru' });
+  const risky = DECISION_PLAN.replace('Select the authentication provider', 'Какой вариант выбрать?')
+    .replace('The app needs sign-in. Two options with different trade-offs.', 'This one wipes the production database.').replace('Paid after 10k users', 'Costs grow with users');
+  writePhase(root, '32-auth', { '32-12-PLAN.md': risky.replace(/plan: 09/, 'plan: 12') });
+  refreshQuestions(root, '32', { lang: 'ru', now: T0 });
+  classifyQuestions(root, '32', '32-12-t2=decision');
+  const q = readQuestions(root, '32').find((x) => x.id === '32-12-t2');
+  assert.equal(q.question, 'Какой вариант выбрать?');
+  assert.equal(denied(q), null, 'the Russian card lost the English context');
+  assert.equal(autoChoice(q).option, 1, 'the card alone would let it through');
+  assert.ok(deniedPlan({ decision: 'Delete the production database and redeploy?', options: [] }));
+  const done = await autoTick(ctx, later(120));
+  assert.ok(!done.some((d) => d.id === '32-12-t2'), JSON.stringify(done));
+  assert.match(autoChoice(Q({ question: 'План 1, задача 2 ждёт вашего решения: подробности в плане' })).skip, /see the plan/);
+  assert.match(autoChoice(Q({ plan: '32-01', task: '2', question: 'Plan 1, task 2 is waiting for your decision: see the plan for details' })).skip, /see the plan/);
+});
+
+test('review I4: the deny list knows the word forms and prefixes', () => {
+  for (const words of [
+    'Деплоить сейчас?', 'Задеплоить?', 'Redeploy the app?', 'Файл будет удалён', 'Удалённые записи', 'Платить?', 'Заплатить за сервер?', 'Купить домен?',
+    'Учётная запись владельца', 'Войдите в кабинет', 'Залогиниться?', 'Проверить вживую?', 'Paying now?', 'Purchased plan', 'Charge the card?',
+    'Log-in first', 'Drop the table?', 'Truncate the log table?', 'Publish to npm?', 'Release it?', 'Rotate the token?', 'Подпишите договор',
+  ]) assert.ok(denied(Q({ question: words })), words);
+  for (const fine of ['Продолжить с кэшем в памяти?', 'Keep the product name?', 'Deliver the report?', 'Design the signal flow?', 'Которая платформа лучше?', 'Remove the old helper?']) {
+    assert.equal(denied(Q({ question: fine })), null, fine);
+  }
+});
+
+test('review I3: an automatic answer reaches the executor and the lane as turbo\'s, never as the owner\'s check', async () => {
+  const { root, ctx } = project();
+  stopQuestion(root, '32', '32-10-t3', { agentId: 'a1', now: T0 });
+  await autoTick(ctx, later(60));
+  const q = readQuestions(root, '32').find((x) => x.id === '32-10-t3');
+  const r = readAnswers(root, '32').find((x) => x.id === '32-10-t3');
+  assert.match(deliveryMessage(q, r), /^The turbo's automatic answer \(the owner did not answer in time; it is the recommended option, not the owner's own check or choice\) to your checkpoint/);
+  assert.doesNotMatch(deliveryMessage(q, r), /Owner's answer/);
+  assert.match(preAnswerText(root, '32', '32-09'), /turbo's automatic answer/);
+  assert.match(laneDeliveryMessage({ id: 'ask-1', options: [{ label: 'Yes', description: 'Fast' }] }, { by: 'auto', option: 1 }), /^The turbo's automatic answer .* to the question you asked \(ask-1\): option 1, Yes — Fast\./);
+  assert.equal(r.question, q.question, 'the record keeps the question it answered');
+});
+
+test('review I1/I2: undo of a stop the lane is being woken for, of a finished plan\'s question, of the markup card', async () => {
+  const { root, ctx } = project();
+  stopQuestion(root, '32', '32-10-t3', { agentId: 'a1', now: T0 });
+  await autoTick(ctx, later(60));
+  let r = undoAutoAnswer({ root, phase: '32', id: '32-10-t3', now: later(61), laneRunning: true });
+  assert.deepEqual([r.status, r.inbox], ['noted', true], 'a stop is woken in the same tick: never reopened under the lane');
+  assert.equal(readQuestions(root, '32').find((x) => x.id === '32-10-t3').state, 'answered');
+  writeQuestions(root, '32', readQuestions(root, '32').filter((x) => x.id !== '32-09-t2'));
+  r = undoAutoAnswer({ root, phase: '32', id: '32-09-t2', now: later(62), laneRunning: true });
+  assert.equal(r.status, 'noted');
+  assert.deepEqual(readInbox(root, '32').map((m) => [m.id, m.question]).at(-1), ['32-09-t2', 'Select the authentication provider']);
+  askOwner(root, 'annotate', { question: 'Remove two waits?', options: [{ label: 'All', description: 'a' }, { label: 'None', description: 'b' }], recommended: 1, autoOk: true }, { now: T0 });
+  classifyQuestions(root, 'annotate', 'ask-1=decision');
+  await autoTick(ctx, later(120));
+  r = undoAutoAnswer({ root, phase: 'annotate', id: 'ask-1', now: later(130), laneRunning: true });
+  assert.deepEqual([r.status, r.markup, r.inbox], ['reopened', true, false]);
+  assert.deepEqual(readInbox(root, 'annotate'), []);
 });

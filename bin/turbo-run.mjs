@@ -24,7 +24,7 @@ import { ownerRequestFiles } from '../lib/uat.mjs';
 import { clearAttempts, nextStep, readProgress } from '../lib/phase-progress.mjs';
 import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
-import { buildView, formatView, openQuestions, runLineFor, withRunLine } from '../lib/view.mjs';
+import { buildView, clean, formatView, openQuestions, runLineFor, withRunLine } from '../lib/view.mjs';
 import { quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
 import { createLaneProbe } from '../lib/wake.mjs';
 import { deliveryState, dropLaneQuestions, readQuestions, refreshQuestions } from '../lib/questions.mjs';
@@ -267,8 +267,8 @@ function printAway(root, config) {
   const ru = config.lang === 'ru';
   if (away.since) out(ru ? `режим «ушёл»: с ${away.since}; когда вернётесь: turbo-run back` : `away: since ${away.since}; when you are back: turbo-run back`);
   for (const a of autoAnswers(root, { after: away.ackAt })) {
-    const q = String(a.question).replace(/\s+/g, ' ');
-    out(ru ? `принято автоматически: фаза ${a.phase} — ${q} → ${a.option} (отменить: ${a.undo})` : `auto-answered: phase ${a.phase} — ${q} → ${a.option} (undo: ${a.undo})`);
+    const q = clean(String(a.question)).replace(/\s+/g, ' ');
+    out(ru ? `принято автоматически: фаза ${a.phase} — ${q} → ${clean(a.option)} (отменить: ${a.undo})` : `auto-answered: phase ${a.phase} — ${q} → ${clean(a.option)} (undo: ${a.undo})`);
   }
 }
 

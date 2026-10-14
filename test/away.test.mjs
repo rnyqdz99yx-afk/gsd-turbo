@@ -132,3 +132,14 @@ test('bin: turbo-run away --set, status lists the mode and the auto answers, bac
   r = run('status');
   assert.doesNotMatch(r.stdout, /^away:|^auto-answered:/m, 'seen on the way back');
 });
+
+test('review I5: the summary counts a lane the supervisor stopped alone, never a lane waiting for an answer; not away, only the news', () => {
+  const root = project();
+  setAway(root, { phases: PHASES, now: T0 });
+  writeLaneStatus(root, '32', 'needs-owner', { reason: 'owner question 32-09-t2' });
+  const s = backSummary({ root, phases: PHASES, sup: { lanes: { 1: { key: '1', job: 'phase', phase: '32' }, 2: { key: '2', job: 'phase', phase: '33', halted: { why: 'noProgress', at: T0.toISOString() } } } }, now: later(5), commits: () => [] });
+  assert.deepEqual(s.failures, [{ phase: '33', status: 'stopped', reason: 'noProgress' }]);
+  refreshQuestions(root, '32', { now: T0 });
+  const off = backSummary({ root, phases: PHASES, sup: null, now: later(6), commits: () => [] });
+  assert.equal(formatBack(off, 'en'), 'Away mode was not on (turbo-run away --set turns it on).', 'the waiting questions are the pane\'s');
+});

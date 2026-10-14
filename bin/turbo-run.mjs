@@ -35,6 +35,7 @@ import { listSlots, maxLanes, prepareSlot, releaseSlot, setupSlots, slotForPhase
 import { trustLine, trustState } from '../lib/trust.mjs';
 import { laneForPhase, laneLabel, lanesSummary, setupLines, supervisorLanes } from '../lib/lanes-state.mjs';
 import { loadLanePlugins } from '../lib/lane-plugins.mjs';
+import { findStrays, strayWatch } from '../lib/strays.mjs';
 import { IntegrateRefused, readyRecord } from '../lib/integrate.mjs';
 import { jobLaneStatus, runAnnotateCommand } from '../lib/cli-jobs.mjs';
 import { runAwayCommand } from '../lib/away.mjs';
@@ -353,6 +354,8 @@ async function makeCtx(root, mode = 'safe') {
       },
       // probed right before a launch: a lease revoked mid-tick (stop, resume, another start) launches nothing
       leaseHeld: () => !lostLease(root),
+      // smoke F2: new entries next to the project while lanes run (lib/strays.mjs)
+      strays: ({ sinceMs, seen }) => findStrays({ watch: strayWatch(root, config, { slots }), sinceMs, seen }),
     },
   };
   if (plugins) {

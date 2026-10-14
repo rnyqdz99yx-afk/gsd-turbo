@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
-import { laneSessionName, projectHash } from '../lib/claude.mjs';
+import { GUARD_SCRIPT, laneSessionName, projectHash } from '../lib/claude.mjs';
+import { decodeGuardArg } from '../lib/lane-guard.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 import { askOwner } from '../lib/questions.mjs';
 import { writeAttend } from '../lib/attend.mjs';
@@ -705,7 +706,14 @@ test('start passes doctor\'s full mode to the daemon: the lane runs the turbo-ph
   // the settings JSON crosses a real process boundary intact (on win32 too: the shim resolves to node, no cmd.exe)
   // never in the project's tree: this fixture's CLAUDE_CONFIG_DIR lies inside the project, so the system temp directory
   const tmp = path.join(os.tmpdir(), 'gsd-turbo', 'tmp', projectHash(p.root, 16), 'p4');
-  assert.deepEqual(JSON.parse(bg[bg.indexOf('--settings') + 1]), { worktree: { bgIsolation: 'none' }, env: { TURBO_LANE: '1', TMP: tmp, TEMP: tmp, TMPDIR: tmp } });
+  const { hooks, ...settings } = JSON.parse(bg[bg.indexOf('--settings') + 1]);
+  assert.deepEqual(settings, { worktree: { bgIsolation: 'none' }, env: { TURBO_LANE: '1', TMP: tmp, TEMP: tmp, TMPDIR: tmp } });
+  // smoke F2: the lane's write guard, over its checkout and its temp directory
+  const [entry] = hooks.PreToolUse;
+  assert.equal(entry.matcher, 'Write|Edit|MultiEdit|NotebookEdit');
+  const command = entry.hooks[0].command;
+  assert.ok(command.includes(GUARD_SCRIPT.replace(/\\/g, '/')), command);
+  assert.deepEqual(decodeGuardArg(command.split(' ').at(-1)), { roots: [path.resolve(p.root), tmp], tmp });
   assert.ok(fs.statSync(tmp).isDirectory(), 'created before the launch');
   const sup = await waitFor(() => { const s = readSup(p.root); return s?.lane?.mode ? s : null; }, 15000);
   assert.equal(sup?.lane?.mode, 'full', logOf(p.root));

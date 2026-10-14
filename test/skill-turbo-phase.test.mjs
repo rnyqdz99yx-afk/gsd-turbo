@@ -386,3 +386,9 @@ test('turbo-phase skill: the watchdog\'s line makes the lane go on and never sta
   assert.ok(s.indexOf('`warn: the supervisor is not running …`') > s.indexOf('\nInbox: before each step'), 'next to the inbox');
   assert.match(p, /^`warn: the supervisor is not running …` \(from `turbo-run inbox`, `ask` or `lane-status`\): .*Go on with the point you are in\. Never start, stop or restart the supervisor yourself \(`turbo-run start` and `resume` refuse in a lane\)/);
 });
+
+test('turbo-phase skill: the lane\'s write guard is named, and a denial is never worked around through Bash', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const line = s.split('\n').find((l) => l.startsWith('- Temporary files'));
+  for (const n of ['write guard', 'Write, Edit, MultiEdit and NotebookEdit', "the lane's temporary directory", "the control root's `.planning/turbo`", 'never get around a denial through Bash']) assert.ok(line.includes(n), n);
+});

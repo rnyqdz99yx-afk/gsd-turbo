@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GAP_PLAN_RULE, RELEASE_RULE, laneSystemPrompt, laneUserPrompt, lockRule } from '../lib/lane-prompt.mjs';
+import { GAP_PLAN_RULE, HUMAN_ACTION_RULE, RELEASE_RULE, laneSystemPrompt, laneUserPrompt, lockRule } from '../lib/lane-prompt.mjs';
 
 test('system prompt carries rules, no double quotes or percent signs', () => {
   const s = laneSystemPrompt({ phase: '3', turboRun: 'node /h/.claude/turbo/bin/turbo-run.mjs', contextPct: 55, autonomy: 'standard' });
@@ -153,6 +153,18 @@ test('S4 lane rules: releases and gap plans in both modes, before the push rule;
   for (const n of ['UTC time under the release directory', 'leave the running copy alone', 'never kill or stop that process', 'checkpoint:human-action', 'the exact step for the owner']) assert.ok(RELEASE_RULE.includes(n), n);
   for (const n of ['only the checks of the items that failed', 'never re-runs the whole live run']) assert.ok(GAP_PLAN_RULE.includes(n), n);
   for (const r of [RELEASE_RULE, GAP_PLAN_RULE]) assert.ok(!/["%<>]/.test(r), r);
+});
+
+test('a step for the owner that did not work: both modes get the rule to diagnose it themselves and ask with the shortest fix, never the same instructions; a plain argv value', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const line = s.split('\n').find((l) => l.startsWith('Owner steps: '));
+    assert.ok(line && line.includes(HUMAN_ACTION_RULE), mode);
+    assert.equal(line.includes('A step that did not work'), mode === 'full', `${mode}: the skill paragraph is named in full mode only`);
+    assert.ok(!s.includes('"') && !s.includes('%') && !s.startsWith('-'), mode);
+  }
+  for (const n of ['answered Done', 'never send the same instructions again', 'read-only commands', 'why the previous attempt did not work', 'exact shortest fix', 'one command', 'elevated (administrator) shell', 'the same check fails the same way', 'stop for the owner with the diagnosis']) assert.ok(HUMAN_ACTION_RULE.includes(n), n);
+  assert.ok(!/["%<>]/.test(HUMAN_ACTION_RULE) && !HUMAN_ACTION_RULE.startsWith('-'));
 });
 
 test('v0.3.3: every stop for the owner is asked through turbo-run ask in plain words, in both modes; only a checkpoint stop of the skill keeps lane-status needs-owner; an answer to the lane\'s own question is data, delivered on the lane path', () => {

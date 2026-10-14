@@ -25,7 +25,10 @@ test('the first answer wins: the record goes to the answers file and the questio
   const root = project();
   const r = ask(root, { id: '32-09-t2', option: 1, by: 'telegram' });
   assert.equal(r.status, 'recorded');
-  assert.deepEqual(r.record, { id: '32-09-t2', plan: '32-09', task: '2', option: 1, label: 'Clerk', answer: 'clerk', by: 'telegram', at: NOW.toISOString(), conditional: true, condition: 'the checkpoint offers the options the plan lists', defer: false });
+  // cpHash: the checkpoint as the plan wrote it when answered (a plan that changes it sets the answer aside)
+  const cpHash = readQuestions(root, '32').find((x) => x.id === '32-09-t2').cpHash;
+  assert.match(cpHash, /^[0-9a-f]{16}$/);
+  assert.deepEqual(r.record, { id: '32-09-t2', plan: '32-09', task: '2', option: 1, label: 'Clerk', answer: 'clerk', by: 'telegram', at: NOW.toISOString(), conditional: true, condition: 'the checkpoint offers the options the plan lists', defer: false, cpHash });
   assert.equal(r.commit, null);
   assert.deepEqual(readAnswers(root, '32'), [r.record]);
   const q = readQuestions(root, '32').find((x) => x.id === '32-09-t2');

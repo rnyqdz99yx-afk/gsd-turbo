@@ -128,6 +128,20 @@ test('a refresh keeps the class, the agent and the stop; state and answer come f
   assert.equal(readAnswers(root, '32').length, 1, 'answers stay');
 });
 
+test('chunked planning: each committed plan brings its questions at the next refresh, the outline none; earlier answers and classes stay; a plan\'s questions classify alone', () => {
+  const root = tmpDir('chunked');
+  const dir = writePhase(root, '32-auth', { '32-PLAN-OUTLINE.md': '| Plan ID | Objective | Wave |\n| 32-09 | auth | 1 |\n| 32-10 | page | 2 |\n\n## OUTLINE COMPLETE\n' });
+  assert.deepEqual(refreshQuestions(root, '32'), [], 'the outline is no plan');
+  fs.writeFileSync(path.join(dir, '32-09-PLAN.md'), DECISION_PLAN);
+  assert.deepEqual(refreshQuestions(root, '32').map((q) => [q.id, q.classified]), [['32-09-t2', false]]);
+  classifyQuestions(root, '32', '32-09-t2=decision');
+  owner(root, '32-09-t2', { option: 1 });
+  fs.writeFileSync(path.join(dir, '32-10-PLAN.md'), VERIFY_PLAN);
+  const list = refreshQuestions(root, '32');
+  assert.deepEqual(list.map((q) => [q.id, q.state, q.classified]), [['32-09-t2', 'answered', true], ['32-10-t3', 'open', false]]);
+  assert.deepEqual(classifyQuestions(root, '32', '32-10-t3=verify').map((q) => [q.id, q.class]), [['32-09-t2', 'decision'], ['32-10-t3', 'verify']]);
+});
+
 test('liveAnswer skips superseded records; a preference reads as deferred', () => {
   const recs = [{ id: 'a', answer: 'x' }, { id: 'a', answer: 'y', superseded: 'z' }, { id: 'b', answer: 'q' }];
   assert.equal(liveAnswer(recs, 'a').answer, 'x');
@@ -206,6 +220,88 @@ test('a deferred checkpoint opens at the stop; a checkpoint that is no plan task
   assert.deepEqual([d.status, d.question.source, d.question.question], ['stopped', 'stop', 'Action: Log in to the deploy CLI']);
   assert.ok(refreshQuestions(root, '32').some((q) => q.id === '32-09-t7'), 'kept while its plan is open');
   assert.throws(() => stopQuestion(root, '32', '32-09-t2', { agentId: '../x' }), /--agent/);
+});
+
+test('a human action whose check failed after the owner\'s Done: the lane\'s diagnosis and fix replace the plan\'s instructions on the card, a refresh keeps them, diagnosis counts the repeats', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  stopQuestion(root, '32', '32-11-t2', { agentId: AG });
+  const done = () => {
+    owner(root, '32-11-t2', { option: 1 });
+    markDelivered(root, '32', '32-11-t2', 'same-agent');
+  };
+  done();
+  const fix = 'Run Stop-Service demo-sync in an administrator terminal, then answer Done';
+  const why = 'The window is closed, but the sync service still runs in the background: closing the window does not stop it.';
+  const r = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: fix, context: why });
+  assert.deepEqual([r.status, r.question.state, r.question.question, r.question.context, r.question.diagnosis], ['stopped', 'open', `Action: ${fix}`, why, 1]);
+  assert.deepEqual(r.question.options.map((o) => o.signal), ['done']);
+  const kept = refreshQuestions(root, '32').find((q) => q.id === '32-11-t2');
+  assert.deepEqual([kept.question, kept.context, kept.diagnosis], [`Action: ${fix}`, why, 1], 'a refresh keeps the lane\'s words while the stop stands');
+  done();
+  // the same failure after the lane's fix: the card says so and offers to check again (or own words), never Done
+  const again = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'The service starts again by itself each time: tell me how you want it handled', context: 'Stopped twice, running again a minute later both times.' });
+  assert.deepEqual([again.question.diagnosis, again.question.question], [2, 'Action: The service starts again by itself each time: tell me how you want it handled']);
+  assert.deepEqual(again.question.options.map((o) => [o.label, o.signal]), [['Check again', 'done']]);
+  assert.equal(again.question.allowOther, true);
+  assert.deepEqual(refreshQuestions(root, '32').find((q) => q.id === '32-11-t2').options.map((o) => o.label), ['Check again'], 'a refresh keeps that option');
+  done();
+  // a stop without new words keeps the lane's last diagnosis, never the instructions that did not work
+  const plain = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true });
+  assert.deepEqual([plain.question.question, plain.question.diagnosis, plain.question.options[0].label], [again.question.question, 2, 'Check again']);
+  // the lane never rewords a decision or a verification: their cards keep the plan's text and options
+  const d = stopQuestion(root, '32', '32-09-t2', { agentId: AG, question: 'Pick one' });
+  assert.equal(d.question.question, 'Select the authentication provider');
+  assert.equal(d.question.diagnosis, 0);
+  // a checkpoint that is no plan task takes the new words the same way
+  stopQuestion(root, '32', '32-09-t7', { agentId: AG, kind: 'human-action', question: 'Log in to the deploy CLI' });
+  owner(root, '32-09-t7', { option: 1 });
+  markDelivered(root, '32', '32-09-t7', 'same-agent');
+  const gate = stopQuestion(root, '32', '32-09-t7', { agentId: AG, unmet: true, question: 'Run deploy-cli login --device, then answer Done', context: 'The saved login expired an hour ago.' });
+  assert.deepEqual([gate.question.question, gate.question.context, gate.question.diagnosis, gate.question.source], ['Action: Run deploy-cli login --device, then answer Done', 'The saved login expired an hour ago.', 1, 'stop']);
+});
+
+test('the lane\'s diagnosis is owner text: plain words in the owner\'s language, a command in backticks as it is; refused before anything is written; a wish to be asked later is no failed attempt', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  // "I will do it when the phase asks", then the first stop: the owner has tried nothing yet, the plan's words stand
+  owner(root, '32-11-t2', { option: 1 });
+  const first = stopQuestion(root, '32', '32-11-t2', { agentId: AG, question: 'Run it now' });
+  assert.deepEqual([first.question.question, first.question.diagnosis], ['Action: Complete the email verification for the mail service account', 0]);
+  owner(root, '32-11-t2', { option: 1 });
+  markDelivered(root, '32', '32-11-t2', 'same-agent');
+  const before = JSON.stringify(readAnswers(root, '32'));
+  assert.throws(() => stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'Delete config/demo.yml and answer Done', context: 'x' }), /the question holds the file name demo\.yml/);
+  assert.equal(JSON.stringify(readAnswers(root, '32')), before, 'the owner\'s answer is not set aside by a refused stop');
+  assert.equal(readQuestions(root, '32').find((q) => q.id === '32-11-t2').state, 'delivered');
+  const ok = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'Run `del config\\demo.yml` in the project folder, then answer Done', context: 'The old file is still there.' });
+  assert.equal(ok.question.diagnosis, 1);
+  // a Russian owner reads Russian words around the command
+  const ru = project();
+  refreshQuestions(ru.root, '32');
+  stopQuestion(ru.root, '32', '32-11-t2', { agentId: AG });
+  owner(ru.root, '32-11-t2', { option: 1 });
+  markDelivered(ru.root, '32', '32-11-t2', 'same-agent');
+  assert.throws(() => stopQuestion(ru.root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'Run `logout` again', context: '', lang: 'ru' }), /no Russian word/);
+  assert.equal(stopQuestion(ru.root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'Выполните `logout` в терминале администратора', context: 'Сеанс остался отключённым, а не закрытым.', lang: 'ru' }).question.diagnosis, 1);
+});
+
+test('an answer given ahead holds for the checkpoint it answered: a plan that changes that checkpoint asks it anew; an unchanged one keeps the answer', () => {
+  const { root, dir } = project();
+  refreshQuestions(root, '32');
+  owner(root, '32-09-t2', { option: 1 });
+  owner(root, '32-10-t3', { option: 1 });
+  const rev = readQuestions(root, '32').find((q) => q.id === '32-09-t2').rev;
+  // a checker's revision rewrites the decision; the verification stays as it was
+  fs.writeFileSync(path.join(dir, '32-09-PLAN.md'), DECISION_PLAN.replace('Select the authentication provider', 'Select the session store'));
+  const at = new Date('2026-01-02T08:00:00Z');
+  const list = refreshQuestions(root, '32', { now: at });
+  const d = list.find((q) => q.id === '32-09-t2');
+  assert.deepEqual([d.state, d.question, d.rev, d.askedAt], ['open', 'Select the session store', rev + 1, at.toISOString()]);
+  assert.equal(list.find((q) => q.id === '32-10-t3').state, 'answered');
+  const recs = readAnswers(root, '32');
+  assert.deepEqual(recs.filter((r) => r.superseded).map((r) => [r.id, r.supersededBy]), [['32-09-t2', 'plan-change']]);
+  assert.equal(refreshQuestions(root, '32').find((q) => q.id === '32-09-t2').rev, rev + 1, 'once');
 });
 
 test('markDelivered records the path on the question and as a note of the step in progress', () => {

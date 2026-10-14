@@ -39,9 +39,10 @@ import { jobLaneStatus, runAnnotateCommand } from '../lib/cli-jobs.mjs';
 import { runAwayCommand } from '../lib/away.mjs';
 import { autoAnswers, readAway } from '../lib/away-state.mjs';
 import { beatBeforeBoot, clearOwnerStop, logonSkip, readOwnerStop, runAutostart, writeOwnerStop } from '../lib/autostart.mjs';
+import { runWorktreesCommand } from '../lib/worktrees.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail|away|back|autostart> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail|away|back|autostart|worktrees> [args]';
 // GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
 const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
@@ -1149,6 +1150,11 @@ async function main() {
         },
       };
       return runAwayCommand(cmd, args, { root, out, deps });
+    }
+    case 'worktrees': {
+      // the agent worktrees Claude Code left in the project: only clean, merged ones go, never forced (lib/worktrees.mjs)
+      if (!root) die('no .planning directory found');
+      return runWorktreesCommand(args, { root, out });
     }
     case 'lanes': {
       // spec §4, §4.1 (Stage 4 L0): the slots of this project: setup, trust, remove

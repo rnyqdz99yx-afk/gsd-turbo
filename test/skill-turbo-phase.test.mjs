@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { STEPS } from '../lib/phase-progress.mjs';
-import { ASK_RULE, GAP_PLAN_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
+import { ASK_RULE, GAP_PLAN_RULE, HUMAN_ACTION_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
 
 test('turbo-phase skill: frontmatter, every step in order, the commands it drives', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
@@ -262,6 +262,54 @@ test('turbo-phase skill (v0.3.3): every stop for the owner is asked with turbo-r
   const fixes = s.slice(s.indexOf('**Owner-chosen fixes.**'));
   for (const needle of ['turbo-run phase-step N --attempt owner-gaps', 'turbo-run owner-gaps N --review', '--gap', 'Skill(skill="gsd-plan-phase", args="N --gaps")', 'args="N --gaps-only --no-transition"', 'no hand-made UAT row']) assert.ok(fixes.includes(needle), needle);
   assert.ok(!/stop for the owner\*\* \("[^"]*\bWR-\d/.test(s), 'no finding codes in stop reasons');
+});
+
+test('turbo-phase skill: a human action that did not work goes back to the owner with the lane\'s own diagnosis and shortest fix, never the same instructions; the second identical failure stops with the diagnosis', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const owner = s.slice(s.indexOf('### Owner questions'), s.indexOf('### Stale report'));
+  const at = owner.slice(owner.indexOf('**At a checkpoint.**'), owner.indexOf('**Delivery.**'));
+  assert.ok(at.includes('**A step that did not work**'), 'At a checkpoint sends a failed human action there');
+  const lane = owner.slice(owner.indexOf('**Lane questions.**'), owner.indexOf('**Owner-chosen fixes.**'));
+  assert.match(lane, /Done \(owner-only work\) → check the result and run the step again; a check that still fails: \*\*A step that did not work\*\*/);
+  const p = owner.slice(owner.indexOf('**A step that did not work.**'), owner.indexOf('**Delivery.**'));
+  assert.ok(p.length > 200, 'its own paragraph, before Delivery');
+  assert.ok(p.includes(HUMAN_ACTION_RULE), 'the rule verbatim, as the lanes get it');
+  for (const n of [
+    'read-only', 'turbo-run questions N --json', '`diagnosis`',
+    "turbo-run questions N --stop <plan id>-t<task number> --agent <agent id> --unmet --question '<", "--context '<",
+    "turbo-run ask N --action '<", 'elevated', 'one command', 'never the plan\'s instructions again', 'Single quotes keep the shell off',
+    'refused twice', 'the card keeps its last words', 'the second identical failure', 'never Done for the same step',
+    // a delivery not marked yet is marked before the stop opens the question again; Delivery then has nothing to mark
+    'mark it first, `turbo-run questions N --delivered <id> --path',
+    'owner question <plan id>-t<task number>: <',
+  ]) assert.ok(p.includes(n), n);
+  // a diagnosis never changes what it looks at
+  assert.match(p, /[Nn]ever change/);
+  const delivery = owner.slice(owner.indexOf('**Delivery.**'), owner.indexOf('**After an interruption.**'));
+  assert.equal(delivery.split('(nothing to do when **A step that did not work** marked it already)').length, 3, 'both delivery paths');
+});
+
+test('turbo-phase skill: during chunked planning each committed plan\'s questions are listed and classified at once, so the owner can answer ahead; the end of the step lists them once more', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const plan = section(s, 'plan');
+  const point = plan.split('\n').find((l) => l.startsWith('2. '));
+  const at = point.indexOf('after each plan\'s commit');
+  assert.ok(at > point.indexOf('Skill(skill="gsd-plan-phase", args="N --chunked")'), point);
+  assert.ok(point.includes('`docs(<padded phase>): plan <plan id> (chunked)`'), 'the commit GSD makes per plan');
+  for (const n of ['`turbo-run questions N`', '`unclassified`', '`turbo-run questions N --class', 'answer ahead', 'before the next plan']) assert.ok(point.slice(at).includes(n), n);
+  assert.ok(plan.split('\n').some((l) => l.startsWith('5. **List and classify**')), 'the whole list once more after the checker\'s revisions');
+  const owner = s.slice(s.indexOf('### Owner questions'), s.indexOf('### Stale report'));
+  assert.match(owner, /\*\*List and classify\*\* \(step \*\*plan\*\*: after each plan's commit and once more at its end;/);
+});
+
+test('turbo-phase skill: the merged Nyquist worktree goes through turbo-run worktrees prune, dry run first, never forced; a conflict keeps the unmerged work', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const point = section(s, 'fanout').split('\n').find((l) => l.startsWith('6. '));
+  const dry = point.indexOf('`turbo-run worktrees prune <path> --dry-run`');
+  const real = point.indexOf('`turbo-run worktrees prune <path>`');
+  assert.ok(dry > point.indexOf('git merge --no-ff <branch>') && real > dry, 'merge, dry run, then the removal');
+  for (const n of ['locks', 'this session', '`kept <path>: <why>`', '`partly removed <path> …`', '`not an agent worktree of this project: …`', 'name the line in the note', 'never force', 'never delete it by hand', 'git merge --abort', 'leave the worktree and its branch']) assert.ok(point.includes(n), n);
+  assert.ok(!point.includes('git worktree remove') && !point.includes('git branch -d'), 'no hand removal the harness lock refuses');
 });
 
 test('turbo-phase skill (review 1, MAJOR 2): no "go on" past the hard gates — final-gate, uat, close, open threats, failed verification; close refuses in code too', () => {

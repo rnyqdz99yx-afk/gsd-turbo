@@ -33,16 +33,22 @@ test('the phase lock waits while Windows reports the lock file as being deleted 
   assert.equal(fs.existsSync(file), false);
 });
 
-// One process taking the phase lock n times; it counts entries that found another process inside.
+// One process taking the phase lock n times; it counts entries that found another process inside. It prints ready
+// once loaded and starts only on the parent's go, so all of them contend from their first entry however slowly the
+// machine starts processes; a dot after each entry is its progress. Between entries it pauses a moment, as separate
+// callers do: without that the process that just left takes the lock again at once and the others only wait.
 const WORKER = `
 import fs from 'node:fs';
 import path from 'node:path';
 const [url, root, n] = process.argv.slice(1);
 const { withPhaseLock } = await import(url);
 const inside = path.join(root, 'inside');
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const errors = {};
 let ok = 0;
 let overlaps = 0;
+process.stdout.write('ready\\n');
+await new Promise((resolve) => process.stdin.once('data', resolve));
 for (let i = 0; i < Number(n); i++) {
   try {
     withPhaseLock(root, '32', () => {
@@ -50,32 +56,60 @@ for (let i = 0; i < Number(n); i++) {
       const t = Date.now();
       while (Date.now() - t < 1) { /* hold */ }
       fs.rmSync(inside, { force: true });
-    }, { waitMs: 20000 });
+    }, { waitMs: 600000 });
     ok++;
   } catch (e) {
     const k = String(e.code || e.message).slice(0, 60);
     errors[k] = (errors[k] || 0) + 1;
   }
+  process.stdout.write('.');
+  pause(1);
 }
-process.stdout.write(JSON.stringify({ ok, overlaps, errors }));
+process.stdout.write('\\n' + JSON.stringify({ ok, overlaps, errors }));
 `;
 
+// No time limit on the run itself: a loaded machine only makes it slower. A hang is what stops it, no output from any
+// worker for STALL_MS (a worker that cannot start, or a lock nobody gets).
 test('several processes taking the same phase lock at once: every acquisition succeeds, none overlaps (Review Focus 1)', async () => {
   const root = tmpDir('lock-race');
   fs.mkdirSync(path.join(root, '.planning'));
   const N = 8;
-  const n = 200;
-  const runs = await Promise.all(Array.from({ length: N }, () => new Promise((resolve) => {
-    const c = spawn(process.execPath, ['--input-type=module', '-e', WORKER, LIB, root, String(n)], { windowsHide: true, timeout: 90000, killSignal: 'SIGKILL' });
-    let out = '';
-    c.stdout.on('data', (d) => { out += d; });
-    c.stderr.on('data', (d) => { out += d; });
-    c.on('close', (code) => resolve({ code, out }));
-  })));
-  for (const r of runs) {
-    assert.equal(r.code, 0, r.out);
-    assert.deepEqual(JSON.parse(r.out), { ok: n, overlaps: 0, errors: {} });
-  }
+  const n = 40;
+  const STALL_MS = 60000;
+  let last = Date.now();
+  let ready = 0;
+  let stalled = false;
+  const workers = Array.from({ length: N }, () => {
+    const c = spawn(process.execPath, ['--input-type=module', '-e', WORKER, LIB, root, String(n)], { windowsHide: true });
+    // ready is read from stdout alone: a warning on stderr first (from NODE_OPTIONS, say) never holds the start
+    const w = { c, out: '', stdout: '', ready: false };
+    const seen = (d) => {
+      w.out += d;
+      w.stdout += d;
+      last = Date.now();
+      if (w.ready || !w.stdout.startsWith('ready\n')) return;
+      w.ready = true;
+      if (++ready === N) for (const x of workers) x.c.stdin.end('go\n');
+    };
+    c.stdout.on('data', seen);
+    c.stderr.on('data', (d) => { w.out += d; last = Date.now(); });
+    c.stdin.on('error', () => {});
+    // one that ends before it is ready never gets its go: the others get none either and end at once
+    c.on('exit', () => { if (!w.ready) for (const x of workers) x.c.stdin.end(); });
+    w.code = new Promise((resolve) => c.on('close', resolve));
+    return w;
+  });
+  const watchdog = setInterval(() => {
+    if (Date.now() - last < STALL_MS) return;
+    stalled = true;
+    for (const w of workers) w.c.kill();
+  }, 1000);
+  const codes = await Promise.all(workers.map((w) => w.code)).finally(() => clearInterval(watchdog));
+  assert.equal(stalled, false, `no worker said anything for ${STALL_MS} ms: ${workers.map((w) => w.out.slice(-300)).join(' | ')}`);
+  workers.forEach((w, i) => {
+    assert.equal(codes[i], 0, w.out);
+    assert.deepEqual(JSON.parse(w.stdout.trim().split('\n').pop()), { ok: n, overlaps: 0, errors: {} });
+  });
 });
 
 test('a stale lock is taken over by one process only: a lock another process took meanwhile is put back, never removed', () => {

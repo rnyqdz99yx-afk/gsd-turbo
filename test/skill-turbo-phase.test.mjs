@@ -379,3 +379,10 @@ test('turbo-phase skill: the lane hands its temporary-files rule (rule 7) to eve
   assert.ok(line, 'a Conventions bullet');
   for (const n of ['rule 7', 'unchanged', 'every subagent prompt', 'executors', 'continuation agents', 'planners', 'turbo-uat', 'by hand', 'nothing else goes outside the checkout', '`.planning/turbo/run/tdd/`']) assert.ok(line.includes(n), n);
 });
+
+test('turbo-phase skill: the watchdog\'s line makes the lane go on and never start the supervisor itself', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const p = s.slice(s.indexOf('`warn: the supervisor is not running …`'));
+  assert.ok(s.indexOf('`warn: the supervisor is not running …`') > s.indexOf('\nInbox: before each step'), 'next to the inbox');
+  assert.match(p, /^`warn: the supervisor is not running …` \(from `turbo-run inbox`, `ask` or `lane-status`\): .*Go on with the point you are in\. Never start, stop or restart the supervisor yourself \(`turbo-run start` refuses in a lane\)/);
+});

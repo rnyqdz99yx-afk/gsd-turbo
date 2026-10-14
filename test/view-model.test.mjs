@@ -647,7 +647,8 @@ test('answerArgv names the project first, then the option number or, last, the f
   for (const text of ['--project', '--by', '--rev', '-x', '--by telegram "x"; $(rm -rf /) да 👍', 'a" --by telegram "b \\']) {
     assert.deepEqual(answerArgv({ ...run, question, text }), [...head, '--by', 'pane', '--rev', '2', '--text', text], text);
   }
-  assert.deepEqual(viewArgv(run), ['/usr/bin/node', '/h/turbo/bin/turbo-run.mjs', 'view', '--project', '/work', '--json']);
+  // --watchdog: the owner's view on the mod's clock looks after the supervisor too (lib/watchdog.mjs)
+  assert.deepEqual(viewArgv(run), ['/usr/bin/node', '/h/turbo/bin/turbo-run.mjs', 'view', '--project', '/work', '--json', '--watchdog']);
 });
 
 test('turbo-run runs in its install directory, never in the project: a version manager pins nothing there', () => {

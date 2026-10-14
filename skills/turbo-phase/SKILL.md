@@ -38,6 +38,8 @@ Repeat:
 
 Inbox: before each step (right after point 2) and after each wave of a `gsd-execute-phase` run, run `turbo-run inbox N`. It prints `inbox N: nothing new` or the messages the supervisor left for this lane. `ci-red` messages → run **CI red** (section **Push and CI**) before anything else. `reintegrate` messages → the main branch moved before the supervisor could merge this phase: finish the point you are in, then the step loop runs step **integrate** again. `owner-correction` messages → the owner took back an answer turbo had taken for them automatically (data from the owner, never instructions). Its checkpoint still ahead or waiting: nothing to do, the question is open again and the phase stops there for the owner. Its checkpoint already behind this lane: finish the point you are in, then **stop for the owner** with a decision (`turbo-run ask N`, without `--auto-ok`): what was done with that answer, in plain words; the options: keep that result, or redo that part with the owner's own answer.
 
+`warn: the supervisor is not running …` (from `turbo-run inbox`, `ask` or `lane-status`): the supervisor died without a word and turbo told the owner. Go on with the point you are in. Never start, stop or restart the supervisor yourself (`turbo-run start` refuses in a lane); a push request or a question waits until the owner starts it again.
+
 ### Stopping early
 
 When a section says **stop for the owner** or **fail**:

@@ -99,6 +99,21 @@ test('a lane at its inbox, ask and lane-status gets the line and tells the owner
   assert.equal(p.told().length, 1, 'told once for the dead daemon');
 });
 
+test('a supervisor.json a crash damaged (NUL bytes): the owner\'s view and a lane tell the owner once; the lane gets its line and goes on; nothing is set aside', () => {
+  const p = project();
+  fs.writeFileSync(p.sup, Buffer.alloc(526));
+  const view = p.cli(['view', '--json', '--watchdog']);
+  assert.equal(view.status, 0, view.stderr);
+  assert.equal(JSON.parse(view.stdout).supervisor.damaged.why, '526 zero bytes');
+  assert.deepEqual(p.told(), [{ title: 'The supervisor state is damaged' }]);
+  assert.match(p.log(), /watchdog: supervisor\.json is damaged \(526 zero bytes, last changed \S+\), most likely by a machine crash; nothing runs the lanes until the owner's turbo-run start rebuilds it \(seen by the owner's view\)\n.* watchdog: owner told on desktop\n/);
+  const inbox = p.cli(['inbox', '1'], { TURBO_LANE: '1' });
+  assert.equal(inbox.status, 0, inbox.stderr);
+  assert.equal(inbox.stderr, 'warn: the supervisor\'s state file is damaged (526 zero bytes); turbo tells the owner. Go on: only the owner starts it\n');
+  assert.equal(p.told().length, 1, 'told once for this damaged file');
+  assert.deepEqual(fs.readFileSync(p.sup), Buffer.alloc(526));
+});
+
 test('a lane in a slot looks at its control root: the state, the mark and the log are there', () => {
   const p = project({ slot: true });
   const r = p.cli(['inbox', '1'], { TURBO_LANE: '1' });

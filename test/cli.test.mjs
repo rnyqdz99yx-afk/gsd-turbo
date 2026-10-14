@@ -883,16 +883,18 @@ test('start that loses the race to another start reports the winner and its rang
     return runAsync(['start', ...args], p.root, { ...p.env, TURBO_TEST_HIDE_READS: String(hide) }, ['--require', preload]);
   };
   const ranges = (r) => r.stdout.split(/\r?\n/).filter((l) => l.startsWith('range:'));
-  let r = await race(['--from', '4', '--to', '5'], 2);
+  // start's reads before its spawn: running(), doctor's supervisor-state check, running() again, the damaged-state check
+  // (recovery), the kept range
+  let r = await race(['--from', '4', '--to', '5'], 3);
   assert.equal(r.code, 0, r.stdout + r.stderr);
   assert.match(r.stdout, new RegExp(`another start launched supervisor pid ${winner.pid} first \\(phases 4–5\\)`));
   assert.deepEqual(ranges(r), ['range: phases 4–5']);
-  r = await race(['--only', '7'], 2);
+  r = await race(['--only', '7'], 3);
   assert.equal(r.code, 1, r.stdout + r.stderr);
   assert.deepEqual(ranges(r), ['range: phases 7–7']);
   assert.match(r.stderr, /the running range is phases 4–5, not phases 7–7: run turbo-run stop first/);
   assert.doesNotMatch(r.stderr, /nothing was changed/);
-  r = await race([], 3);
+  r = await race([], 5);
   assert.equal(r.code, 0, r.stdout + r.stderr);
   assert.deepEqual(ranges(r), []);
   assert.match(r.stdout, /another start launched supervisor pid \d+ first \(phases 4–5\)/);
@@ -1589,4 +1591,100 @@ test('status in the owner\'s session says how to come back to it after a crash, 
   assert.doesNotMatch(run(['status'], p.root, outside), /claude --resume/);
   assert.doesNotMatch(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: sid, TURBO_LANE: '1' }), /claude --resume/);
   assert.doesNotMatch(run(['status'], p.root, { ...p.env, CLAUDE_CODE_SESSION_ID: 'x; rm -rf ~' }), /claude --resume/);
+});
+
+// A supervisor.json a machine crash damaged (seen: 526 NUL bytes after a bugcheck) is never read as "never started":
+// status, status --json, view --json and doctor say it is damaged; the owner's start and resume keep it aside and rebuild
+// the lane; attend refuses until then; stop and start at logon leave it to the owner's start.
+const DAMAGED = [['zero bytes', '', 'empty (0 bytes)'], ['NUL bytes', Buffer.alloc(526), '526 zero bytes'], ['truncated JSON', '{"pid": 40164, "lane": {"phase": "4", "sess', 'not JSON (43 bytes)']];
+const damageSup = (root, content) => {
+  fs.mkdirSync(runDirOf(root), { recursive: true });
+  fs.writeFileSync(path.join(runDirOf(root), 'supervisor.json'), content);
+};
+const asideOf = (root) => fs.readdirSync(runDirOf(root)).filter((n) => n.startsWith('supervisor.json.damaged-'));
+
+test('a damaged supervisor.json (zero bytes, NUL bytes, truncated JSON): status, status --json, view --json and doctor say so, never "never started"', async () => {
+  const p = fakeProject();
+  for (const [name, content, why] of DAMAGED) {
+    damageSup(p.root, content);
+    const status = run(['status'], p.root, p.env);
+    assert.match(status, new RegExp(`^supervisor: state damaged \\(supervisor\\.json: ${why.replace(/[()]/g, '\\$&')}, last changed \\S+\\), most likely by a machine crash; nothing runs the lanes\\. turbo-run start keeps the file aside and rebuilds the lanes from the slots and the lane sessions$`, 'm'), name);
+    assert.doesNotMatch(status, /never started/, name);
+    const json = JSON.parse(run(['status', '--json'], p.root, p.env));
+    assert.deepEqual([json.running, json.damaged.why], [false, why], name);
+    const view = JSON.parse(run(['view', '--json'], p.root, p.env));
+    assert.equal(view.supervisor.damaged.why, why, name);
+    assert.match(run(['view'], p.root, p.env), /^Run — supervisor state damaged \(likely a machine crash\) — run turbo-run start, it rebuilds the lanes$/m, name);
+    const doctor = await runAsync(['doctor'], p.root, p.env);
+    assert.match(doctor.stdout, new RegExp(`^warn supervisor-state supervisor\\.json is damaged \\(${why.replace(/[()]/g, '\\$&')}\\), most likely by a machine crash: turbo-run start keeps it aside and rebuilds the lanes$`, 'm'), name);
+  }
+  // stop changes nothing in it
+  const stop = await runAsync(['stop'], p.root, p.env);
+  assert.equal(stop.code, 0, stop.stderr);
+  assert.match(stop.stdout, /^supervisor\.json is damaged \(not JSON \(43 bytes\)\): kept as it is; turbo-run start keeps it aside and rebuilds the lanes$/m);
+  assert.deepEqual(asideOf(p.root), []);
+  // a healthy project still reads as never started
+  assert.match(run(['status'], fakeProject().root, p.env), /^supervisor: not running \(never started\)$/m);
+});
+
+test('the owner\'s start over a damaged supervisor.json keeps it aside, rebuilds the lane of this checkout from its session and record, says so, and the supervisor takes the lane up', async (t) => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  t.after(() => { const pid = readSup(p.root)?.pid; if (pid) try { process.kill(pid); } catch { /* gone */ } });
+  p.setClaude({ agents: [{ id: 'old111', name: laneSessionName(p.root, '4'), cwd: p.root, state: 'failed' }] });
+  fs.mkdirSync(runDirOf(p.root), { recursive: true });
+  fs.writeFileSync(path.join(runDirOf(p.root), 'p4.json'), JSON.stringify({ phase: '4', status: 'running', reason: '', sessionId: 'old111', at: ago(70) }));
+  damageSup(p.root, Buffer.alloc(526));
+  const r = await runAsync(['start'], p.root, p.env);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  const [aside] = asideOf(p.root);
+  assert.match(aside, /^supervisor\.json\.damaged-\d{8}T\d{6}Z$/);
+  assert.deepEqual(fs.readFileSync(path.join(runDirOf(p.root), aside)), Buffer.alloc(526), 'kept, never deleted');
+  assert.ok(r.stdout.includes(`supervisor.json was damaged (526 zero bytes; most likely a machine crash): kept as .planning/turbo/run/${aside}\n`), r.stdout);
+  assert.match(r.stdout, /^recovered phase 4 in this checkout; session old111 is failed: the supervisor resumes the lane in a new session$/m);
+  assert.match(r.stdout, /^not recovered: the run's range and plan-only mark \(the supervisor now runs the whole milestone\), restart counts and sent-notification marks$/m);
+  assert.match(r.stdout, /started supervisor pid \d+/);
+  assert.match(logOf(p.root), /recovery: recovered phase 4 in this checkout; session old111 is failed/);
+  // the supervisor took the rebuilt lane over: a continuation in place of the failed session, never a fresh phase
+  const sup = await waitFor(() => { const s = readSup(p.root); return s?.pid && s.lane?.sessionId === 'abcdef123456' ? s : null; }, 15000);
+  assert.ok(sup, logOf(p.root));
+  assert.match(logOf(p.root), /phase 4: session old111 failed before this supervisor started \(a reboot, a crash or a halt\); relaunching it \(continuation\)/);
+  assert.ok(p.claudeCalls().some((a) => a[0] === '--bg' && a.join(' ').includes('--resume')), JSON.stringify(p.claudeCalls()));
+  const stop = await runAsync(['stop'], p.root, p.env);
+  assert.equal(stop.code, 0, stop.stderr);
+});
+
+test('resume over a damaged supervisor.json rebuilds first and arms the phase\'s lane; attend refuses until a start rebuilt it; an unreadable one is refused, never moved', async () => {
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }] });
+  p.setClaude({ agents: [{ id: 'old111', name: laneSessionName(p.root, '4'), cwd: p.root, state: 'blocked' }] });
+  damageSup(p.root, '{"pid": 40164, "lane": {"phase": "4", "sess');
+  const attend = await runAsync(['attend', '4'], p.root, p.env);
+  assert.equal(attend.code, 1);
+  assert.match(attend.stderr, /^supervisor\.json is damaged \(not JSON \(43 bytes\)\), most likely by a machine crash: no lane is known to attend; nothing was stopped\. Run turbo-run start first/m);
+  assert.deepEqual(asideOf(p.root), []);
+  const r = await runAsync(['resume', '4'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^recovered phase 4 in this checkout; session old111 runs: the supervisor adopts it$/m);
+  assert.match(r.stdout, /^phase 4 cleared; run: turbo-run start$/m);
+  assert.equal(asideOf(p.root).length, 1);
+  const sup = readSup(p.root);
+  assert.deepEqual([sup.lane.phase, sup.lane.sessionId, sup.lane.forceRelaunch, sup.pid], ['4', 'old111', true, null]);
+  // unreadable (here: a directory): start refuses and moves nothing
+  const q = fakeProject();
+  fs.mkdirSync(path.join(runDirOf(q.root), 'supervisor.json'), { recursive: true });
+  const s = await runAsync(['start'], q.root, q.env);
+  assert.equal(s.code, 1, s.stdout);
+  assert.match(s.stderr, /^supervisor\.json cannot be read: unreadable \(E[A-Z]+\); nothing was started or changed: look at /m);
+  assert.deepEqual(asideOf(q.root), []);
+  assert.ok(!q.claudeCalls().some((a) => a[0] === '--bg'));
+});
+
+test('start --autostart over a damaged supervisor.json starts nothing, leaves the file to the owner\'s start and has the owner told (Gap 2)', async () => {
+  const p = fakeProject({ config: { notify: { desktop: false, telegram: false } } });
+  damageSup(p.root, Buffer.alloc(526));
+  const r = await runAsync(['start', '--autostart'], p.root, p.env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^autostart: nothing started: supervisor\.json is damaged \(526 zero bytes\); the owner's turbo-run start rebuilds the lanes$/m);
+  assert.deepEqual(asideOf(p.root), []);
+  assert.match(logOf(p.root), /watchdog: supervisor\.json is damaged \(526 zero bytes, last changed \S+\), most likely by a machine crash; nothing runs the lanes until the owner's turbo-run start rebuilds it \(seen by autostart at logon\)/);
+  assert.ok(!p.claudeCalls().some((a) => a[0] === '--bg'));
 });

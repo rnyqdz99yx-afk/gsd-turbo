@@ -258,3 +258,14 @@ test('the owner\'s stop mark is written, read and cleared in the run directory',
   assert.equal(readOwnerStop(root), null);
   clearOwnerStop(root); // nothing to clear: no error
 });
+
+test('a stop mark a crash damaged (zero bytes, NUL bytes, cut short) still stands: a stopped run never comes back at logon', () => {
+  const root = tmpDir('proj');
+  const file = path.join(root, '.planning', 'turbo', 'run', 'owner-stop.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  for (const [content, why] of [['', 'empty (0 bytes)'], [Buffer.alloc(40), '40 zero bytes'], ['{"at":"2026-10-1', 'not JSON (16 bytes)']]) {
+    fs.writeFileSync(file, content);
+    assert.deepEqual(readOwnerStop(root), { at: null, damaged: why });
+    assert.match(logonSkip({ sup: { pid: null, finished: false, halted: false }, ownerStop: readOwnerStop(root), alive: false }), /^the run was stopped by the owner \(turbo-run stop\)$/);
+  }
+});

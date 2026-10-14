@@ -5,6 +5,7 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { writeOwnerStop } from '../lib/autostart.mjs';
 import { silentDeath, watchSupervisor } from '../lib/watchdog.mjs';
+import { readSupervisor } from '../lib/sup-state.mjs';
 
 // The supervisor's watchdog: a daemon that died without an exit line (a crash, a reboot, a killed process) is told to the
 // owner once, by whoever sees it first: the owner's view on the mod's clock, or a lane at its inbox, ask or lane-status.
@@ -223,4 +224,59 @@ test('the grace is two of the daemon\'s own polls when it polls slowly', async (
   assert.equal(await s.watch(slow), null);
   assert.equal(await s.watch(slow, false, { now: NOW + 590 * 1000 }), null);
   assert.equal((await s.watch(slow, false, { now: NOW + 600 * 1000 })).told, true);
+});
+
+// A supervisor.json a crash damaged (lib/sup-state.mjs readSupervisor): read as missing it would keep the watchdog silent.
+// It is told once per damaged file (its why and last change), never while the owner's stop stands, and a look that has
+// not told it yet reads the file again first: a start may be setting it aside.
+const supFile = (root) => path.join(root, '.planning', 'turbo', 'run', 'supervisor.json');
+const damage = (root, data = Buffer.alloc(526)) => {
+  fs.writeFileSync(supFile(root), data);
+  return readSupervisor(root).damaged;
+};
+
+test('a damaged supervisor.json is told to the owner once per damaged file, with the command; every caller gets the line', async () => {
+  const root = project('my-app', null);
+  const s = spy(root);
+  const damaged = damage(root);
+  assert.equal(damaged.why, '526 zero bytes');
+  const first = await s.watch(null, false, { damaged });
+  assert.deepEqual(first, { told: true, line: 'warn: the supervisor\'s state file is damaged (526 zero bytes); turbo tells the owner. Go on: only the owner starts it' });
+  assert.deepEqual(s.slept, [1500], 'read again first');
+  assert.equal(s.sent.length, 1);
+  assert.equal(s.sent[0].title, 'The supervisor state is damaged');
+  assert.match(s.sent[0].body, /^The supervisor's state file of my-app \(\.planning\/turbo\/run\/supervisor\.json\) is damaged, most likely by a machine crash, and nothing runs the lanes now\. To start it again: \/turbo-autonomous in my-app \(turbo-run start\): it keeps the damaged file aside and rebuilds the lanes/);
+  assert.equal(s.logged[0], `watchdog: supervisor.json is damaged (526 zero bytes, last changed ${damaged.at}), most likely by a machine crash; nothing runs the lanes until the owner's turbo-run start rebuilds it (seen by the owner's view)`);
+  assert.equal(s.logged[1], 'watchdog: owner told on desktop');
+  const mark = markOf(root);
+  assert.deepEqual([mark.pid, mark.since, mark.damaged, mark.noted, mark.delivered], [null, damaged.at, '526 zero bytes', true, { desktop: true }]);
+  // the next look tells nobody and reads nothing again
+  assert.deepEqual(await s.watch(null, false, { damaged, now: NOW + 10 * MIN }), { told: false, line: first.line });
+  assert.equal(s.sent.length, 1);
+  assert.deepEqual(s.slept, [1500]);
+  // the same file damaged anew (a later crash): told again
+  const later = new Date(Date.parse(damaged.at) + 60000);
+  fs.utimesSync(supFile(root), later, later);
+  assert.equal((await s.watch(null, false, { damaged: readSupervisor(root).damaged })).told, true);
+  assert.equal(s.sent.length, 2);
+});
+
+test('a damaged supervisor.json: the owner\'s stop keeps the watchdog silent; a file set aside meanwhile tells nobody; in Russian', async () => {
+  const stopped = project('stopped', null);
+  const s = spy(stopped);
+  const damaged = damage(stopped, '');
+  assert.equal(damaged.why, 'empty (0 bytes)');
+  writeOwnerStop(stopped);
+  assert.equal(await s.watch(null, false, { damaged }), null);
+  assert.deepEqual([s.sent, s.logged, hasMark(stopped)], [[], [], false]);
+  // a start set the file aside and rebuilt it between the look and its second read
+  const fixed = project('fixed', null);
+  const f = spy(fixed, { sleep: async () => fs.writeFileSync(supFile(fixed), JSON.stringify({ pid: null, lanes: {} })) });
+  assert.equal(await f.watch(null, false, { damaged: damage(fixed, '{"pid": 4') }), null);
+  assert.deepEqual([f.sent, f.logged, hasMark(fixed)], [[], [], false]);
+  const ru = project('ru-app', null);
+  const r = spy(ru, { config: { lang: 'ru', poll_seconds: 20, notify: { desktop: true, telegram: false } } });
+  await r.watch(null, false, { damaged: damage(ru, '{"pid": 4') });
+  assert.equal(r.sent[0].title, 'Состояние супервизора повреждено');
+  assert.match(r.sent[0].body, /^Файл состояния супервизора проекта ru-app .* повреждён — вероятно, из-за сбоя машины.*Запустить снова: \/turbo-autonomous в проекте ru-app \(turbo-run start\)/);
 });

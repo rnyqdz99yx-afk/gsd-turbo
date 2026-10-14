@@ -42,6 +42,8 @@ import { autoAnswers, readAway } from '../lib/away-state.mjs';
 import { beatBeforeBoot, clearOwnerStop, logonSkip, readOwnerStop, runAutostart, writeOwnerStop } from '../lib/autostart.mjs';
 import { runWorktreesCommand } from '../lib/worktrees.mjs';
 import { watchSupervisor } from '../lib/watchdog.mjs';
+import { readSupervisor } from '../lib/sup-state.mjs';
+import { recoverSupervisor } from '../lib/sup-recover.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail|away|back|autostart|worktrees> [args]';
@@ -235,14 +237,48 @@ async function supervisorLook(root, by) {
   try {
     const control = stateRoot(root);
     const config = runtimeConfig(loadConfig(control));
-    const sup = readJson(supPath(control), null);
+    // a damaged supervisor.json (a crash cut its write short) is told too, never taken for a project that never ran
+    const { sup, damaged } = readSupervisor(control);
     const up = process.env.TURBO_UPTIME_SECONDS;
-    const r = await watchSupervisor(control, { sup, alive: supAlive(sup, config.poll_seconds), config, by, ...(up ? { uptimeSeconds: Number(up) } : {}) });
+    const r = await watchSupervisor(control, { sup, damaged, alive: supAlive(sup, config.poll_seconds), config, by, ...(up ? { uptimeSeconds: Number(up) } : {}) });
     return r?.line ?? null;
   } catch {
     return null;
   }
 }
+
+// A damaged supervisor.json (lib/sup-state.mjs) at the owner's start or resume: kept aside as
+// supervisor.json.damaged-<UTC> and rebuilt from the slots, the lane sessions and records, and the phases' progress
+// (lib/sup-recover.mjs); the summary printed in the owner's language and logged. An unreadable one (an error code, not
+// damaged content) is left alone and the command refuses. mode: the mode the supervisor runs in; range: what this start
+// runs. true when it recovered.
+function recoverDamaged(root, config, { mode = 'safe', range = null } = {}) {
+  let r;
+  try {
+    const core = gsdCoreDir(root);
+    r = recoverSupervisor(root, {
+      lang: config?.lang,
+      slots: lanesSettings(config?.lanes).mode === 'slots',
+      listSlots: () => listSlots(root, config),
+      agents: () => createClaude({ root }).list(),
+      phases: () => (core ? loadPhases(root, core).phases : null),
+      mode,
+      range,
+    });
+  } catch (e) {
+    die(`${String(e?.message ?? e).split(/\r?\n/)[0]}; nothing was started or changed: look at ${supPath(root)} (move it aside by hand once the disk reads again)`);
+  }
+  if (!r) return false;
+  for (const line of r.lines) out(line);
+  try {
+    ensureDir(logsDir(root));
+    fs.appendFileSync(path.join(logsDir(root), 'supervisor.log'), r.log.map((l) => `${new Date().toISOString()} recovery: ${l}\n`).join(''));
+  } catch { /* logging is best-effort */ }
+  return true;
+}
+
+// What status prints of a damaged supervisor.json, and what to do.
+const damagedLine = (d) => `supervisor: state damaged (supervisor.json: ${d.why}${d.at ? `, last changed ${d.at}` : ''}), most likely by a machine crash; nothing runs the lanes. turbo-run start keeps the file aside and rebuilds the lanes from the slots and the lane sessions`;
 
 // What status prints next to the lanes: the attended phases, the open questions, the owner's language.
 function statusOpts(root, config) {
@@ -456,6 +492,8 @@ async function start(root, requested = undefined, { planOnly = false, logon = fa
   // doctor takes seconds: another start may have launched a daemon meanwhile
   sup = running();
   if (sup) return already(sup);
+  // a supervisor.json a crash damaged: kept aside, the lanes rebuilt before the daemon reads them
+  recoverDamaged(root, config, { mode: r.mode === 'full' ? 'full' : 'safe', range: requested ?? null });
   const kept = requested === undefined ? keptRange(readJson(supPath(root), null)) : null;
   const range = kept || requested || null;
   if (range) out(`range: phases ${rangeLabel(range)}${kept ? ' (kept from the previous run)' : ''}`);
@@ -529,7 +567,14 @@ async function startAtLogon(root) {
       return write(chunk, ...rest);
     };
   }
-  const sup = readJson(supPath(root), null);
+  const read = readSupervisor(root);
+  if (read.damaged) {
+    // the owner rebuilds it (turbo-run start): told once, as the watchdog tells a dead supervisor
+    out(`autostart: nothing started: supervisor.json is damaged (${read.damaged.why}); the owner's turbo-run start rebuilds the lanes`);
+    await supervisorLook(root, 'autostart at logon');
+    return 0;
+  }
+  const sup = read.sup;
   const why = logonSkip({ sup, ownerStop: readOwnerStop(root), alive: supAlive(sup, pollOf(root)) });
   if (why) {
     out(`autostart: nothing started: ${why}`);
@@ -780,8 +825,8 @@ function coverNestedPackages(root, res, known) {
 // The view of the project, read fresh: what view prints and status --watch redraws.
 function readView(root) {
   const config = runtimeConfig(loadConfig(root));
-  const sup = readJson(supPath(root), null);
-  return buildView({ root, sup, running: supAlive(sup, config.poll_seconds), config });
+  const { sup, damaged } = readSupervisor(root);
+  return buildView({ root, sup, damaged, running: supAlive(sup, config.poll_seconds), config });
 }
 
 // The owner's resume, and attend N --done (spec §8): clears the phase's lane record and its attend mark (the owner
@@ -811,6 +856,12 @@ async function resumePhase(root, id, andStart) {
   // a live daemon (for example one waiting for the owner) rewrites supervisor.json every
   // tick; stop it first. The lane session is left alone: forceRelaunch replaces it.
   stopDaemon(root, readJson(supPath(root), null));
+  // a supervisor.json a crash damaged: kept aside and rebuilt first, so the phase's lane is found and armed below
+  if (readSupervisor(root).damaged) {
+    let config = {};
+    try { config = loadConfig(root); } catch { /* a broken config: checkout mode's rebuild */ }
+    recoverDamaged(root, config, { mode: 'safe' });
+  }
   // the owner goes on with the run: a start at logon takes it up again (Gap 2)
   clearOwnerStop(root);
   // the phase's own files: in its lane's slot (Stage 4), else in this checkout. The questions are rebuilt as the plans
@@ -885,6 +936,8 @@ function attendSettleMs() {
 // daemon until attend N --done or resume N clears it; then every lane session of this checkout stops (claude stop
 // keeps the conversation). The checkpoints the lane stopped at are asked ahead again.
 async function attend(root, id) {
+  const damaged = readSupervisor(root).damaged;
+  if (damaged) die(`supervisor.json is damaged (${damaged.why}), most likely by a machine crash: no lane is known to attend; nothing was stopped. Run turbo-run start first (it keeps the file aside and rebuilds the lanes), then attend ${id}`);
   const current = readJson(supPath(root), null);
   // spec §8 (D11): in slots mode only lane N stops; the supervisor and the other lanes go on
   if (current?.lanes) return attendLane(root, id, current);
@@ -1090,13 +1143,14 @@ async function main() {
         return 0;
       }
       const config = runtimeConfig(loadConfig(root)); // a corrupt config stops the daemon; report it instead of a normal status
-      const sup = readJson(supPath(root), null);
+      const { sup, damaged } = readSupervisor(root);
       const running = supAlive(sup, config.poll_seconds);
       const ownerRequests = ownerRequestFiles(root); // a phase run by hand has one without a supervisor
       const leftovers = gatesLeftovers(root);
       const attended = attendedPhases(root); // spec §8: phases the owner runs in their session; no lane runs meanwhile
-      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ownerRequests, gatesOff: leftovers.gates, attended }, null, 2)); return 0; }
-      if (!sup) out('supervisor: not running (never started)');
+      if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ...(damaged ? { damaged } : {}), ownerRequests, gatesOff: leftovers.gates, attended }, null, 2)); return 0; }
+      if (damaged) out(damagedLine(damaged));
+      else if (!sup) out('supervisor: not running (never started)');
       else printStatus(sup, running, { ...statusOpts(root, config), attended });
       for (const f of ownerRequests) out(`owner request: ${f}`);
       // v0.3.3: the questions a phase stopped for, in the owner's words
@@ -1127,6 +1181,8 @@ async function main() {
       // project's lane sessions are swept either way
       const code = stopLanes(root, sup);
       printLeftovers(gatesLeftovers(root));
+      const damaged = readSupervisor(root).damaged;
+      if (damaged) out(`supervisor.json is damaged (${damaged.why}): kept as it is; turbo-run start keeps it aside and rebuilds the lanes`);
       return code;
     }
     case 'autostart': {

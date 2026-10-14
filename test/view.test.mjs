@@ -383,6 +383,8 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', reason: 'checkpoint 32-10 Task 2', quiet: true, lastAt: at('10:01') }),
     textView({ questions: [], attended: ['32'] }, { status: 'needs-owner', reason: 'a live check', push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } }),
     textView({ questions: [], attended: ['34'], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', status: 'needs-owner', quiet: true, lastAt: at('10:01') }] }),
+    textView({ questions: [], attended: ['34'], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', status: 'needs-owner', push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } }, { ...textView().lanes[0], phase: '35', step: 'fanout' }] }),
+    textView({ questions: [], attended: ['34'], lanes: [{ ...textView().lanes[0], status: 'done', step: null }, { ...textView().lanes[0], phase: '34', status: 'needs-owner' }] }),
     // gap planning: the planner past the plan step, and the plan checker
     textView({ questions: [] }, { plans: { done: 9, total: 9 }, agents: [{ type: 'gsd-planner', plan: null, state: 'running', action: { tool: 'Write', detail: 'x' }, elapsedMs: 5000 }] }),
     textView({ questions: [] }, { step: 'uat', agents: [{ type: 'gsd-plan-checker', plan: null, state: 'running', action: null, elapsedMs: 5000 }] }),

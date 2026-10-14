@@ -1432,6 +1432,36 @@ test('F5: resume N in slots mode with a running supervisor hands the phase to it
   assert.match(done.stdout, /^phase 4: handed to the running supervisor /m);
   assert.ok(fs.existsSync(path.join(runDir, 'p4-resume.json')));
   assert.equal(await exited(child, 300), false);
+  // a phase without a lane: only cleared
+  assert.match((await runAsync(['resume', '7'], p.root, env)).stdout, /^phase 7: handed to the running supervisor \(pid \d+\): at its next check it clears the phase; the other lanes keep running$/m);
+});
+
+test('review: attend cancels a resume the supervisor has not taken (it would clear the new mark); status without a supervisor says when a resume is taken; a plan-only or halted supervisor is not handed one', async (t) => {
+  const { p, child, env } = slotsProject(t);
+  const runDir = runDirOf(p.root);
+  const dir = path.join(path.dirname(p.root), `${path.basename(p.root)}.turbo`, 'lane-1', '.planning', 'phases', '04-four');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of ['04-01-PLAN.md', '04-01-SUMMARY.md', '04-02-PLAN.md']) fs.writeFileSync(path.join(dir, f), '# plan\n');
+  fs.writeFileSync(path.join(runDir, 'phase-p4.json'), JSON.stringify({ phase: '4', done: STEPS.slice(0, STEPS.indexOf('execute')), attempts: {} }));
+  assert.equal((await runAsync(['resume', '4'], p.root, env)).code, 0);
+  const r = await runAsync(['attend', '4'], p.root, env);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^cancelled the resume of phase 4 that the supervisor had not taken yet$/m);
+  assert.equal(fs.existsSync(path.join(runDir, 'p4-resume.json')), false);
+  assert.ok(fs.existsSync(path.join(runDir, 'p4-attend.json')));
+  // no supervisor runs: a request left is taken when one starts
+  assert.equal((await runAsync(['resume', '5'], p.root, env)).code, 0);
+  writeSup(p.root, { ...readSup(p.root), pid: null });
+  assert.match(run(['status'], p.root, env), /^lane 5: [^\n]*\n {2}resume asked: taken when the supervisor starts \(turbo-run start\)$/m);
+  // a plan-only run never steps a phase lane, a halted supervisor takes nothing more: the resume goes the old way
+  for (const [mark, daemon] of [[{ planOnly: true }, child], [{ halted: true }, sleeper(t)]]) {
+    writeSup(p.root, { ...readSup(p.root), pid: daemon.pid, updatedAt: ago(0), planOnly: undefined, halted: false, ...mark });
+    const old = await runAsync(['resume', '5'], p.root, env);
+    assert.equal(old.code, 0, old.stderr);
+    assert.match(old.stdout, /^phase 5 cleared; run: turbo-run start$/m, JSON.stringify(mark));
+    assert.equal(fs.existsSync(path.join(runDir, 'p5-resume.json')), false, 'done here: no request is left');
+    assert.ok(await exited(daemon), 'stopped as before');
+  }
 });
 
 test('start in slots mode builds the slots before any supervisor; when none can be built it starts nothing (Stage 4 L1)', async () => {

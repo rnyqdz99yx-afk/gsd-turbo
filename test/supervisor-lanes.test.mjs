@@ -238,3 +238,44 @@ test('F5: the owner\'s resume N handed to the running supervisor clears that pha
   assert.ok(h.logs.includes('phase 2: resumed by the owner (turbo-run resume 2); its lane is relaunched'), h.logs.join('\n'));
   assert.equal(s.halted, false);
 });
+
+test('review: a resume the tick cannot take yet holds its lane and stays; one taken while the tick then fails keeps its lane armed; a phase without a lane is cleared alone', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { requestResume } = await import('../lib/attend.mjs');
+  const h = lanesHarness({ phases: [P('1'), P('2'), P('3', ['2'])], lanes: annotated({ 1: A('a/**'), 2: A('b/**'), 3: A('c/**') }) });
+  h.ctx.config.max_restarts_without_progress = 0;
+  let s = await tick(freshLanes(), h.ctx);
+  h.agentOf('2').state = 'done'; // ended without a record: it would be stopped as failed
+  const run = path.join(h.root, '.planning', 'turbo', 'run');
+  // the lane record cannot be removed (a directory in its place): the resume fails, its lane is held, the request stays
+  fs.rmSync(path.join(run, 'p2.json'));
+  fs.mkdirSync(path.join(run, 'p2.json', 'x'), { recursive: true });
+  requestResume(h.root, '2');
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(s.lanes['2'].halted, undefined, 'held, never stopped meanwhile');
+  assert.equal(h.launched.length, 2);
+  assert.ok(fs.existsSync(path.join(run, 'p2-resume.json')));
+  assert.ok(h.logs.some((l) => /^resume phase 2: .*; tried again at the next check$/.test(l)), h.logs.join('\n'));
+  fs.rmSync(path.join(run, 'p2.json'), { recursive: true });
+  // taken, then the tick fails (the roadmap cannot be read): the lane stays armed and relaunches at the next tick
+  const load = h.ctx.deps.loadPhases;
+  h.ctx.deps.loadPhases = () => { throw new Error('gsd-tools failed'); };
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(fs.existsSync(path.join(run, 'p2-resume.json')), false);
+  assert.deepEqual([s.lanes['2'].forceRelaunch, s.lanes['2'].restarts], [true, 0]);
+  h.ctx.deps.loadPhases = load;
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.lanes['2'].forceRelaunch, h.launched.at(-1).name], [false, laneSessionName(h.root, '2')]);
+  // phase 3 has no lane: its files are cleared, nothing is armed
+  fs.writeFileSync(path.join(run, 'p3-owner.md'), '# Phase 3\n');
+  requestResume(h.root, '3');
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(fs.existsSync(path.join(run, 'p3-owner.md')), false);
+  assert.ok(h.logs.includes('phase 3: resumed by the owner (turbo-run resume 3)'), h.logs.join('\n'));
+  assert.equal(s.lanes['3'], undefined);
+});

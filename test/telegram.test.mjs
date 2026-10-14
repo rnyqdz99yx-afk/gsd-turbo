@@ -689,21 +689,33 @@ test('an Other prompt whose question a button of the same message answered is cl
   assert.equal(polls(bot).length, polled, 'no question open: no poll');
 });
 
-test('while a phase is attended the questions still go out, but no Telegram answer is taken: a press waits in Telegram until the hand-back (S4 N2)', async () => {
+test('while a phase is attended its questions are the sitting\'s: none goes out or is notified, a message already sent stays as it is, no answer is taken; all of it resumes at the hand-back; another phase goes on (S4 N2, journal 15:34Z)', async () => {
   const { root, ctx, bot, logs } = project();
+  const notes = [];
+  ctx.deps.notify = async (kind, data) => notes.push([kind, data.phase]);
   writeQuestions(root, '3', [Q('03-01-t2')]);
+  await ownerTick(ctx, NOW, { lane: { phase: '3' } });
+  assert.equal(bot.sent().length, 1, 'sent before the attend');
+  const polled = polls(bot).length;
   writeAttend(root, '3', { now: NOW });
+  // the sitting's questions: one asked ahead again at attend, and the one already in the chat
+  writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t4', { task: '4', question: 'Pick the cache' })]);
+  writeQuestions(root, '4', [Q('04-01-t1', { phase: '4', plan: '04-01', task: '1', question: 'Pick the queue' })]);
   bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:2:00000002`, 41));
   await ownerTick(ctx, NOW, { lane: { phase: '3' } });
   await ownerTick(ctx, NOW, { lane: { phase: '3' } });
-  assert.equal(bot.sent().length, 1, 'the question still goes out');
-  assert.equal(polls(bot).length, 0, 'no update taken');
+  assert.deepEqual(bot.sent().map((c) => c.body.text.split('\n')[1]), ['Pick the store', 'Pick the queue'], 'only the other phase\'s question goes out');
+  assert.equal(bot.calls.filter((c) => c.method === 'editMessageText').length, 0, 'the attended phase\'s message is not closed');
+  assert.deepEqual(notes, [['questionsReady', '3'], ['questionsReady', '4']], 'the attended phase\'s new question is not notified');
+  assert.equal(polls(bot).length, polled, 'no update taken');
   assert.deepEqual(readAnswers(root, '3'), []);
   assert.equal(bot.updates.length, 1, 'the press waits in Telegram');
   assert.equal(logs.filter((l) => l.startsWith('telegram: answers wait while a phase is attended')).length, 1, logs.join('\n'));
   clearAttend(root, '3');
   await ownerTick(ctx, NOW, { lane: { phase: '3' } });
   assert.deepEqual(readAnswers(root, '3').map((r) => [r.id, r.option, r.by]), [['03-01-t2', 2, 'telegram']]);
+  assert.ok(bot.sent().some((c) => c.body.text.includes('Pick the cache')), 'the held question goes out after the hand-back');
+  assert.deepEqual(notes.at(-1), ['questionsReady', '3']);
 });
 
 // What the owner reads in each language: the turbo-view pane's words (mod/hooks/view-model.mjs)

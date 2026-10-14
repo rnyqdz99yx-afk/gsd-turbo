@@ -1122,7 +1122,8 @@ function attendProject(t, { lanePhase = '4', mode = 'full', next = 'execute' } =
 
 test('attend N stops the supervisor and the lane session, marks the phase, releases its stops and names the open plans; status names the mark (S4)', async (t) => {
   const { p, child, env } = attendProject(t);
-  const r = await runAsync(['attend', '4'], p.root, env);
+  // the owner's session that runs attend: the mark names it, so the view reads the sitting's progress there
+  const r = await runAsync(['attend', '4'], p.root, { ...env, CLAUDE_CODE_SESSION_ID: 'owner-session-1' });
   assert.equal(r.code, 0, r.stderr);
   assert.ok(await exited(child), 'the supervisor is stopped');
   assert.equal(readSup(p.root).pid, null);
@@ -1133,7 +1134,7 @@ test('attend N stops the supervisor and the lane session, marks the phase, relea
   assert.match(r.stdout, /^released stops: 04-02-t1 \(asked ahead again\)$/m);
   assert.match(r.stdout, /^already delivered: 04-02-t3 \(the stopped session took these answers; a checkpoint reached again is asked in this session\)$/m, 'a delivered stop is no question asked ahead (F4)');
   const mark = readJsonFile(path.join(runDirOf(p.root), 'p4-attend.json'));
-  assert.deepEqual([mark.phase, mark.sessionId, typeof mark.at], ['4', 'abc123', 'string']);
+  assert.deepEqual([mark.phase, mark.sessionId, typeof mark.at, mark.owner], ['4', 'abc123', 'string', 'owner-session-1']);
   assert.deepEqual(readJsonFile(path.join(runDirOf(p.root), 'p4-questions.json')).map((q) => [q.stopped, q.agentId]), [[false, null], [true, 'a0123456789abcdef']]);
   assert.match(run(['status'], p.root, env), /^attended: phase 4 since \S+ in the owner's session \(hand it back: turbo-run attend 4 --done\)$/m);
   assert.deepEqual(JSON.parse(run(['status', '--json'], p.root, env)).attended.map((a) => a.phase), ['4']);
@@ -1446,11 +1447,11 @@ test('review: attend cancels a resume the supervisor has not taken (it would cle
   for (const f of ['04-01-PLAN.md', '04-01-SUMMARY.md', '04-02-PLAN.md']) fs.writeFileSync(path.join(dir, f), '# plan\n');
   fs.writeFileSync(path.join(runDir, 'phase-p4.json'), JSON.stringify({ phase: '4', done: STEPS.slice(0, STEPS.indexOf('execute')), attempts: {} }));
   assert.equal((await runAsync(['resume', '4'], p.root, env)).code, 0);
-  const r = await runAsync(['attend', '4'], p.root, env);
+  const r = await runAsync(['attend', '4'], p.root, { ...env, CLAUDE_CODE_SESSION_ID: 'owner-session-2' });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /^cancelled the resume of phase 4 that the supervisor had not taken yet$/m);
   assert.equal(fs.existsSync(path.join(runDir, 'p4-resume.json')), false);
-  assert.ok(fs.existsSync(path.join(runDir, 'p4-attend.json')));
+  assert.equal(readJsonFile(path.join(runDir, 'p4-attend.json')).owner, 'owner-session-2', 'slots mode: the session in the slot');
   // no supervisor runs: a request left is taken when one starts
   assert.equal((await runAsync(['resume', '5'], p.root, env)).code, 0);
   writeSup(p.root, { ...readSup(p.root), pid: null });

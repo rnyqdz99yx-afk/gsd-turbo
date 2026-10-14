@@ -19,6 +19,7 @@ const NOW = new Date('2026-01-01T11:00:00.000Z');
 const at = (hhmm) => `2026-01-01T${hhmm}:00.000Z`;
 const COMMITS = () => [{ sha: 'abc1234', subject: 'feat: something' }];
 const runDirOf = (root) => path.join(root, '.planning', 'turbo', 'run');
+const readJsonFile = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 const LEAK = `ghp_${'s'.repeat(36)}`;
 
 // A project with a supervisor lane for phase 32 and its transcripts in a separate Claude home.
@@ -385,6 +386,11 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     textView({ questions: [], attended: ['34'], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', status: 'needs-owner', quiet: true, lastAt: at('10:01') }] }),
     textView({ questions: [], attended: ['34'], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', status: 'needs-owner', push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } }, { ...textView().lanes[0], phase: '35', step: 'fanout' }] }),
     textView({ questions: [], attended: ['34'], lanes: [{ ...textView().lanes[0], status: 'done', step: null }, { ...textView().lanes[0], phase: '34', status: 'needs-owner' }] }),
+    // the sitting of an attended phase (lane.sitting): its helpers and last activity, its own action, a silent one
+    textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', reason: 'x', sitting: { sessionId: 'o1', action: { tool: 'Agent', detail: 'x' } }, lastAt: at('10:59'), agents: [{ type: 'gsd-executor', plan: '32-13', task: '1', state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, lastAt: at('10:59'), elapsedMs: 5000 }, { type: 'gsd-verifier', state: 'completed', lastAt: at('10:40'), elapsedMs: 5000 }] }),
+    textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', sitting: { sessionId: 'o1', action: { tool: 'Bash', detail: 'node scripts/live-check.mjs' } }, lastAt: at('10:58'), agents: [], push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' } }),
+    textView({ questions: [], supervisor: stoppedSup, attended: ['32'] }, { status: 'needs-owner', sitting: { sessionId: 'o1', action: null }, lastAt: at('10:01'), agents: [] }),
+    textView({ questions: [], attended: ['34'], lanes: [textView().lanes[0], { ...textView().lanes[0], phase: '34', status: 'needs-owner', sitting: { sessionId: 'o1', action: null }, lastAt: at('10:50'), agents: [{ type: 'gsd-planner', state: 'running', action: null, lastAt: at('10:50'), elapsedMs: 5000 }] }] }),
     // gap planning: the planner past the plan step, and the plan checker
     textView({ questions: [] }, { plans: { done: 9, total: 9 }, agents: [{ type: 'gsd-planner', plan: null, state: 'running', action: { tool: 'Write', detail: 'x' }, elapsedMs: 5000 }] }),
     textView({ questions: [] }, { step: 'uat', agents: [{ type: 'gsd-plan-checker', plan: null, state: 'running', action: null, elapsedMs: 5000 }] }),
@@ -396,6 +402,11 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
       assert.equal(formatView(view), pane.paneLines(pane.render(view)).join('\n'), `${lang}: ${JSON.stringify(v.lanes[0]?.status)} ${JSON.stringify(v.supervisor)}`);
     }
   }
+  // the pane's: an attended phase's questions are the sitting's, another phase's stays (the pane draws it as a card)
+  const asked = textView({ supervisor: stoppedSup, attended: ['32'], questions: [textView().questions[0], { ...textView().questions[0], id: 'q2', phase: '34', plan: '34-01' }] }, { status: 'needs-owner', sitting: { sessionId: 'o1', action: null }, lastAt: at('10:01'), agents: [] });
+  const shown = formatView(asked);
+  assert.ok(shown.includes('Needs your answer (1):') && shown.includes('(plan 34-01, task 3)') && !shown.includes('plan 32-09'), shown);
+  assert.deepEqual(pane.paneLines(pane.render(asked)).filter((l) => /plan 3[24]-0\d, task/.test(l)), ['│ Deploy after green CI? (plan 34-01, task 3)']);
 });
 
 test('formatView in colour (status --watch on a terminal): each line wrapped in the SGR of its tone, reset at its end; the text unchanged; plain lines bare', () => {
@@ -444,6 +455,69 @@ test('the view carries what the pane needs to judge: plans done, the CI fix roun
   const [c] = recentCommits(repo);
   assert.equal(c.subject, 'feat: timed');
   assert.ok(Math.abs(Date.parse(c.at) - Date.now()) < 120000, c.at);
+});
+
+// spec §8: the owner's session that runs the sitting of phase 32 (the attend mark's owner)
+const OWNER = '77777777-8888-4999-aaaa-bbbbbbbbbbbb';
+test('an attended phase\'s progress is its sitting\'s, read from the owner\'s session the mark names (its transcript and subagents since the mark), never from the stopped lane; its questions are left out (journal 08:30Z, 15:34Z)', () => {
+  const { root, dir, sup, env } = laneProject();
+  // the stopped lane: silent since 10:01 with a helper left behind
+  setMtime(writeSession(dir, SESSION, [entry.user('run phase 32', at('09:48')), entry.launched('toolu_1', 'a2000000000000001', at('10:00'))]), new Date(at('10:01')));
+  setMtime(writeAgent(dir, SESSION, 'a2000000000000001', agentEntries('a2000000000000001', '10:00', '10:01')), new Date(at('10:01')));
+  writeLaneStatus(root, '32', 'needs-owner', { reason: 'checkpoint 32-13 Task 2', at: at('10:02') });
+  writeAttend(root, '32', { sessionId: SESSION.slice(0, 8), owner: OWNER, now: new Date(at('10:30')) });
+  // the sitting: a command in flight of its own, an executor at work, and a helper from before the sitting
+  const pad = entry.user('x'.repeat(3000), at('09:00'));
+  setMtime(writeSession(dir, OWNER, [...Array(1000).fill(pad), entry.user('/turbo-autonomous attend 32', at('10:30')), entry.assistant({ ts: at('10:58'), tool: { name: 'Bash', input: { command: 'node scripts/live-check.mjs' } } })]), new Date(at('10:58')));
+  setMtime(writeAgent(dir, OWNER, 'a4000000000000001', agentEntries('a4000000000000001', '10:50', '10:59'), { agentType: 'gsd-executor', description: 'Execute plan 13 of phase 32', spawnDepth: 1 }), new Date(at('10:59')));
+  setMtime(writeAgent(dir, OWNER, 'a4000000000000002', agentEntries('a4000000000000002', '08:00', '08:10'), { agentType: 'gsd-planner', description: 'Plan phase 32', spawnDepth: 1 }), new Date(at('08:10')));
+  writeJsonAtomic(path.join(runDirOf(root), 'p32-questions.json'), [{ id: '32-13-t2', phase: '32', plan: '32-13', task: '2', question: 'Live check: go?', options: [], state: 'open' }]);
+  writeJsonAtomic(path.join(runDirOf(root), 'p34-questions.json'), [{ id: '34-01-t1', phase: '34', plan: '34-01', task: '1', question: 'Pick the queue', options: [], state: 'open' }]);
+  for (const round of ['cold', 'warm']) {
+    const v = buildView({ root, sup, env, now: NOW, commits: COMMITS });
+    const [lane] = v.lanes;
+    assert.deepEqual(lane.sitting, { sessionId: OWNER, action: { tool: 'Bash', detail: 'node scripts/live-check.mjs' } }, round);
+    assert.deepEqual([lane.lastAt, lane.quiet, lane.busy], [at('10:59'), false, null], round);
+    assert.deepEqual(lane.agents.map((a) => [a.agentId, a.type, a.plan, a.state]), [['a4000000000000001', 'gsd-executor', '32-13', 'running']], `${round}: the sitting's helpers since the mark only`);
+    assert.deepEqual(v.questions.map((q) => q.id), ['34-01-t1'], `${round}: the sitting's questions are asked in the owner's session`);
+    const text = formatView(v).split('\n');
+    assert.deepEqual(text.slice(0, 3), ['Phase 32 is running in your session', '  Now: writing code for a plan', '  last activity 1m ago'], round);
+    assert.ok(text[3].startsWith('  Executor · plan 32-13 · '), text.join('\n'));
+    assert.ok(!text.some((x) => /silent|Reason|stopped|Needed from you|Live check|not running/.test(x)), text.join('\n'));
+    assert.equal(text.at(-1), 'Supervisor paused: phase 32 is running in your session · phases 32–34');
+  }
+  assert.ok(Object.keys(readJsonFile(path.join(runDirOf(root), 'view-cache.json')).files).some((k) => k.startsWith('sitting:')), 'the session\'s last action is cached by size and mtime');
+  // a silent sitting (the owner is away): its age, no action, no alarm
+  const later = buildView({ root, sup, env, now: new Date(at('12:30')), commits: COMMITS });
+  assert.equal(later.lanes[0].sitting.action, null);
+  assert.deepEqual(formatView(later).split('\n').slice(1, 2), ['  last activity 1h 31m ago']);
+  // a mark that names no session, or one whose transcript is gone: the neutral line, without any age
+  for (const owner of [null, '99999999-0000-4000-8000-000000000000']) {
+    const p = laneProject();
+    writeAttend(p.root, '32', { sessionId: SESSION.slice(0, 8), owner, now: new Date(at('10:30')) });
+    setMtime(writeSession(p.dir, SESSION, [entry.user('run phase 32', at('09:48'))]), new Date(at('10:01')));
+    const v = buildView({ root: p.root, sup: p.sup, env: p.env, now: NOW, commits: COMMITS });
+    assert.deepEqual([v.lanes[0].sitting, v.lanes[0].lastAt, v.lanes[0].agents], [null, null, []], String(owner));
+    assert.deepEqual(formatView(v).split('\n').slice(0, 2), ['Phase 32 is running in your session', ''], String(owner));
+  }
+});
+
+test('a warm view of an attended phase whose owner\'s session is long (12 MB, 100 older helpers) stays within the view\'s budget', () => {
+  const { root, dir, sup, env } = laneProject();
+  writeAttend(root, '32', { sessionId: SESSION.slice(0, 8), owner: OWNER, now: new Date(at('10:30')) });
+  writeSession(dir, OWNER, [...Array(3000).fill(entry.user('p'.repeat(4000), at('08:00'))), entry.assistant({ ts: at('10:58'), tool: { name: 'Bash', input: { command: 'node x' } } })]);
+  for (let i = 0; i < 100; i++) setMtime(writeAgent(dir, OWNER, `a5${String(i).padStart(15, '0')}`, agentEntries('a5', '08:00', '08:30')), new Date(at('08:30')));
+  setMtime(writeAgent(dir, OWNER, 'a4000000000000001', agentEntries('a4000000000000001', '10:50', '10:59')), new Date(at('10:59')));
+  buildView({ root, sup, env, now: NOW, commits: COMMITS });
+  const cpu = Math.min(...Array.from({ length: 5 }, () => {
+    const c0 = process.cpuUsage();
+    const v = buildView({ root, sup, env, now: NOW, commits: COMMITS });
+    const c = process.cpuUsage(c0);
+    assert.deepEqual(v.lanes[0].agents.map((a) => a.agentId), ['a4000000000000001']);
+    return (c.user + c.system) / 1000;
+  }));
+  const budget = process.env.CI ? 1500 : 300;
+  assert.ok(cpu < budget, `a warm attended view took ${cpu.toFixed(0)} ms of CPU at best (budget ${budget} ms)`);
 });
 
 test('status --watch draws its footer in the config\'s language', async () => {

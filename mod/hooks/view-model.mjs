@@ -98,7 +98,8 @@ const VIEW_WORDS = {
     ago: (d) => `${d} ago`,
     justNow: 'just now',
     days: (n) => `${n}d`,
-    sup: { running: 'Supervisor running', stopped: 'Supervisor not running', finished: 'Supervisor finished', halted: 'Supervisor stopped', never: 'Supervisor never started' },
+    // attended: attend stopped the supervisor (checkout mode); attend N --done starts it again
+    sup: { running: 'Supervisor running', stopped: 'Supervisor not running', finished: 'Supervisor finished', halted: 'Supervisor stopped', never: 'Supervisor never started', attended: (p) => `Supervisor paused: phase ${p} is running in your session` },
     phases: (from, to) => `phases ${from}–${to}`,
     duration: (h, m, s) => (h ? `${h}h ${m}m` : m ? `${m}m` : `${s}s`),
     // v0.3.3: what the phase does now, its steps, what comes next, when the owner is needed, the commits by kind
@@ -193,7 +194,7 @@ const VIEW_WORDS = {
     ago: (d) => `${d} назад`,
     justNow: 'только что',
     days: (n) => `${n} дн`,
-    sup: { running: 'Супервизор работает', stopped: 'Супервизор не работает', finished: 'Супервизор закончил', halted: 'Супервизор остановился', never: 'Супервизор не запускался' },
+    sup: { running: 'Супервизор работает', stopped: 'Супервизор не работает', finished: 'Супервизор закончил', halted: 'Супервизор остановился', never: 'Супервизор не запускался', attended: (p) => `Супервизор на паузе: фаза ${p} идёт у вас в сессии` },
     phases: (from, to) => `фазы ${from}–${to}`,
     duration: (h, m, s) => (h ? `${h} ч ${m} мин` : m ? `${m} мин` : `${s} с`),
     nowHead: 'Сейчас',
@@ -421,6 +422,9 @@ const stepText = (t, lane) => (lane.job === 'annotate' ? t.job.annotate : lane.j
 // spec §8: a phase the owner attends (turbo-run attend N) runs in their own session. Its lane's record, transcript and
 // helpers are the stopped lane session's: the mark wins over them (no stop, no silence, no lane age).
 const attendedLane = (view, lane) => (lane?.job ?? 'phase') === 'phase' && lane?.phase != null && list(view?.attended).some((p) => String(p) === String(lane.phase));
+// The questions the view draws: an attended phase's are the sitting's, asked in the owner's own session, and come back
+// with attend N --done (turbo-run view leaves them out already; a view from an older turbo-run may still carry them).
+const shownQuestions = (view) => list(view?.questions).filter((q) => !list(view?.attended).some((p) => String(p) === String(q?.phase ?? '')));
 // A question the phase waits for: a stop of a phase that is not attended (an attended phase's own question is the
 // owner's to answer in the sitting, or ahead).
 const waitsFor = (view, q) => q?.stopped === true && !list(view?.attended).some((p) => String(p) === String(q.phase ?? ''));
@@ -435,7 +439,7 @@ function waitsWords(t, next) {
   return t.waits[next.why](cut(next.phase, 20), on, next.gate == null ? '' : gateWord(t, next.gate));
 }
 function summaryLine(t, view) {
-  const asked = list(view?.questions).length;
+  const asked = shownQuestions(view).length;
   return [t.lanesCount(list(view?.lanes).length), asked ? t.questionsCount(asked) : null, waitsWords(t, view?.next)].filter(Boolean).join(' · ');
 }
 export const runSummary = (view) => clean(summaryLine(textOf(view), view));
@@ -502,7 +506,7 @@ function verdictOf(t, view) {
   const lanes = list(view?.lanes).filter((l) => !attendedLane(view, l));
   const sup = view?.supervisor;
   const live = Boolean(sup?.running);
-  const asked = list(view?.questions).length;
+  const asked = shownQuestions(view).length;
   const has = (s) => lanes.some((l) => l.status === s);
   const v = (kind, tone, text = t.verdict[kind]) => ({ kind, tone, text });
   if (sup?.halted) return v('halted', 'bad');
@@ -535,11 +539,15 @@ function verdictOf(t, view) {
 
 export const verdict = (view) => verdictOf(textOf(view), view);
 
-function supWord(t, sup) {
+// The supervisor's line. One attend stopped (checkout mode: nothing runs but the owner's sitting) is paused, not down.
+function supWord(t, view) {
+  const sup = view?.supervisor;
   if (!sup) return t.sup.never;
   if (sup.running) return t.sup.running;
   if (sup.halted) return t.sup.halted;
-  return sup.finished ? t.sup.finished : t.sup.stopped;
+  if (sup.finished) return t.sup.finished;
+  const attended = list(view?.attended)[0];
+  return attended != null && list(view?.lanes).every((l) => attendedLane(view, l)) ? t.sup.attended(cut(attended, 20)) : t.sup.stopped;
 }
 
 // The pane is a tree of plain nodes the hooks module turns into the surface's elements: { type: 'Box' | 'Text',
@@ -594,7 +602,9 @@ function laneLine(t, view, lane, v, asked) {
   const dimmed = (parts) => (parts.filter(Boolean).length ? text(TONES.dim, ` · ${parts.filter(Boolean).join(' · ')}`) : null);
   if (form === 'running') return text({ wrap: 'wrap' }, text({ bold: true }, head), ` — ${stepText(t, lane)}`, dimmed([plans, dur]), tail);
   if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${head} ${t.stoppedAt(stepNoun(t, lane.step))}`), dimmed([plans, dur]), tail);
-  const where = [stepNoun(t, lane.step) && t.atStep(stepNoun(t, lane.step)), plans, dur && (lane.status === 'done' ? t.took(dur) : dur)];
+  // an attended lane's step is the stopped lane's: what the sitting does is said under the line (sittingRows)
+  const noun = attendedLane(view, lane) ? null : stepNoun(t, lane.step);
+  const where = [noun && t.atStep(noun), plans, dur && (lane.status === 'done' ? t.took(dur) : dur)];
   return text({ wrap: 'wrap' }, text(toned(state.tone, { bold: true }), `${head} ${state.text}`), dimmed(where), tail);
 }
 
@@ -605,7 +615,7 @@ function laneAlert(view, lane) {
   if (!attended && (lane.held === 'fullMode' || lane.halted || STOPPED.has(lane.status) || lane.status === 'paused-context')) return true;
   if (lane.push?.ci === 'red') return true;
   const own = lane.job === 'annotate' ? 'annotate' : lane.phase;
-  if (own != null && list(view?.questions).some((q) => String(q?.phase ?? '') === String(own))) return true;
+  if (own != null && shownQuestions(view).some((q) => String(q?.phase ?? '') === String(own))) return true;
   return !attended && Boolean(view?.supervisor?.running) && lane.status === 'running' && (Boolean(lane.quiet) || list(lane.agents).some((a) => a.state === 'quiet'));
 }
 
@@ -647,16 +657,25 @@ function runSection(t, view, v, columns) {
   const lanes = list(view.lanes);
   const multi = lanes.length > 1;
   const live = Boolean(view.supervisor?.running);
-  const asked = list(view.questions).length;
+  const asked = shownQuestions(view).length;
   const rows = lanes.length && !multi ? [] : [text({ wrap: 'wrap' }, text({ bold: true }, t.run), ' — ', text(toned(v.tone, { bold: true }), v.text))];
   if (multi) rows.push(text({ wrap: 'wrap' }, summaryLine(t, view)));
   lanes.forEach((lane, i) => {
     const first = !multi && i === 0;
     rows.push(laneLine(t, view, lane, first ? v : null, asked));
     if (lanes.length > 2 && !laneAlert(view, lane)) return;
-    // an attended lane: its sign of life, reason and helpers are the stopped lane session's; only a red CI stays
+    // an attended lane: the owner's session is the phase (spec §8). What it does now, its sign of life and its helpers
+    // at work come from that session (sittingRows), calm; the stopped lane's reason and silence are never shown; a red
+    // CI stays
     if (attendedLane(view, lane)) {
-      if (lane.push?.ci === 'red') rows.push(box({ flexDirection: 'column', paddingLeft: 2 }, text(toned('bad', { wrap: 'wrap' }), t.verdict.ciRed(asked))));
+      const s = sittingRows(t, view, lane);
+      const under = [
+        s.now ? text({ wrap: 'wrap' }, text({ bold: true }, `${t.nowHead}: `), s.now) : null,
+        s.life ? text(toned('dim', { wrap: 'truncate-end' }), s.life) : null,
+        lane.push?.ci === 'red' ? text(toned('bad', { wrap: 'wrap' }), t.verdict.ciRed(asked)) : null,
+        ...s.helpers.map((a) => agentRow(t, a, view.at, true, columns)),
+      ].filter(Boolean);
+      if (under.length) rows.push(box({ flexDirection: 'column', paddingLeft: 2 }, under));
       return;
     }
     const agents = list(lane.agents);
@@ -724,14 +743,29 @@ function nowOf(t, view, lane) {
   const working = list(lane.agents).filter((a) => a.state === 'running');
   // an annotate lane says what it does in its line; with no helper at work there is nothing to add
   if (lane.job === 'annotate' && !working.length) return null;
-  if (working.length) {
-    const type = NOW_ORDER.find((x) => working.some((a) => a.type === x));
-    if (type === 'gsd-executor') return plain(t.now.executors(working.filter((a) => a.type === type).length));
-    if (type === 'gsd-planner' && gapPlanning(lane)) return plain(t.now.gapPlan);
-    return plain(type ? t.now.agent[type] : t.now.helpers(working.length));
-  }
+  if (working.length) return plain(helpersNow(t, lane, working));
   if (lane.push?.ci === 'pending') return plain(t.now.ciWait);
   return plain(lane.step == null ? t.allDone : t.now.step[lane.step] ?? cut(lane.step, 40));
+}
+
+// What helpers at work do, in words: the most telling type first (NOW_ORDER), executors counted, any other as a count.
+function helpersNow(t, lane, working) {
+  const type = NOW_ORDER.find((x) => working.some((a) => a.type === x));
+  if (type === 'gsd-executor') return t.now.executors(working.filter((a) => a.type === type).length);
+  if (type === 'gsd-planner' && gapPlanning(lane)) return t.now.gapPlan;
+  return type ? t.now.agent[type] : t.now.helpers(working.length);
+}
+
+// spec §8: an attended phase as its sitting shows it (turbo-run view's lane.sitting: lastAt and agents are the owner's
+// session's): { now (its helpers at work in words, else its last action while it works, else null), life (its last
+// activity, never a silence: the owner may think or be away), helpers (at work) }. Nothing from a view without sitting
+// (an older turbo-run, or a session not known): the stopped lane's would mislead.
+function sittingRows(t, view, lane) {
+  if (!lane?.sitting || typeof lane.sitting !== 'object') return { now: null, life: null, helpers: [] };
+  const helpers = list(lane.agents).filter((a) => a.state === 'running');
+  const now = helpers.length ? helpersNow(t, lane, helpers) : lane.sitting.action ? doingWords(t, lane.sitting.action) : null;
+  const sign = lastSign(lane);
+  return { now, life: sign ? t.life(since(t, sign, view.at) ?? '-') : null, helpers };
 }
 
 export const currentAction = (view, lane) => nowOf(textOf(view), view, lane);
@@ -767,7 +801,7 @@ function nextOf(t, view, lane) {
   if (!lane || lane.status === 'done' || lane.job === 'annotate') return null;
   const ahead = phaseSteps(lane).filter((s) => s.state === 'ahead').map((s) => stepWord(t, s.step));
   const last = lastPhase(view, lane);
-  const questions = list(view?.questions);
+  const questions = shownQuestions(view);
   const held = questions.filter((q) => waitsFor(view, q)).length;
   const needs = [];
   const need = (tone, s) => needs.push({ tone, text: s });
@@ -801,7 +835,7 @@ function lastPhase(view, lane) {
 // summary line the next phase, so no chain of steps.
 function nextOfRun(t, view) {
   const lanes = list(view?.lanes).filter((l) => !attendedLane(view, l));
-  const questions = list(view?.questions);
+  const questions = shownQuestions(view);
   const held = questions.filter((q) => waitsFor(view, q)).length;
   const needs = [];
   const need = (tone, s) => needs.push({ tone, text: s });
@@ -830,7 +864,7 @@ function nextSection(t, view, lane) {
 const MERGING = new Set(['ready', 'prepped', 'annotated']);
 function stepHalt(view, lane) {
   if (laneForm(view, lane) === 'running' || attendedLane(view, lane)) return null;
-  const asks = list(view?.questions).some((q) => String(q?.phase ?? '') === String(lane.phase));
+  const asks = shownQuestions(view).some((q) => String(q?.phase ?? '') === String(lane.phase));
   if (MERGING.has(lane.status) && !lane.halted && lane.held !== 'fullMode' && view?.supervisor?.running && !asks) return null;
   return STOPPED.has(lane.status) || lane.held === 'fullMode' || lane.halted ? 'bad' : 'warn';
 }
@@ -902,14 +936,14 @@ export function render(view, { error = null, field = NO_FIELD, columns = null } 
   if (error) parts.push(text(toned('bad', { wrap: 'truncate-end' }), `⚠️ ${t.failed}: ${errorWords(view, cut(error, 200))}`));
   if (!view) return box({ flexDirection: 'column' }, parts.length ? parts : [text(TONES.dim, t.loading)]);
   parts.push(runSection(t, view, verdictOf(t, view), columns));
-  const questions = [...list(view.questions)].sort((a, b) => waitsFor(view, b) - waitsFor(view, a));
+  const questions = [...shownQuestions(view)].sort((a, b) => waitsFor(view, b) - waitsFor(view, a));
   if (questions.length) parts.push(box({ flexDirection: 'column', marginTop: 1 }, text(toned('warn', { bold: true }), t.askHead(questions.length)), questions.map((q) => questionCard(t, view, q, field))));
   parts.push(awaySection(t, view));
   const lane = list(view.lanes)[0] ?? null;
   parts.push(nextSection(t, view, lane), stepsSection(t, view, lane), changesSection(t, view));
   if (view.supervisor) {
     const range = view.range ? t.phases(cut(view.range.from ?? '…', 20), cut(view.range.to ?? '…', 20)) : null;
-    parts.push(box({ marginTop: 1 }, text(toned('dim', { wrap: 'truncate-end' }), [supWord(t, view.supervisor), range].filter(Boolean).join(' · '))));
+    parts.push(box({ marginTop: 1 }, text(toned('dim', { wrap: 'truncate-end' }), [supWord(t, view), range].filter(Boolean).join(' · '))));
   }
   return box({ flexDirection: 'column' }, parts.filter(Boolean));
 }
@@ -942,7 +976,7 @@ function pushMarks(t, push, ci = true) {
 // CI ✓`), or null when the project has no turbo run and no open question. bandStyle is its colour, the verdict's.
 export function bandLine(view, { error = null, paneWaiting = false } = {}) {
   if (error) return `turbo · ⚠️ ${errorWords(view, cut(error, 100))}`;
-  const questions = list(view?.questions);
+  const questions = shownQuestions(view);
   if (!view || (!view.supervisor && !questions.length)) return null;
   const t = textOf(view);
   const v = verdictOf(t, view);
@@ -992,8 +1026,8 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
   if (!prev) return { toasts: [], seen: { ...seen, ...lanesSeen(next) } };
   const t = textOf(next);
   const out = [];
-  const asked = new Set(list(prev.questions).map((q) => q.id));
-  const fresh = list(next.questions).filter((q) => !asked.has(q.id));
+  const asked = new Set(shownQuestions(prev).map((q) => q.id));
+  const fresh = shownQuestions(next).filter((q) => !asked.has(q.id));
   const asks = (q) => cut(q.question || q.header || '', 80);
   if (fresh.length === 1) out.push(fresh[0].phase === 'annotate' ? t.newMarkupQuestion(asks(fresh[0])) : t.newQuestion(cut(fresh[0].phase ?? '', 20), asks(fresh[0])));
   else if (fresh.length > 1) out.push(t.newQuestions(fresh.length));
@@ -1012,7 +1046,7 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
     if (n.status === 'done' && last.status !== 'done') out.push(t.phaseDone(phase));
     if (STOPPED.has(n.status) && n.status !== last.status) out.push((n.status === 'failed' ? t.laneFailed : t.laneNeedsOwner)(phase, cut(laneReason(n.reason), 80)));
     const red = redOf(n);
-    if (red !== null && red !== last.red) out.push(t.ciRed(phase, sup?.running ? ciFixing(n) : null, list(next.questions).length));
+    if (red !== null && red !== last.red) out.push(t.ciRed(phase, sup?.running ? ciFixing(n) : null, shownQuestions(next).length));
     after[phase] = { status: n.status, red, slot: slotOf(n) };
   }
   if (!prev.supervisor?.halted && sup?.halted) out.push(t.halted);
@@ -1106,7 +1140,7 @@ export function refreshMs(view, foreground) {
 // the owner stopped (turbo-run stop) opens it only for a question. Claude Code places such a pane from 144 columns (110
 // once the person opened it), and /turbo-view or the owner's next prompt (register.mjs askAgain) opens it at any width.
 const laneOpen = (lane) => lane?.status !== 'done';
-export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || list(view?.questions).length || (!view?.supervisor?.stoppedByOwner && list(view?.lanes).some(laneOpen)));
+export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || shownQuestions(view).length || (!view?.supervisor?.stoppedByOwner && list(view?.lanes).some(laneOpen)));
 
 // The argv of S1's single answer arbiter (spec §5.3) for a press in the pane: option is the 1-based option number,
 // text a free answer, passed as one argument (no shell); --rev is always the revision the pane drew, so an answer to
@@ -1175,7 +1209,7 @@ export function afterAnswer(field, id, code) {
 
 // A draft lives as long as its question is open in the view.
 export function keepDraft(field, view) {
-  if (field.draftFor === null || list(view?.questions).some((q) => String(q.id) === field.draftFor)) return field;
+  if (field.draftFor === null || shownQuestions(view).some((q) => String(q.id) === field.draftFor)) return field;
   return { inputFor: field.inputFor === field.draftFor ? null : field.inputFor, draft: '', draftFor: null };
 }
 

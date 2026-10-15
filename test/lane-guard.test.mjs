@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
 import { GUARD_MATCHER, decodeGuardArg, encodeGuardArg, guardCommand, guardDecision, guardHooks, hookOutput, readStdin, windowsPath } from '../lib/lane-guard.mjs';
 import { GUARD_SCRIPT, buildBgArgs } from '../lib/claude.mjs';
@@ -145,27 +145,36 @@ test('the hook script itself: reads the call on stdin, always exits 0, prints th
   const denied = JSON.parse(run(path.join(path.dirname(slot), 'exec-02-01-tools', 'capture-red.mjs')));
   assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
   assert.equal(execFileSync(process.execPath, [GUARD_SCRIPT], { input: 'garbage', encoding: 'utf8' }), '');
+  // an empty stdin (the null device): allowed, exit 0
+  const closed = spawnSync(process.execPath, [GUARD_SCRIPT, arg], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
+  assert.deepEqual([closed.status, closed.stdout], [0, '']);
 });
 
 test('readStdin: the whole input across reads; a Windows pipe\'s EOF error ends it, a non-blocking pipe\'s EAGAIN is waited out, anything else throws', () => {
-  // answers: a string (its bytes are read), an error code (thrown), or 0 (the end)
+  // answers: a Buffer (its bytes are read), an error code (thrown), or 0 (the end)
   const reader = (answers) => {
     const left = [...answers];
     return (fd, buf) => {
       const a = left.length ? left.shift() : 0;
-      if (typeof a === 'string' && /^E[A-Z]+$/.test(a)) throw Object.assign(new Error(a), { code: a });
+      if (typeof a === 'string') throw Object.assign(new Error(a), { code: a });
       if (!a) return 0;
-      return Buffer.from(a).copy(buf);
+      return a.copy(buf);
     };
   };
+  const b = (s) => Buffer.from(s);
+  const u = Buffer.from('"ü"}');
   const slept = [];
   const sleep = (ms) => slept.push(ms);
-  assert.equal(readStdin({ readSync: reader(['{"tool_name":', '"Write"}', 0]), sleep }), '{"tool_name":"Write"}');
-  assert.equal(readStdin({ readSync: reader(['{"a":', '"ü"}', 'EOF']), sleep }), '{"a":"ü"}', 'EOF where a 0 was due');
-  assert.equal(readStdin({ readSync: reader(['EAGAIN', '{}', 'EAGAIN', 0]), sleep }), '{}');
+  assert.equal(readStdin({ readSync: reader([b('{"tool_name":'), b('"Write"}'), 0]), sleep }), '{"tool_name":"Write"}');
+  assert.equal(readStdin({ readSync: reader([b('{"a":'), b('"ü"}'), 'EOF']), sleep }), '{"a":"ü"}', 'EOF where a 0 was due');
+  // the two bytes of ü split across reads still decode as one character
+  assert.equal(readStdin({ readSync: reader([b('{"a":'), u.subarray(0, 2), u.subarray(2), 0]), sleep }), '{"a":"ü"}');
+  assert.equal(readStdin({ readSync: reader(['EAGAIN', b('{}'), 'EAGAIN', 0]), sleep }), '{}');
   assert.deepEqual(slept, [10, 10]);
   assert.throws(() => readStdin({ readSync: reader(['EBADF']), sleep }), /EBADF/);
   assert.throws(() => readStdin({ readSync: reader(Array(5).fill('EAGAIN')), sleep, maxWaits: 3 }), /EAGAIN/);
+  // the pauses count in a row only: data in between starts the count again
+  assert.equal(readStdin({ readSync: reader(['EAGAIN', 'EAGAIN', 'EAGAIN', b('{'), 'EAGAIN', 'EAGAIN', 'EAGAIN', b('}'), 0]), sleep, maxWaits: 3 }), '{}');
 });
 
 test('a lane launch gets the guard over its checkout, temp directory and control root\'s .planning/turbo; lanes.write_guard false, or no temp directory, gets none', () => {

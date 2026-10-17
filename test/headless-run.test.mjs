@@ -158,8 +158,15 @@ test('transcript writes keep a session alive without stream events (its own and 
   }
 });
 
-test('a session the tree kill misses is killed alone and finished after killGraceMs', { timeout: 20000 }, async (t) => {
-  const { cwd, env, deps } = setup(t, { hang: true });
+test('a transcript written after init under another directory name still counts as activity', { timeout: 20000 }, async (t) => {
+  const { cwd, f, env, deps } = setup(t, { transcriptKey: 'C--elsewhere', transcriptLateMs: 200, transcriptTicks: 16, tickMs: 150 });
+  const r = await runSession({ cwd, prompt: 'x', env, stallMin: 0.02, timeoutMin: 5 }, deps);
+  assert.deepEqual([r.stalled, r.result], [false, 'done']);
+  assert.equal(r.transcript, path.join(f.home, 'projects', 'C--elsewhere', `${SESSION}.jsonl`));
+});
+
+test('a session the tree kill misses is killed alone and finished after killGraceMs, a grandchild on its stdout or not', { timeout: 20000 }, async (t) => {
+  const { cwd, env, deps } = setup(t, { hang: true, grandchild: 'inherit' });
   const seen = [];
   const r = await runSession({ cwd, prompt: 'x', env, stallMin: 0.01 }, { ...deps, killGraceMs: 300, kill: (pid) => seen.push(pid) });
   assert.equal(r.stalled, true);

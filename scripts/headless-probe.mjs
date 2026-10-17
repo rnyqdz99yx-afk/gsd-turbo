@@ -166,6 +166,7 @@ async function live(ids, { keep }) {
     child.on('error', (e) => { clearTimeout(cap); reject(new Error(`claude failed to start: ${e.code || e.message}`)); });
     child.stdin.on('error', () => {});
     child.stdin.end(Buffer.from(prompt, 'utf8'));
+    child.stdout.setEncoding('utf8'); // a Cyrillic character split between chunks stays whole
     child.stdout.on('data', (d) => {
       const lines = (tail + d).split('\n');
       tail = lines.pop();
@@ -175,6 +176,7 @@ async function live(ids, { keep }) {
         try { events.push(JSON.parse(s)); } catch { /* not an event */ }
       }
     });
+    child.stderr.setEncoding('utf8');
     child.stderr.on('data', (d) => { stderr += d; });
     child.on('exit', (code) => { exitCode = code; setTimeout(finish, 2000); });
     child.on('close', finish);

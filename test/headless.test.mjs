@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { SESSION } from './helpers/transcripts.mjs';
-import { buildHeadlessArgs, headlessEnv, sessionSettings, killTree, parseStreamLine, newStreamState, foldEvent, usageOf, transcriptPath, parseOwnerQuestion, OWNER_CONTEXT_MAX, OWNER_OPTIONS_MAX } from '../lib/headless.mjs';
+import { buildHeadlessArgs, headlessEnv, sessionSettings, removeSessionSettings, killTree, parseStreamLine, newStreamState, foldEvent, usageOf, transcriptPath, parseOwnerQuestion, OWNER_CONTEXT_MAX, OWNER_OPTIONS_MAX } from '../lib/headless.mjs';
 import { projectKey } from '../lib/transcripts.mjs';
 import { decodeGuardArg, GUARD_MATCHER } from '../lib/lane-guard.mjs';
 import { pidAlive } from '../lib/merge-lock.mjs';
@@ -53,11 +53,17 @@ test('sessionSettings writes the lane settings with the worktree as an allowed r
   assert.deepEqual(decodeGuardArg(arg).roots, [path.resolve(worktree), dir, path.join(root, '.planning', 'turbo')]);
   assert.equal('hooks' in JSON.parse(fs.readFileSync(sessionSettings({ root, key: '3-s03', cwd: worktree, guard: false }).settingsFile, 'utf8')), false);
   assert.throws(() => sessionSettings({ root, key: '../x', cwd: worktree }), /key/);
+  // a lane's key would empty a running lane's temp directory
+  for (const key of ['3', '3.1', '12A', 'prep-3', 'annotate']) assert.throws(() => sessionSettings({ root, key, cwd: worktree }), /lane's/);
+  removeSessionSettings({ root, key: '3-s02' });
+  assert.deepEqual([fs.existsSync(settingsFile), fs.existsSync(dir)], [false, false]);
+  removeSessionSettings({ root, key: '3-s02' }); // nothing left: no error
 });
 
 test('killTree ends a process and its child', { timeout: 20000 }, async (t) => {
   const grand = 'setInterval(() => {}, 1000)';
-  const parentCode = `const c = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grand)}], { stdio: 'ignore' }); console.log(c.pid); setInterval(() => {}, 1000);`;
+  // the child detached off Windows: Claude Code starts its shell commands in a process group of their own
+  const parentCode = `const c = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grand)}], { stdio: 'ignore', detached: process.platform !== 'win32' }); console.log(c.pid); setInterval(() => {}, 1000);`;
   const parent = spawn(process.execPath, ['-e', parentCode], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, detached: process.platform !== 'win32' });
   let childPid = null;
   t.after(() => {
@@ -87,7 +93,8 @@ test('killTree ends a process and its child', { timeout: 20000 }, async (t) => {
 test('killTree never throws', () => {
   killTree(2147483644);
   killTree(2147483644, { platform: 'win32', exec: () => { throw new Error('taskkill failed'); } });
-  killTree(2147483644, { platform: 'linux' });
+  killTree(2147483644, { platform: 'linux', exec: () => { throw new Error('no ps'); } });
+  killTree(2147483644, { platform: 'linux', exec: () => 'garbage\n  2147483645 2147483644\n' });
 });
 
 // Task 2: stream-json, in the shapes the live probe printed (Claude Code 2.1.302)
@@ -182,6 +189,13 @@ test('parseOwnerQuestion: context cut to 600 characters', () => {
 test('parseOwnerQuestion: null without the heading or the question; the last heading wins', () => {
   for (const t of ['', 'Question: q', '## OWNER QUESTION\nContext: c', '## OWNER QUESTION\nQuestion:   ', null]) assert.equal(parseOwnerQuestion(t), null);
   assert.equal(parseOwnerQuestion('## OWNER QUESTION\nQuestion: old\n\n## OWNER QUESTION\nQuestion: new').question, 'new');
+});
+
+test('parseOwnerQuestion: bold or bulleted field names, a colon after the heading, bulleted options', () => {
+  const r = parseOwnerQuestion(['## OWNER QUESTION:', '**Question:** Which port?', '- **Context**: the VPS', '**Options:**',
+    '- 8080 — free (recommended)', '* 80 — needs admin'].join('\n'));
+  assert.deepEqual(r, { question: 'Which port?', context: 'the VPS', options: [
+    { label: '8080', description: 'free', recommended: true }, { label: '80', description: 'needs admin', recommended: false }] });
 });
 
 test('parseOwnerQuestion: a later heading ends the block; ### and trailing spaces are a heading too', () => {

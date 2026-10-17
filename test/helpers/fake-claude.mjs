@@ -11,7 +11,9 @@ import { SESSION, usage } from './transcripts.mjs';
 //   hang (after init: silent, alive), chatter (after init: an assistant event every 100 ms, forever),
 //   transcriptTicks + tickMs + tickSubagent (after init: that many transcript lines, in <id>/subagents/agent-a1.jsonl
 //   when tickSubagent, no stdout, then the result), grandchild: 'ignore' | 'inherit' (a node child with that stdout,
-//   its pid in <dir>/grandchild.pid).
+//   its pid in <dir>/grandchild.pid; detached off Windows, as Claude Code starts its shell-tool commands),
+//   transcriptKey (the project directory's name instead of projectKey(cwd)), transcriptLateMs (the transcript's first
+//   line written that long after init instead of before it).
 export const FAKE_MESSAGES = [
   ['msg_1', { input_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 1 }],
   ['msg_1', { input_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 5 }],
@@ -33,13 +35,17 @@ process.stdin.on('end', () => {
   fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify({ argv, stdin, env: { CLAUDECODE: envOf('CLAUDECODE'), CLAUDE_CODE_SESSION_ID: envOf('CLAUDE_CODE_SESSION_ID'), CLAUDE_CONFIG_DIR: envOf('CLAUDE_CONFIG_DIR') } }) + '\\n');
   const ri = argv.indexOf('--resume');
   const id = ri >= 0 && !B.resumeNewId ? argv[ri + 1] : B.sessionId;
-  const tdir = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', process.cwd().replace(/[^A-Za-z0-9]/g, '-'));
+  const tdir = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', B.transcriptKey || process.cwd().replace(/[^A-Za-z0-9]/g, '-'));
   const tfile = path.join(tdir, id + '.jsonl');
-  fs.mkdirSync(tdir, { recursive: true });
-  fs.appendFileSync(tfile, JSON.stringify({ type: 'user', sessionId: id, message: { role: 'user', content: stdin } }) + '\\n');
+  const firstLine = () => {
+    fs.mkdirSync(tdir, { recursive: true });
+    fs.appendFileSync(tfile, JSON.stringify({ type: 'user', sessionId: id, message: { role: 'user', content: stdin } }) + '\\n');
+  };
+  if (B.transcriptLateMs) setTimeout(firstLine, B.transcriptLateMs);
+  else firstLine();
   const out = (e) => process.stdout.write(JSON.stringify(e) + '\\n');
   if (B.grandchild) {
-    const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', B.grandchild === 'inherit' ? 'inherit' : 'ignore', 'ignore'] });
+    const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', B.grandchild === 'inherit' ? 'inherit' : 'ignore', 'ignore'], detached: process.platform !== 'win32' });
     g.unref();
     fs.writeFileSync(path.join(dir, 'grandchild.pid'), String(g.pid));
   }
@@ -67,7 +73,7 @@ process.stdin.on('end', () => {
 });
 `;
 
-const DEFAULTS = { sessionId: SESSION, result: 'done', isError: false, exitCode: 0, resultUsage: usage(20, 200, 2000), messages: FAKE_MESSAGES, noResult: false, hang: false, chatter: false, transcriptTicks: 0, tickMs: 100, tickSubagent: false, grandchild: null, resumeNewId: false };
+const DEFAULTS = { sessionId: SESSION, result: 'done', isError: false, exitCode: 0, resultUsage: usage(20, 200, 2000), messages: FAKE_MESSAGES, noResult: false, hang: false, chatter: false, transcriptTicks: 0, tickMs: 100, tickSubagent: false, grandchild: null, resumeNewId: false, transcriptKey: null, transcriptLateMs: 0 };
 
 export function fakeClaude(dir, behavior = {}) {
   const script = path.join(dir, 'fake-claude.cjs');

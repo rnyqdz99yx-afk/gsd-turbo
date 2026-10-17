@@ -95,6 +95,37 @@ test('a held slot\'s file is refreshed every heartbeatMs', async () => {
   r();
 });
 
+test('a slot file unreadable for a moment does not stop the heartbeat', async () => {
+  const dir = tmpDir('slots');
+  const r = await acquireSessionSlot({ max: 1, dir, heartbeatMs: 50 });
+  const file = path.join(dir, 'slot-1.json');
+  const text = fs.readFileSync(file, 'utf8');
+  fs.writeFileSync(file, 'cut sho');
+  await sleep(200);
+  fs.writeFileSync(file, text);
+  setMtime(file, new Date(Date.now() - 3600000));
+  await sleep(300);
+  assert.ok(Math.abs(fs.statSync(file).mtimeMs - Date.now()) < 1000, 'the heartbeat stopped');
+  r();
+  assert.equal(fs.existsSync(file), false);
+});
+
+test('a mutex left by a crash is taken over even when its pid is alive (Windows reuses pids); a busy one is waited on', { timeout: 20000 }, async () => {
+  const dir = tmpDir('slots');
+  const mutex = path.join(dir, '.mutex');
+  fs.writeFileSync(mutex, `${process.pid}-left-by-a-crash`);
+  setMtime(mutex, new Date(Date.now() - 120000));
+  const t0 = Date.now();
+  const a = await acquireSessionSlot({ max: 1, dir, pollMs: 20 });
+  assert.ok(Date.now() - t0 < 2000);
+  a();
+  fs.writeFileSync(mutex, `${process.pid}-busy`);
+  setTimeout(() => fs.rmSync(mutex, { force: true }), 300);
+  const b = await acquireSessionSlot({ max: 1, dir, pollMs: 20 });
+  assert.equal(b.slot, 1);
+  b();
+});
+
 test('max must be an integer of at least 1', async () => {
   const dir = tmpDir('slots');
   for (const max of [0, 1.5, '2', undefined]) await assert.rejects(acquireSessionSlot({ max, dir }), /max/);

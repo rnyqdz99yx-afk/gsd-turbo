@@ -11,11 +11,24 @@ import { compactPlan } from './helpers/slices.mjs';
 import { writeAttend } from '../lib/attend.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { runDir } from '../lib/paths.mjs';
-import { pidAlive } from '../lib/merge-lock.mjs';
-import { buildPathFor, buildLaneDeps, buildLogFile, claimRunner, launchBuild, runnerAlive, runnerFile, runnerOf, runningBuilds, stopBuild, waitBuildPaused } from '../lib/build-lane.mjs';
+import { pidAlive, processAlive } from '../lib/merge-lock.mjs';
+import { buildPathFor, buildLaneDeps, buildLogFile, claimRunner, launchBuild, processAlive as laneProcessAlive, runnerAlive, runnerFile, runnerOf, runningBuilds, stopBuild, waitBuildPaused } from '../lib/build-lane.mjs';
 
 const DEAD = 2147483644;
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
+
+test('processAlive: a zombie is gone, a running process is not (one function for every wait on a process)', { skip: process.platform === 'win32' && 'POSIX zombies only' }, async (t) => {
+  assert.equal(laneProcessAlive, processAlive);
+  const running = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  const done = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+  t.after(() => { try { process.kill(running.pid, 'SIGKILL'); } catch { /* gone */ } });
+  // a synchronous wait: this process cannot reap the child that ended, so it stays a zombie meanwhile
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+  assert.equal(pidAlive(done.pid), true);
+  assert.equal(processAlive(done.pid), false);
+  assert.equal(processAlive(running.pid), true);
+  assert.equal(processAlive(DEAD), false);
+});
 
 test('buildPathFor: the refusals of spec §6.8, each with its reason', () => {
   const off = buildProject({ config: { build: { enabled: false } } });

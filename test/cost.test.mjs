@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { writeBuildPhase4 } from './fixtures/cost.mjs';
-import { GAP_CAP_MS, IEU_WEIGHTS, eachLine, ieuOf, laneJobIds, phaseCost, recordSessionUsage, turboStepOf } from '../lib/cost.mjs';
+import { writeBuildPhase4, writeLanePhase3, writeLanePhase5 } from './fixtures/cost.mjs';
+import { FORK, SESSION } from './helpers/transcripts.mjs';
+import { GAP_CAP_MS, IEU_WEIGHTS, eachLine, ieuOf, laneJobIds, laneTranscripts, phaseCost, recordSessionUsage, turboStepOf } from '../lib/cost.mjs';
 
 const U = { input_tokens: 100, cache_creation_input_tokens: 1000, cache_read_input_tokens: 0, output_tokens: 50 };
 
@@ -99,4 +100,55 @@ test('laneJobIds takes the phase\'s own launches and adoptions and its prep lane
   ].map((l, i) => `2026-10-17T10:0${i}:00.000Z ${l}`).join('\n');
   assert.deepEqual(laneJobIds(text, '3'), ['11111111', '33333333', '44444444']);
   assert.deepEqual(laneJobIds(text, '03'), ['11111111', '33333333', '44444444']);
+});
+
+// A project root and a Claude home holding the synthetic lane phases 3 and 5.
+function laneProject() {
+  const root = tmpDir('cost-l');
+  const home = tmpDir('cost-home');
+  writeLanePhase3({ home, root });
+  writeLanePhase5({ home, root });
+  return { root, home, env: { CLAUDE_CONFIG_DIR: home } };
+}
+
+test('laneTranscripts finds a phase\'s lane sessions through supervisor.log and the job state, and their subagents', () => {
+  const { root, home } = laneProject();
+  const t = laneTranscripts({ home, root, phase: '3' });
+  assert.deepEqual(t.mains.map((m) => path.basename(m.file)), [`${SESSION}.jsonl`, `${FORK}.jsonl`]);
+  assert.deepEqual(t.agents.map((a) => [path.basename(a.file), a.meta.agentType]), [['agent-a0123456789abcdef.jsonl', 'gsd-assumptions-analyzer']]);
+});
+
+test('phaseCost of a lane phase: steps from phase-step and skills, subagents under their dispatch step, each call once', () => {
+  const { root, env } = laneProject();
+  const cost = phaseCost({ root, phase: '3', env });
+  assert.deepEqual(cost.rows, [
+    { step: 'turbo-phase', role: 'orchestrator', sessions: 1, wallMs: 30000, out: 70, inCreate: 1110, cacheRead: 2000, ieu: 1910 },
+    { step: 'discuss', role: 'orchestrator', sessions: 1, wallMs: 385000, out: 130, inCreate: 500, cacheRead: 7000, ieu: 1975 },
+    { step: 'discuss', role: 'gsd-assumptions-analyzer', sessions: 1, wallMs: 180000, out: 500, inCreate: 4200, cacheRead: 8000, ieu: 8500 },
+    { step: 'plan', role: 'orchestrator', sessions: 1, wallMs: 20000, out: 60, inCreate: 0, cacheRead: 7000, ieu: 1000 },
+  ]);
+  assert.deepEqual(cost.total, { sessions: 3, wallMs: 616000, out: 760, inCreate: 5810, cacheRead: 24000, ieu: 13385 });
+  assert.deepEqual(cost.steps, [{ step: 'turbo-phase', wallMs: 30000, ieu: 1910 }, { step: 'discuss', wallMs: 566000, ieu: 10475 }, { step: 'plan', wallMs: 20000, ieu: 1000 }]);
+  assert.deepEqual(cost.sources, { lane: 3, build: 0 });
+  assert.equal(cost.fixRounds, 2);
+  assert.equal(cost.slices, 0);
+});
+
+test('nested subagents inherit through their parent agent, an unlinked one reads ?, synthetic messages count nothing', () => {
+  const { root, env } = laneProject();
+  const cost = phaseCost({ root, phase: '5', env });
+  assert.deepEqual(cost.rows.map((r) => [r.step, r.role, r.ieu]), [
+    ['gsd-execute-phase', 'orchestrator', 12],
+    ['gsd-execute-phase', 'gsd-executor', 6],
+    ['gsd-execute-phase', 'Explore', 6],
+    ['?', 'general-purpose', 6],
+  ]);
+  assert.equal(cost.total.ieu, 30);
+});
+
+test('phaseCost reads the transcripts under CLAUDE_CONFIG_DIR', () => {
+  const { root } = laneProject();
+  const cost = phaseCost({ root, phase: '3', env: { CLAUDE_CONFIG_DIR: tmpDir('cost-other') } });
+  assert.deepEqual(cost.rows, []);
+  assert.equal(cost.sources.lane, 0);
 });

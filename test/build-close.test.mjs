@@ -2,6 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { buildRig, claudeHome, summaryText } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
 import { laneProject } from './helpers/lane-merge.mjs';
@@ -85,7 +86,7 @@ test('uat: nothing to check by hand when verification passed', async (t) => {
   assert.deepEqual(r.turbo.calls, []);
   // the owner's Go on at the verify card holds here too
   const g = await closeRig(t, { setup: (x) => { x.write(`${REL}/05-VERIFICATION.md`, verification('gaps_found')); x.commit('docs: v'); } });
-  setStep(g.ctx.state, 'verify', { state: 'done', accepted: 'ask-1' });
+  setStep(g.ctx.state, 'verify', { state: 'done', accepted: 'ask-1', acceptedOn: createHash('sha256').update(verification('gaps_found')).digest('hex') });
   assert.equal(await runStep(g.ctx, 'uat'), 'skipped');
   assert.equal(g.ctx.state.steps.uat.why, 'verification gaps accepted by the owner: nothing to check by hand');
 });

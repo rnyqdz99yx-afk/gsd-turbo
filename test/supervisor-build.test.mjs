@@ -201,6 +201,19 @@ test('reintegrate and ci-red relaunch build --resume (Stage 6 B4)', async () => 
   assert.equal(s.lanes['1'].inboxWake, undefined);
 });
 
+test('a lane rebuilt from its slot\'s record resumes as a build when the phase began on the build path (Stage 6 B4)', async () => {
+  const h = lanesHarness({ phases: [LP('1')] });
+  const b = (h.ctx.deps.build = fakeBuild());
+  b.started = (phase) => phase === '1';
+  const slot = h.slots[0];
+  slot.job = { kind: 'phase', phase: '1', branch: 'turbo/p1', state: 'active' };
+  const s = { ...freshLanes(), lanes: { 1: { key: '1', job: 'phase', phase: '1', slot: 1, slotPath: slot.path, branch: 'turbo/p1', sessionId: null, launchedAt: null, restarts: 0, notified: {}, mode: 'full', launch: 'resume' } } };
+  const next = await tick(s, h.ctx);
+  assert.deepEqual(b.calls, [['launch', { phase: '1', cwd: slot.path, controlRoot: h.root, resume: true }]], h.logs.join('\n'));
+  assert.deepEqual(h.launched, []);
+  assert.equal(next.lanes['1'].path, 'build');
+});
+
 test('an attended build lane is left to pause on its own (Stage 6 B4)', async () => {
   const h = lanesHarness({ phases: [LP('1')] });
   const b = (h.ctx.deps.build = fakeBuild());

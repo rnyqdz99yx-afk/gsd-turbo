@@ -143,8 +143,15 @@ test('launchBuild starts a detached turbo-run build; stopBuild ends its tree', a
   const started = async (o) => {
     fs.rmSync(out, { force: true });
     const { pid } = launchBuild({ root: p.root, phase: '5', script, ...o });
-    for (let i = 0; i < 100 && !fs.existsSync(out); i++) await sleep(50);
-    const r = JSON.parse(fs.readFileSync(out, 'utf8'));
+    // the script writes the file once: read it when it parses (an empty file is a write in progress)
+    let r = null;
+    for (let i = 0; i < 200 && !r; i++) {
+      try {
+        r = JSON.parse(fs.readFileSync(out, 'utf8'));
+      } catch {
+        await sleep(50);
+      }
+    }
     pids.push(...r.pids);
     assert.equal(r.pids[0], pid);
     return r;

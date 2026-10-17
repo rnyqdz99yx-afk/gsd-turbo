@@ -803,7 +803,8 @@ function stopLanes(root, before, { prevStop = null } = {}) {
     // the second stop: the build already pauses for one (its hold), or an earlier stop came after the build started
     const started = Date.parse(runnerOf(root, b.phase)?.startedAt);
     const stoppedOnce = Number.isFinite(started) && Date.parse(prevStop?.at) >= started;
-    if (hold?.reason !== 'stop' && !stoppedOnce) {
+    const held = hold?.reason === 'stop' && Number.isFinite(started) && Date.parse(hold.at) >= started;
+    if (!held && !stoppedOnce) {
       out(`phase ${b.phase}: the build stops after its running sessions; run turbo-run stop again to end them now`);
       continue;
     }

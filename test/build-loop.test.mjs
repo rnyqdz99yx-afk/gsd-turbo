@@ -129,6 +129,30 @@ test('red after the fix stops for the owner', async (t) => {
   assert.equal(r.a.acts().filter((x) => x.role === 'fixer').length, 2);
 });
 
+test('a pause or a stop while the tests are red ends with merges still queued', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }) };
+  const slices = { '05-01': { files: files('a', { value: 1, expect: 2 }) }, '05-02': { files: files('b'), delayMs: 3000 } };
+  // attend while red and 05-02 still builds: 05-02 finishes, waits for its merge, and the build pauses (no fixer)
+  const a = await loopRig(t, { plans, slices });
+  every(t, () => {
+    if (!a.ctx.state.red) return false;
+    writeAttend(a.root, '5');
+    return true;
+  });
+  assert.equal(await runStep(a.ctx, 'build'), 'paused');
+  assert.equal(a.ctx.state.slices['05-02'].state, 'running');
+  assert.equal(a.a.acts().filter((x) => x.role === 'fixer').length, 0);
+  // Stop here on the red card while 05-02 waits for its merge: the step stops
+  const s = await loopRig(t, { plans, slices, script: { fixes: [{ files: {}, result: 'nothing to change' }] } });
+  every(t, () => {
+    const q = openCard(s.root);
+    if (!q) return false;
+    answer(s.root, q.id, 2);
+    return true;
+  });
+  assert.equal(await runStep(s.ctx, 'build'), 'stopped');
+});
+
 test('a slice built again gets the answer it took before in its prompt', async (t) => {
   const r = await loopRig(t, { plans: { '05-01': plan('05-01', 'a') }, slices: { '05-01': { files: files('a') } } });
   const q = askOwner(r.root, '5', { question: 'Which greeting should the bot use?', context: '', options: [{ label: 'Formal', description: 'Hello, Ann' }, { label: 'Casual', description: 'Hi, Ann' }], recommended: 1 }, { keepRunning: true }).question;

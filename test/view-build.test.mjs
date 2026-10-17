@@ -34,7 +34,7 @@ function buildLaneProject({ step = 'build', red = null, path: lanePath = 'build'
         '05-03': slice('owner', { question: 'ask-1' }),
         '05-04': slice('waiting'),
       },
-      step, steps: { review: { state: 'running', at: ago(3), session: { id: SR, role: 'reviewer', transcript: tr, cwd: root } } }, base: null, roundBase: null, gapRounds: 0, info: { name: 'Demo', padded: '05' },
+      step, steps: { review: { state: 'running', at: ago(3), session: { id: SR, role: 'reviewer', transcript: tr, cwd: root, pid: 777 } } }, base: null, roundBase: null, gapRounds: 0, info: { name: 'Demo', padded: '05' },
     }));
   }
   const sup = { pid: 4242, updatedAt: ago(0), finished: false, halted: false, range: { from: '5', to: '5' }, lane: { phase: '5', ...(lanePath ? { path: lanePath, pid: 4242 } : {}), sessionId: null, launchedAt: ago(10), mode: 'full', restarts: 0, notified: {} } };

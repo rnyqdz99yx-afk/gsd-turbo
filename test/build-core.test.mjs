@@ -7,7 +7,7 @@ import { compactPlan } from './helpers/slices.mjs';
 import { BUILD_STEPS, HALT_KINDS, BuildFailed, adoptRound, haltQuestion, openBuild, ownerAsk, runStep, setStep, stepSession, takeAnswer } from '../lib/build.mjs';
 import { loadBuildState, reconcileBuildState, saveBuildState } from '../lib/build-queue.mjs';
 import { runDir } from '../lib/paths.mjs';
-import { laneQuestion, liveAnswer, markDelivered, readAnswers, readQuestions } from '../lib/questions.mjs';
+import { askOwner, laneQuestion, liveAnswer, markDelivered, readAnswers, readQuestions } from '../lib/questions.mjs';
 import { answerQuestion, laneDeliveryMessage } from '../lib/answers.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
 
@@ -118,6 +118,20 @@ test('an answer the run before died taking goes to the same session again, never
   assert.equal(calls[1].stdin, laneDeliveryMessage(readQuestions(rig.root, '5')[0], liveAnswer(readAnswers(rig.root, '5'), 'ask-1')));
   assert.deepEqual(readQuestions(rig.root, '5').map((q) => q.id), ['ask-1']);
   assert.equal(ctx.state.steps.discuss.answering, undefined);
+});
+
+test('a card of another session of the step is dropped, never answered into this one', async (t) => {
+  const ctxText = '# Phase 5: Demo Feature - Context\n\n<decisions>\n## Implementation Decisions\n\n- **D-01:** greet\n</decisions>\n';
+  const rig = await buildRig({ project: { context: false }, script: { context: { path: '.planning/phases/05-demo/05-CONTEXT.md', text: ctxText } } });
+  const ctx = await openBuild(rig.root, '5', { deps: rig.deps });
+  t.after(() => ctx.release());
+  const q = askOwner(rig.root, '5', { question: 'Which greeting should the bot use?', context: '', options: [{ label: 'Formal', description: 'Hello, Ann' }, { label: 'Casual', description: 'Hi, Ann' }], recommended: 1 }, { keepRunning: true }).question;
+  setStep(ctx.state, 'discuss', { state: 'owner', question: q.id, session: { id: 'b4000000-0000-4000-8000-000000000077', role: 'other', key: '5-other', cwd: rig.root } });
+  assert.equal(await runStep(ctx, 'discuss'), 'done');
+  const calls = rig.f.calls();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].argv.includes('--resume'), false);
+  assert.deepEqual(readQuestions(rig.root, '5'), []);
 });
 
 test('a question the card refuses is rewritten once by the same session, then the step fails', async (t) => {

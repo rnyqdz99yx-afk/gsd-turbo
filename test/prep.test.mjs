@@ -186,3 +186,16 @@ test('review: an annotate merge refusal is not retried on the same ROADMAP; the 
   assert.equal((await finishJob(ctx2, lane, { merge: async () => ({ outcome: 'merged' }) })).outcome, 'merged');
   assert.deepEqual(calls.at(-1), [1, 'merged']);
 });
+
+test('Stage 5 D1: a phase marked low before its prep is queued for markup again after its prep, once no prep is due', () => {
+  const root = project({ context: ['2', '3', '4'] });
+  const entries = { ...all(['2', '3', '5']), 4: { areas: ['**'], gates: [], confidence: 'low', context: false } };
+  writeLanesFile(root, { phases: entries });
+  // phase 5 still needs its prep: no markup job yet
+  assert.deepEqual(pendingJobs(ctx(root), MORE), [{ kind: 'prep', phase: '5' }]);
+  const dir = path.join(root, '.planning', 'phases', '05-p5');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, '05-CONTEXT.md'), '# ctx\n');
+  assert.deepEqual(pendingJobs(ctx(root), MORE), [{ kind: 'annotate', phase: null }]);
+  assert.equal(annotateReason(root, MORE), 'phases');
+});

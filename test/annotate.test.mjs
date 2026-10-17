@@ -212,3 +212,56 @@ test('v0.4.0: the dependency card may be taken automatically (autoOk: its decisi
   applyAnswer(root, 'all', { phases: PH, config: {}, now: NOW });
   assert.match(fs.readFileSync(path.join(root, '.planning', 'turbo', 'DECISIONS.md'), 'utf8'), /Decided by: gsd-turbo automatically, the owner did not answer in time \(answer ask-1\)/);
 });
+
+// --- Stage 5: /turbo-adopt applies with the owner's choice, without a commit ------------------------------------------
+
+const TWO = { ...GOOD, relax: [{ phase: '4', drop: ['3'], kind: 'prose', reason: 'wording only' }, { phase: '4', drop: ['2'], kind: 'imaginary', reason: 'the docs need no API' }] };
+const head = (root) => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+
+test('adopt: relax all at standard autonomy asks nothing and applies every relaxation with a decision record by the owner', () => {
+  const root = project();
+  const r = applyAnalysis(root, TWO, { phases: PH, config: { autonomy: 'standard' }, now: NOW, relax: 'all' });
+  assert.deepEqual([r.asked, r.relaxed, r.adr], [null, ['r1', 'r2'], '.planning/turbo/DECISIONS.md']);
+  assert.deepEqual(readQuestions(root, 'annotate'), []);
+  assert.equal(gsdDepends(gsdSection(fs.readFileSync(roadmapFile(root), 'utf8'), '4')), 'Nothing');
+  assert.match(fs.readFileSync(path.join(root, '.planning', 'turbo', 'DECISIONS.md'), 'utf8'), /Decided by: the owner \(turbo adopt\)/);
+  assert.equal(readLanesRaw(root).proposal.state, 'applied');
+  assert.equal(readLanesFile(root).fresh, true);
+});
+
+test('adopt: relax none declines without a record; a list applies only its ids; an unknown id is refused', () => {
+  const root = project();
+  const r = applyAnalysis(root, TWO, { phases: PH, config: {}, now: NOW, relax: 'none' });
+  assert.deepEqual([r.asked, r.relaxed, r.adr], [null, [], null]);
+  assert.equal(gsdDepends(gsdSection(fs.readFileSync(roadmapFile(root), 'utf8'), '4')), 'Phase 2, Phase 3');
+  assert.equal(readLanesRaw(root).proposal.state, 'declined');
+  assert.ok(!fs.existsSync(path.join(root, '.planning', 'turbo', 'DECISIONS.md')));
+
+  const q = project();
+  assert.deepEqual(applyAnalysis(q, TWO, { phases: PH, config: {}, now: NOW, relax: ['r2'] }).relaxed, ['r2']);
+  assert.equal(gsdDepends(gsdSection(fs.readFileSync(roadmapFile(q), 'utf8'), '4')), 'Phase 3');
+
+  const u = project();
+  assert.throws(() => applyAnalysis(u, TWO, { phases: PH, config: {}, now: NOW, relax: ['r9'] }), (e) => e instanceof AnnotateRefused && /no proposal r9/.test(e.message));
+  assert.ok(!fs.existsSync(lanesFile(u)), 'nothing written');
+});
+
+test('adopt: commit null commits nothing and lists the files it wrote', () => {
+  const root = project();
+  const before = head(root);
+  const r = applyAnalysis(root, TWO, { phases: PH, config: {}, now: NOW, relax: 'all', commit: null });
+  assert.equal(r.commit, null);
+  assert.equal(head(root), before);
+  assert.deepEqual(r.paths, ['.planning/ROADMAP.md', '.planning/turbo/lanes.json', '.planning/turbo/DECISIONS.md']);
+  const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean).map((l) => l.slice(3)).sort();
+  assert.deepEqual(dirty, [...r.paths].sort());
+});
+
+test('D1: every marked-up phase records whether its CONTEXT.md existed; v0.4 behaviour without relax is unchanged', () => {
+  const root = project();
+  const r = applyAnalysis(root, GOOD, { phases: PH, config: {}, now: NOW });
+  assert.equal(r.commit.committed, true);
+  const raw = readLanesRaw(root);
+  assert.deepEqual(['2', '3', '4'].map((n) => raw.phases[n].context), [false, true, false]);
+  assert.deepEqual(readLanesFile(root).phases['3'], { areas: ['web/**'], gates: ['prod-deploy'], confidence: 'high' });
+});

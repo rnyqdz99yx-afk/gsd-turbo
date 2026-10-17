@@ -90,3 +90,23 @@ test('writeLanesFile needs a ROADMAP', () => {
   fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
   assert.throws(() => writeLanesFile(root, MARKUP), /no \.planning\/ROADMAP\.md/);
 });
+
+test('Stage 5 D1: a phase marked low without its CONTEXT.md goes stale once the CONTEXT.md exists; high, no key or context true never', () => {
+  const root = project();
+  const phases = PHASES;
+  const mark = (e4) => writeLanesFile(root, { phases: { 2: { areas: ['src/**'], gates: [], confidence: 'high', context: false }, 3: { areas: ['web/**'], gates: [], confidence: 'high' }, 4: e4 } });
+  mark({ areas: ['**'], gates: [], confidence: 'low', context: false });
+  assert.deepEqual(stalePhases(root, phases), []);
+  assert.equal(readLanesRaw(root).phases['4'].context, false);
+  const dir = path.join(root, '.planning', 'phases', '04-docs');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, '04-CONTEXT.md'), '# ctx\n');
+  assert.deepEqual(stalePhases(root, phases), ['4']);
+  fs.mkdirSync(path.join(root, '.planning', 'phases', '02-api'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'phases', '02-api', '02-CONTEXT.md'), '# ctx\n');
+  assert.deepEqual(stalePhases(root, phases), ['4'], 'phase 2 has high confidence');
+  mark({ areas: ['**'], gates: [], confidence: 'low' });
+  assert.deepEqual(stalePhases(root, phases), [], 'no context key: a v0.4 markup');
+  mark({ areas: ['**'], gates: [], confidence: 'low', context: true });
+  assert.deepEqual(stalePhases(root, phases), [], 'marked up again with its context: no loop');
+});

@@ -2,19 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { STALE_REPORT, adoptDeps, adoptProject, closedRow, commitAll, MANAGER, write } from './helpers/adopt.mjs';
+import { STALE_REPORT, adoptDeps, adoptProject, closedRow, commitAll, MANAGER, WIDE, wideProject, write } from './helpers/adopt.mjs';
 import { createGsdConfig } from '../lib/gates.mjs';
 import { LEAN_KEYS, leanApply, leanChanges } from '../lib/lean.mjs';
 import { setManager } from './helpers/fake-gsd.mjs';
 import { jargonIn, plainWords } from '../lib/questions.mjs';
 import { analysisFile } from '../lib/annotate.mjs';
-import { ADOPT_REL, AdoptRefused, AdoptUsage, adoptPlan, adoptQuestions, formatPlan, parseAnswers, readReverified, reverifyResult } from '../lib/adopt.mjs';
+import { ADOPT_REL, AdoptRefused, AdoptUsage, adoptPlan, adoptQuestions, formatOverview, formatPlan, parseAnswers, readReverified, reverifyResult } from '../lib/adopt.mjs';
 
 const GOOD = {
   phases: { 2: { areas: ['src/api/**'], gates: [], confidence: 'high' }, 3: { areas: ['web/**'], gates: ['owner-live'], confidence: 'high' }, 4: { areas: ['docs/**'], gates: [], confidence: 'high' } },
   pairs: [],
   relax: [{ phase: '4', drop: ['3'], kind: 'prose', reason: 'wording only' }],
 };
+const GOOD5 = { ...GOOD, phases: { ...GOOD.phases, 5: { areas: ['cli/**'], gates: [], confidence: 'high' }, 6: { areas: ['tools/**'], gates: [], confidence: 'high' } } };
 const kinds = (p) => p.changes.map((c) => c.kind);
 const record = (o) => JSON.stringify({ v: 1, state: 'applied', at: '2026-10-14T00:00:00.000Z', staleClosed: ['1'], answers: { 'stale-closed': { value: 'keep', set: ['1'] } }, reverified: {}, paths: [ADOPT_REL], ...o });
 
@@ -51,8 +52,8 @@ test('a question answered for the same set is not asked again; a new closed phas
 });
 
 test('a valid analysis with relaxations: the relax card joins the questions at standard; at max no question, the markup change carries the decision record', () => {
-  const { root, deps } = adoptProject({ files: { [ADOPT_REL]: record() } });
-  write(root, path.relative(root, analysisFile(root)).split(path.sep).join('/'), JSON.stringify(GOOD));
+  const { root, deps } = wideProject({ files: { [ADOPT_REL]: record() } });
+  write(root, path.relative(root, analysisFile(root)).split(path.sep).join('/'), JSON.stringify(GOOD5));
   let p = adoptPlan(root, { deps });
   assert.equal(p.analysis, 'valid');
   const [q] = p.questions;
@@ -68,13 +69,33 @@ test('a valid analysis with relaxations: the relax card joins the questions at s
   commitAll(root);
   p = adoptPlan(root, { deps });
   assert.deepEqual(p.questions, []);
-  assert.deepEqual(p.changes.find((c) => c.kind === 'markup'), { kind: 'markup', paths: ['.planning/ROADMAP.md', '.planning/turbo/lanes.json', '.planning/turbo/DECISIONS.md'], value: { targets: ['2', '3', '4'], relax: ['r1'] }, text: p.changes.find((c) => c.kind === 'markup').text });
-  // relaxed: 4 no longer waits on 3, so 3 and 4 run side by side after 2
-  assert.deepEqual(p.forecast.after.steps, [['2'], ['3', '4']]);
+  assert.deepEqual(p.changes.find((c) => c.kind === 'markup'), { kind: 'markup', paths: ['.planning/ROADMAP.md', '.planning/turbo/lanes.json', '.planning/turbo/DECISIONS.md'], value: { targets: ['2', '3', '4', '5', '6'], relax: ['r1'] }, text: p.changes.find((c) => c.kind === 'markup').text });
+  // relaxed: 4 no longer waits on 3, so 3 and 4 run side by side after 2 (5 and 6 beside 2)
+  assert.deepEqual(p.forecast.after.steps, [['2', '5', '6'], ['3', '4']]);
+});
+
+test('fewer than three independent phases: no markup, whatever analysis lies there (spec §5.5, the rule of prep, v0.5.1)', () => {
+  // phases 2, 3 and 4 wait on each other: one at a time
+  const { root, deps } = adoptProject({ files: { [ADOPT_REL]: record() } });
+  write(root, path.relative(root, analysisFile(root)).split(path.sep).join('/'), JSON.stringify(GOOD));
+  const p = adoptPlan(root, { deps });
+  assert.equal(p.overview.markup, 'few');
+  assert.equal(p.analysis, 'none');
+  assert.ok(!kinds(p).includes('markup'));
+  assert.deepEqual(p.questions, []);
+  assert.ok(formatOverview(p.overview).includes('markup: few (1 independent phase, needs 3)'), formatOverview(p.overview).join('\n'));
+  // two independent phases are still too few
+  const two = wideProject({}, WIDE.slice(0, 1));
+  const twoPlan = adoptPlan(two.root, { deps: two.deps, answers: { 'stale-closed': 'keep' } });
+  assert.equal(twoPlan.overview.markup, 'few');
+  assert.ok(formatOverview(twoPlan.overview).includes('markup: few (2 independent phases, needs 3)'), formatOverview(twoPlan.overview).join('\n'));
+  // three: the markup is needed
+  const w = wideProject();
+  assert.equal(adoptPlan(w.root, { deps: w.deps, answers: { 'stale-closed': 'keep' } }).overview.markup, 'needed');
 });
 
 test('an invalid analysis is refused with its problems and adds no markup change', () => {
-  const { root, deps } = adoptProject();
+  const { root, deps } = wideProject();
   write(root, '.planning/turbo/run/annotate/analysis.json', JSON.stringify({ phases: { 9: { areas: [], gates: [], confidence: 'x' } } }));
   const p = adoptPlan(root, { deps, answers: { 'stale-closed': 'keep' } });
   assert.equal(p.analysis, 'refused');

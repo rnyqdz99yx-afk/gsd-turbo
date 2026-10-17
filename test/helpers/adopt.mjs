@@ -45,6 +45,17 @@ export function adoptProject({ manager = MANAGER, files = {}, config = null, roa
   return { root, core, git, deps: adoptDeps(root, core) };
 }
 
+// spec §5.5: adopt marks the ROADMAP up only with three independent phases. The fixture's 2, 3 and 4 wait on each
+// other; the wide one adds phases (default 5 and 6) that wait on phase 1 alone: 2, 5 and 6 are independent.
+export const WIDE = [['5', 'Cli'], ['6', 'Tools']];
+export function wideRoadmap(ns = WIDE) {
+  const list = ns.map(([n, name]) => `- [ ] **Phase ${n}: ${name}** - the ${name}\n`).join('');
+  const sections = ns.map(([n, name]) => `### Phase ${n}: ${name}\n**Goal**: The ${name}\n**Depends on**: Phase 1\n\n`).join('');
+  return ROADMAP4.replace('- [ ] **Phase 4: Docs** - the docs\n', `- [ ] **Phase 4: Docs** - the docs\n${list}`).replace('## Progress', `${sections}## Progress`);
+}
+export const wideManager = (ns = WIDE) => ({ ...MANAGER, phases: [...MANAGER.phases, ...ns.map(([n]) => row(n, { dep_phases: ['1'] }))] });
+export const wideProject = (o = {}, ns = WIDE) => adoptProject({ manager: wideManager(ns), roadmap: wideRoadmap(ns), ...o });
+
 export function adoptDeps(root, core, over = {}) {
   return {
     core,

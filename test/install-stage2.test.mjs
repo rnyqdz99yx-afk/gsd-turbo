@@ -23,7 +23,7 @@ test('install ships the stage-2 skill, agent and libraries under turbo-* names o
 test('install ships the build-path role prompts and the installed roles.mjs reads them', async () => {
   const home = tmpDir('home');
   const m = install({ repoDir: path.resolve('.'), claudeHome: home });
-  for (const f of ['turbo/roles/slicer.md', 'turbo/roles/builder.md', 'turbo/roles/fixer.md', 'turbo/roles/owner-question.md', 'turbo/lib/roles.mjs']) {
+  for (const f of ['turbo/roles/slicer.md', 'turbo/roles/builder.md', 'turbo/roles/fixer.md', 'turbo/roles/owner-question.md', 'turbo/lib/roles.mjs', 'turbo/lib/slice-lint.mjs']) {
     assert.ok(m.files.includes(f), f);
     assert.ok(fs.existsSync(path.join(home, f)), f);
   }

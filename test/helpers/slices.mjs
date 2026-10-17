@@ -75,6 +75,24 @@ export function writePlan(root, id, text, slug = 'demo') {
   return file;
 }
 
+// gsd-tools' verdict verbs as lintSlices calls them, answered like GSD 1.17 and recorded. structure: { planId: verdict }
+// overrides verify plan-structure for that plan; decision: what check decision-coverage-plan answers.
+export function fakeLintGsd(root, { decision = { passed: true, skipped: false, total: 2, covered: 2, uncovered: [] }, structure = {} } = {}) {
+  const calls = [];
+  const gsd = (args) => {
+    calls.push(args);
+    if (args[0] === 'verify' && args[1] === 'plan-structure') {
+      const id = path.posix.basename(args[2]).replace(/-PLAN\.md$/, '');
+      if (structure[id]) return structure[id];
+      const text = fs.readFileSync(path.join(root, args[2]), 'utf8');
+      return { code: 0, json: { valid: true, errors: [], warnings: [], task_count: text.split('<task ').length - 1 } };
+    }
+    if (args[0] === 'check' && args[1] === 'decision-coverage-plan') return { code: 0, json: decision };
+    throw new Error(`unexpected gsd-tools ${args.join(' ')}`);
+  };
+  return { gsd, calls };
+}
+
 // What L1's readPhaseInfo answers for slicePhase()'s phase 5.
 export const DEMO_INFO = Object.freeze({
   phase: '5',

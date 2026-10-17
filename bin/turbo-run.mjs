@@ -6,9 +6,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
 import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
+import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
-import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
+import { InitAborted, initProject } from '../lib/project-init.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { createGit } from '../lib/push.mjs';
 import { createGh } from '../lib/ci.mjs';
@@ -23,7 +23,7 @@ import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, VALUE_FLAGS as PHASE_VALUE_FLAGS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
 import { nextStep, readProgress } from '../lib/phase-progress.mjs';
-import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
+import { gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, clean, formatView, openQuestions, runLineFor, withRunLine } from '../lib/view.mjs';
 import { quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
@@ -49,8 +49,6 @@ import { recoverSupervisor } from '../lib/sup-recover.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees> [args]';
-// GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
-const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax']);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
@@ -65,8 +63,6 @@ const START_CONFIRM_MS = 5000;
 const EXEC_TIMEOUT_MS = 30000;
 // POSIX single quotes; a ' inside becomes '\''.
 const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-// Why a child process failed, without Node's "Command failed: <argv>" text.
-const execWhy = (e) => (typeof e.status === 'number' ? `exit status ${e.status}` : e.code || e.signal || 'failed');
 
 function die(text, code = 1) { process.stderr.write(text + '\n'); process.exit(code); }
 function flag(args, name, fallback = '') { const i = args.indexOf(name); return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback; }
@@ -789,70 +785,6 @@ function stopLanes(root, before) {
   return 0;
 }
 
-// GSD 1.16 with an empty workflow.test_command runs: xcodebuild test for an Xcode project (within
-// depth 2, not under node_modules; post-merge gate), else `make test` for a Makefile with a
-// test: target, else `just test` for a Justfile, else `npm test` when package.json exists.
-// turbo's default full command is GSD's own choice only in the npm case, and usable only with a
-// test script. Returns why it is not, or null.
-function npmTestBlocker(root) {
-  const has = (f) => fs.existsSync(path.join(root, f));
-  const read = (f) => { try { return fs.readFileSync(path.join(root, f), 'utf8'); } catch { return ''; } };
-  const isX = (n) => n.endsWith('.xcodeproj');
-  let top = [];
-  try { top = fs.readdirSync(root, { withFileTypes: true }); } catch { /* reported below as no package.json */ }
-  for (const e of top) if (isX(e.name)) return `GSD runs xcodebuild test for ${e.name}`;
-  for (const e of top) {
-    if (!e.isDirectory() || e.name === 'node_modules') continue;
-    let names = [];
-    try { names = fs.readdirSync(path.join(root, e.name)); } catch { /* unreadable */ }
-    const x = names.find(isX);
-    if (x) return `GSD runs xcodebuild test for ${e.name}/${x}`;
-  }
-  if (has('Makefile') && /^test:/m.test(read('Makefile'))) return 'GSD runs make test (Makefile has a test target)';
-  if (has('Justfile') || has('justfile')) return 'GSD runs just test (Justfile)';
-  if (!has('package.json')) return 'no package.json';
-  let pkg = null;
-  try { pkg = JSON.parse(read('package.json').replace(/^\uFEFF/, '')); } catch { return 'package.json cannot be parsed'; }
-  const script = pkg?.scripts?.test;
-  return typeof script === 'string' && script.trim() ? null : 'package.json has no test script';
-}
-
-// The full command test-changed falls back to: an explicitly set test.full (a command, or a list of entries,
-// which must be valid), or the default `npm test` where GSD itself would run it. Anything else would let a gate
-// pass on a subset.
-function knownFullCommand(root, config) {
-  const full = config.test?.full;
-  if (Array.isArray(full)) { fullEntries(full, root); return { full }; } // an invalid list throws a config error
-  if (full !== DEFAULTS.test.full) return typeof full === 'string' && full.trim() ? { full } : { why: 'test.full is empty or not a string' };
-  const why = npmTestBlocker(root);
-  return why ? { why } : { full };
-}
-const showFull = (full) => (typeof full === 'string' ? full : JSON.stringify(full));
-
-// Nested packages with their own test script that test.full does not run. A config this init created gets
-// test.full as a list: the root command first (none when the root package.json is missing or has no real test
-// script: a workspaces root, npm's stub), then one entry per package. Otherwise init only warns and prints the
-// entries to add. Returns the list it wrote, or null.
-function coverNestedPackages(root, res, known) {
-  const nested = nestedTestPackages(root);
-  if (!nested.length) return null;
-  const entries = fullEntries(loadConfig(root).test?.full, root);
-  const missing = nested.filter((p) => !entries.some((e) => e.dir === p.dir));
-  if (!missing.length) return null;
-  const rootTests = realTestScript(readJson(path.join(root, 'package.json'), null)?.scripts?.test);
-  const noRootTests = ['no package.json', 'package.json has no test script'].includes(known.why) || (known.full === DEFAULTS.test.full && !rootTests);
-  const rootCommand = noRootTests ? '' : typeof known.full === 'string' ? known.full : null;
-  if (res.created && rootCommand !== null) {
-    const list = [...(rootCommand ? [rootCommand] : []), ...missing];
-    writeJsonAtomic(res.file, deepMerge(readJson(res.file, {}), { test: { full: list } }));
-    out(`test.full set to the root command and every nested package with its own test script: ${JSON.stringify(list)}`);
-    return list;
-  }
-  for (const p of missing) out(`warn: nested package ${p.dir} has its own test script that test.full does not run`);
-  out(`to run them, add to test.full (a list) in .planning/turbo/config.json: ${JSON.stringify(missing)}`);
-  return null;
-}
-
 // The view of the project, read fresh: what view prints and status --watch redraws.
 function readView(root) {
   const config = runtimeConfig(loadConfig(root));
@@ -1101,61 +1033,13 @@ async function main() {
       const lang = flag(args, '--lang', 'en');
       const autonomy = flag(args, '--autonomy', 'standard');
       if (!['en', 'ru'].includes(lang) || !['standard', 'max'].includes(autonomy)) die('init [--lang en|ru] [--autonomy standard|max]');
-      const core = gsdCoreDir(root);
-      const tool = core && path.join(core, 'bin', 'gsd-tools.cjs');
-      // Read the previous test command before anything is written: it is never overwritten
-      // without first being kept as test.full.
-      let prev = '';
-      if (tool) {
-        try {
-          prev = execFileSync(process.execPath, [tool, 'config-get', 'workflow.test_command', '--default', '', '--raw', '--cwd', root], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' }).replace(/\r?\n$/, '');
-        } catch (e) {
-          const detail = String(e.stderr || '').trim().split(/\r?\n/)[0] || '';
-          die(`init aborted: gsd-tools config-get workflow.test_command failed (${execWhy(e)})${detail ? `: ${detail}` : ''}; nothing was changed`);
-        }
+      // lib/project-init.mjs: the same lines and changes; where it stops, the message and exit 1
+      try {
+        return initProject(root, { lang, autonomy, out });
+      } catch (e) {
+        if (e instanceof InitAborted) die(e.message);
+        throw e;
       }
-      const res = initConfig(root, { lang, autonomy });
-      const config = loadConfig(root); // an existing corrupt config fails init
-      const prevIsTurbo = prev.includes('turbo-run.mjs');
-      let known;
-      if (prev && !prevIsTurbo) {
-        writeJsonAtomic(res.file, deepMerge(readJson(res.file, {}), { test: { full: prev } }));
-        out(`kept previous workflow.test_command as test.full: ${prev}`);
-        known = { full: prev };
-      } else {
-        known = knownFullCommand(root, config);
-      }
-      const list = coverNestedPackages(root, res, known);
-      if (list) known = { full: list };
-      if (tool) {
-        if (known.full !== undefined) {
-          try {
-            execFileSync(process.execPath, [tool, 'config-set', 'workflow.test_command', TURBO_TEST_CMD, '--cwd', root], { stdio: 'inherit', windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' });
-          } catch (e) { die(`gsd-tools config-set workflow.test_command failed (${execWhy(e)})`); }
-          out(`workflow.test_command set to turbo-run test-changed (full test command: ${showFull(known.full)})`);
-        } else {
-          // GSD keeps choosing the test runner itself; nothing in the GSD config changes
-          out(`no known full test command: ${known.why}`);
-          out('targeted tests not enabled: set test.full in .planning/turbo/config.json, then run init again');
-          if (prevIsTurbo) out('warn: workflow.test_command already runs turbo-run test-changed, but no full test command is known: set test.full and run init again, or reset workflow.test_command (see the README, Uninstall)');
-        }
-        // GSD's adaptive prompts key on its own context_window (200000 when unset); a value the project set stays
-        const gsdCfg = createGsdConfig({ root, core });
-        const window = config.context_window;
-        try {
-          if (gsdCfg.get('context_window') === ABSENT) {
-            if (!Number.isInteger(window) || window <= 0) out(`warn: context_window ${JSON.stringify(window)} in .planning/turbo/config.json is not a positive integer; GSD's context_window not set`);
-            else {
-              gsdCfg.set('context_window', String(window));
-              out(`context_window set to ${window} in .planning/config.json (GSD had none; its default is 200000)`);
-            }
-          }
-        } catch (e) { die(`init: ${e.message}`); }
-      } else {
-        out('gsd-core not found: workflow.test_command not set');
-      }
-      out(`${res.created ? 'created' : 'kept'} ${res.file}`);
-      return 0;
     }
     case 'start': {
       if (!root) die('no .planning directory found');

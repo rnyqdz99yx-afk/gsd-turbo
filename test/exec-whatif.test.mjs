@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
+import { jsonl, projectDirFor } from './helpers/transcripts.mjs';
 import { executed, executorTranscript, phaseRepo } from './helpers/whatif.mjs';
 import { gitRunner } from '../lib/staleness.mjs';
 import { fmtMin, formatWhatIf, parseMinutes, phasePlans, runExecWhatif, whatIf, WhatifRefused } from '../lib/exec-whatif.mjs';
@@ -92,6 +94,17 @@ test('transcripts win over git: the union of a plan\'s executor spans (an owner 
   assert.deepEqual([all.observed.source, all.observed.from, all.observed.to, all.observed.minutes], ['transcripts', '2026-10-01T09:01:00Z', '2026-10-01T10:08:00Z', 67]);
   // --no-transcripts: git only
   assert.equal(whatIf(root, '32', deps(root, home), { transcripts: false }).plans[0].source, 'git~');
+});
+
+test('an executor transcript whose last line is longer than the tail window (a large tool result) still counts', () => {
+  const repo = finished();
+  const home = tmpDir('home');
+  const { root } = repo;
+  executorTranscript(home, root, { agent: 'big02', description: 'Execute plan 02 of phase 32', times: ['2026-10-01T09:01:00Z'] });
+  const file = path.join(projectDirFor(home, root), '11111111-2222-4333-8444-555555555555', 'subagents', 'agent-big02.jsonl');
+  fs.appendFileSync(file, jsonl([{ type: 'user', isSidechain: true, agentId: 'big02', timestamp: '2026-10-01T09:07:00Z', cwd: root, message: { role: 'user', content: 'x'.repeat(200 * 1024) } }]));
+  const p = whatIf(root, '32', deps(root, home), {}).plans.find((x) => x.id === '32-02');
+  assert.deepEqual([p.minutes, p.source], [6, 'transcripts']);
 });
 
 test('options: --minutes wins, --tail-minutes and --merge-minutes are taken, depends-only edges, the executors table stops at the plan count', () => {

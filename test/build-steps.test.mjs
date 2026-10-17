@@ -144,16 +144,10 @@ test('slice: one revision by the same session, then a held card', async (t) => {
 
   let k = 0;
   const c = await rig(t, { script: { plans: PLANS }, deps: { lint: () => (++k <= 2 ? bad() : { ok: true, problems: [], edges: [] }) } });
-  const seen = [];
-  const watch = setInterval(() => {
-    const q = readQuestions(c.root, '5').find((x) => x.state === 'open');
-    if (q && c.ctx.state.steps.slice?.state === 'owner') seen.push(c.ctx.state.steps.slice.state);
-  }, 10);
-  t.after(() => clearInterval(watch));
   const stop2 = answerWhenAsked(c.root, 1);
   t.after(stop2);
   assert.equal(await runStep(c.ctx, 'slice'), 'done');
-  assert.ok(seen.includes('owner'));
+  assert.deepEqual(readQuestions(c.root, '5').map((q) => [q.held, q.state]), [[true, 'delivered']]);
   const fresh = c.f.calls().filter((x) => !x.argv.includes('--resume'));
   assert.equal(fresh.length, 2, 'Try again starts a new slicer session');
 });

@@ -10,7 +10,9 @@ import { ISOLATED } from './helpers/slots.mjs';
 import { BUILD_STEPS, openBuild, runBuild, runStep, setStep } from '../lib/build.mjs';
 import { readQuestions, askOwner } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
-import { readLaneStatus } from '../lib/run-status.mjs';
+import { readLaneStatus, writeLaneStatus } from '../lib/run-status.mjs';
+import { writeJsonAtomic } from '../lib/fsx.mjs';
+import { mergeFile } from '../lib/merge.mjs';
 import { appendInbox, formatInboxMessage } from '../lib/inbox.mjs';
 import { recordSessionUsage } from '../lib/cost.mjs';
 import { integrateMain, holdFile } from '../lib/integrate.mjs';
@@ -81,6 +83,11 @@ test('uat: nothing to check by hand when verification passed', async (t) => {
   assert.equal(await runStep(r.ctx, 'uat'), 'skipped');
   assert.equal(r.ctx.state.steps.uat.why, 'verification passed: nothing to check by hand');
   assert.deepEqual(r.turbo.calls, []);
+  // the owner's Go on at the verify card holds here too
+  const g = await closeRig(t, { setup: (x) => { x.write(`${REL}/05-VERIFICATION.md`, verification('gaps_found')); x.commit('docs: v'); } });
+  setStep(g.ctx.state, 'verify', { state: 'done', accepted: 'ask-1' });
+  assert.equal(await runStep(g.ctx, 'uat'), 'skipped');
+  assert.equal(g.ctx.state.steps.uat.why, 'verification gaps accepted by the owner: nothing to check by hand');
 });
 
 test('uat: human_needed runs turbo-uat and the uat commands in the skill\'s order', async (t) => {
@@ -255,6 +262,23 @@ test('close in a slot: integrate, full tests, verification, then ready', async (
       assert.equal(out, 'paused');
       assert.deepEqual([readLaneStatus(d.p.root, '5').status, readLaneStatus(d.p.root, '5').reason], ['needs-owner', 'the owner merges phase 5 by hand']);
     }
+  }
+
+  // the card in the supervisor's merge record, after the relaunch wrote running over the lane record: --resume of a
+  // closed build opens close again and acts on it once
+  {
+    const m = await slotRig(t);
+    for (const s of BUILD_STEPS) setStep(m.ctx.state, s, { state: 'done' });
+    m.ctx.state.step = 'close';
+    m.ctx.save();
+    m.ctx.release();
+    const q = askOwner(m.p.slot, '5', card).question;
+    writeJsonAtomic(mergeFile(m.p.root, '5'), { phase: '5', state: 'needs-owner', reason: `the main branch moved 3 times in a row before phase 5 could be merged; owner question ${q.id}` });
+    writeLaneStatus(m.p.slot, '5', 'running');
+    answerQuestion({ root: m.p.slot, phase: '5', id: q.id, option: 2, by: 'pane', laneRunning: true });
+    const out = await runBuild({ root: m.p.slot, phase: '5', resume: true, deps: { ...m.ctx.deps } });
+    assert.equal(out.outcome, 'paused');
+    assert.deepEqual([readLaneStatus(m.p.root, '5').status, readLaneStatus(m.p.root, '5').reason], ['needs-owner', 'the owner merges phase 5 by hand']);
   }
 
   // --resume with an unread reintegrate runs close again; with an unread ci-red, tests then close

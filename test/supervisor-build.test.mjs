@@ -140,6 +140,22 @@ test('a refused phase runs its lane session and says why once (Stage 6 B4)', asy
   assert.ok(s.lane.sessionId);
 });
 
+test('a lane session\'s relaunch stays a lane session, whatever the build path says now (Stage 6 B4)', async () => {
+  const h = harness({ phases: [P('4')] });
+  let asked = 0;
+  const b = (h.ctx.deps.build = fakeBuild({ pathFor: () => (++asked === 1 ? { build: false, why: 'phase 4 has GSD plans without a summary (04-01): x' } : { build: true, why: '' }) }));
+  let s = await tick(fresh(), h.ctx);
+  assert.equal(h.launched.length, 1);
+  // the session is gone without a record: paused-context, relaunched with resume
+  h.agents = [];
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2, h.logs.join('\n'));
+  assert.deepEqual(b.calls, []);
+  assert.equal(asked, 1);
+  assert.equal(s.lane.path, undefined);
+});
+
 test('the owner\'s resume stops a live build before its relaunch; a live build is adopted, never launched twice (Stage 6 B4)', async () => {
   const h = harness({ phases: [P('4')] });
   const b = (h.ctx.deps.build = fakeBuild());

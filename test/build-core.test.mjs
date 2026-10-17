@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildRig, claudeHome } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
-import { BUILD_STEPS, HALT_KINDS, BuildFailed, adoptRound, haltQuestion, openBuild, ownerAsk, setStep, stepSession, takeAnswer } from '../lib/build.mjs';
+import { BUILD_STEPS, HALT_KINDS, BuildFailed, adoptRound, haltQuestion, openBuild, ownerAsk, runStep, setStep, stepSession, takeAnswer } from '../lib/build.mjs';
 import { loadBuildState, reconcileBuildState, saveBuildState } from '../lib/build-queue.mjs';
 import { runDir } from '../lib/paths.mjs';
-import { laneQuestion, liveAnswer, readAnswers, readQuestions } from '../lib/questions.mjs';
+import { laneQuestion, liveAnswer, markDelivered, readAnswers, readQuestions } from '../lib/questions.mjs';
 import { answerQuestion, laneDeliveryMessage } from '../lib/answers.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
 
@@ -72,7 +72,8 @@ test('stepSession runs a role under a machine slot and records its cost', async 
   assert.deepEqual([records[0].step, records[0].role, records[0].sessionId], ['review', 'reviewer', r.sessionId]);
   const s = ctx.state.steps.review.session;
   assert.equal(s.id, r.sessionId);
-  assert.ok(s.transcript && s.pid && s.settings === settings);
+  assert.ok(s.transcript && s.settings === settings);
+  assert.equal(s.pid, null, 'an ended session keeps no pid');
   const slots = fs.readdirSync(path.join(H.home, 'turbo', 'sessions')).filter((n) => /^slot-/.test(n));
   assert.deepEqual(slots, []);
 });
@@ -96,6 +97,27 @@ test('an owner question becomes a held card; its answer resumes the same session
   assert.equal(call.stdin, laneDeliveryMessage(card, liveAnswer(readAnswers(root, '5'), 'ask-1')));
   assert.equal(await takeAnswer(ctx, 'ask-1'), null);
   assert.equal(a.acts().length, 2);
+});
+
+test('an answer the run before died taking goes to the same session again, never a new question', async (t) => {
+  const ctxText = '# Phase 5: Demo Feature - Context\n\n<decisions>\n## Implementation Decisions\n\n- **D-01:** greet\n</decisions>\n';
+  const rig = await buildRig({ project: { context: false }, script: { results: [OQ(TWO)] } });
+  const ctx = await openBuild(rig.root, '5', { deps: rig.deps });
+  t.after(() => ctx.release());
+  const r = await stepSession(ctx, { step: 'discuss', role: 'discuss', effortKey: 'lane', prompt: DISCUSS, cwd: rig.root, key: '5-discuss' });
+  await ownerAsk(ctx, r, { step: 'discuss' });
+  rig.a.set({ context: { path: '.planning/phases/05-demo/05-CONTEXT.md', text: ctxText } });
+  answerQuestion({ root: rig.root, phase: '5', id: 'ask-1', option: 1, by: 'pane', laneRunning: true });
+  // what takeAnswer leaves behind when the process dies during the continuation
+  markDelivered(rig.root, '5', 'ask-1', 'lane');
+  setStep(ctx.state, 'discuss', { state: 'running', answering: 'ask-1' });
+  assert.equal(await runStep(ctx, 'discuss'), 'done');
+  const calls = rig.f.calls();
+  assert.equal(calls.length, 2, 'no new session');
+  assert.deepEqual(calls[1].argv.slice(-2), ['--resume', r.sessionId]);
+  assert.equal(calls[1].stdin, laneDeliveryMessage(readQuestions(rig.root, '5')[0], liveAnswer(readAnswers(rig.root, '5'), 'ask-1')));
+  assert.deepEqual(readQuestions(rig.root, '5').map((q) => q.id), ['ask-1']);
+  assert.equal(ctx.state.steps.discuss.answering, undefined);
 });
 
 test('a question the card refuses is rewritten once by the same session, then the step fails', async (t) => {

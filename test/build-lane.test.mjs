@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { spawn } from 'node:child_process';
+import { completeStep } from '../lib/phase-progress.mjs';
 import { tmpDir } from './helpers/tmp.mjs';
 import { buildProject } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
@@ -48,6 +50,27 @@ test('buildPathFor: the refusals of spec §6.8, each with its reason', () => {
   const cycle = buildPathFor(planned.root, '5', { config: adopt });
   assert.equal(cycle.build, false);
   assert.match(cycle.why, /^depends_on cycle/);
+});
+
+test('buildPathFor: a phase /turbo-phase began finishes there', () => {
+  const p = buildProject();
+  completeStep(p.root, '5', 'freshness');
+  assert.deepEqual(buildPathFor(p.root, '5'), { build: false, why: 'phase 5 started on the lean path (/turbo-phase): it finishes there' });
+});
+
+test('the supervisor\'s stop ends only the build\'s own process', async (t) => {
+  const p = buildProject();
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  t.after(() => { try { process.kill(child.pid, 'SIGKILL'); } catch { /* gone */ } });
+  const deps = buildLaneDeps(p.root, loadConfig(p.root));
+  // a lane that ended long ago, its pid now someone else's: left alone
+  deps.stop({ phase: '5', pid: child.pid, launchedAt: ago(60 * 60000) });
+  await sleep(300);
+  assert.equal(pidAlive(child.pid), true);
+  // the build's own (just launched): ended
+  deps.stop({ phase: '5', pid: child.pid, launchedAt: ago(0) });
+  for (let i = 0; i < 50 && pidAlive(child.pid); i++) await sleep(100);
+  assert.equal(pidAlive(child.pid), false);
 });
 
 test('claimRunner: one holder per phase; a dead or silent holder is replaced', async () => {

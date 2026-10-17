@@ -14,6 +14,8 @@ import { answerQuestion } from '../lib/answers.mjs';
 import { runDir } from '../lib/paths.mjs';
 import { killTree } from '../lib/headless.mjs';
 import { pidAlive } from '../lib/merge-lock.mjs';
+import { writeOwnerStop } from '../lib/autostart.mjs';
+import { writeAttend } from '../lib/attend.mjs';
 
 const H = claudeHome();
 after(() => H.restore());
@@ -53,7 +55,7 @@ test('a crash after slicing does not slice again', { timeout: 300000 }, async (t
 });
 
 test('a crash after one merge keeps it; the slice that was running is salvaged and built again', { timeout: 300000 }, async (t) => {
-  const r = await buildRig({ script: await phaseScript({ ask: false, red: false, slices: { '05-02': { delayMs: 4000 } } }) });
+  const r = await buildRig({ script: await phaseScript({ ask: false, red: false, slices: { '05-02': { firstDelayMs: 30000 } } }) });
   await assert.rejects(runBuild({ root: r.root, phase: '5', deps: { ...r.deps, checkpoint: crashAt('merged:05-01') } }), /crash/);
   const before = loadBuildState(runDir(r.root), '5');
   const pid = before.slices['05-02'].pid;
@@ -67,6 +69,21 @@ test('a crash after one merge keeps it; the slice that was running is salvaged a
   const after = loadBuildState(runDir(r.root), '5');
   for (const step of ['begin', 'slice', 'build', 'review', 'verify', 'close']) assert.ok(['done', 'skipped'].includes(after.steps[step]?.state), step);
   assert.ok(r.lines.some((l) => /reconcile: 05-02 (requeued|salvaged)/.test(l)), r.lines.join('\n'));
+});
+
+test('the owner\'s stop and attend pause the build outside its build step too', { timeout: 300000 }, async () => {
+  // a stop after the build step: nothing of review starts
+  const r = await buildRig({ script: await phaseScript({ ask: false, red: false }) });
+  const out = await runBuild({ root: r.root, phase: '5', deps: { ...r.deps, checkpoint: (n) => { if (n === 'step:build') writeOwnerStop(r.root); } } });
+  assert.deepEqual([out.outcome, out.step, out.why], ['paused', 'review', 'stop']);
+  assert.equal(loadBuildState(runDir(r.root), '5').hold.reason, 'stop');
+  assert.equal(count(r.a.acts(), 'gsd-code-reviewer'), 0);
+  // attend while the review is written: its fixer never starts; the hold is recorded for turbo-run stop
+  const a = await buildRig({ script: await phaseScript({ ask: false, red: false }) });
+  const paused = await runBuild({ root: a.root, phase: '5', deps: { ...a.deps, checkpoint: (n) => { if (n === 'review:reviewed') writeAttend(a.root, '5'); } } });
+  assert.deepEqual([paused.outcome, paused.step], ['paused', 'review']);
+  assert.equal(count(a.a.acts(), 'fixer'), 0);
+  assert.equal(loadBuildState(runDir(a.root), '5').hold.reason, 'attend');
 });
 
 test('a crash after the review is written does not review round 1 again', { timeout: 300000 }, async (t) => {

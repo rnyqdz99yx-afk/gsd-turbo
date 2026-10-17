@@ -51,7 +51,7 @@ import { recoverSupervisor } from '../lib/sup-recover.mjs';
 import { WHATIF_VALUE_FLAGS, runExecWhatif } from '../lib/exec-whatif.mjs';
 import { gitRunner } from '../lib/staleness.mjs';
 import { runCostCommand, spawnCostLog } from '../lib/cost.mjs';
-import { buildLaneDeps, runningBuilds, stopBuild, waitBuildPaused } from '../lib/build-lane.mjs';
+import { buildLaneDeps, runnerOf, runningBuilds, stopBuild, waitBuildPaused } from '../lib/build-lane.mjs';
 import { loadBuildState } from '../lib/build-queue.mjs';
 import { buildOf, buildRows } from '../lib/view.mjs';
 
@@ -789,7 +789,7 @@ function ownerClaude(root) {
 // A job that Claude Code's idle-exited background service no longer runs (no pid) is stopped as it is, and so is one
 // listed alive when the service is gone and no process carries it; one it may run gets the service kicked up and its
 // stop tried once more (lib/claude.mjs daemonAware).
-function stopLanes(root, before) {
+function stopLanes(root, before, { prevStop = null } = {}) {
   const after = readJson(supPath(root), null);
   const warn = (line) => process.stderr.write(`warn: ${line}\n`);
   // Stage 6 B4 (spec §6.6, §6.7): a running build pauses on the owner's first stop (the owner-stop mark: running
@@ -800,7 +800,10 @@ function stopLanes(root, before) {
     try {
       hold = loadBuildState(runDir(root), b.phase)?.hold ?? null;
     } catch { /* a damaged state: it pauses */ }
-    if (hold?.reason !== 'stop') {
+    // the second stop: the build already pauses for one (its hold), or an earlier stop came after the build started
+    const started = Date.parse(runnerOf(root, b.phase)?.startedAt);
+    const stoppedOnce = Number.isFinite(started) && Date.parse(prevStop?.at) >= started;
+    if (hold?.reason !== 'stop' && !stoppedOnce) {
       out(`phase ${b.phase}: the build stops after its running sessions; run turbo-run stop again to end them now`);
       continue;
     }
@@ -1199,12 +1202,17 @@ async function main() {
     case 'stop': {
       if (!root) die('no .planning directory found');
       // the owner's stop: a start at logon (autostart) leaves the run stopped until the owner's start or resume
+      // Stage 6 B4: the stop before this one, which a running build may still be pausing for
+      let prevStop = null;
+      try {
+        prevStop = readOwnerStop(root);
+      } catch { /* none */ }
       if (fs.existsSync(path.dirname(runDir(root)))) writeOwnerStop(root);
       const sup = readJson(supPath(root), null);
       stopDaemon(root, sup);
       // supervisor.json may be missing (never started) or unreadable for any reason: this
       // project's lane sessions are swept either way
-      const code = stopLanes(root, sup);
+      const code = stopLanes(root, sup, { prevStop });
       printLeftovers(gatesLeftovers(root));
       const damaged = readSupervisor(root).damaged;
       if (damaged) out(damaged.unreadable ? `supervisor.json cannot be read (${damaged.why}): kept as it is` : `supervisor.json is damaged (${damaged.why}): kept as it is; turbo-run start keeps it aside and rebuilds the lanes`);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildRig, claudeHome } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
 import { adoptRound, openBuild, runStep } from '../lib/build.mjs';
-import { readQuestions } from '../lib/questions.mjs';
+import { askOwner, markDelivered, readQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
 import { writeAttend } from '../lib/attend.mjs';
@@ -116,6 +116,30 @@ test('red after the fix stops for the owner', async (t) => {
   assert.equal(await runStep(r.ctx, 'build'), 'stopped');
   const st = readLaneStatus(r.root, '5');
   assert.deepEqual([st.status, st.reason], ['failed', 'phase 5 build stopped at step build: the tests stay red after one fix']);
+  // the next run (turbo-run resume 5) tries the step afresh: one more fixer, then a new card
+  r.a.set({ fixes: [{ files: {}, result: 'nothing to change' }] });
+  every(t, () => {
+    const q = openCard(r.root);
+    if (!q) return false;
+    answer(r.root, q.id, 2);
+    return true;
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'stopped');
+  assert.deepEqual(readQuestions(r.root, '5').map((q) => q.id).sort(), ['ask-1', 'ask-2']);
+  assert.equal(r.a.acts().filter((x) => x.role === 'fixer').length, 2);
+});
+
+test('a slice built again gets the answer it took before in its prompt', async (t) => {
+  const r = await loopRig(t, { plans: { '05-01': plan('05-01', 'a') }, slices: { '05-01': { files: files('a') } } });
+  const q = askOwner(r.root, '5', { question: 'Which greeting should the bot use?', context: '', options: [{ label: 'Formal', description: 'Hello, Ann' }, { label: 'Casual', description: 'Hi, Ann' }], recommended: 1 }, { keepRunning: true }).question;
+  answer(r.root, q.id, 2);
+  markDelivered(r.root, '5', q.id, 'lane');
+  r.ctx.state.slices['05-01'].answered = [q.id];
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  const builder = r.f.calls().find((c) => c.stdin.startsWith('You are a builder'));
+  assert.match(builder.stdin, /## Owner answers given ahead/);
+  assert.match(builder.stdin, /Which greeting should the bot use\?/);
+  assert.match(builder.stdin, /option 2, Casual — Hi, Ann/);
 });
 
 test('a merge conflict rebuilds the slice once from the new HEAD, then asks the owner', async (t) => {
@@ -164,6 +188,10 @@ test('a failed builder gets one fresh try, then the owner', async (t) => {
     return true;
   });
   assert.equal(await runStep(r2.ctx, 'build'), 'stopped');
+  // Stop here leaves no answered card behind: the next run builds the slice afresh (its third try succeeds)
+  assert.equal(await runStep(r2.ctx, 'build'), 'done');
+  assert.equal(r2.ctx.state.slices['05-01'].state, 'merged');
+  assert.equal(r2.a.acts().filter((x) => x.role === 'builder').length, 3);
 });
 
 test('a slice without its SUMMARY is told once in the same session', async (t) => {

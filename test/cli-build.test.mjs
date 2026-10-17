@@ -89,7 +89,7 @@ test('stop asks a running build to pause first and ends it on the second stop', 
   const first = run(p.root, ['stop'], env);
   assert.match(first.out, /^phase 5: the build stops after its running sessions; run turbo-run stop again to end them now$/m, first.err);
   assert.equal(pidAlive(child.pid), true);
-  writeState(p.root, { step: 'build', hold: { reason: 'stop', at: new Date().toISOString() } });
+  // the second stop ends it: the first came after the build started (whether or not the build recorded its hold yet)
   const second = run(p.root, ['stop'], env);
   assert.match(second.out, new RegExp(`^phase 5: build pid ${child.pid} ended$`, 'm'), second.err);
   for (let i = 0; i < 50 && pidAlive(child.pid); i++) await sleep(100);

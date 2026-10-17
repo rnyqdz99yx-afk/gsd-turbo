@@ -147,7 +147,8 @@ function actMain({ argv, stdin, cwd, resume }) {
   }
   if (role === 'builder') {
     const cfg = (script.slices || {})[who.plan] || {};
-    if (cfg.delayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, cfg.delayMs);
+    const wait = (n === 1 && cfg.firstDelayMs) || cfg.delayMs;
+    if (wait) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
     if (cfg.ask && !resume) return answer({ result: cfg.ask });
     if (n <= times(cfg.fail)) return answer({ result: 'failed', isError: true, exitCode: 1 });
     commit(writeAll(cfg.files), `feat(${who.plan}): build`);
@@ -196,7 +197,7 @@ function actMain({ argv, stdin, cwd, resume }) {
 // b4000000-0000-4000-8000-<12-digit counter>, and a resumed session keeps the role it had. The role: --agent, else the
 // prompt's start (slicer, builder with its plan, fixer, discuss, verify-work, integrate), else other. script:
 //   plans { rel: text } (the slicer writes them); slices { <id>: { files { rel: text } committed as feat(<id>): build,
-//   ask (the result of the first call, nothing written), delayMs, fail (the first n calls end with exit 1; true = 1),
+//   ask (the result of the first call, nothing written), delayMs (before every call's work), firstDelayMs (the first only), fail (the first n calls end with exit 1; true = 1),
 //   noSummary (the first n calls write no SUMMARY), extra { rel: text } written, never staged } }; summaries { <id>:
 //   text } (else summaryText); fixes [{ files, message, result }]; reviews / verifications [{ path, text }]; audits
 //   [text]; research { path, text }; context { path, text } (committed); uat (text); verifyWork { path, text } (written

@@ -73,7 +73,10 @@ test('the text view and the pane print the same build lines', async () => {
   const red = viewOf(buildLaneProject({ red: { after: '05-01' } }));
   assert.ok(formatView(red).split('\n').includes('  Slices: 1 of 4 merged · 1 building · 1 waits for you · tests red, fixing'));
   assert.deepEqual(buildRows(red.lanes[0].build, 'ru')[0], 'Куски: слито 1 из 4 · собираются 1 · ждут вас 1 · тесты красные, чиню');
-  for (const v of [base, ru, red]) assert.equal(formatView(v), pane.paneLines(pane.render(v)).join('\n'), v.ui.lang);
+  // a step of its own session (review): what it does now, under the lane line
+  const review = viewOf(buildLaneProject({ step: 'review' }));
+  assert.ok(formatView(review).split('\n').includes('  Now: reading src/a.js · 3m'), formatView(review));
+  for (const v of [base, ru, red, review]) assert.equal(formatView(v), pane.paneLines(pane.render(v)).join('\n'), v.ui.lang);
 });
 
 test('the band names the build step', async () => {

@@ -330,6 +330,29 @@ node <gsd-turbo checkout>/bin/turbo-run.mjs exec-whatif 32 --project <path to th
 - **The ready queue** for 1 executor up to `max_executors` (`--max-executors`): the longest remaining chain first, one merge at a time after each plan, each merge costing one wave tail unless `--merge-minutes` says otherwise (a merge plus targeted tests is usually shorter: the line also shows half a tail).
 - **Output.** The measured span, the assumptions, GSD's waves, the ready queue by executors, the gain, the critical path, the edges that cost most (what the queue would save without each), and per plan its minutes, source and start in both schedules. `--json` prints all of it; `--edges depends,files` or `--edges depends` leaves edge kinds out; `--no-transcripts` uses git only.
 
+## Build path: roles and slice plans
+
+The build path (Stage 6 part B, `build.enabled`) runs a phase's plan and execution from code; a model works only in short headless sessions, each with one role prompt and the files it needs.
+
+- **Roles.** The *slicer* runs once per phase (and once per gap round, with the phase's VERIFICATION.md) and writes the phase's slices as compact GSD plan files; it never writes code and never commits. A *builder* runs per slice in the slice's own git worktree, implements exactly that plan, commits its work and its SUMMARY there, and code merges its branch. The *fixer* runs once per red merge (the failing tests' output), per review round (REVIEW.md: Critical `CR-`/`BL-` and Warning `WR-`) and per security round (SECURITY.md: open critical/high threats to mitigate); one pass, smallest fix, one commit per fix, and a critical or high finding is closed only by code, never by editing a report or calling it accepted.
+- **The copy.** `~/.claude/turbo/roles/slicer.md`, `builder.md`, `fixer.md` and the shared `owner-question.md`, with `{{name}}` placeholders that `lib/roles.mjs` (`rolePrompt(role, ctx)`) fills: paths relative to the project with `/`, the phase's goal, success criteria and requirements, research and signals (external systems, security), owner answers given ahead, the owner's language. The prompt goes to the session on stdin. Budgets: slicer 8 KB, builder 6 KB, fixer 6 KB.
+- **Owner questions.** A session that needs the owner ends its reply with exactly this block and stops:
+
+```text
+## OWNER QUESTION
+Question: <one line>
+Context: <up to 600 characters>
+Options:
+1. <label> — <description> (recommended)
+2. <label> — <description>
+```
+
+  Code turns it into a card (as any owner question) and resumes the same session with the answer. Answers given ahead go into the prompt under `## Owner answers given ahead`.
+- **Slice plan** (`<padded N>-<NN>-PLAN.md` in the phase directory). Frontmatter: GSD's `phase`, `plan`, `type`, `wave`, `depends_on`, `files_modified`, `autonomous: true`, `must_haves` (`truths`, `artifacts`, `key_links`), plus `files_deleted` and `requirements`; `spike: true` marks a slice that proves an unverified assumption about an external system (wave 1, no `depends_on`, the slices relying on it depend on it), `gap_closure: true` a slice of a gap round. Body: `<objective>`, `<tasks>` (at most 5 GSD tasks, no checkpoints), `<verification>` (commands, never the whole test suite). At most 8 KB, its own files as exact paths (no globs, directories or `.planning/`), the decisions it implements cited as `D-NN` in its objective or tasks.
+- **SUMMARY** (`<id>-SUMMARY.md`, committed alone by the builder). Frontmatter `phase`, `plan`, `subsystem`, `tags`, `key-files`, `key-decisions`, `requirements-completed`, `duration`, `completed`, `status: complete`; it ends with `## Self-Check: PASSED` or `## Self-Check: FAILED`. A builder that cannot finish within its files writes `status: blocked` with `Self-Check: FAILED`: GSD does not count it, and code does not merge it.
+- **The slice check** (`lib/slice-lint.mjs`, `lintSlices(root, phase)`, no model). Kinds: `phase` (no phase directory), `empty` (no plans), `size` (over 8 KB), `structure` (GSD's `verify plan-structure` errors), `tasks` (none, or more than 5), `files` (none listed, a glob or directory, outside the project, under `.planning/`), `depends` (a `depends_on` naming no slice, or the slice itself), `coverage` (a phase requirement in no slice's `requirements`), `decisions` (a CONTEXT decision no slice cites, from GSD's `check decision-coverage-plan`), `cycle` (a `depends_on` cycle), `gsd` (gsd-tools could not run: code stops or retries, never sends it to the slicer). Shared files are not problems: they become edges of the build graph (`lib/exec-graph.mjs`). Problems go back to the slicer's session once (`formatProblems`); if they remain, the owner decides.
+- **GSD compatibility** (spec §6.9). The plans and summaries in the role prompts' format are valid for the installed GSD: `verify plan-structure`, `frontmatter validate`, `check decision-coverage-plan`, and `init manager`, `progress` and `verification status` read the phase as planned, then executed, then complete, and `phase complete` closes it. `test/slice-gsd-compat.test.mjs` pins this against the installed GSD (it skips where GSD is not installed).
+
 ## Adopting a running milestone
 
 `/turbo-adopt` moves a milestone that is already running on plain GSD onto turbo. It never starts the supervisor, a lane, a prep or markup job, makes no slots, writes no trust, removes no agent worktree and turns no gates back on: the report names each of these with its command, and the first `/turbo-autonomous` does the rest. It runs `turbo-run adopt …` in this order:

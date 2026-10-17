@@ -384,6 +384,47 @@ test('untracked files: the full command runs but the marker is not updated', asy
   assert.deepEqual(readMarker(repo), green, 'no marker write while untracked files are present');
 });
 
+// v0.5.1: GSD writes these at every step and neither commits nor ignores them; in a lane slot they made every run full
+test('GSD\'s runtime files, untracked, are no dirty tree: the run stays targeted and records; any other untracked file still runs full', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const w = project(repo);
+  w('.planning/workstreams/ws1/STATE.md', '# ws1\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(repo);
+  assert.equal(await r.run(), 0);
+  for (const f of ['state.json', 'milestone.lock', 'STATE.md.lock', '.lock', '.WINDOWS.lock', 'WAITING.json', 'workstreams/ws1/state.json', 'workstreams/ws1/milestone.lock']) w(`.planning/${f}`, '{}\n');
+  w('src/a.js', 'export const a = 1; // c2\n');
+  git('commit', '-qam', 'c2');
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
+  assert.equal(readMarker(repo).targetedSince, 1, 'the green targeted run is recorded');
+  // a file of the same name elsewhere is not GSD's
+  w('.planning/phases/state.json', '{}\n');
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'full: untracked files present');
+  assert.equal(readMarker(repo).targetedSince, 1);
+});
+
+test('GSD\'s runtime files of a project root in a subdirectory are no dirty tree either; the repository root\'s are', async () => {
+  const repo = tmpGitRepo();
+  const git = gitIn(repo);
+  const root = path.join(repo, 'app');
+  const w = project(root);
+  git('add', '-A'); git('commit', '-q', '-m', 'c1');
+  const r = runner(root);
+  assert.equal(await r.run(), 0);
+  w('.planning/state.json', '{}\n');
+  w('src/a.js', 'export const a = 1; // c2\n');
+  git('commit', '-qam', 'c2');
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'targeted: 1 related test file(s)');
+  fs.mkdirSync(path.join(repo, '.planning'));
+  fs.writeFileSync(path.join(repo, '.planning', 'state.json'), '{}\n');
+  assert.equal(await r.run(), 0);
+  assert.equal(r.logs.at(-1), 'full: untracked files present');
+});
+
 test('project root in a subdirectory: a change outside the root runs full', async () => {
   const repo = tmpGitRepo();
   const git = gitIn(repo);

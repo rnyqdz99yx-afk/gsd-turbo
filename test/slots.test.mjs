@@ -70,6 +70,26 @@ test('settings.local.json stays hidden in a slot even when the project does not 
   assert.match(fs.readFileSync(path.join(s, '.git', 'info', 'exclude'), 'utf8'), /# gsd-turbo slot files: begin\n\/\.claude\/settings\.local\.json\n# gsd-turbo slot files: end\n/);
 });
 
+test('GSD\'s runtime files never show in a slot\'s git status: setup lists them in its exclude once, however often it runs; other files still show (v0.5.1)', () => {
+  const p = mainProject();
+  const t = slotFixture(p.root, { max: 1 });
+  setupSlots(p.root, t.config, t.deps);
+  setupSlots(p.root, t.config, t.deps);
+  const s = slotPath(p.root, t.config, 1);
+  for (const f of ['state.json', 'milestone.lock', 'STATE.md.lock', '.lock', '.WINDOWS.lock', 'WAITING.json', 'workstreams/ws1/state.json']) {
+    fs.mkdirSync(path.dirname(path.join(s, '.planning', f)), { recursive: true });
+    fs.writeFileSync(path.join(s, '.planning', f), '{}\n');
+  }
+  assert.equal(gitIn(s, 'status', '--porcelain', '--untracked-files=all'), '');
+  const exclude = fs.readFileSync(path.join(s, '.git', 'info', 'exclude'), 'utf8');
+  assert.equal(exclude.split('# gsd-turbo: GSD runtime files: begin').length, 2, exclude);
+  assert.match(exclude, /^\/\.planning\/state\.json$/m);
+  assert.match(exclude, /^\/\.planning\/workstreams\/\*\/milestone\.lock$/m);
+  fs.writeFileSync(path.join(s, '.planning', 'notes.json'), '{}\n');
+  assert.equal(gitIn(s, 'status', '--porcelain', '--untracked-files=all'), '?? .planning/notes.json');
+  assert.deepEqual(listSlots(p.root, t.config, t.deps).map((x) => x.state), ['dirty']);
+});
+
 test('setup refuses, creating nothing: a lanes.copy file git does not ignore, lanes.dir inside the project, a detached main checkout, lanes.mode checkout, a tracked settings.local.json (Review Focus 4)', () => {
   const tracked = mainProject({ ignore: ['node_modules'], files: { '.env': 'A=1\n' } });
   let t = slotFixture(tracked.root);

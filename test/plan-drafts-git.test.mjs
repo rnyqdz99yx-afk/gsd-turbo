@@ -239,7 +239,10 @@ test('B11: a plan that came from a draft without a passed reconcile is refused b
   assert.equal(await run('--check', 'plan'), 0);
   assert.equal(lines.at(-1), `phase 33: plan set incomplete: ${why}`);
   assert.equal(await run('--done', 'plan'), 1);
-  assert.equal(lines.at(-1), `ERR turbo-run phase-step: phase 33 cannot finish planning: ${why}`);
+  assert.match(lines.at(-1), new RegExp(`^ERR turbo-run phase-step: phase 33 cannot finish planning: ${why.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  // the plan-check record (web-hygiene2) is refused the same way: there is no whole plan set to check yet
+  assert.equal(await run('--plan-checked'), 1);
+  assert.match(lines.at(-1), /no plan check to record: plan set incomplete: plan 33-03 came from a draft without a passed reconcile/);
   // a replanned record whose plan file is still the draft: refused whatever the record says
   const rec = readDrafts(p.root, '33');
   rec.plans['33-03'].state = 'replanned';
@@ -250,6 +253,7 @@ test('B11: a plan that came from a draft without a passed reconcile is refused b
   p.git('commit', '-q', '-m', 'docs(phase-33): drop a plan that skipped its reconcile');
   p.commitPlan('33-03', planText('33-03', 2, ['33-01'], ['src/c.ts']));
   assert.equal(draftsGuard(p.root, '33'), null);
+  assert.equal(await run('--plan-checked', '--note', 'passed'), 0, lines.at(-1));
   assert.equal(await run('--done', 'plan'), 0, lines.at(-1));
 });
 

@@ -110,6 +110,7 @@ test('in a slot the record lands in the slot\'s run directory and the measuremen
   assert.equal(fs.existsSync(path.join(control, '.planning', 'turbo', 'run', 'drafts-p33')), false);
   for (const s of ['freshness', 'discuss', 'prologue']) assert.equal(cli(slot, 'phase-step', '33', '--done', s).code, 0);
   for (const id of ['33-01', '33-02', '33-03']) commitPlan(slot, dir, id, planText(id, ROWS.find((x) => x[0] === id)[1]));
+  assert.equal(cli(slot, 'phase-step', '33', '--plan-checked', '--note', 'passed').code, 0);
   const r = cli(slot, 'phase-step', '33', '--done', 'plan');
   assert.equal(r.code, 0, r.err);
   assert.match(fs.readFileSync(path.join(control, '.planning', 'turbo', 'logs', 'supervisor.log'), 'utf8'), / phase 33 plan: \d+h\d{2}m wall clock · drafts on: 3 plans in 3 waves, 0 drafted, 0 reconciled, 0 replanned\n$/);

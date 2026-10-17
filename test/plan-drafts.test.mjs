@@ -56,6 +56,11 @@ test('B4: every drafts off reason in its order; enabled false writes no record, 
   // GSD's plan checker off: drafts have nothing to check them
   fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify({ workflow: { plan_check: false } }));
   off(/^plan checker disabled/);
+  // GSD's flat plan_checker wins over workflow.plan_check, as its config-loader reads them
+  fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify({ plan_checker: false, workflow: { plan_check: true } }));
+  off(/^plan checker disabled/);
+  fs.writeFileSync(path.join(root, '.planning', 'config.json'), JSON.stringify({ plan_checker: true, workflow: { plan_check: false } }));
+  off(/^2 waves hold plans/);
 });
 
 test('B4: a fresh 4-wave outline drafts waves 2-4 up to max_parallel; in-flight drafts count; GSD plans the wave it is at', () => {

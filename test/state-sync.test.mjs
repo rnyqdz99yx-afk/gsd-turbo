@@ -668,6 +668,24 @@ test('state-sync with a budget trims STATE.md in the same GSD commit as the posi
   assert.equal(fs.existsSync(path.join(lone2, '.planning', 'STATE-ARCHIVE.md')), false);
 });
 
+// Stage 6 integration (L1 budget + L2 --no-commit): the budget's own commit is skipped too; both files stay written
+// for the step's records commit (it names STATE.md and STATE-ARCHIVE.md).
+test('state-sync --no-commit with a budget trims STATE.md in place and commits nothing, with or without a position to sync', async () => {
+  for (const plans of [4, 0]) {
+    const root = fixture({ plans, after: overBudget() });
+    const stateFile = path.join(root, '.planning', 'STATE.md');
+    const { gsd, calls } = fakeGsd(root);
+    const lines = [];
+    const code = await runPhaseCommand('state-sync', ['05', '--no-commit'], { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd, now: new Date(2026, 0, 5, 12) } });
+    assert.equal(code, 0, lines.join('\n'));
+    assert.deepEqual(calls.filter((c) => c[0] === 'commit'), [], `plans ${plans}: no GSD commit`);
+    assert.ok(fs.statSync(stateFile).size <= 16 * KB, `plans ${plans}: trimmed in place`);
+    assert.match(fs.readFileSync(path.join(root, '.planning', 'STATE-ARCHIVE.md'), 'utf8'), /^# STATE Archive\n/);
+    assert.ok(lines.some((l) => /^STATE\.md: history trimmed to stay within 16 KB \(Performance Metrics\): \d+ → \d+ KB$/.test(l)), lines.join('\n'));
+    if (plans) assert.ok(lines.some((l) => l.endsWith('; not committed (--no-commit)')), lines.join('\n'));
+  }
+});
+
 test('state-sync without a budget never trims (the supervisor\'s merge path); turbo-run state-sync prints the over-budget warning', async () => {
   const root = fixture({ after: overBudget() });
   const stateFile = path.join(root, '.planning', 'STATE.md');

@@ -431,6 +431,9 @@ test('turbo-phase skill (lean): the Lean mode section carries the inserts verbat
     'lean: on', 'When the workflow spawns gsd-phase-researcher', 'When the workflow spawns gsd-code-reviewer', 'turbo-run jobs N regate --json',
     'turbo-run jobs N review --json', '`n` above 2', '`fallback`', 'verifier_dispatch', '--about-review', 'skip: lean:',
     'turbo-run state-sync N --no-commit', '"docs(phase-N): <step> records"', 'stop records', 'pause records',
+    // review: the diff reviews are bounded and survive GSD skipping every --files path; the re-gate checks its gates ran
+    'turbo-run phase-step N --attempt review-diff', '`n` above 3', 'the same without `--files`', 'sub-points 1 to 3',
+    'produced no artifact', 'With `code-review` among the jobs', 'never open threats',
   ]) assert.ok(lean.includes(n), n);
   assert.ok(!lean.includes('\n### '), 'bold labels only: no ### inside, so every step section keeps its own end');
   assert.ok(!lean.includes('draft later'));

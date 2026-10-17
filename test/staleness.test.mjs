@@ -556,4 +556,21 @@ test('changedSince: committed, uncommitted and untracked paths since a commit, p
   sub.write('other/y.js', 'y2\n');
   sub.write('app/.planning/STATE.md', 's\n');
   assert.deepEqual(changedSince(gitRunner(path.join(sub.root, 'app')), s0), { code: ['src/x.js'], planning: ['.planning/STATE.md'] });
+  // committed only: the working tree is left out
+  assert.deepEqual(changedSince(git, base, { worktree: false }), { code: ['src/a.js'], planning: [] });
+});
+
+test('changedSince: code a merge took in from another branch is not the branch\'s own change', async () => {
+  const { changedSince } = await import('../lib/staleness.mjs');
+  const r = repo();
+  r.write('src/a.js', 'a\n');
+  const base = r.commit('base');
+  r.g('checkout', '-q', '-b', 'main-moved');
+  r.write('src/other.js', 'from main\n');
+  r.commit('another phase');
+  r.g('checkout', '-q', '-');
+  r.write('src/a.js', 'a fixed\n');
+  r.commit('fix');
+  r.g('merge', '-q', '--no-ff', '-m', 'take in main', 'main-moved');
+  assert.deepEqual(changedSince(gitRunner(r.root), base), { code: ['src/a.js'], planning: [] });
 });

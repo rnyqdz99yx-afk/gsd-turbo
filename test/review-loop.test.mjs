@@ -259,4 +259,34 @@ test('jobs review CLI: the loop state comes from git; an uncommitted report fall
   assert.match(fb.why, /REVIEW\.md/);
   assert.equal(await run('3', 'review'), 0);
   assert.match(lines.at(-1), /^review: fallback \(/);
+  assert.deepEqual([fb.critical, fb.warning], [1, 0], 'a fallback still counts the report on disk (the re-gate reads it)');
+});
+
+test('leanReviewNext: a critical finding fixed only in other files stays open for the diff review', () => {
+  const r = leanReviewNext({ review: reviewOf([FINDINGS[0], FINDINGS[2]]), fixReport: fixReport([['CR-01', 'Race in sync', 'c1c1c1c', ['src/caller.js']], ['WR-01', 'Leaky cache', 'c3c3c3c', ['src/other.js']]]), since: S, fixedAfterReview: true, changedCode: ['src/caller.js', 'src/other.js'], commitFiles: (sha) => ({ c1c1c1c: ['src/caller.js'], c3c3c3c: ['src/other.js'] })[sha] ?? null });
+  assert.deepEqual(r.open.map((o) => [o.code, o.why]), [['CR-01', 'fixed outside its files']], 'warnings fixed elsewhere count as fixed');
+});
+
+test('jobs review CLI: fix commits a session left without their report ask for a diff review, never another fixer pass; an untracked file asks for nothing', async () => {
+  const root = tmpGitRepo();
+  const g = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const write = (f, s) => { fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true }); fs.writeFileSync(path.join(root, f), s); };
+  const commit = (m) => { g('add', '-A'); g('commit', '-q', '-m', m); return g('rev-parse', 'HEAD'); };
+  const dir = '.planning/phases/03-alpha';
+  write('src/a.js', 'a\n');
+  write(`${dir}/03-REVIEW.md`, reviewOf([['CR-01', 'Race in sync', 'src/a.js']]));
+  const r1 = commit('review');
+  write('src/a.js', 'a fixed\n');
+  commit('fix(03): CR-01');
+  const lines = [];
+  const run = (...a) => runPhaseCommand('jobs', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd: {} } });
+  assert.equal(await run('3', 'review', '--json'), 0);
+  const resumed = JSON.parse(lines.at(-1));
+  assert.deepEqual([resumed.next, resumed.since, resumed.files, resumed.open.map((o) => o.why)], ['review-diff', r1, ['src/a.js'], ['not re-checked since the code changed']]);
+  write(`${dir}/03-REVIEW.md`, reviewOf([]));
+  commit('docs(03): review of the fixes');
+  write('src/stray.js', 'untracked\n');
+  write('src/a.js', 'a fixed, edited\n');
+  assert.equal(await run('3', 'review', '--json'), 0);
+  assert.equal(JSON.parse(lines.at(-1)).next, 'done', 'uncommitted and untracked files never re-open the loop');
 });

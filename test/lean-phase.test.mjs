@@ -5,12 +5,12 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
-import { leanDeferral, phaseLean, pinLean } from '../lib/phase-progress.mjs';
+import { LEAN_WINDOW_HOURS, leanDeferral, phaseLean, pinLean } from '../lib/phase-progress.mjs';
 
 // Stage 6 L2 (D10): lean is decided per phase; a phase whose execution began before lean finishes without it.
 const runFile = (root, name) => path.join(root, '.planning', 'turbo', 'run', name);
 const setLean = (root, enabled) => writeJsonAtomic(path.join(root, '.planning', 'turbo', 'config.json'), { lean: { enabled } });
-const progress = (root, done, extra = {}) => writeJsonAtomic(runFile(root, 'phase-p3.json'), { phase: '3', done, updatedAt: '2026-10-17T10:00:00.000Z', ...extra });
+const progress = (root, done, extra = {}) => writeJsonAtomic(runFile(root, 'phase-p3.json'), { phase: '3', done, updatedAt: new Date().toISOString(), ...extra });
 function project(prefix) {
   const root = tmpDir(prefix);
   fs.mkdirSync(path.join(root, '.planning', 'phases', '03-alpha'), { recursive: true });
@@ -114,4 +114,16 @@ test('leanDeferral: a lean phase\'s turbo-phase run before final-gate only', () 
   setLean(root, false);
   assert.equal(leanDeferral(root), null, 'lean off');
   assert.deepEqual(leanDeferral(root, { lean: { enabled: true } }), { phase: '3' }, 'the config passed in decides');
+});
+
+test('leanDeferral: a run that has not moved for a day is an abandoned one outside a lane; a lane keeps its window', () => {
+  const root = project('lean-stale');
+  const old = new Date(Date.now() - (LEAN_WINDOW_HOURS + 1) * 3600000).toISOString();
+  progress(root, ['freshness'], { updatedAt: old });
+  assert.equal(leanDeferral(root, null, { env: {} }), null, 'a hand run tests in full');
+  assert.deepEqual(leanDeferral(root, null, { env: { TURBO_LANE: '1' } }), { phase: '3' }, 'the lane session');
+  progress(root, ['freshness'], { updatedAt: 'not a date' });
+  assert.equal(leanDeferral(root, null, { env: {} }), null, 'an unreadable time closes the window');
+  progress(root, ['freshness']);
+  assert.deepEqual(leanDeferral(root, null, { env: {} }), { phase: '3' }, 'a run that moves keeps it');
 });

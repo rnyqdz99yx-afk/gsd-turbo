@@ -321,3 +321,17 @@ test('jobs CLI (lean): research verdict, prologue and fan-out follow the signals
   assert.equal(await run('3', 'fanout', '--json'), 0);
   assert.deepEqual(JSON.parse(lines.at(-1)).map((j) => j.id), ['code-review'], 'lean off: the fan-out is stage-5');
 });
+
+test('jobs CLI (lean): signals that cannot be read run research and the audit', async () => {
+  const root = tmpDir('jobs-lean-throw');
+  fs.mkdirSync(path.join(root, '.planning', 'phases', '03-alpha'), { recursive: true });
+  const gsd = { hooks: () => HOOKS, frontend: () => false, goal: () => '', frontmatter: stubFrontmatter() };
+  const boom = () => { throw new Error('ROADMAP.md unreadable'); };
+  const lines = [];
+  const run = (...a) => runPhaseCommand('jobs', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd, signals: { research: boom, security: boom } } });
+  assert.equal(await run('3', 'research'), 0);
+  assert.equal(lines.at(-1), "research: yes (the phase's signals could not be read: ROADMAP.md unreadable)");
+  writeJsonAtomic(activeFile(root), { phase: '3', active: ['code-review'] });
+  assert.equal(await run('3', 'fanout', '--json'), 0);
+  assert.deepEqual(JSON.parse(lines.at(-1)).map((j) => [j.id, j.direct ?? false]), [['security', true], ['code-review', false]]);
+});

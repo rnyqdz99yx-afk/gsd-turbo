@@ -27,7 +27,7 @@ test('applyLean: a full plan becomes a lean skip naming the phase and the reason
 const gitIn = (dir) => (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: 'pipe' }).trim();
 const markerOf = (dir) => path.resolve(dir, gitIn(dir)('rev-parse', '--git-path', 'turbo-last-green'));
 const runFile = (root, name) => path.join(root, '.planning', 'turbo', 'run', name);
-const progress = (root, done) => writeJsonAtomic(runFile(root, 'phase-p3.json'), { phase: '3', done, updatedAt: '2026-10-17T10:00:00.000Z' });
+const progress = (root, done) => writeJsonAtomic(runFile(root, 'phase-p3.json'), { phase: '3', done, updatedAt: new Date().toISOString() });
 const ALL = ['freshness', 'discuss', 'prologue', 'plan', 'gates-off', 'execute', 'restore', 'fanout', 'fix', 'final-gate'];
 
 // A repository whose turbo run directory git ignores (as turbo-run init writes it), with test.full and a root script.

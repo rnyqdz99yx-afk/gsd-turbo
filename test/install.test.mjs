@@ -64,7 +64,7 @@ test('a partially failed install leaves a manifest that uninstalls the copied fi
   assert.throws(() => install({ repoDir: path.resolve('.'), claudeHome: home }));
   const mf = path.join(home, 'turbo', 'install-manifest.json');
   assert.ok(fs.existsSync(mf));
-  const copied = JSON.parse(fs.readFileSync(mf, 'utf8')).files.filter((f) => /^turbo\/(bin|lib)\//.test(f));
+  const copied = JSON.parse(fs.readFileSync(mf, 'utf8')).files.filter((f) => /^turbo\/(bin|lib|roles)\//.test(f));
   assert.ok(copied.length > 0 && copied.every((f) => fs.existsSync(path.join(home, f))));
   t.mock.method(process.stderr, 'write', () => true);
   assert.equal(uninstall({ claudeHome: home }), copied.length);

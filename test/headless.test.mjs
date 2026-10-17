@@ -146,8 +146,8 @@ test('transcriptPath: the found file, else <home>/projects/<projectKey(cwd)>/<id
   fs.mkdirSync(path.dirname(elsewhere), { recursive: true });
   fs.writeFileSync(elsewhere, '{}\n');
   assert.equal(transcriptPath({ home, cwd, sessionId: SESSION }), elsewhere); // a found file as is
-  assert.equal(transcriptPath({ home: 'C:\\h', cwd: 'C:\\Users\\u\\my proj', sessionId: SESSION, platform: 'win32' }),
-    `C:\\h\\projects\\C--Users-u-my-proj\\${SESSION}.jsonl`);
+  assert.equal(transcriptPath({ home: 'C:\\h', cwd: 'C:\\Users\\dev\\my proj', sessionId: SESSION, platform: 'win32' }),
+    `C:\\h\\projects\\C--Users-dev-my-proj\\${SESSION}.jsonl`);
 });
 
 // Task 3: the OWNER QUESTION block

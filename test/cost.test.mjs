@@ -195,41 +195,68 @@ test('spawnCostLog\'s detached child appends the cost line to supervisor.log', a
 test('a woken lane\'s later transcript is found through the supervisor\'s job line once claude rm took the job state', () => {
   const { root, home, env } = laneProject();
   const full = phaseCost({ root, phase: '3', env });
+  const log = path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log');
   fs.rmSync(path.join(home, 'jobs', '11111111'), { recursive: true });
   assert.equal(phaseCost({ root, phase: '3', env }).total.ieu, 12385, 'without the line only the first transcript is found');
-  fs.appendFileSync(path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log'), `2026-10-17T11:30:00.000Z phase 3 job 11111111 sessions ${FORK}\n`);
+  fs.appendFileSync(log, `2026-10-17T11:30:00.000Z phase 30 job 11111111 sessions ${FORK}\n`);
+  assert.equal(phaseCost({ root, phase: '3', env }).total.ieu, 12385, 'another phase\'s line is not this phase\'s');
+  // the woken transcript went on in another project directory (a slot's): found by its exact id anywhere
+  const elsewhere = path.join(home, 'projects', 'C--elsewhere-lane-1');
+  fs.mkdirSync(elsewhere, { recursive: true });
+  fs.renameSync(path.join(projectDirFor(home, root), `${FORK}.jsonl`), path.join(elsewhere, `${FORK}.jsonl`));
+  fs.appendFileSync(log, `2026-10-17T11:30:00.000Z lane prep-03 job 11111111 sessions ${FORK},${'x'.repeat(65)}\n`);
   const cost = phaseCost({ root, phase: '3', env });
   assert.deepEqual(cost.rows, full.rows);
   assert.deepEqual(cost.total, full.total);
-  assert.deepEqual(laneTranscripts({ home, root, phase: '3' }).mains.map((m) => path.basename(m.file)), [`${SESSION}.jsonl`, `${FORK}.jsonl`]);
+  assert.deepEqual(laneTranscripts({ home, root, phase: '3' }).mains.map((m) => [path.basename(path.dirname(m.file)), path.basename(m.file)]), [
+    [path.basename(projectDirFor(home, root)), `${SESSION}.jsonl`],
+    ['C--elsewhere-lane-1', `${FORK}.jsonl`],
+  ]);
 });
 
-test('a woken transcript without the history keeps the lane\'s step; a slash command is a prompt; phase-step through PowerShell counts', () => {
+test('a job\'s woken transcript keeps its step, another job\'s does not; a slash command is a prompt; PowerShell phase-step; a result between a message\'s lines', () => {
   const root = tmpDir('cost-l');
   const home = tmpDir('cost-home');
   const T = (hms) => `2026-10-17T${hms}.000Z`;
   const one = { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 };
+  const zero = { ...one, output_tokens: 0 };
+  const P = '99999999-0000-4000-8000-000000000003';
   const A = '77777777-0000-4000-8000-000000000001';
   const B = '88888888-0000-4000-8000-000000000002';
   fs.mkdirSync(path.join(root, '.planning', 'turbo', 'logs'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log'), `${T('08:00:00')} launch phase 6 session 77777777\n`);
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log'), `${T('07:00:00')} launch lane prep-6 session 99999999\n${T('08:00:00')} launch phase 6 session 77777777\n`);
   writeJob(home, '77777777', { sessionId: A, resumeSessionId: B });
   const dir = projectDirFor(home, root);
+  // the prep job ends in its prologue step
+  setMtime(writeSession(dir, P, [
+    { ...entry.user('Run the turbo-prep skill with arguments: 6', T('07:00:00')), uuid: 'p-1' },
+    entry.assistant({ ts: T('07:00:10'), id: 'z1', usage: one, tool: { name: 'Bash', input: { command: 'node "$T" phase-step 6 --prep' }, id: 'toolu_z' } }),
+    { ...entry.toolResult('toolu_z', 'phase 6: prep next prologue', T('07:00:20')), uuid: 'p-2' },
+    entry.assistant({ ts: T('07:00:30'), id: 'z2', usage: one, text: 'ok' }),
+  ]), new Date(T('07:00:30')));
   setMtime(writeSession(dir, A, [
     { ...entry.user('Run the turbo-phase skill with arguments: 6', T('08:00:00')), uuid: 'u-1' },
     entry.assistant({ ts: T('08:00:10'), id: 'x1', usage: one, tool: { name: 'PowerShell', input: { command: 'node $T phase-step 6' }, id: 'toolu_p6' } }),
     { ...entry.toolResult('toolu_p6', 'phase 6: next execute', T('08:00:20')), uuid: 'u-2' },
     entry.assistant({ ts: T('08:00:30'), id: 'x2', usage: one, text: 'ok' }),
-  ]), new Date(T('08:00:30')));
+    // one message: its phase-step result lands before its second line; the message stays in its step
+    entry.assistant({ ts: T('08:00:40'), id: 'x3', usage: zero, tool: { name: 'Bash', input: { command: 'node "$T" phase-step 6 --done execute' }, id: 'toolu_p7' } }),
+    { ...entry.toolResult('toolu_p7', 'phase 6: next verify', T('08:00:41')), uuid: 'u-3' },
+    entry.assistant({ ts: T('08:00:42'), id: 'x3', usage: one, tool: { name: 'Read', input: { file_path: 'a.md' }, id: 'toolu_r6' } }),
+  ]), new Date(T('08:00:42')));
+  // woken: the job went on in a transcript without its history
+  const anonymous = entry.assistant({ ts: T('09:03:20'), usage: one, text: 'ok' });
   setMtime(writeSession(dir, B, [
-    { ...entry.user('The owner answered ask-1.', T('09:00:00')), uuid: 'u-3' },
+    { ...entry.user('The owner answered ask-1.', T('09:00:00')), uuid: 'u-4' },
     entry.assistant({ ts: T('09:00:05'), id: 'y1', usage: one, text: 'ok' }),
-    { ...entry.user('<command-message>gsd:verify-work</command-message>\n<command-name>/gsd:verify-work</command-name>', T('09:03:00')), uuid: 'u-4' },
+    { ...entry.user('<command-message>gsd:verify-work</command-message>\n<command-name>/gsd:verify-work</command-name>', T('09:03:00')), uuid: 'u-5' },
     entry.assistant({ ts: T('09:03:10'), id: 'y2', usage: one, text: 'ok' }),
-  ]), new Date(T('09:03:10')));
+    anonymous,
+  ]), new Date(T('09:03:20')));
   const cost = phaseCost({ root, phase: '6', env: { CLAUDE_CONFIG_DIR: home } });
-  assert.deepEqual(cost.rows.map((r) => [r.step, r.wallMs, r.ieu]), [['-', 20000, 5], ['execute', 25000, 15]]);
-  assert.equal(cost.total.wallMs, 45000);
+  assert.deepEqual(cost.rows.map((r) => [r.step, r.sessions, r.wallMs, r.ieu]), [['-', 2, 40000, 10], ['prologue', 1, 10000, 5], ['execute', 1, 21000, 10], ['verify', 1, 25000, 15]]);
+  assert.equal(cost.total.wallMs, 96000);
+  assert.equal(cost.total.sessions, 3);
 });
 
 test('fix rounds on the build path count fixer sessions: a resumed one is one round', () => {

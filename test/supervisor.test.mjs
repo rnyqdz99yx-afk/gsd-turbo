@@ -1130,3 +1130,21 @@ test('a lane job\'s other transcripts are logged before claude rm takes its stat
   assert.deepEqual(order, ['ids s1', 'rm s1', 'ids s2', 'rm s2']);
   assert.deepEqual(h.logs.filter((l) => / job /.test(l)), ['phase 4 job s1 sessions fork-s1', 'phase 4 job s2 sessions fork-s2']);
 });
+
+test('a job state that cannot be read before claude rm is logged; the phase still closes and is measured (Stage 6 M)', async () => {
+  const h = harness({ phases: [P('4')] });
+  const calls = [];
+  h.ctx.deps.phaseCost = (p) => calls.push(p);
+  h.ctx.deps.jobSessions = () => {
+    throw new Error('EACCES: state.json');
+  };
+  let s = await tick(fresh(), h.ctx);
+  h.phases[0].complete = true;
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  assert.ok(h.logs.includes('phase 4 job s1: its sessions were not read: EACCES: state.json'), h.logs.join('\n'));
+  assert.deepEqual(h.removed, ['s1']);
+  assert.deepEqual(calls, ['4']);
+  assert.ok(h.notes.some((x) => x.key === 'phaseDone'));
+  assert.equal(s.lane, null);
+});

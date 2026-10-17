@@ -53,7 +53,7 @@ import { gitRunner } from '../lib/staleness.mjs';
 import { runCostCommand, spawnCostLog } from '../lib/cost.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost|build> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', '--merge', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
@@ -1194,6 +1194,13 @@ async function main() {
       // Stage 6 M (spec §7): a phase's time and tokens by step and role; --log appends its line to supervisor.log
       if (!root) die('no .planning directory found');
       return runCostCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`) });
+    }
+    case 'build': {
+      // Stage 6 B4 (spec §6.3): the build path runs phase N by code; the supervisor launches it for eligible phases
+      if (process.env.TURBO_LANE) die("refused: build is the owner's: a lane never runs it", 2);
+      if (!root) die('no .planning directory found');
+      const { runBuildCommand } = await import('../lib/build.mjs');
+      return runBuildCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`) });
     }
     case 'annotate': {
       // spec §6.2 (L3): the markup session's brief and apply

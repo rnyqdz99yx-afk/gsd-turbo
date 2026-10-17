@@ -155,6 +155,10 @@ function actMain({ argv, stdin, cwd, resume }) {
     return answer({ result: script.discuss || 'context written' });
   }
   if (role === 'turbo-uat') return answer({ result: script.uat || 'UAT done' });
+  if (role === 'verify-work') {
+    if (script.verifyWork) write(script.verifyWork.path, script.verifyWork.text);
+    return answer({ result: 'verify-work done' });
+  }
   if (role === 'integrate') {
     for (const f of writeAll(script.resolve)) git('add', '-A', '--', f);
     return answer({ result: 'resolved' });
@@ -170,7 +174,8 @@ function actMain({ argv, stdin, cwd, resume }) {
 //   ask (the result of the first call, nothing written), delayMs, fail (the first n calls end with exit 1; true = 1),
 //   noSummary (the first n calls write no SUMMARY), extra { rel: text } written, never staged } }; summaries { <id>:
 //   text } (else summaryText); fixes [{ files, message, result }]; reviews / verifications [{ path, text }]; audits
-//   [text]; research { path, text }; context { path, text } (committed); uat (text); resolve { rel: text } (git added);
+//   [text]; research { path, text }; context { path, text } (committed); uat (text); verifyWork { path, text } (written
+//   by the verify-work session); resolve { rel: text } (git added);
 //   phaseDir (when the prompt names no SUMMARY path); results [text] (each call, of any role, takes the next one as
 //   its result after acting).
 // -> { act, acts(), set(patch) }

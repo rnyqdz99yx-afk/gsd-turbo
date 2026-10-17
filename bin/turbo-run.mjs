@@ -5,7 +5,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
-import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
+import { cwdInside, laneSessionIds, ownSessionId } from '../lib/transcripts.mjs';
 import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
 import { InitAborted, initProject } from '../lib/project-init.mjs';
@@ -402,8 +402,10 @@ async function makeCtx(root, mode = 'safe') {
       notify: (key, vars) => notify(config, withRunLine(msg(config.lang, key, vars), runLineFor(root, config, { leaving: key === 'phaseDone' ? vars?.phase : null }))),
       now: () => new Date(),
       log,
-      // Stage 6 M (spec §7): the closed phase's cost line, from a detached turbo-run cost <N> --log
+      // Stage 6 M (spec §7): the closed phase's cost line, from a detached turbo-run cost <N> --log; a job's session ids
+      // (its job state), logged before claude rm takes them
       phaseCost: (phase) => spawnCostLog({ script: SELF, root, phase, log }),
+      jobSessions: (jobId, cwd) => laneSessionIds({ home: claudeHome(), root: cwd, jobId }),
       // probed right before a launch: a lease revoked mid-tick (stop, resume, another start) launches nothing
       leaseHeld: () => !lostLease(root),
       // smoke F2: new entries next to the project while lanes run (lib/strays.mjs)

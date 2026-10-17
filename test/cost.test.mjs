@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { tmpDir } from './helpers/tmp.mjs';
 import { writeBuildPhase4, writeLanePhase3, writeLanePhase5 } from './fixtures/cost.mjs';
-import { FORK, SESSION } from './helpers/transcripts.mjs';
+import { FORK, SESSION, entry, projectDirFor, setMtime, writeJob, writeSession } from './helpers/transcripts.mjs';
 import { GAP_CAP_MS, IEU_WEIGHTS, costLine, eachLine, ieuOf, laneJobIds, laneTranscripts, phaseCost, recordSessionUsage, spawnCostLog, turboStepOf } from '../lib/cost.mjs';
 
 const U = { input_tokens: 100, cache_creation_input_tokens: 1000, cache_read_input_tokens: 0, output_tokens: 50 };
@@ -190,4 +190,54 @@ test('spawnCostLog\'s detached child appends the cost line to supervisor.log', a
   }
   assert.match(text, /phase 4 cost: path build · wall 17m00s/);
   assert.deepEqual(logs, []);
+});
+
+test('a woken lane\'s later transcript is found through the supervisor\'s job line once claude rm took the job state', () => {
+  const { root, home, env } = laneProject();
+  const full = phaseCost({ root, phase: '3', env });
+  fs.rmSync(path.join(home, 'jobs', '11111111'), { recursive: true });
+  assert.equal(phaseCost({ root, phase: '3', env }).total.ieu, 12385, 'without the line only the first transcript is found');
+  fs.appendFileSync(path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log'), `2026-10-17T11:30:00.000Z phase 3 job 11111111 sessions ${FORK}\n`);
+  const cost = phaseCost({ root, phase: '3', env });
+  assert.deepEqual(cost.rows, full.rows);
+  assert.deepEqual(cost.total, full.total);
+  assert.deepEqual(laneTranscripts({ home, root, phase: '3' }).mains.map((m) => path.basename(m.file)), [`${SESSION}.jsonl`, `${FORK}.jsonl`]);
+});
+
+test('a woken transcript without the history keeps the lane\'s step; a slash command is a prompt; phase-step through PowerShell counts', () => {
+  const root = tmpDir('cost-l');
+  const home = tmpDir('cost-home');
+  const T = (hms) => `2026-10-17T${hms}.000Z`;
+  const one = { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 };
+  const A = '77777777-0000-4000-8000-000000000001';
+  const B = '88888888-0000-4000-8000-000000000002';
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log'), `${T('08:00:00')} launch phase 6 session 77777777\n`);
+  writeJob(home, '77777777', { sessionId: A, resumeSessionId: B });
+  const dir = projectDirFor(home, root);
+  setMtime(writeSession(dir, A, [
+    { ...entry.user('Run the turbo-phase skill with arguments: 6', T('08:00:00')), uuid: 'u-1' },
+    entry.assistant({ ts: T('08:00:10'), id: 'x1', usage: one, tool: { name: 'PowerShell', input: { command: 'node $T phase-step 6' }, id: 'toolu_p6' } }),
+    { ...entry.toolResult('toolu_p6', 'phase 6: next execute', T('08:00:20')), uuid: 'u-2' },
+    entry.assistant({ ts: T('08:00:30'), id: 'x2', usage: one, text: 'ok' }),
+  ]), new Date(T('08:00:30')));
+  setMtime(writeSession(dir, B, [
+    { ...entry.user('The owner answered ask-1.', T('09:00:00')), uuid: 'u-3' },
+    entry.assistant({ ts: T('09:00:05'), id: 'y1', usage: one, text: 'ok' }),
+    { ...entry.user('<command-message>gsd:verify-work</command-message>\n<command-name>/gsd:verify-work</command-name>', T('09:03:00')), uuid: 'u-4' },
+    entry.assistant({ ts: T('09:03:10'), id: 'y2', usage: one, text: 'ok' }),
+  ]), new Date(T('09:03:10')));
+  const cost = phaseCost({ root, phase: '6', env: { CLAUDE_CONFIG_DIR: home } });
+  assert.deepEqual(cost.rows.map((r) => [r.step, r.wallMs, r.ieu]), [['-', 20000, 5], ['execute', 25000, 15]]);
+  assert.equal(cost.total.wallMs, 45000);
+});
+
+test('fix rounds on the build path count fixer sessions: a resumed one is one round', () => {
+  const root = tmpDir('cost-b');
+  writeBuildPhase4(root);
+  const env = { CLAUDE_CONFIG_DIR: tmpDir('cost-home') };
+  recordSessionUsage(path.join(root, '.planning', 'turbo', 'run'), '4', { step: 'review', role: 'fixer', sessionId: 'b0000000-0000-4000-8000-00000000000d', usage: { output_tokens: 1 }, wallMs: 1000 });
+  assert.equal(phaseCost({ root, phase: '4', env }).fixRounds, 1);
+  recordSessionUsage(path.join(root, '.planning', 'turbo', 'run'), '4', { step: 'review', role: 'fixer', sessionId: 'b0000000-0000-4000-8000-00000000000e', usage: { output_tokens: 1 }, wallMs: 1000 });
+  assert.equal(phaseCost({ root, phase: '4', env }).fixRounds, 2);
 });

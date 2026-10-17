@@ -1105,3 +1105,28 @@ test('a finished phase starts its cost measurement once; one that cannot start i
     assert.deepEqual(calls, ['4'], 'measured once');
   }
 });
+
+test('a lane job\'s other transcripts are logged before claude rm takes its state: at a relaunch and at phase close (Stage 6 M)', async () => {
+  const h = harness({ phases: [P('4'), P('5', ['4'])] });
+  const order = [];
+  h.ctx.deps.jobSessions = (id, cwd) => {
+    order.push(`ids ${id}`);
+    assert.equal(cwd, h.root);
+    return new Set([id, `${id}-0000-4000-8000-000000000000`, `fork-${id}`]);
+  };
+  const { rm } = h.ctx.deps.claude;
+  h.ctx.deps.claude.rm = (id) => {
+    order.push(`rm ${id}`);
+    return rm(id);
+  };
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'done';
+  h.fp = 'B';
+  s = await tick(s, h.ctx); // relaunched: s1 goes, s2 starts
+  assert.equal(s.lane.sessionId, 's2');
+  h.phases[0].complete = true;
+  h.agents.find((a) => a.id === 's2').state = 'blocked';
+  s = await tick(s, h.ctx); // phase 4 done
+  assert.deepEqual(order, ['ids s1', 'rm s1', 'ids s2', 'rm s2']);
+  assert.deepEqual(h.logs.filter((l) => / job /.test(l)), ['phase 4 job s1 sessions fork-s1', 'phase 4 job s2 sessions fork-s2']);
+});

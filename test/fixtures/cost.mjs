@@ -49,7 +49,8 @@ export function writeLanePhase3({ home, root }) {
     call('10:01:30', 'm3', u(0, 500, 3000, 100), tool('Agent', { subagent_type: 'gsd-assumptions-analyzer', description: 'assumptions', prompt: 'p' }, 'toolu_ag1')),
     withUuid(entry.launched('toolu_ag1', 'a0123456789abcdef', T('10:01:40'))),
     withUuid(entry.note('a0123456789abcdef', 'completed', T('10:20:00'))),
-    call('10:20:10', 'm4', u(0, 0, 4000, 30), tool('Bash', { command: 'node "$T" phase-step 3 --done discuss' }, 'toolu_ps2')),
+    // one message, two lines: the first carries the output streamed so far
+    call('10:20:10', 'm4', u(0, 0, 4000, 10), tool('Bash', { command: 'node "$T" phase-step 3 --done discuss' }, 'toolu_ps2')),
     call('10:20:11', 'm4', u(0, 0, 4000, 30)),
     withUuid(entry.toolResult('toolu_ps2', 'phase 3: next plan (done: freshness, discuss)', T('10:20:15'))),
   ];
@@ -65,7 +66,9 @@ export function writeLanePhase3({ home, root }) {
   setMtime(writeSession(dir, FORK, woken), new Date(T('11:00:20')));
   writeAgent(dir, SESSION, 'a0123456789abcdef', [
     withUuid(entry.agentUser('a0123456789abcdef', 'Analyze phase 3', T('10:01:41'))),
-    sideCall('10:02:41', 's1', u(200, 4000, 0, 300)),
+    // a subagent's message: its first line carries a part of the output, its last line all of it
+    sideCall('10:02:41', 's1', u(200, 4000, 0, 2)),
+    sideCall('10:02:50', 's1', u(200, 4000, 0, 300), tool('Read', { file_path: 'x.md' }, 'toolu_r1')),
     sideCall('10:04:41', 's2', u(0, 0, 8000, 200)),
   ], { agentType: 'gsd-assumptions-analyzer', toolUseId: 'toolu_ag1', spawnDepth: 1 });
 }
@@ -81,7 +84,9 @@ export function writeLanePhase5({ home, root }) {
   synthetic.message.model = '<synthetic>';
   writeSession(dir, SESSION5, [
     withUuid(entry.user('Run the turbo-phase skill with arguments: 5', T('09:00:00'))),
-    call('09:00:10', 'g1', u(1, 0, 0, 1), tool('Skill', { skill: '/gsd:execute-phase' })),
+    // the Skill call on the message's second line: the whole message counts under the skill
+    call('09:00:10', 'g1', u(1, 0, 0, 0)),
+    call('09:00:11', 'g1', u(1, 0, 0, 1), tool('Skill', { skill: '/gsd:execute-phase' })),
     call('09:00:20', 'g2', u(1, 0, 0, 1), tool('Agent', { subagent_type: 'gsd-executor', description: 'Execute plan 01 of phase 5', prompt: 'p' }, 'toolu_x')),
     synthetic,
   ]);

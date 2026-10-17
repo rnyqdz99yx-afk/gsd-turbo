@@ -569,7 +569,8 @@ test('status and stop name the GSD gates and docs commits a stopped phase left o
   for (const l of want) assert.ok(r.stdout.includes(`${l}\n`), r.stdout);
   assert.equal(fs.readFileSync(path.join(gatesDir, 'p3.json'), 'utf8'), state, 'never restored by status or stop');
   assert.ok(fs.existsSync(docs));
-  assert.equal(p.gsdCalls().length, 0, 'no gsd-tools call: nothing was restored');
+  // Stage 5 §4.10: status reads the phase list (init manager) for its closed-phases line; nothing else
+  assert.deepEqual(p.gsdCalls().filter((a) => !(a[0] === 'init' && a[1] === 'manager')), [], 'no other gsd-tools call: nothing was restored');
   fs.rmSync(gatesDir, { recursive: true });
   fs.rmSync(docs);
   assert.doesNotMatch(run(['status'], p.root, p.env), /off: phase/);

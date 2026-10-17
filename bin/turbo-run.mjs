@@ -9,6 +9,7 @@ import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
 import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
 import { InitAborted, initProject } from '../lib/project-init.mjs';
+import { closedLineFor, runAdoptCommand } from '../lib/cli-adopt.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { createGit } from '../lib/push.mjs';
 import { createGh } from '../lib/ci.mjs';
@@ -48,9 +49,9 @@ import { readSupervisor } from '../lib/sup-state.mjs';
 import { recoverSupervisor } from '../lib/sup-recover.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax']);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha']);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
 const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
@@ -295,9 +296,11 @@ function statusOpts(root, config) {
 
 // rangeLine false: the caller printed the range line already. attended: attendedPhases; a mark holds every lane, so
 // the lane line names the hold instead of a session to watch.
-function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en', resumes = [] } = {}) {
+// closed: Stage 5's line about the closed phases turbo skips (lib/cli-adopt.mjs closedLineFor), after the supervisor line.
+function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en', resumes = [], closed = null } = {}) {
   const finished = sup.range ? ' · range finished' : ' · milestone finished';
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.planOnly ? ' · plan only' : ''}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
+  if (closed) out(closed);
   if (sup.range && rangeLine) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
   if (sup.lanes) return printLanes(sup, { attended, questions, lang, resumes, running });
@@ -517,6 +520,9 @@ async function start(root, requested = undefined, { planOnly = false, logon = fa
     writeJsonAtomic(supPath(root), rest);
   }
   if (planOnly) out('plan only: prep and lane markup jobs run in the slots; no phase runs');
+  // Stage 5 §4.10: the closed phases with a stale verification are skipped; said until the owner decides in /turbo-adopt
+  const closed = closedLineFor(root, config.lang);
+  if (closed) out(closed);
   // the run goes on: a start at logon takes it up again after a reboot (Gap 2)
   clearOwnerStop(root);
   ensureDir(logsDir(root));
@@ -1078,10 +1084,12 @@ async function main() {
       const leftovers = gatesLeftovers(root);
       const attended = attendedPhases(root); // spec §8: phases the owner runs in their session; no lane runs meanwhile
       if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ...(damaged ? { damaged } : {}), ownerRequests, gatesOff: leftovers.gates, attended }, null, 2)); return 0; }
+      // Stage 5 §4.10: the closed phases turbo skips, until the owner decides in /turbo-adopt
+      const closed = closedLineFor(root, config.lang);
       if (damaged?.unreadable) out(`supervisor: state cannot be read now (supervisor.json: ${damaged.why}); look again in a moment; if it stays so, check the file and the disk`);
       else if (damaged) out(damagedLine(damaged));
-      else if (!sup) out('supervisor: not running (never started)');
-      else printStatus(sup, running, { ...statusOpts(root, config), attended });
+      else if (!sup) out(`supervisor: not running (never started)${closed ? `\n${closed}` : ''}`);
+      else printStatus(sup, running, { ...statusOpts(root, config), attended, closed });
       for (const f of ownerRequests) out(`owner request: ${f}`);
       // v0.3.3: the questions a phase stopped for, in the owner's words
       const said = config.lang === 'ru' ? ['вопрос к вам: фаза', 'ответить'] : ['owner question: phase', 'answer'];
@@ -1126,6 +1134,11 @@ async function main() {
       const failing = r.code ? r.lines.at(-1) : null;
       for (const line of r.lines) (line === failing ? process.stderr : process.stdout).write(`${line}\n`);
       return r.code;
+    }
+    case 'adopt': {
+      // Stage 5 (spec §4, §7): /turbo-adopt's command; the owner's, never a lane's, and it never starts the run
+      refuseInLane('adopt');
+      return runAdoptCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`), supervisorAlive: (sup) => supAlive(sup, pollOf(root)) });
     }
     case 'annotate': {
       // spec §6.2 (L3): the markup session's brief and apply

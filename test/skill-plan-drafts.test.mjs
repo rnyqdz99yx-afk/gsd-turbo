@@ -46,16 +46,22 @@ test('section Plan drafts: the commands in order, one message per wave, GSD\'s p
   ]);
   assert.ok(d.includes('never for `--gaps`, `--reviews`, a freshness revision'));
   assert.ok(!/draft later/.test(d), 'no rolling re-dispatch');
+  // review C2, I1: every wave after drafts on (a resumed session's first runnable wave too), draft returns handled before
+  // GSD's resume check, serial dispatch
+  inOrder(d, ['**Every Wave GSD dispatches after `drafts on`**', 'its first runnable Wave too', "Before GSD's §8.5.2 point 2 (its resume check)",
+    'keeps that entry in the runnable set', "At GSD's §8.5.2 point 4", '`CHUNKED_PARALLEL` false', "GSD's first serial call of the Wave"]);
+  assert.ok(d.includes('a `## REVISION COMPLETE` that leaves no issue unaddressed'));
+  assert.ok(d.includes('is no plan of GSD\'s outline'));
 });
 
-test('the reconcile prompt: GSD\'s revision contract, the draft-reconcile blocker, Steps 2-5 and 7 only, no commit, the three returns', () => {
+test('the reconcile prompt: GSD\'s revision contract, the draft-reconcile blocker, Steps 2-5 (2.5) only, no commit, the three returns', () => {
   const d = section('Plan drafts');
   const prompt = d.slice(d.indexOf('<revision_context>'), d.indexOf('</instructions>'));
   inOrder(prompt, [
     '<revision_context>', '**Mode:** revision (gsd-turbo draft reconcile)', '<required_reading>', '<draft>', '<each before: path>', '<outline>', '<context>',
     'plan: "<id>"', 'dimension: "draft-reconcile"', 'severity: "blocker"', 'required_property: "every file, symbol, interface, command and decision',
-    'description: "<the assumptions lines>"', '<instructions>', 'planner-revision.md', 'Steps 2–5 and 7 only', 'Read only the files listed above',
-    'Do not run Step 6', 'Never run git or gsd-tools commit', 'Edit nothing but <draft>', 'do not edit ROADMAP.md or STATE.md',
+    'description: "<the assumptions lines>"', '<instructions>', 'planner-revision.md', 'Steps 2 to 5 (with 2.5) only; not Steps 1, 6 or 7', 'Read only the files listed above',
+    'Never run git or gsd-tools commit', 'Edit nothing but <draft>', 'do not edit ROADMAP.md or STATE.md', 'Return only one of the markers below',
     '## RECONCILE PASSED', '## RECONCILE FAILED', '## REVISION_CONFLICT',
   ]);
   assert.ok(d.includes('followed by the **Temporary files** paragraph'));

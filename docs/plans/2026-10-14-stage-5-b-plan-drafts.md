@@ -29,12 +29,17 @@ The spec (§5, §6, §7, §9) is corrected to match; where this plan's text diff
 - `--plan` also removes drafts an agent left in the phase directory and prints `commit first: <ids>`; it applies only
   to the waves after the one GSD plans now; `min_waves` decides only before the first draft; `drafts off: plan checker
   disabled` when GSD's `plan_checker` / `workflow.plan_check` is false.
-- `--drafting`/`--reconcile` record HEAD and the state of the phase directory, ROADMAP.md and STATE.md;
-  `--drafted`/`--reconciled` refuse on a planner's own commit or another change there (G16, G17). Every `use: gsd`
-  marks the record `replanned`; `--drafted`, `--reconciled` and `--replan` remove a draft written into the phase
-  directory (with a commit when it was committed).
+- `--drafting`/`--reconcile` record the phase directory's plan files; `--drafted`/`--reconciled`/`--replan` remove
+  (with a commit when committed) and refuse on the agent's own `<id>-PLAN.md` or any new plan file no outline row
+  names. ROADMAP.md, STATE.md and commits are not looked at: GSD's own chunked planners touch them in every run (G16;
+  second review C1). Every `use: gsd` marks the record `replanned`.
 - Predecessors also include the earlier plans the draft's `## Draft assumptions` names. The guard (B11) reads the
-  newest adding commit and refuses any plan file equal to a recorded drafted/reconciled blob.
+  newest adding commit, goes over every plan file of the phase and refuses any equal to a recorded drafted/reconciled
+  blob, and (before execution) any plan file no outline row names that was not there before the first draft.
+- Every Wave GSD dispatches after `drafts on` (a resumed session's first runnable Wave too) runs `--reconcile` per
+  entry; draft returns of a Wave are handled before GSD's resume check of it (second review C2, I1).
+- `plan_drafts.enabled: false` writes `lastPlan` too, for the measurement line. `planCheckState` (web-hygiene2) no
+  longer counts a `create phase plan` commit that adds a plan file (a planner's own commit, review I3).
 - `filesModified` of `lib/annotate.mjs` is not imported (it would pull annotate's imports into the lane commands):
   `lib/plan-drafts.mjs` reads `files_modified` with its own `frontList`, which also reads `depends_on`.
 - The skill section **Plan drafts** sits after **Stale report**; its tests are `test/skill-plan-drafts.test.mjs`, and

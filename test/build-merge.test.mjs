@@ -189,6 +189,13 @@ test('a lock a dead build left is taken over at once; a very old one even when i
     assert.ok(Date.now() - t0 < 5000, 'not waited out');
     assert.equal(exists(file), false, 'released');
   }
+  // a fresh lock is waited on, even when its owner is gone: it may still be writing its token
+  const l = lane();
+  const s = built(l, '33-02');
+  const file = buildLockFile(l.root, '33');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${dead}-just-made`);
+  assert.throws(() => mergeSlice(l.root, s, { lockWaitMs: 300 }), BuildLocked);
 });
 
 test('runMergeTests: the targeted tests of one merge, a red one, a retest', async () => {

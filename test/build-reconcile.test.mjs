@@ -8,7 +8,8 @@ import { planText } from './helpers/whatif.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 import { askOwner, markDelivered, readQuestions } from '../lib/questions.mjs';
 import {
-  createSliceWorktree, loadBuildState, mergeSlice, mergeSubject, newBuildState, nextReady, planGraph, reconcileBuildState, saveBuildState, setSlice,
+  buildGit, createSliceWorktree, loadBuildState, mergeSlice, mergeSubject, newBuildState, nextReady, planGraph, reconcileBuildState, removeSliceWorktree,
+  saveBuildState, setSlice,
 } from '../lib/build-queue.mjs';
 
 const now = new Date('2026-10-17T12:00:00Z');
@@ -168,6 +169,76 @@ test('a folder a halfway removal left inside another repository: git never runs 
   assert.equal(outer.git('status', '--porcelain', '--', 'outer-dirty.txt'), '?? outer-dirty.txt');
   assert.equal(r.state.slices['33-02'].leftover, null);
   assert.ok(createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.git('rev-parse', 'HEAD') }).path, 'the slice is built again');
+});
+
+test('a locked worktree record without its .git file inside another repository: git never runs in it', () => {
+  const outer = buildRepo({ plans: [] });
+  const commits = outer.git('rev-list', '--count', 'HEAD');
+  const l = buildRepo({ plans: PLANS, config: { lanes: { dir: path.join(outer.root, 'slots') } } });
+  const ctx = { ...l, runDir: path.join(l.root, '.planning', 'turbo', 'run'), state: newBuildState({ phase: '33', graph: planGraph(l.root, '33'), head: l.git('rev-parse', 'HEAD'), now }) };
+  const w = inFlight(ctx, '33-02', (wt) => commitIn(wt, { 'src/33-02.js': 'export const half = 1;\n' }, 'feat(33-02): half'));
+  const tip = gitIn(w.path, 'rev-parse', 'HEAD');
+  l.git('worktree', 'lock', w.path.split(path.sep).join('/'));
+  fs.rmSync(path.join(w.path, '.git'), { force: true });
+  fs.writeFileSync(path.join(w.path, 'src', 'left.js'), 'left behind\n');
+  const r = reconcile(ctx);
+  assert.deepEqual(acts(r), [['33-02', 'salvaged']]);
+  assert.equal(l.git('rev-parse', 'refs/heads/turbo-salvage/33-02-20261017T120000Z'), tip);
+  assert.equal(exists(w.path), false);
+  assert.equal(outer.git('rev-list', '--count', 'HEAD'), commits);
+  assert.equal(outer.git('diff', '--cached', '--name-only'), '', 'nothing staged in the repository around it');
+  assert.equal(branchExists(l.root, 'turbo-build/33-02'), false, 'the stale record is gone, so is the slice branch');
+  assert.ok(createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.git('rev-parse', 'HEAD') }).path);
+});
+
+test('a worktree listing that fails: nothing is salvaged, skipped or removed', () => {
+  const l = lane();
+  const w = inFlight(l, '33-02', (wt) => fs.writeFileSync(path.join(wt.path, 'work.js'), 'unsaved\n'));
+  const real = buildGit();
+  const git = (dir, args, o) => {
+    if (args[0] === 'worktree' && args[1] === 'list') throw new Error(`git worktree in ${dir} failed: spawn EAGAIN`);
+    return real(dir, args, o);
+  };
+  const r = reconcile(l, { deps: { git } });
+  assert.deepEqual(acts(r), [['33-02', 'blocked']]);
+  assert.equal(r.state.slices['33-02'].state, 'blocked');
+  assert.equal(fs.readFileSync(path.join(w.path, 'work.js'), 'utf8'), 'unsaved\n');
+  assert.equal(l.git('for-each-ref', 'refs/heads/turbo-salvage'), '');
+  const rm = removeSliceWorktree(l.root, { path: w.path, branch: w.branch }, { git });
+  assert.equal(rm.removed, false);
+  assert.ok(exists(path.join(w.path, 'work.js')));
+});
+
+test('a worktree that outlives a refused removal is salvaged once', () => {
+  const l = lane();
+  const w = inFlight(l, '33-02', (wt) => fs.writeFileSync(path.join(wt.path, 'work.js'), 'unsaved\n'));
+  const real = buildGit();
+  const git = (dir, args, o) => {
+    if (args[0] === 'worktree' && args[1] === 'remove') throw new Error(`git worktree in ${dir} failed: Permission denied`);
+    return real(dir, args, o);
+  };
+  const first = reconcile(l, { deps: { git } });
+  assert.deepEqual(acts(first), [['33-02', 'salvaged']]);
+  assert.equal(first.state.slices['33-02'].leftover, w.path);
+  const second = reconcileBuildState(l.root, l.runDir, '33', { now: new Date('2026-10-17T13:00:00Z'), deps: { git } });
+  assert.deepEqual(acts(second), [['33-02', 'requeued']]);
+  assert.deepEqual(l.git('for-each-ref', '--format=%(refname:short)', 'refs/heads/turbo-salvage').split('\n'), ['turbo-salvage/33-02-20261017T120000Z']);
+  assert.equal(l.git('show', 'turbo-salvage/33-02-20261017T120000Z:work.js'), 'unsaved');
+});
+
+test('a detached HEAD on a commit the slice branch holds is no second salvage', () => {
+  const l = lane();
+  const w = inFlight(l, '33-02', (wt) => {
+    commitIn(wt, { 'src/33-02.js': '1\n' }, 'feat(33-02): one');
+    commitIn(wt, { 'src/33-02.js': '2\n' }, 'feat(33-02): two');
+    gitIn(wt.path, 'checkout', '-q', '--detach', 'HEAD~1');
+  });
+  const tip = l.git('rev-parse', 'refs/heads/turbo-build/33-02');
+  const r = reconcile(l);
+  assert.deepEqual(acts(r), [['33-02', 'salvaged']]);
+  assert.deepEqual(r.state.slices['33-02'].salvage, ['turbo-salvage/33-02-20261017T120000Z']);
+  assert.equal(l.git('rev-parse', 'turbo-salvage/33-02-20261017T120000Z'), tip);
+  assert.equal(exists(w.path), false);
 });
 
 test('nothing done: requeued, also for an orphan branch of a waiting slice', () => {

@@ -55,15 +55,21 @@ test('size, structure and tasks', () => {
   assert.deepEqual(lint(phase({ p1: { tasks: 0 } })).r.problems, [{ plan: '05-01', kind: 'tasks', detail: 'no tasks' }]);
 });
 
-test('files are exact paths inside the project, outside .planning', () => {
+test('files are exact paths inside the project, outside GSD\'s and turbo\'s own planning files', () => {
   const files = (p1) => lint(phase({ p1 })).r.problems;
   assert.deepEqual(files({ files: [], deleted: [] }), [{ plan: '05-01', kind: 'files', detail: 'lists no files' }]);
   assert.deepEqual(files({ files: [], deleted: ['old.js'] }), [], 'a slice that only deletes lists its files');
   for (const [p, why] of [
     ['src/*.js', 'a glob or a directory, not an exact path'],
     ['src/', 'a glob or a directory, not an exact path'],
-    ['.planning/notes.md', 'under .planning/'],
-    ['.planning', 'under .planning/'],
+    ['.planning/notes.md', "GSD's or turbo's own planning file"],
+    ['.planning', "GSD's or turbo's own planning file"],
+    ['.planning/ROADMAP.md', "GSD's or turbo's own planning file"],
+    ['.planning/config.json', "GSD's or turbo's own planning file"],
+    ['.planning/turbo/config.json', "GSD's or turbo's own planning file"],
+    ['.planning/workstreams/a/STATE.md', "GSD's or turbo's own planning file"],
+    ['.planning/phases/05-demo/05-01-PLAN.md', "GSD's or turbo's own planning file"],
+    ['.planning/phases/05-demo/notes.md', "GSD's or turbo's own planning file"],
     ['../x.js', 'outside the project'],
     ['src/../../x.js', 'outside the project'],
     ['/x.js', 'outside the project'],
@@ -72,6 +78,8 @@ test('files are exact paths inside the project, outside .planning', () => {
     ['src//b.js', 'write it as src/b.js'],
   ]) assert.deepEqual(files({ files: ['src/a.js', p] }), [{ plan: '05-01', kind: 'files', detail: `${p}: ${why}` }], p);
   assert.deepEqual(files({ files: ['src/a.js'], deleted: ['src/old/'] }), [{ plan: '05-01', kind: 'files', detail: 'src/old/: a glob or a directory, not an exact path' }]);
+  // B5 A/B: a phase whose criteria amend a project document under .planning/ (an older phase's UI-SPEC) lists it
+  assert.deepEqual(files({ files: ['src/a.js', '.planning/milestones/v2.0-phases/13-catalog/13-UI-SPEC.md', '.planning/phases/04-old/04-UI-SPEC.md', '.planning/codebase/STACK.md'] }), []);
 });
 
 test('no phase directory, no plans, no GSD', () => {

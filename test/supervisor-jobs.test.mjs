@@ -351,3 +351,27 @@ test('integration: a refused or diverged push or a CI timeout after the merge is
   assert.ok(h.logs.some((l) => l.includes('diverged') && l.includes('the push work told the owner')), h.logs.join('\n'));
   assert.deepEqual(s.lanes, {});
 });
+
+test('a phase lane released after its merge starts its cost measurement once (Stage 6 M)', async () => {
+  const h = lanesHarness({ phases: [P('1')], merge: mergeFrom([{ outcome: 'merged' }]) });
+  const calls = [];
+  h.ctx.deps.phaseCost = (p) => calls.push(p);
+  const asked = [];
+  h.ctx.deps.jobSessions = (id, cwd) => {
+    asked.push([id, cwd]);
+    return [id, 'fork-1'];
+  };
+  let s = await tick(freshLanes(), h.ctx);
+  writeLaneStatus(h.root, '1', 'ready', { at: h.at() });
+  h.agentOf('1').state = 'blocked';
+  for (let i = 0; i < 4 && Object.keys(s.lanes).length; i++) {
+    h.advance(1);
+    s = await tick(s, h.ctx);
+  }
+  assert.deepEqual(s.lanes, {});
+  assert.deepEqual(calls, ['1']);
+  assert.deepEqual(asked, [['s1', h.slots[0].path]], 'the job state is read in the lane\'s slot, before its rm');
+  assert.ok(h.logs.includes('phase 1 job s1 sessions fork-1'), h.logs.join('\n'));
+  s = await tick(s, h.ctx);
+  assert.deepEqual(calls, ['1'], 'measured once');
+});

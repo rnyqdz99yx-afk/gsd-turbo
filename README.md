@@ -74,6 +74,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 | `/turbo-autonomous away` | answer ahead everything that can be, then leave; `back` shows what happened |
 | `/turbo-autonomous attend N` | run the rest of phase N here with you (for plans that need a device, a login…) |
 | `/turbo-autonomous stop` | stop the supervisor and its sessions |
+| `/turbo-adopt` | move a milestone already running on plain GSD onto turbo: where it stands, the closed phases turbo skips, all questions at once, one commit; then `/turbo-autonomous` ([details](docs/reference.md#adopting-a-running-milestone)) |
 
 ## Before you start
 
@@ -105,7 +106,7 @@ The [full reference](docs/reference.md) covers every command, the config, owner 
 2. ✅ **Faster phases** — `/turbo-phase` with a parallel prologue, gates in parallel, `turbo-uat`.
 3. ✅ **The owner in the loop** — question cards answered ahead (session, pane, Telegram), push and CI, the live view, live sittings.
 4. ✅ **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging. *(v0.4.x, current)*
-5. **Adoption** — `/turbo-adopt`: plug turbo into a milestone that is already in progress — where it stands, what was skipped, all questions up front, a plan for the rest.
+5. **Adoption** — `/turbo-adopt`: plug turbo into a milestone that is already in progress — where it stands, what was skipped, all questions up front, a plan for the rest. *(0.5.0)*
 6. **Execution graph** — each plan starts as soon as its dependencies are done instead of waiting for whole waves.
 
 ## License

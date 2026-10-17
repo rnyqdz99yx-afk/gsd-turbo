@@ -49,3 +49,10 @@ test('install ships skills/turbo-adopt and the adopt libraries; uninstall remove
   for (const f of files) assert.ok(!fs.existsSync(path.join(home, f)), f);
   assert.ok(!fs.existsSync(path.join(home, 'skills', 'turbo-adopt')));
 });
+
+test('turbo-autonomous passes start\'s closed-phases line on as it is (spec §8)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const report = s.slice(s.indexOf('7. **Report to the user, briefly:**'));
+  assert.ok(report.includes('when `start` printed a `closed phases not re-verified: …` line'), 'point 7');
+  assert.ok(report.includes('pass it on as it is'));
+});

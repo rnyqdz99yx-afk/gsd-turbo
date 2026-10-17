@@ -315,6 +315,21 @@ GSD's chunked planning plans one Wave of its outline at a time, because a planne
 
 **Cost.** Each drafted plan is written once as a draft (as it would have been once anyway) plus a reconcile pass (about a quarter to two fifths of a plan), plus GSD's own plan for a draft that fails: expect 30–50 % more tokens in the plan step.
 
+## What-if: plans as a graph
+
+GSD executes a phase wave by wave: a wave starts only when every plan of the wave before it is done and merged, so one long plan holds back every plan of the next wave, including those that do not need it. turbo's next step (Stage 6) starts each plan as soon as the plans it needs are merged. Before that is built, `turbo-run exec-whatif <N>` measures what it would have saved on a phase that has already run. It only reads: the phase's plans, git and Claude Code's transcripts; it writes nothing.
+
+```text
+turbo-run exec-whatif 32                 # in the project
+node <gsd-turbo checkout>/bin/turbo-run.mjs exec-whatif 32 --project <path to the project>
+```
+
+- **Graph.** A plan needs the plans in its `depends_on`, every earlier plan that changes or deletes a file it changes or deletes (`files_modified`, `files_deleted`), and every earlier plan that changes a file its `must_haves.key_links` name (the planner's own rules). Earlier means GSD's wave, then the declared wave, then the plan id.
+- **Minutes per plan.** From the executor transcripts (each executor subagent of the plan from its first to its last entry; a continuation after a checkpoint counts, the time waiting for you between them does not), else from git (from the commit of the phase's orchestration before the plan's first commit to its summary commit; a start more than `--max-lead` minutes, default 20, before the first commit becomes the median of the others, marked `start estimated`), else `--minutes 32-07=12,…`, which wins over both. Gap-closure plans are left out.
+- **GSD's waves** as GSD computes them (the longest `depends_on` chain; a wave whose plans share a file runs one plan at a time), with the wave tail (merges, test gate, tracking commit, next dispatch) measured at each wave boundary (median), else 5 minutes (`--tail-minutes`).
+- **The ready queue** for 1 executor up to `max_executors` (`--max-executors`): the longest remaining chain first, one merge at a time after each plan, each merge costing one wave tail unless `--merge-minutes` says otherwise (a merge plus targeted tests is usually shorter: the line also shows half a tail).
+- **Output.** The measured span, the assumptions, GSD's waves, the ready queue by executors, the gain, the critical path, the edges that cost most (what the queue would save without each), and per plan its minutes, source and start in both schedules. `--json` prints all of it; `--edges depends,files` or `--edges depends` leaves edge kinds out; `--no-transcripts` uses git only.
+
 ## Adopting a running milestone
 
 `/turbo-adopt` moves a milestone that is already running on plain GSD onto turbo. It never starts the supervisor, a lane, a prep or markup job, makes no slots, writes no trust, removes no agent worktree and turns no gates back on: the report names each of these with its command, and the first `/turbo-autonomous` does the rest. It runs `turbo-run adopt …` in this order:
@@ -419,7 +434,7 @@ turbo's state stays in your checkout (the control root): `.planning/turbo/run/`,
 | `max_prep` | `null` | Prep and annotate jobs at once; `null` is `max_lanes`, `0` none. Ready phases always get the slots first. |
 | `merge_rounds` | `3` | Times a ready phase integrates again while `main` keeps moving, before you are asked. |
 | `lanes.gates` | `[]` | Your own shared resources (lower-case letters, digits and `-`), next to `prod-deploy`, `owner-live`, `owner-signature`, `packaged-build`. |
-| `max_executors` | `20` | Reserved for stage 4 (execution graph). Not used in v0.2. |
+| `max_executors` | `20` | The most executors the what-if calculator tries at once (see [What-if: plans as a graph](#what-if-plans-as-a-graph)); reserved for Stage 6's execution graph, not used by the run yet. |
 | `lane_permission_mode` | `"bypassPermissions"` | `--permission-mode` of every background session. turbo reads a session that Claude Code lists as `blocked` as one that finished its turn, which assumes this default: with another mode, a session waiting on a permission prompt looks the same. |
 | `lane_model` | `""` | `--model` of every background session; empty uses your Claude Code default. |
 | `context_stop_pct` | `55` | Context usage, in percent, at which a session saves its state and hands over to a fresh one. The session measures it with `turbo-run context <N>` before each step (an instruction in the session prompt; the supervisor itself does not measure context). |

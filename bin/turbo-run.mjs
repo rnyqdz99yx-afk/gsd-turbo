@@ -47,11 +47,13 @@ import { runWorktreesCommand } from '../lib/worktrees.mjs';
 import { watchSupervisor } from '../lib/watchdog.mjs';
 import { readSupervisor } from '../lib/sup-state.mjs';
 import { recoverSupervisor } from '../lib/sup-recover.mjs';
+import { WHATIF_VALUE_FLAGS, runExecWhatif } from '../lib/exec-whatif.mjs';
+import { gitRunner } from '../lib/staleness.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha']);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
 const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
@@ -1139,6 +1141,21 @@ async function main() {
       // Stage 5 (spec §4, §7): /turbo-adopt's command; the owner's, never a lane's, and it never starts the run
       refuseInLane('adopt');
       return runAdoptCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`), supervisorAlive: (sup) => supAlive(sup, pollOf(root)) });
+    }
+    case 'exec-whatif': {
+      // Stage 6 (spec docs/specs/2026-10-15-stage-6-design.md §5): measure first. Reads a finished phase's plans, git
+      // and transcripts and compares GSD's waves with a ready queue; it writes nothing
+      let config = DEFAULTS;
+      let slotsBase = null;
+      try {
+        if (root) config = loadConfig(root);
+        if (root) slotsBase = slotsDir(root, config);
+      } catch {
+        // a broken config loses only max_executors and lanes.dir: the defaults serve a read-only calculator
+        if (root) slotsBase = slotsDir(root, DEFAULTS);
+      }
+      const deps = root ? { git: gitRunner(root), home: claudeHome(), slotsBase, maxExecutors: Number(config.max_executors) || 20 } : {};
+      return runExecWhatif(args, { root, out, err: (l) => process.stderr.write(`${l}\n`), deps });
     }
     case 'annotate': {
       // spec §6.2 (L3): the markup session's brief and apply

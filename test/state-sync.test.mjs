@@ -182,6 +182,27 @@ test('state-sync is best effort: a failing GSD command or commit is a warning wi
   assert.match(fs.readFileSync(path.join(root, '.planning', 'STATE.md'), 'utf8'), /<!-- patched -->/);
 });
 
+// Stage 6 L2 (spec §5.4): one records commit per turbo step; state-sync then leaves its write to that commit.
+test('state-sync --no-commit writes STATE.md through GSD\'s state commands and leaves the commit to the step\'s records commit', async () => {
+  const root = fixture();
+  const { gsd, calls } = fakeGsd(root);
+  const lines = [];
+  const run = (args, deps) => runPhaseCommand('state-sync', args, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps });
+  assert.equal(await run(['05', '--no-commit'], { gsd }), 0);
+  assert.deepEqual(calls.map((c) => c.slice(0, 2)), [['init', 'execute-phase'], ['phase-plan-index', '05'], ['state', 'patch'], ['state', 'record-session']]);
+  assert.equal(lines.at(-1), 'STATE.md: phase 05 executing, next plan 05-03 (3 of 4); not committed (--no-commit)');
+  assert.match(fs.readFileSync(path.join(root, '.planning', 'STATE.md'), 'utf8'), /<!-- patched -->/, 'the written STATE.md stays for the records commit');
+  // a failing state command still puts STATE.md's bytes back
+  const again = fixture();
+  const before = fs.readFileSync(path.join(again, '.planning', 'STATE.md'));
+  const fake = fakeGsd(again);
+  const out = [];
+  const code = await runPhaseCommand('state-sync', ['05', '--no-commit'], { root: again, out: (l) => out.push(l), err: (l) => out.push(l), deps: { gsd: (args) => { if (args[1] === 'record-session') throw new Error('boom'); return fake.gsd(args); } } });
+  assert.equal(code, 0);
+  assert.match(out.at(-1), /^warn: state-sync: boom; STATE\.md was put back as it was$/);
+  assert.ok(fs.readFileSync(path.join(again, '.planning', 'STATE.md')).equals(before));
+});
+
 // Against the installed GSD core when it is the tested version (skipped elsewhere): the position state-sync
 // writes survives the begin-phase call every execute-phase run starts with, and undoes planned-phase's flip.
 const core = gsdCoreDir(null);

@@ -1,5 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { buildRig, claudeHome } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
 import { adoptRound, openBuild, runStep } from '../lib/build.mjs';
@@ -48,6 +50,7 @@ function every(t, fn) {
 }
 const answer = (root, id, option) => answerQuestion({ root, phase: '5', id, option, by: 'pane', laneRunning: true });
 const openCard = (root) => readQuestions(root, '5').find((q) => q.state === 'open');
+const read = (r, rel) => fs.readFileSync(path.join(r.root, ...rel.split('/')), 'utf8');
 const merges = (r) => Number(r.git('rev-list', '--merges', '--count', 'HEAD'));
 
 test('slices run in parallel and an owner question holds only its dependents', async (t) => {
@@ -215,6 +218,40 @@ test('a failed builder gets one fresh try, then the owner', async (t) => {
   assert.equal(await runStep(r2.ctx, 'build'), 'done');
   assert.equal(r2.ctx.state.slices['05-01'].state, 'merged');
   assert.equal(r2.a.acts().filter((x) => x.role === 'builder').length, 3);
+});
+
+test('a builder blocked for a file no unmerged slice lists: the slice takes it and is built again, once (B5 A/B)', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b') };
+  const shared = { ...files('a'), 'src/shared.js': 'module.exports = 2;\n' };
+  const r = await loopRig(t, { plans, slices: { '05-01': { files: shared, blocked: 'src/shared.js' }, '05-02': { files: files('b') } } });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  const s = r.ctx.state.slices['05-01'];
+  assert.equal(s.state, 'merged');
+  assert.deepEqual(s.widened, ['src/shared.js']);
+  assert.match(read(r, `${REL}/05-01-PLAN.md`), /^files_modified: \[src\/a\.js, test\/a\.test\.js, src\/shared\.js\]$/m);
+  assert.ok(r.git('log', '--format=%s').split('\n').includes('docs(phase-5): slice 05-01 takes src/shared.js'));
+  const builds = r.f.calls().filter((c) => c.stdin.includes('05-01-PLAN.md') && c.stdin.includes('You may create, change or delete only:'));
+  assert.equal(builds.length, 2);
+  assert.ok(!builds[0].stdin.includes('src/shared.js') && builds[1].stdin.includes('src/shared.js'));
+  assert.deepEqual(readQuestions(r.root, '5'), []);
+  assert.equal(read(r, 'src/shared.js'), 'module.exports = 2;\n');
+});
+
+test('a builder blocked for a file another unmerged slice lists, or GSD\'s own: the plan stays; one retry, then the owner', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { wave: 2, deps: ['05-01'] }) };
+  for (const needed of ['src/b.js', '.planning/STATE.md']) {
+    const r = await loopRig(t, { plans, slices: { '05-01': { files: files('a'), blocked: needed, blockedTimes: 2 }, '05-02': { files: files('b') } } });
+    every(t, () => {
+      const q = openCard(r.root);
+      if (!q) return false;
+      answer(r.root, q.id, 2);
+      return true;
+    });
+    assert.equal(await runStep(r.ctx, 'build'), 'stopped', needed);
+    assert.equal(r.ctx.state.slices['05-01'].widened, undefined, needed);
+    assert.equal(read(r, `${REL}/05-01-PLAN.md`), plans['05-01'], needed);
+    assert.equal(r.a.acts().filter((x) => x.role === 'builder' && x.plan === '05-01').length, 2, needed);
+  }
 });
 
 test('a slice without its SUMMARY is told once in the same session', async (t) => {

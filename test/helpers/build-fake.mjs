@@ -151,6 +151,14 @@ function actMain({ argv, stdin, cwd, resume }) {
     if (wait) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
     if (cfg.ask && !resume) return answer({ result: cfg.ask });
     if (n <= times(cfg.fail)) return answer({ result: 'failed', isError: true, exitCode: 1 });
+    // blocked: the builder stops for a file outside its list (B3's blocked SUMMARY), the first blockedTimes calls
+    if (cfg.blocked && n <= (cfg.blockedTimes || 1)) {
+      const rel = who.summaryPath || `${script.phaseDir || '.planning/phases/05-demo'}/${who.plan}-SUMMARY.md`;
+      const text = summaryText({ phaseSlug: path.posix.basename(path.posix.dirname(rel)), plan: who.plan, status: 'blocked', check: 'FAILED' });
+      write(rel, text.replace('## Task Commits', `Blocked: needs \`${cfg.blocked}\` because the slice cannot pass without it\n\n## Task Commits`));
+      commit([rel], `docs(${who.plan}): blocked`);
+      return answer({ result: `slice ${who.plan} blocked` });
+    }
     commit(writeAll(cfg.files), `feat(${who.plan}): build`);
     writeAll(cfg.extra);
     if (n > times(cfg.noSummary)) {

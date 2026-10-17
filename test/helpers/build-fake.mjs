@@ -110,7 +110,10 @@ function actMain({ argv, stdin, cwd, resume }) {
   const n = who.role === 'builder' ? (st.calls[who.plan] = (st.calls[who.plan] || 0) + 1) : 0;
   fs.writeFileSync(stateFile, JSON.stringify(st));
   fs.appendFileSync(path.join(dir, 'acts.jsonl'), `${JSON.stringify({ role: who.role, plan: who.plan, resume: resume || null, at: new Date().toISOString() })}\n`);
-  const answer = (o = {}) => ({ ...(resume ? {} : { sessionId: id }), result: 'done', ...o });
+  const answer = (o = {}) => {
+    const queued = Array.isArray(script.results) && script.results.length ? shift('results') : undefined;
+    return { ...(resume ? {} : { sessionId: id }), result: 'done', ...o, ...(queued !== undefined ? { result: queued } : {}) };
+  };
   const times = (v) => (v === true ? 1 : Number(v) || 0);
   const role = who.role;
   if (role === 'slicer') {
@@ -168,7 +171,8 @@ function actMain({ argv, stdin, cwd, resume }) {
 //   noSummary (the first n calls write no SUMMARY), extra { rel: text } written, never staged } }; summaries { <id>:
 //   text } (else summaryText); fixes [{ files, message, result }]; reviews / verifications [{ path, text }]; audits
 //   [text]; research { path, text }; context { path, text } (committed); uat (text); resolve { rel: text } (git added);
-//   phaseDir (when the prompt names no SUMMARY path).
+//   phaseDir (when the prompt names no SUMMARY path); results [text] (each call, of any role, takes the next one as
+//   its result after acting).
 // -> { act, acts(), set(patch) }
 export function buildAct(dir, script = {}) {
   fs.mkdirSync(dir, { recursive: true });
@@ -190,6 +194,41 @@ export function buildAct(dir, script = {}) {
       fs.writeFileSync(file, JSON.stringify({ ...now, ...patch }, null, 2));
     },
   };
+}
+
+// process.env.CLAUDE_CONFIG_DIR set to a fresh directory for the test file (turbo's home: session settings, slots;
+// the fake claude's transcripts), restored by the returned function. -> { home, restore }
+export function claudeHome() {
+  const saved = process.env.CLAUDE_CONFIG_DIR;
+  const home = tmpDir('claude-home');
+  process.env.CLAUDE_CONFIG_DIR = home;
+  return {
+    home,
+    restore() {
+      if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = saved;
+    },
+  };
+}
+
+// A build project, a scripted act and the fake claude running it, with the build deps that use them.
+// -> { root, phaseDir, rel, git, write, commit, a, f, deps, lines (what ctx.log wrote) }
+export async function buildRig({ project = {}, script = {}, deps = {} } = {}) {
+  const { runSession, resumeSession } = await import('../../lib/headless.mjs');
+  const { fakeClaude } = await import('./fake-claude.mjs');
+  const p = buildProject(project);
+  const dir = tmpDir('act');
+  const a = buildAct(dir, script);
+  const f = fakeClaude(dir, { act: a.act });
+  const lines = [];
+  const all = {
+    runSession: (o) => runSession(o, { bin: f.bin, pollMs: 100 }),
+    resumeSession: (id, text, o) => resumeSession(id, text, o, { bin: f.bin, pollMs: 100 }),
+    pollMs: 20,
+    log: (l) => lines.push(l),
+    ...deps,
+  };
+  return { ...p, a, f, deps: all, lines };
 }
 
 // <dir>/bin with a claude that runs <dir>/fake-claude.cjs (fakeClaude's script): claude.cmd as an npm shim (resolveBin

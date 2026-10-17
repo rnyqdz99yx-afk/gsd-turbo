@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { SLICE_MAX_BYTES, SLICE_MAX_TASKS, LINT_KINDS, gsdVerdict, lintSlices } from '../lib/slice-lint.mjs';
+import { SLICE_MAX_BYTES, SLICE_MAX_TASKS, LINT_KINDS, gsdVerdict, lintSlices, formatProblems } from '../lib/slice-lint.mjs';
 import { tmpDir } from './helpers/tmp.mjs';
 import { slicePhase, compactPlan, writePlan, fakeLintGsd, DEMO_INFO } from './helpers/slices.mjs';
 
@@ -112,4 +112,55 @@ test('gsdVerdict: exit 0 and 1 are verdicts, any other exit is not', () => {
   assert.deepEqual(run({ STUB_EXIT: '1' }), { code: 1, json: { argv } });
   assert.equal(run({ STUB_EXIT: '69' }).code, 69);
   assert.deepEqual(run({ STUB_SILENT: '1' }), { code: 0, json: null });
+});
+
+test('every phase requirement is in some slice\'s requirements', () => {
+  const r = lint(phase({ p2: { reqs: ['DEMO-01'] } })).r;
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.problems, [{ plan: null, kind: 'coverage', detail: "DEMO-02 is in no slice's requirements" }]);
+  const root = phase({ p2: { reqs: ['DEMO-01'] } });
+  const file = path.join(root, '.planning', 'phases', '05-demo', '05-02-PLAN.md');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('requirements: [DEMO-01]', 'requirements:\n  - DEMO-02'));
+  assert.deepEqual(lint(root).r.problems, [], 'a block list counts');
+});
+
+test('decisions come from GSD\'s decision-coverage gate', () => {
+  const root = phase();
+  const uncovered = { passed: false, skipped: false, total: 3, covered: 2, uncovered: [{ id: 'D-03', text: 'logs nothing', category: '' }] };
+  assert.deepEqual(lint(root, { decision: uncovered }).r.problems, [{ plan: null, kind: 'decisions', detail: 'D-03 (logs nothing) is cited by no slice' }]);
+  const unparsed = { passed: false, reason: 'could-not-parse', message: 'Decision coverage gate: could not parse decisions' };
+  assert.deepEqual(lint(root, { decision: unparsed }).r.problems, [{ plan: null, kind: 'decisions', detail: 'Decision coverage gate: could not parse decisions' }]);
+  assert.deepEqual(lint(root, { decision: { passed: true, skipped: true } }).r.problems, []);
+  assert.deepEqual(lint(root, { decision: { passed: false, skipped: true, reason: 'gate disabled' } }).r.problems, [], 'GSD skipped the gate');
+  const { r, calls } = lint(phase({ context: false }));
+  assert.equal(r.ok, true);
+  assert.ok(!calls.some((c) => c[0] === 'check'), 'no CONTEXT.md, no decision check');
+});
+
+test('depends_on that names no slice, and cycles', () => {
+  assert.deepEqual(lint(phase({ p2: { deps: ['05-09'] } })).r.problems, [{ plan: '05-02', kind: 'depends', detail: 'depends_on names 05-09, no slice of phase 5' }]);
+  assert.deepEqual(lint(phase({ p1: { deps: ['05-01'] } })).r.problems, [{ plan: '05-01', kind: 'depends', detail: 'depends_on names the slice itself' }]);
+  const r = lint(phase({ p1: { deps: ['05-02'] } })).r;
+  assert.deepEqual(r, { ok: false, problems: [{ plan: null, kind: 'cycle', detail: 'depends_on cycle among: 05-01, 05-02' }], edges: [] });
+});
+
+test('shared files become edges, not problems', () => {
+  const root = phase();
+  writePlan(root, '05-03', compactPlan({ id: '05-03', files: ['src/a.js', 'test/c.test.js'] }));
+  const r = lint(root).r;
+  assert.equal(r.ok, true, JSON.stringify(r.problems));
+  assert.ok(r.edges.some((e) => e.from === '05-01' && e.to === '05-03' && e.kind === 'files' && e.why === 'src/a.js'), JSON.stringify(r.edges));
+});
+
+test('problems come in order: per slice, then depends_on, coverage, decisions, cycle', () => {
+  const root = phase({ p1: { tasks: 0 }, p2: { deps: ['05-09'], reqs: ['DEMO-01'] } });
+  const decision = { passed: false, skipped: false, total: 3, covered: 2, uncovered: [{ id: 'D-03', text: 'logs nothing', category: '' }] };
+  assert.deepEqual(lint(root, { decision }).r.problems.map((p) => p.kind), ['tasks', 'depends', 'coverage', 'decisions']);
+});
+
+test('formatProblems', () => {
+  assert.equal(formatProblems([
+    { plan: '05-01', kind: 'size', detail: '9000 bytes, more than 8192' },
+    { plan: null, kind: 'coverage', detail: "DEMO-02 is in no slice's requirements" },
+  ]), "The code check of your slice plans found these problems. Fix exactly these in the plan files, change nothing else, and end with your one-line-per-plan list again:\n- 05-01 size: 9000 bytes, more than 8192\n- phase coverage: DEMO-02 is in no slice's requirements\n");
 });

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { writeBuildPhase4 } from './fixtures/cost.mjs';
-import { GAP_CAP_MS, IEU_WEIGHTS, ieuOf, phaseCost, recordSessionUsage } from '../lib/cost.mjs';
+import { GAP_CAP_MS, IEU_WEIGHTS, eachLine, ieuOf, laneJobIds, phaseCost, recordSessionUsage, turboStepOf } from '../lib/cost.mjs';
 
 const U = { input_tokens: 100, cache_creation_input_tokens: 1000, cache_read_input_tokens: 0, output_tokens: 50 };
 
@@ -68,4 +68,35 @@ test('phaseCost of a build phase: rows by step and role, wall clock as the union
   assert.equal(cost.fixRounds, 1);
   assert.deepEqual(cost.sources, { lane: 0, build: 4 });
   assert.equal(cost.phase, '4');
+});
+
+test('eachLine reads whole lines across chunk boundaries, multi-byte characters included', () => {
+  const file = path.join(tmpDir('cost'), 'lines.jsonl');
+  fs.writeFileSync(file, Buffer.from('a\n{"x":"≈é"}\r\n\nlast', 'utf8'));
+  const lines = [];
+  eachLine(file, (l) => lines.push(l), { chunk: 2 });
+  assert.deepEqual(lines, ['a', '{"x":"≈é"}', 'last']);
+});
+
+test('turboStepOf reads the last step phase-step printed', () => {
+  assert.equal(turboStepOf('phase 3: next plan (done: freshness, discuss)'), 'plan');
+  assert.equal(turboStepOf('phase 3: prep next discuss'), 'discuss');
+  assert.equal(turboStepOf('phase 3: next execute\nphase 3: next restore'), 'restore');
+  assert.equal(turboStepOf('phase 3: next none (done: close)'), null);
+  assert.equal(turboStepOf('attempt fix 2'), null);
+});
+
+test('laneJobIds takes the phase\'s own launches and adoptions and its prep lane, in log order', () => {
+  const text = [
+    'launch phase 3 session 11111111',
+    'launch phase 30 session 30303030',
+    'launch phase 3.1 session 31313131',
+    'launch lane prep-3 session 33333333',
+    'adopt phase 03 session 11111111',
+    'launch phase 3 session 44444444 (resume)',
+    'launch lane annotate session 55555555',
+    'wake phase 3: woke session 66666666',
+  ].map((l, i) => `2026-10-17T10:0${i}:00.000Z ${l}`).join('\n');
+  assert.deepEqual(laneJobIds(text, '3'), ['11111111', '33333333', '44444444']);
+  assert.deepEqual(laneJobIds(text, '03'), ['11111111', '33333333', '44444444']);
 });

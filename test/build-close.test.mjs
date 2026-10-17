@@ -97,19 +97,36 @@ test('uat: human_needed runs turbo-uat and the uat commands in the skill\'s orde
     x.write(`${REL}/05-UAT.md`, uatFile([[1, 'the greeting shows', '[pending]'], [2, 'the owner likes it', '[pending]']]));
     x.commit('docs: v and uat');
   };
-  const script = { verifyWork: { path: `${REL}/05-VERIFICATION.md`, text: verification('passed') } };
+  const script = { uatResult: { path: `${REL}/05-UAT.md`, text: uatFile([[1, 'the greeting shows', 'pass'], [2, 'the owner likes it', 'pass']]) } };
   const r = await closeRig(t, { script, setup, turbo: { 'uat plan': json({ items: [{ test: 1 }] }), 'uat owner-request': json({ needsOwner: false, sign: [] }) } });
   assert.equal(await runStep(r.ctx, 'uat'), 'done');
   assert.deepEqual(r.turbo.args(), [['uat', 'plan', '5'], ['uat', 'stand', '5', 'cleanup'], ['uat', 'defer', '5', '--rulings'], ['uat', 'owner-request', '5', '--json'], ['uat', 'settle', '5']]);
   const calls = r.f.calls();
   assert.equal(calls[0].argv[calls[0].argv.indexOf('--agent') + 1], 'turbo-uat');
   assert.equal(calls[0].stdin, `Phase 5. Phase directory: ${REL}. Run your procedure and reply with your report.`);
-  assert.equal(calls[1].stdin, 'In this repository run Skill(skill="gsd-verify-work", args="5") and nothing else. Answer every question with its recommended option. Do not edit source files, commit or push.');
-  assert.ok(r.gsdCalls.some((a) => JSON.stringify(a) === JSON.stringify(['query', 'uat.complete-session', `${REL}/05-UAT.md`, '--message', 'test(5): complete UAT'])));
+  // B5 A/B: no gsd-verify-work session (its verify:pre and verify:post hooks gate on files the build path does not
+  // write); its own canonicalization instead: GSD's UAT predicate, then the report's status
+  assert.equal(calls.length, 1);
+  const has = (args) => r.gsdCalls.some((a) => JSON.stringify(a) === JSON.stringify(args));
+  assert.ok(has(['query', 'uat.complete-session', `${REL}/05-UAT.md`, '--message', 'test(5): complete UAT']));
+  assert.ok(has(['phase', 'uat-passed', '5', '--uat-only']));
+  assert.ok(has(['query', 'frontmatter.set', `${REL}/05-VERIFICATION.md`, '--field', 'status', '--value', 'passed']));
+  assert.match(fs.readFileSync(path.join(r.root, ...`${REL}/05-VERIFICATION.md`.split('/')), 'utf8'), /^status: passed$/m);
+  assert.equal(r.git('log', '-1', '--format=%s'), 'docs(phase-5): verification passed after UAT');
+
+  // a UAT with a row still pending is no pass: the report stays human_needed and the step fails
+  const p = await closeRig(t, { setup, turbo: { 'uat plan': json({ items: [] }), 'uat owner-request': json({ needsOwner: false, sign: [] }) } });
+  await assert.rejects(runStep(p.ctx, 'uat'), /verification human_needed after UAT/);
 
   // the owner's signature: a held sign-off card; Accept signs those rows, then the step starts again
+  const signSetup = (x) => {
+    x.write(`${REL}/05-VERIFICATION.md`, verification('human_needed'));
+    // (turbo uat sign is a recorded stub here: the rows pass as signing would leave them)
+    x.write(`${REL}/05-UAT.md`, uatFile([[1, 'the greeting shows', 'pass'], [2, 'the owner likes it', 'pass']]));
+    x.commit('docs: v and uat');
+  };
   const s = await closeRig(t, {
-    script, setup,
+    script, setup: signSetup,
     turbo: { 'uat plan': json({ items: [] }), 'uat owner-request': [json({ needsOwner: true, sign: [2], reason: 'row 2' }), json({ needsOwner: false, sign: [] })] },
   });
   const seen = answerNext(t, s.root, '5', 1);

@@ -188,7 +188,10 @@ function actMain({ argv, stdin, cwd, resume }) {
     if (script.context) commit(writeAll({ [script.context.path]: script.context.text }), 'docs(05): capture phase context');
     return answer({ result: script.discuss || 'context written' });
   }
-  if (role === 'turbo-uat') return answer({ result: script.uat || 'UAT done' });
+  if (role === 'turbo-uat') {
+    if (script.uatResult) write(script.uatResult.path, script.uatResult.text);
+    return answer({ result: script.uat || 'UAT done' });
+  }
   if (role === 'verify-work') {
     if (script.verifyWork) write(script.verifyWork.path, script.verifyWork.text);
     return answer({ result: 'verify-work done' });

@@ -155,6 +155,25 @@ if (cmd === 'config-get') {
   let m = { milestone_version: 'v1', phases: [] };
   try { m = JSON.parse(fs.readFileSync(path.join(__dirname, 'manager.json'), 'utf8')); } catch (e) { /* no phases */ }
   out(m);
+} else if (cmd === 'phase' && sub === 'uat-passed') {
+  // GSD 1.17 uat-predicate, --uat-only: passed with at least one pass and no row pending, issue, blocked or skipped
+  // without a reason (the fake reads result and reason lines only)
+  const dir = phaseDir(args[2]);
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((x) => /-UAT\.md$/.test(x)).sort(); } catch (e) { /* no directory */ }
+  const text = names.length ? fs.readFileSync(path.join(dir, names[0]), 'utf8') : '';
+  const rows = text.split(/^### /m).slice(1).map((b) => ({ n: b.split(/[.\s]/)[0], result: ((/^result:\s*\[?(\w+)/m.exec(b) || [])[1] || 'missing').toLowerCase(), reason: /^reason:/m.test(b) }));
+  const blockers = rows.filter((r) => !(r.result === 'pass' || (r.result === 'skipped' && r.reason))).map((r) => r.n);
+  out({ passed: rows.some((r) => r.result === 'pass') && !blockers.length, blockers });
+} else if (cmd === 'query' && sub === 'frontmatter.set') {
+  const file = path.resolve(root, args[2]);
+  const field = args[args.indexOf('--field') + 1];
+  const value = args[args.indexOf('--value') + 1];
+  const text = fs.readFileSync(file, 'utf8');
+  const end = text.indexOf('\n---', 3);
+  const head = text.slice(0, end).split('\n').map((l) => (l.startsWith(field + ':') ? field + ': ' + value : l)).join('\n');
+  fs.writeFileSync(file, head + text.slice(end));
+  out({ updated: true });
 } else if (cmd === 'verification' && sub === 'status') {
   const dir = path.resolve(root, args[2]);
   let names = [];

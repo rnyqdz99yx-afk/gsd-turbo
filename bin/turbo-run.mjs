@@ -49,9 +49,10 @@ import { readSupervisor } from '../lib/sup-state.mjs';
 import { recoverSupervisor } from '../lib/sup-recover.mjs';
 import { WHATIF_VALUE_FLAGS, runExecWhatif } from '../lib/exec-whatif.mjs';
 import { gitRunner } from '../lib/staleness.mjs';
+import { runCostCommand } from '../lib/cost.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|cost> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
@@ -1156,6 +1157,11 @@ async function main() {
       }
       const deps = root ? { git: gitRunner(root), home: claudeHome(), slotsBase, maxExecutors: Number(config.max_executors) || 20 } : {};
       return runExecWhatif(args, { root, out, err: (l) => process.stderr.write(`${l}\n`), deps });
+    }
+    case 'cost': {
+      // Stage 6 M (spec §7): a phase's time and tokens by step and role; --log appends its line to supervisor.log
+      if (!root) die('no .planning directory found');
+      return runCostCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`) });
     }
     case 'annotate': {
       // spec §6.2 (L3): the markup session's brief and apply

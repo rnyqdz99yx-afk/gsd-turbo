@@ -5,7 +5,7 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { writeBuildPhase4, writeLanePhase3, writeLanePhase5 } from './fixtures/cost.mjs';
 import { FORK, SESSION } from './helpers/transcripts.mjs';
-import { GAP_CAP_MS, IEU_WEIGHTS, eachLine, ieuOf, laneJobIds, laneTranscripts, phaseCost, recordSessionUsage, turboStepOf } from '../lib/cost.mjs';
+import { GAP_CAP_MS, IEU_WEIGHTS, costLine, eachLine, ieuOf, laneJobIds, laneTranscripts, phaseCost, recordSessionUsage, turboStepOf } from '../lib/cost.mjs';
 
 const U = { input_tokens: 100, cache_creation_input_tokens: 1000, cache_read_input_tokens: 0, output_tokens: 50 };
 
@@ -151,4 +151,16 @@ test('phaseCost reads the transcripts under CLAUDE_CONFIG_DIR', () => {
   const cost = phaseCost({ root, phase: '3', env: { CLAUDE_CONFIG_DIR: tmpDir('cost-other') } });
   assert.deepEqual(cost.rows, []);
   assert.equal(cost.sources.lane, 0);
+});
+
+test('costLine names path, wall clock, IEU, sessions, slices, fix rounds and each step', () => {
+  const { root, env } = laneProject();
+  writeBuildPhase4(root);
+  const lane = phaseCost({ root, phase: '3', env });
+  const build = phaseCost({ root, phase: '4', env });
+  assert.equal(costLine(lane, { path: 'lane' }), 'phase 3 cost: path lane · wall 10m16s · ≈IEU 13.4K · sessions 3 · slices 0 · fix rounds 2 · steps: turbo-phase 0m30s 1.9K, discuss 9m26s 10.5K, plan 0m20s 1.0K');
+  assert.equal(costLine(build, { path: 'build' }), 'phase 4 cost: path build · wall 17m00s · ≈IEU 139.4K · sessions 4 · slices 2 · fix rounds 1 · steps: slice 5m00s 46.0K, build 10m00s 86.0K, review 2m00s 7.4K');
+  assert.equal(costLine(phaseCost({ root, phase: '9', env }), { path: 'lane' }), 'phase 9 cost: path lane · wall 0m00s · ≈IEU 0 · sessions 0 · slices 0 · fix rounds 0');
+  assert.match(costLine(build), /^phase 4 cost: path build · /);
+  assert.match(costLine(lane), /^phase 3 cost: path lane · /);
 });

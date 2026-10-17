@@ -136,6 +136,10 @@ test('uat: human_needed runs turbo-uat and the uat commands in the skill\'s orde
   assert.equal(u.ctx.state.gapRounds, 1);
   const slicer = u.f.calls().find((c) => c.stdin.startsWith('You are the slicer'));
   assert.ok(slicer.stdin.includes(`${REL}/05-UAT.md`));
+  // B5: after the slicer read them, the issue rows go back to pending, so the next UAT step re-tests them
+  const uatText = fs.readFileSync(path.join(u.root, ...`${REL}/05-UAT.md`.split('/')), 'utf8');
+  assert.match(uatText, /result: \[pending\]\r?\nretest: "gap round 1: was an issue/);
+  assert.ok(u.git('log', '--format=%s').split(/\r?\n/).includes('test(phase-5): UAT issues back to pending for the re-test after gap round 1'));
 });
 
 test('uat at the gap-round limit: an issue asks the owner; Try again is one more gap round (B5 A/B: the same UAT again and again)', async (t) => {

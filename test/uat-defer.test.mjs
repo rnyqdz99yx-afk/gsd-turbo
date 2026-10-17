@@ -173,3 +173,24 @@ test('ownerRequest: skipped or blocked rows were not tested: the owner confirms 
   assert.deepEqual(mixed.confirm, [6, 7, 8, 9, 11]);
   assert.match(mixed.reason, /item\(s\) need your sign-off; see f; items 6, 7, 8, 9, 11 were not tested/);
 });
+
+test('retestRows: issue rows go back to pending for the re-test after a gap round, the issue kept in one retest line (B5 A/B)', async () => {
+  const { retestRows } = await import('../lib/uat.mjs');
+  const ISSUES = [
+    '### 12. Retry of a failed GIF', 'expected: the retry downloads again', 'result: issue', 'reported: "the retry reuses the dead URL"', 'severity: minor',
+    'source: turbo-uat', 'class: A', 'head: 0123456', '',
+    '### 13. Passed already', 'expected: z', 'result: pass', 'source: turbo-uat', 'class: A', '',
+  ].join('\n');
+  const before = UAT.replace('## Summary', `${ISSUES}\n## Summary`);
+  const r = retestRows(before, { round: 2, now: NOW });
+  assert.deepEqual(r.retest, [12]);
+  const t = rowOf(r.text, 12);
+  assert.equal(t.result, 'pending');
+  assert.equal(t.fields.reported, undefined);
+  assert.equal(t.fields.severity, undefined);
+  assert.equal(String(t.fields.retest).replace(/^"|"$/g, ''), 'gap round 2: was an issue: the retry reuses the dead URL');
+  assert.equal(rowOf(r.text, 13).result, 'pass');
+  assert.equal(t.expected, 'the retry downloads again');
+  // nothing to re-test: the text as it was
+  assert.deepEqual(retestRows(r.text, { round: 3, now: NOW }), { text: r.text, retest: [] });
+});

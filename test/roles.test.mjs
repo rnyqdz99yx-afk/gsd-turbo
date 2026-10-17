@@ -51,10 +51,25 @@ function slicerCtx(over = {}) {
   };
 }
 
+function fixerCtx(over = {}) {
+  const root = slicePhase({ slug: SLUG });
+  return {
+    root,
+    phase: '5',
+    contextPath: path.join(phaseDir(root), '05-CONTEXT.md'),
+    findingsPath: path.join(phaseDir(root), '05-REVIEW.md'),
+    diffRange: '1a2b3c4d5e6f..9f8e7d6c5b4a',
+    lang: 'ru',
+    preanswers: PRE,
+    ...over,
+  };
+}
+
 // role -> a ctx builder; every role prompt carries the OWNER QUESTION block
 const CASES = {
   builder: (over) => builderCtx(over),
   slicer: (over) => slicerCtx(over),
+  fixer: (over) => fixerCtx(over),
 };
 
 test('ROLES names the three build-path roles', () => {
@@ -154,6 +169,40 @@ test('slicer prompt carries the slicing rules the spec fixes', () => {
   assert.ok(!p.includes('commit the work that is done'), 'the slicer is never told to commit');
   const bare = rolePrompt('slicer', slicerCtx({ researchPath: undefined }));
   assert.ok(bare.includes('code insights.\n- The code the phase touches'), 'no gap in the Read list without research');
+});
+
+test('fixer prompt: review findings, the diff in question, within 6144 bytes', () => {
+  const p = rolePrompt('fixer', fixerCtx());
+  assert.ok(Buffer.byteLength(p) <= 6144, `${Buffer.byteLength(p)} bytes`);
+  for (const s of [
+    `.planning/phases/05-${SLUG}/05-REVIEW.md is a GSD code review. Fix every Critical (CR-, BL-) and Warning (WR-) finding in it; leave Info (IN-) findings alone.`,
+    'The changes in question: git diff 1a2b3c4d5e6f..9f8e7d6c5b4a. Leave code outside them alone unless a fix needs it.',
+    '`fix(05): <finding id> <what>`',
+    `Read .planning/phases/05-${SLUG}/05-CONTEXT.md only for the decisions a fix touches.`,
+    'Before you ask, commit the work that is done.',
+  ]) assert.ok(p.includes(s), s);
+  for (const s of ['{{', '\\']) assert.ok(!p.includes(s), s);
+});
+
+test('fixer prompt: a security audit, failing tests, named findings', () => {
+  const sec = rolePrompt('fixer', fixerCtx({ findingsPath: '.planning/phases/05-x/05-SECURITY.md' }));
+  assert.ok(sec.includes('.planning/phases/05-x/05-SECURITY.md is a GSD security audit. Fix every threat in its Threat Register whose Status is open, Severity critical or high, and Disposition mitigate.'), sec);
+  const tests = rolePrompt('fixer', fixerCtx({ findingsPath: '.planning/turbo/run/build-tests-05.log' }));
+  assert.ok(tests.includes('.planning/turbo/run/build-tests-05.log is the output of tests that failed after a merge. Make them pass by fixing the code; change a test only when it is plainly wrong about the behaviour the decisions or the plan set, and say so in your last message.'), tests);
+  const named = rolePrompt('fixer', fixerCtx({ findingIds: ['CR-03', 'WR-01'], diffRange: undefined }));
+  assert.ok(named.includes(`.planning/phases/05-${SLUG}/05-REVIEW.md is a GSD code review. Fix exactly these: CR-03, WR-01; leave everything else in it alone.`), named);
+  assert.ok(!named.includes('git diff'));
+  assert.ok(!named.includes('Fix every Critical'));
+});
+
+test('fixer prompt never closes a critical or high finding by documentation', () => {
+  const p = rolePrompt('fixer', fixerCtx());
+  for (const re of [
+    /never by editing the report, a comment or a document, or by calling it accepted/,
+    /No refactors, renames, reformatting, cleanups or new features/,
+    /Change nothing under \.planning\//,
+  ]) assert.match(p, re);
+  assert.throws(() => rolePrompt('fixer', fixerCtx({ findingsPath: undefined })), /fixer: findingsPath is required/);
 });
 
 test('every role prompt carries the OWNER QUESTION block exactly', () => {

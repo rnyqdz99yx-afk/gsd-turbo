@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GAP_PLAN_RULE, HUMAN_ACTION_RULE, RELEASE_RULE, TMP_RULE_LEAD, laneSystemPrompt, laneUserPrompt, lockRule, tmpRule } from '../lib/lane-prompt.mjs';
+import { GAP_PLAN_RULE, HUMAN_ACTION_RULE, LEAN_CHECKER_RULE, LEAN_EXECUTOR_REFS, LEAN_PLANNER_RULE, LEAN_RESEARCH_RULE, RELEASE_RULE, TMP_RULE_LEAD, laneSystemPrompt, laneUserPrompt, lockRule, tmpRule } from '../lib/lane-prompt.mjs';
 
 test('system prompt carries rules, no double quotes or percent signs', () => {
   const s = laneSystemPrompt({ phase: '3', turboRun: 'node /h/.claude/turbo/bin/turbo-run.mjs', contextPct: 55, autonomy: 'standard' });
@@ -204,4 +204,27 @@ test('slot lanes get the lock rule for one-off actions on shared resources; chec
   const base = { phase: '34', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode: 'full' };
   assert.ok(laneSystemPrompt({ ...base, slots: true }).endsWith(rule));
   assert.ok(!laneSystemPrompt(base).includes('lock <gate>'));
+});
+
+// Stage 6 L2 (spec §5.2, §5.4): the lean inserts and the executor reference diet.
+test('lean: rule 5 gains the executor reference diet; lean off is the stage-5 prompt', () => {
+  const safe = { phase: '3', turboRun: 'node /t/turbo-run.mjs', contextPct: 55, autonomy: 'standard' };
+  for (const v of [safe, { ...safe, mode: 'full', tmpDir: '/tmp/lane-3', pushMode: 'after-wave', slots: true }]) {
+    const off = laneSystemPrompt(v);
+    const on = laneSystemPrompt({ ...v, lean: true });
+    const rule5 = off.split('\n').find((l) => l.startsWith('5. '));
+    assert.equal(on, off.replace(rule5, `${rule5} Lean mode: ${LEAN_EXECUTOR_REFS}`));
+    assert.equal(laneSystemPrompt({ ...v, lean: false }), off);
+    assert.ok(!on.includes('"') && !on.includes('%'));
+  }
+});
+
+test('lean inserts: plain argv values with the spec\'s numbers', () => {
+  for (const rule of [LEAN_RESEARCH_RULE, LEAN_PLANNER_RULE, LEAN_CHECKER_RULE, LEAN_EXECUTOR_REFS]) {
+    assert.ok(!/["%<>]/.test(rule) && !rule.startsWith('-'), rule);
+  }
+  for (const n of ['25 KB', '10 lines', 'phase, plan, type, wave, depends_on, files_modified, autonomous', 'requirements', 'must_haves', 'key_links', 'files, action, verify and done', 'threat_model', 'Pitfall']) assert.ok(LEAN_PLANNER_RULE.includes(n), n);
+  for (const n of ['research_resolution', 'scope_sanity', 'severity info']) assert.ok(LEAN_CHECKER_RULE.includes(n), n);
+  for (const n of ['Existing Code Insights', 'do not scan the code base again', 'Pitfall', 'spike']) assert.ok(LEAN_RESEARCH_RULE.includes(n), n);
+  for (const n of ['executor-examples.md', 'checkpoints.md', 'autonomous: false', 'tdd.md', 'worktree-path-safety.md']) assert.ok(LEAN_EXECUTOR_REFS.includes(n), n);
 });

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpGitRepo } from './helpers/tmp.mjs';
 import { draftText, outline, planText } from './helpers/drafts.mjs';
-import { draftFile, draftsGuard, draftsPlan, finishReconcile, markDrafted, predecessors, promote, readDrafts, replan, startDraft, startReconcile, stripAssumptions, writeDrafts } from '../lib/plan-drafts.mjs';
+import { DRAFTING_STALE_MS, draftFile, draftsGuard, draftsPlan, finishReconcile, markDrafted, predecessors, promote, readDrafts, replan, startDraft, startReconcile, stripAssumptions, writeDrafts } from '../lib/plan-drafts.mjs';
 import { STEPS, completeStep } from '../lib/phase-progress.mjs';
 import { planSetCheck, runPhaseCommand } from '../lib/cli-phase.mjs';
 
@@ -267,6 +267,21 @@ test('second review C1: a plan GSD\'s revision loop splits off (scope_sanity) pa
   r.commitPlan('33-03', planText('33-03', 2, ['33-01']));
   assert.deepEqual(startReconcile(r.root, '33', '33-04', { now: NOW }), { gsd: 'the draft agent never returned' });
   assert.equal(fs.existsSync(path.join(r.dir, '33-04-lost-PLAN.md')), false);
+});
+
+test('final review I-1: re-drafting after a lost agent (>90 min) removes the misnamed plan file it left before taking the new base', () => {
+  const p = project();
+  draftsPlan(p.root, '33', { config: CFG, now: NOW });
+  assert.ok(startDraft(p.root, '33', '33-04', { config: CFG, now: NOW }).paragraph);
+  // the lost agent's partial draft and a misnamed plan it committed into the phase directory
+  p.writeDraft('33-04', '---\nwave: 3\n');
+  p.commitPlan('33-04-auth', planText('33-04', 3, ['33-03']));
+  const later = new Date(Math.max(Date.now(), NOW.getTime()) + DRAFTING_STALE_MS + 60000);
+  assert.ok(startDraft(p.root, '33', '33-04', { config: CFG, now: later }).paragraph);
+  assert.equal(fs.existsSync(p.planFile('33-04-auth')), false);
+  assert.match(p.git('log', '-1', '--format=%s'), /^docs\(33\): drop 33-04-auth-PLAN\.md: a draft agent wrote it/);
+  assert.equal(fs.existsSync(draftFile(p.root, '33', '33-04')), false);
+  assert.ok(!readDrafts(p.root, '33').plans['33-04'].base.plans.includes('33-04-auth-PLAN.md'));
 });
 
 test('review I-a: a resumed session with drafts now off hands every draft not promoted to GSD; GSD\'s plans then pass the guard', async () => {

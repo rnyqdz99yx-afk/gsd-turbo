@@ -447,7 +447,7 @@ drafts** меняет только §8.5.2 GSD: где GSD сделал бы о�
 никакой PLAN-файл фазы под любым именем не может равняться записанному блобу `drafted`/`reconciled` (в любом
 состоянии записи). PLAN-файл вне строк outline гарантия не трогает: цикл ревизий GSD может разбить план на новые
 (`scope_sanity` в planner-revision.md); такие файлы агентов turbo удаляет, пока окно агента известно (`--drafted`,
-`--reconciled`, `--reconcile` за потерянного агента, `--replan` записи `drafting`/`reconciling`). `--plan` с
+`--reconciled`, `--reconcile` за потерянного агента, повторный черновик потерянного агента (`--drafting`), `--replan` записи `drafting`/`reconciling`). `--plan` с
 ответом `drafts off` в возобновлённой сессии отдаёт GSD все неперенесённые черновики этого outline (`replanned`).
 Иначе: `plan <id> came from a draft without a passed reconcile: delete it and plan it again (turbo-run plan-drafts N
 --replan <id>)`. `--replan` сам удаляет такой файл (с коммитом, если он закоммичен); после удаления и коммита GSD

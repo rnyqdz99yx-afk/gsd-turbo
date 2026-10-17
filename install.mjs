@@ -21,7 +21,7 @@ function walk(dir) {
 
 function plan(repoDir, { mod = false } = {}) {
   const pairs = [];
-  for (const sub of ['bin', 'lib']) for (const f of walk(path.join(repoDir, sub))) pairs.push([f, path.join('turbo', path.relative(repoDir, f))]);
+  for (const sub of ['bin', 'lib', 'roles']) for (const f of walk(path.join(repoDir, sub))) pairs.push([f, path.join('turbo', path.relative(repoDir, f))]);
   pairs.push([path.join(repoDir, 'package.json'), path.join('turbo', 'package.json')]);
   for (const d of fs.existsSync(path.join(repoDir, 'skills')) ? fs.readdirSync(path.join(repoDir, 'skills')) : []) {
     if (!d.startsWith('turbo-')) continue;

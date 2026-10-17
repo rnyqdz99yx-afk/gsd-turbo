@@ -1,15 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-// A stub gsd-tools.cjs at the project-local install path; answers the verbs turbo uses (G15).
-export function fakeGsdCore(root, { hooks = {}, goal = 'Ship the demo feature', version = '1.16.0' } = {}) {
+// A stub gsd-tools.cjs at the project-local install path; answers the verbs turbo uses (G15). manager: what
+// init manager prints (setManager changes it later); verification status reads the status: line of the phase
+// directory's *-VERIFICATION.md frontmatter (missing without one).
+export function fakeGsdCore(root, { hooks = {}, goal = 'Ship the demo feature', version = '1.16.0', manager = null } = {}) {
   const core = path.join(root, '.claude', 'gsd-core');
   fs.mkdirSync(path.join(core, 'bin'), { recursive: true });
   fs.writeFileSync(path.join(core, 'VERSION'), `${version}\n`);
+  if (manager) setManager(core, manager);
   // function replacers: "$&" and the like inside the JSON are never expanded
   fs.writeFileSync(path.join(core, 'bin', 'gsd-tools.cjs'), STUB.replace('__HOOKS__', () => JSON.stringify(hooks)).replace('__GOAL__', () => JSON.stringify(goal)));
   return core;
 }
+
+export const setManager = (core, manager) => fs.writeFileSync(path.join(core, 'bin', 'manager.json'), JSON.stringify(manager));
 
 // No template placeholders or backticks inside: plain CommonJS.
 const STUB = String.raw`'use strict';
@@ -96,6 +101,16 @@ if (cmd === 'config-get') {
   out({ frontend: false, hasUiSpec: false, block: false });
 } else if (cmd === 'roadmap') {
   out(GOAL);
+} else if (cmd === 'init' && sub === 'manager') {
+  let m = { milestone_version: 'v1', phases: [] };
+  try { m = JSON.parse(fs.readFileSync(path.join(__dirname, 'manager.json'), 'utf8')); } catch (e) { /* no phases */ }
+  out(m);
+} else if (cmd === 'verification' && sub === 'status') {
+  const dir = path.resolve(root, args[2]);
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((f) => /-VERIFICATION\.md$/.test(f)).sort(); } catch (e) { /* no directory */ }
+  const fm = names.length ? frontmatter(fs.readFileSync(path.join(dir, names[0]), 'utf8')) : {};
+  out({ status: fm.status || 'missing' });
 } else {
   process.stderr.write('fake gsd-tools: unsupported ' + args.join(' ') + '\n');
   process.exit(2);

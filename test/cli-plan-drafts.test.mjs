@@ -31,9 +31,12 @@ const commitPlan = (root, dir, id, text) => {
   gitIn(root, 'add', '-A');
   gitIn(root, 'commit', '-q', '-m', `docs(33): plan ${id} (chunked)`);
 };
+// Plan drafts are off by default until their live check: these tests turn them on in the project's config.
+const draftsOn = (root) => fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ plan_drafts: { enabled: true } }));
 
 test('turbo-run plan-drafts: each action\'s first line and exit code', () => {
   const root = controlProject();
+  draftsOn(root);
   const dir = phaseIn(root);
   let r = cli(root, 'plan-drafts', '33', '--plan');
   assert.deepEqual([r.code, r.first], [0, 'drafts on: 3 waves, 3 plans · draft now: 33-02, 33-03 · left to GSD: none']);
@@ -104,6 +107,7 @@ test('in a slot the record lands in the slot\'s run directory and the measuremen
   gitIn(slot, 'config', 'user.name', 'test');
   fs.mkdirSync(path.join(slot, '.planning', 'turbo'), { recursive: true });
   fs.writeFileSync(path.join(slot, '.planning', 'turbo', '.gitignore'), 'run/\nlogs/\nlocks/\n');
+  draftsOn(slot);
   const dir = phaseIn(slot);
   assert.match(cli(slot, 'plan-drafts', '33', '--plan').first, /^drafts on: /);
   assert.ok(fs.existsSync(path.join(slot, '.planning', 'turbo', 'run', 'drafts-p33', 'drafts.json')));

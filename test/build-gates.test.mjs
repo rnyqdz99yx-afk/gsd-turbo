@@ -192,3 +192,19 @@ test('security: by the phase\'s signal; the auditor\'s verdict becomes SECURITY.
   assert.equal(fixers(d).length, 0);
   assert.match(seenD[0].question, /security check/);
 });
+
+test('security: while GSD\'s own workflow.security_enforcement is on the audit runs whatever the signals (B5 demo: GSD\'s verify-work needs SECURITY.md)', async (t) => {
+  const enforce = (value) => (x) => {
+    x.write('.planning/config.json', `${JSON.stringify({ workflow: { security_enforcement: value } })}\n`);
+    x.commit('chore: GSD security switch');
+  };
+  const on = await gatesRig(t, { script: { audits: ['## SECURED\n\n**threats_open:** 0\n'] }, setup: enforce(true) });
+  assert.equal(needsSecurity(readPhaseInfo(on.root, '5')).yes, false);
+  assert.equal(await runStep(on.ctx, 'security'), 'done');
+  assert.equal(byAgent(on, 'gsd-security-auditor').length, 1);
+  assert.match(fs.readFileSync(path.join(on.phaseDir, '05-SECURITY.md'), 'utf8'), /^threats_open: 0$/m);
+
+  const off = await gatesRig(t, { setup: enforce(false) });
+  assert.equal(await runStep(off.ctx, 'security'), 'skipped');
+  assert.equal(byAgent(off, 'gsd-security-auditor').length, 0);
+});

@@ -29,8 +29,9 @@ const GATE = { nyquist: 'workflow.nyquist_validation', security: 'workflow.secur
 const argv = process.argv.slice(2);
 const args = [];
 let root = process.cwd();
+let raw = false;
 for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--raw') continue;
+  if (argv[i] === '--raw') { raw = true; continue; }
   if (argv[i] === '--cwd') { root = argv[++i]; continue; }
   args.push(argv[i]);
 }
@@ -122,7 +123,8 @@ if (cmd === 'config-get') {
     has_context: has('-CONTEXT.md'), has_research: has('-RESEARCH.md'), has_plans: has('-PLAN.md'),
   });
 } else if (cmd === 'query' && sub === 'state.begin-phase') {
-  out({ updated: true });
+  // GSD 1.17: --raw prints only true
+  out(raw ? 'true' : { updated: true });
 } else if (cmd === 'query' && sub === 'phase.complete') {
   const file = path.join(root, '.planning', 'ROADMAP.md');
   const n = String(Number(args[2]));

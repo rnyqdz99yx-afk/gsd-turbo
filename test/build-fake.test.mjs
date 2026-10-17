@@ -17,7 +17,8 @@ test('the fake gsd answers the build path\'s verbs', () => {
   const gsd = (...args) => runGsdJson(core, args, { cwd: p.root });
   const init = gsd('init', 'phase-op', '5');
   assert.deepEqual([init.phase_dir, init.phase_name, init.padded_phase, init.has_context], ['.planning/phases/05-demo', 'Demo Feature', '05', true]);
-  assert.equal(gsd('query', 'state.begin-phase', '--phase', '5', '--name', 'x', '--plans', '0').updated, true);
+  // GSD 1.17 answers begin-phase --raw with a bare true (no JSON), as the fake does
+  assert.throws(() => gsd('query', 'state.begin-phase', '--phase', '5', '--name', 'x', '--plans', '0'), /no JSON in output/);
   assert.equal(gsd('query', 'phase.complete', '5').completed, true);
   assert.match(fs.readFileSync(path.join(p.root, '.planning', 'ROADMAP.md'), 'utf8'), /^- \[x\] \*\*Phase 5: Demo Feature\*\*/m);
   p.write('a.txt', 'a\n');

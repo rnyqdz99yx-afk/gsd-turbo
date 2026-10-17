@@ -55,6 +55,8 @@ test('begin records the phase base and begins the phase in GSD', async (t) => {
   assert.ok(calls.some((a) => JSON.stringify(a) === JSON.stringify(['query', 'state.begin-phase', '--phase', '5', '--name', 'Demo Feature', '--plans', '0'])));
   assert.equal(ctx.state.base, git('rev-parse', 'HEAD'));
   assert.ok(lines.some((l) => / phase 5 build: warn: state-sync: /.test(l)), lines.join('\n'));
+  // B5 demo: GSD's begin-phase answers --raw with a bare true, which is no failure
+  assert.equal(lines.some((l) => /warn: state\.begin-phase/.test(l)), false, lines.join('\n'));
   assert.equal(await runStep(ctx, 'begin'), 'done');
   assert.equal(root, ctx.root);
 });

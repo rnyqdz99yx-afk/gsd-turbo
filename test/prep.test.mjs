@@ -8,12 +8,15 @@ import { writeAnswers } from '../lib/questions.mjs';
 import { readAnnotateAttempt, readJobStatus, writeAnnotateAttempt, writeJobStatus } from '../lib/run-status.mjs';
 import { roadmapFile, writeLanesFile } from '../lib/lanes-file.mjs';
 import { roadmapDigest } from '../lib/roadmap-lanes.mjs';
-import { ANNOTATE_PHASE, annotateReason, finishJob, jobName, jobPrompts, jobSystemPrompt, jobUserPrompt, pendingJobs } from '../lib/prep.mjs';
+import { ANNOTATE_PHASE, MARKUP_MIN_INDEPENDENT, annotateReason, finishJob, independentCount, jobName, jobPrompts, jobSystemPrompt, jobUserPrompt, pendingJobs } from '../lib/prep.mjs';
 import { tmpRule } from '../lib/lane-prompt.mjs';
 
 const MORE = [...PHASES, { number: '5', name: 'Ops', deps: ['4'], complete: false, closed: false }];
 const ROADMAP5 = ROADMAP.replace('## Progress', '### Phase 5: Ops\n**Goal**: Deploy it\n**Depends on**: Phase 4\n\n## Progress');
-const SLOTS = { lanes: { mode: 'slots' }, max_lanes: 3 };
+// three phases independent by Depends on (3, 4, 5): lane markup pays (Stage 6 §5.5)
+const WIDE = MORE.map((p) => (p.number === '5' ? { ...p, deps: [] } : p));
+// prep.lookahead 10: every phase is in the prep window, as before Stage 6
+const SLOTS = { lanes: { mode: 'slots' }, max_lanes: 3, prep: { lookahead: 10 } };
 
 function project({ context = [] } = {}) {
   const root = tmpDir('pending');
@@ -50,14 +53,14 @@ test('a failed or prepped prep is not queued again; checkout mode and safe mode 
 
 test('annotate after prep: only when no prep is due or running and no annotate lane runs', () => {
   const root = project({ context: ['2', '3', '4', '5'] });
-  assert.deepEqual(pendingJobs(ctx(root), MORE), [{ kind: 'annotate', phase: null }]);
-  assert.deepEqual(pendingJobs(ctx(root, { lanes: { annotate: { job: 'annotate', phase: null } } }), MORE), []);
-  assert.deepEqual(pendingJobs(ctx(root, { lanes: { 'prep-6': { job: 'prep', phase: '6' } } }), MORE), []);
+  assert.deepEqual(pendingJobs(ctx(root), WIDE), [{ kind: 'annotate', phase: null }]);
+  assert.deepEqual(pendingJobs(ctx(root, { lanes: { annotate: { job: 'annotate', phase: null } } }), WIDE), []);
+  assert.deepEqual(pendingJobs(ctx(root, { lanes: { 'prep-6': { job: 'prep', phase: '6' } } }), WIDE), []);
   writeLanesFile(root, { phases: all(['2', '3', '4', '5']), pairs: [] });
-  assert.deepEqual(pendingJobs(ctx(root), MORE), [], 'fresh markup: nothing to do');
+  assert.deepEqual(pendingJobs(ctx(root), WIDE), [], 'fresh markup: nothing to do');
   fs.writeFileSync(roadmapFile(root), ROADMAP5.replace('**Depends on**: Phase 4', '**Depends on**: Phase 2'));
   assert.equal(annotateReason(root, MORE), 'phases');
-  assert.deepEqual(pendingJobs(ctx(root), MORE), [{ kind: 'annotate', phase: null }]);
+  assert.deepEqual(pendingJobs(ctx(root), WIDE), [{ kind: 'annotate', phase: null }]);
 });
 
 test('a markup that failed on this same ROADMAP is not retried; a changed ROADMAP is', () => {
@@ -138,8 +141,8 @@ test('reconcile R7: a job key in failed (supervisor.json jobsFailed) is never qu
   const root = project({ context: ['2'] });
   assert.deepEqual(pendingJobs(ctx(root, { failed: ['prep-3', 'prep-5'] }), MORE), [{ kind: 'prep', phase: '4' }]);
   const done = project({ context: ['2', '3', '4', '5'] });
-  assert.deepEqual(pendingJobs(ctx(done), MORE), [{ kind: 'annotate', phase: null }]);
-  assert.deepEqual(pendingJobs(ctx(done, { failed: ['annotate'] }), MORE), []);
+  assert.deepEqual(pendingJobs(ctx(done), WIDE), [{ kind: 'annotate', phase: null }]);
+  assert.deepEqual(pendingJobs(ctx(done, { failed: ['annotate'] }), WIDE), []);
 });
 
 test('reconcile R6: max_prep is lib/config.mjs maxPrep against max_lanes (null: max_lanes)', () => {
@@ -192,10 +195,60 @@ test('Stage 5 D1: a phase marked low before its prep is queued for markup again 
   const entries = { ...all(['2', '3', '5']), 4: { areas: ['**'], gates: [], confidence: 'low', context: false } };
   writeLanesFile(root, { phases: entries });
   // phase 5 still needs its prep: no markup job yet
-  assert.deepEqual(pendingJobs(ctx(root), MORE), [{ kind: 'prep', phase: '5' }]);
+  assert.deepEqual(pendingJobs(ctx(root), WIDE), [{ kind: 'prep', phase: '5' }]);
   const dir = path.join(root, '.planning', 'phases', '05-p5');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, '05-CONTEXT.md'), '# ctx\n');
-  assert.deepEqual(pendingJobs(ctx(root), MORE), [{ kind: 'annotate', phase: null }]);
+  assert.deepEqual(pendingJobs(ctx(root), WIDE), [{ kind: 'annotate', phase: null }]);
   assert.equal(annotateReason(root, MORE), 'phases');
+});
+
+test('prep.lookahead (default 1): only the next phase after the running ones; a running prep fills the window', () => {
+  const root = project();
+  const cfg = { lanes: { mode: 'slots' }, max_lanes: 3 };
+  const at = (over) => pendingJobs({ root, config: cfg, lanes: {}, range: null, mode: 'full', ...over }, MORE);
+  assert.deepEqual(at({}), [{ kind: 'prep', phase: '2' }]);
+  assert.deepEqual(at({ lanes: { 'prep-2': { job: 'prep', phase: '2' } } }), []);
+  assert.deepEqual(at({ lanes: { 2: { job: 'phase', phase: '2' } } }), [{ kind: 'prep', phase: '3' }]);
+  assert.deepEqual(at({ config: { ...cfg, prep: { lookahead: 2 } } }), [{ kind: 'prep', phase: '2' }, { kind: 'prep', phase: '3' }]);
+  // a prepped or failed phase fills the window too: nothing further ahead is prepared
+  writeJobStatus(root, { kind: 'prep', phase: '2' }, 'failed', { reason: 'x' });
+  assert.deepEqual(at({}), []);
+  assert.throws(() => at({ config: { ...cfg, prep: { lookahead: 0 } } }), /invalid turbo config prep\.lookahead/);
+});
+
+test('a plan-only run prepares only the next phase: once it has its CONTEXT.md nothing more is prepared', () => {
+  const root = project({ context: ['2'] });
+  const cfg = { lanes: { mode: 'slots' }, max_lanes: 3 };
+  const at = (phases) => pendingJobs({ root, config: cfg, lanes: {}, range: null, mode: 'full' }, phases);
+  assert.deepEqual(at(MORE), []);
+  assert.deepEqual(at(WIDE), [{ kind: 'annotate', phase: null }]);
+});
+
+test('lane markup needs three independent phases; an answered card always runs', () => {
+  assert.equal(MARKUP_MIN_INDEPENDENT, 3);
+  const root = project({ context: ['2', '3', '4', '5'] });
+  writeLanesFile(root, { phases: all(['2', '3', '4', '5']), pairs: [] });
+  fs.writeFileSync(roadmapFile(root), ROADMAP5.replace('**Depends on**: Phase 4', '**Depends on**: Phase 2'));
+  assert.equal(annotateReason(root, MORE), 'phases');
+  assert.deepEqual(pendingJobs(ctx(root), MORE), []);
+  assert.deepEqual(pendingJobs(ctx(root), WIDE), [{ kind: 'annotate', phase: null }]);
+  const asked = project({ context: ['2', '3', '4', '5'] });
+  writeLanesFile(asked, { phases: all(['2', '3', '4', '5']), pairs: [], proposal: { id: 'ask-1', state: 'asked', at: 'x', relax: [{ id: 'r1', phase: '5', drop: ['4'] }] } });
+  writeAnswers(asked, ANNOTATE_PHASE, [{ id: 'ask-1', option: 1, label: 'Remove all', answer: 'Remove all', by: 'session', at: 'x' }], { warn: () => {} });
+  assert.deepEqual(pendingJobs(ctx(asked), MORE), [{ kind: 'annotate', phase: null }]);
+});
+
+test('independentCount: chains, a diamond, finished dependencies, the cap', () => {
+  const P = (number, deps = [], closed = false) => ({ number, name: 'P' + number, deps, complete: closed, closed });
+  assert.equal(independentCount(MORE), 2);
+  assert.equal(independentCount(WIDE), 3);
+  assert.equal(independentCount(['1', '2', '3', '4', '5'].map((n) => P(n))), 3);
+  assert.equal(independentCount(['1', '2', '3', '4', '5'].map((n) => P(n)), 5), 5);
+  assert.equal(independentCount([P('2'), P('3', ['2']), P('4', ['2']), P('5', ['3', '4'])]), 2);
+  // a dependency on a finished phase links nothing
+  assert.equal(independentCount([P('1', [], true), P('2', ['1']), P('3', ['1']), P('4', ['1'])]), 3);
+  // transitive: 4 waits on 2 through 3
+  assert.equal(independentCount([P('2'), P('3', ['2']), P('4', ['3'])]), 1);
+  assert.equal(independentCount([P('1', [], true)]), 0);
 });

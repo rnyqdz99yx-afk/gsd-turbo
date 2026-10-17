@@ -92,6 +92,50 @@ test('context-window: a warning when GSD\'s effective context_window differs fro
   assert.equal(check(r), undefined);
 });
 
+test('context-window: the lean split is ok with the lean line; equal values stay ok; anything else warns, with the lean hint while lean is on', () => {
+  const e = env();
+  const execWindow = (gsd) => (cmd, args) => (args.includes('config-get') ? gsd : execOk('2.1.291')(cmd, args));
+  const check = (r) => r.checks.find((c) => c.name === 'context-window');
+  const run = (gsd) => doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execWindow(gsd), claudeBin: BIN });
+  assert.deepEqual(check(run('400000\n')), { name: 'context-window', ok: true, detail: 'lean: GSD 400000 for prompt sizing, turbo 1000000 for pauses' });
+  const warned = check(run('200000'));
+  assert.equal(warned.warn, true);
+  assert.match(warned.detail, /^GSD's context_window is 200000, turbo's is 1000000/);
+  assert.ok(warned.detail.endsWith('; lean mode gives GSD 400000: turbo-run lean apply'), warned.detail);
+  assert.deepEqual(check(run('1000000')), { name: 'context-window', ok: true, detail: '1000000' });
+  // lean off: GSD 400000 is a difference like any other, without the lean hint
+  fs.mkdirSync(path.join(e.root, '.planning', 'turbo'));
+  fs.writeFileSync(path.join(e.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lean: { enabled: false } }));
+  const off = check(run('400000'));
+  assert.equal(off.warn, true);
+  assert.match(off.detail, /^GSD's context_window is 400000, turbo's is 1000000/);
+  assert.ok(!off.detail.includes('lean'), off.detail);
+});
+
+test('gsd-effort: not checked without GSD agents; a warning naming the values when they differ from lean; ok when they match; the mode stays full', () => {
+  const e = env();
+  const check = (r) => r.checks.find((c) => c.name === 'gsd-effort');
+  const run = () => doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.291'), claudeBin: BIN });
+  assert.deepEqual(check(run()), { name: 'gsd-effort', ok: true, detail: `GSD agents not found in ${path.join(e.home, 'agents')}: not checked` });
+  const agents = (planner, analyzer, researcher) => {
+    for (const [a, v] of [['gsd-planner', planner], ['gsd-assumptions-analyzer', analyzer], ['gsd-phase-researcher', researcher]]) fs.writeFileSync(path.join(e.home, 'agents', `${a}.md`), `---\nname: ${a}\neffort: ${v}\n---\n`);
+  };
+  agents('xhigh', 'xhigh', 'high');
+  let r = run();
+  assert.deepEqual(check(r), { name: 'gsd-effort', ok: true, warn: true, detail: "gsd-planner xhigh, gsd-assumptions-analyzer xhigh, gsd-phase-researcher high; lean wants high, high, medium: turbo-run lean apply (GSD's effort sync, every project on this machine)" });
+  assert.equal(r.mode, 'full');
+  agents('high', 'high', 'medium');
+  assert.deepEqual(check(run()), { name: 'gsd-effort', ok: true, detail: 'gsd-planner high, gsd-assumptions-analyzer high, gsd-phase-researcher medium (lean)' });
+  // lean off: the values, never a warning
+  agents('xhigh', 'xhigh', 'high');
+  fs.mkdirSync(path.join(e.root, '.planning', 'turbo'));
+  fs.writeFileSync(path.join(e.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lean: { enabled: false } }));
+  assert.deepEqual(check(run()), { name: 'gsd-effort', ok: true, detail: 'gsd-planner xhigh, gsd-assumptions-analyzer xhigh, gsd-phase-researcher high' });
+  // outside a project: the values only
+  r = doctor({ root: null, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.291'), claudeBin: BIN });
+  assert.deepEqual(check(r), { name: 'gsd-effort', ok: true, detail: 'gsd-planner xhigh, gsd-assumptions-analyzer xhigh, gsd-phase-researcher high' });
+});
+
 test('unsupported when claude too old', () => {
   const e = env();
   const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.100'), claudeBin: BIN });

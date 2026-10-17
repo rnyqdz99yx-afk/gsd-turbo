@@ -6,7 +6,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
 import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
-import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
+import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings, leanSettings, prepSettings, laneEffort, buildSettings } from '../lib/config.mjs';
+import { effortApply, effortOffHint, leanApply, leanBoundary, runLeanCommand } from '../lib/lean.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
 import { InitAborted, initProject } from '../lib/project-init.mjs';
 import { closedLineFor, runAdoptCommand } from '../lib/cli-adopt.mjs';
@@ -51,11 +52,11 @@ import { WHATIF_VALUE_FLAGS, runExecWhatif } from '../lib/exec-whatif.mjs';
 import { gitRunner } from '../lib/staleness.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
-const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart']);
+const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart', 'lean']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const START_USAGE = 'usage: turbo-run start [--from <phase>] [--to <phase>] | start --only <phase> | start --all';
@@ -144,6 +145,11 @@ function runtimeConfig(config) {
   };
   laneGates(c);
   maxPrep(c, maxLanes(c));
+  // Stage 6 §6.10: lean.*, prep.lookahead, lanes.effort and build.* the same way
+  leanSettings(c);
+  prepSettings(c);
+  laneEffort(c);
+  buildSettings(c);
   return c;
 }
 // stop/resume must work even when the config is broken.
@@ -404,6 +410,8 @@ async function makeCtx(root, mode = 'safe') {
       leaseHeld: () => !lostLease(root),
       // smoke F2: new entries next to the project while lanes run (lib/strays.mjs)
       strays: ({ sinceMs, seen }) => findStrays({ watch: strayWatch(root, config, { slots }), sinceMs, seen }),
+      // Stage 6 D10: lean mode at a phase's boundary, before its launch (checkout) or its slot (slots)
+      leanBoundary: (phase) => leanBoundary({ root, phase, core, log: (l) => ctx.deps.log(l), effort: () => effortApply({ root, env: process.env }) }),
     },
   };
   if (plugins) {
@@ -1043,7 +1051,8 @@ async function main() {
       if (!['en', 'ru'].includes(lang) || !['standard', 'max'].includes(autonomy)) die('init [--lang en|ru] [--autonomy standard|max]');
       // lib/project-init.mjs: the same lines and changes; where it stops, the message and exit 1
       try {
-        return initProject(root, { lang, autonomy, out });
+        // Stage 6 §5.1: lean mode's keys (no commit: init commits nothing) and GSD's agent effort
+        return initProject(root, { lang, autonomy, out, lean: (o) => leanApply({ ...o, effort: () => effortApply({ root, env: process.env }) }) });
       } catch (e) {
         if (e instanceof InitAborted) die(e.message);
         throw e;
@@ -1156,6 +1165,24 @@ async function main() {
       }
       const deps = root ? { git: gitRunner(root), home: claudeHome(), slotsBase, maxExecutors: Number(config.max_executors) || 20 } : {};
       return runExecWhatif(args, { root, out, err: (l) => process.stderr.write(`${l}\n`), deps });
+    }
+    case 'lean': {
+      // Stage 6 §5.6 (L1): lean mode's status, apply and off; apply and off are the owner's
+      if (!root) die('no .planning directory found');
+      return runLeanCommand(args, {
+        root,
+        out,
+        err: (l) => process.stderr.write(`${l}\n`),
+        deps: {
+          loadPhases: () => {
+            const core = gsdCoreDir(root);
+            if (!core) throw new Error('gsd-core not found');
+            return loadPhases(root, core).phases;
+          },
+          effort: () => effortApply({ root, env: process.env }),
+          hint: () => effortOffHint(),
+        },
+      });
     }
     case 'annotate': {
       // spec §6.2 (L3): the markup session's brief and apply

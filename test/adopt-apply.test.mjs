@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { STALE_REPORT, MANAGER, adoptProject, closedRow, write } from './helpers/adopt.mjs';
+import { STALE_REPORT, MANAGER, adoptDeps, adoptProject, closedRow, write } from './helpers/adopt.mjs';
+import { createGsdConfig } from '../lib/gates.mjs';
+import { LEAN_KEYS, leanApply, leanChanges, leanCurrent } from '../lib/lean.mjs';
 import { initProject } from '../lib/project-init.mjs';
 import { ADOPT_REL, adoptPlan, applyAdopt, readRecord, reverifyFile, reverifyResult, scanProject, staleClosedLine } from '../lib/adopt.mjs';
 
@@ -162,4 +164,22 @@ test('the closed-phases line: until the owner decided in adopt, and never for a 
   assert.equal(staleClosedLine(root, phases, 'en', { laneDone: (n) => n === '1' }), null);
   applyAdopt(root, { answers: { 'stale-closed': 'keep' }, plan: confirm(root, deps, { 'stale-closed': 'keep' }), deps });
   assert.equal(staleClosedLine(root, phases, 'en'), null);
+});
+
+test('apply writes the lean keys and lean-prev.json into the one adopt commit', () => {
+  const { root, core, git } = adoptProject();
+  const deps = adoptDeps(root, core, { lean: { changes: () => leanChanges({ cfg: createGsdConfig({ root, core }) }), apply: () => leanApply({ root, core, commit: false }) } });
+  const head = headOf(git);
+  const answers = { 'stale-closed': 'keep' };
+  const r = applyAdopt(root, { answers, plan: confirm(root, deps, answers), deps });
+  assert.equal(r.refused, undefined, String(r.refused));
+  assert.equal(git(['rev-list', '--count', `${head}..HEAD`]).trim(), '1');
+  assert.equal(subjectOf(git), 'chore(turbo): adopt');
+  const files = shown(git);
+  assert.ok(files.includes('.planning/config.json') && files.includes('.planning/turbo/lean-prev.json'), files.join(' '));
+  assert.equal(leanCurrent(root), true);
+  // the value init gave GSD first is the one lean off puts back
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.planning', 'turbo', 'lean-prev.json'), 'utf8')).keys.context_window, '1000000');
+  assert.equal(LEAN_KEYS.length, 10);
+  assert.equal(status(git), '');
 });

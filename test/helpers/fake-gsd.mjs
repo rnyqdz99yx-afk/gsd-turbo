@@ -76,7 +76,8 @@ if (cmd === 'config-get') {
   const raw = args[2];
   const key = parts[parts.length - 1];
   if (raw === 'null') delete cur[key];
-  else cur[key] = raw === 'true' ? true : raw === 'false' ? false : raw;
+  // GSD 1.17 cmdConfigSet: true/false, finite numbers as numbers, the rest as written
+  else cur[key] = raw === 'true' ? true : raw === 'false' ? false : raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : raw;
   fs.writeFileSync(cfgFile, JSON.stringify(c, null, 2));
   out({ updated: true });
 } else if (cmd === 'loop') {

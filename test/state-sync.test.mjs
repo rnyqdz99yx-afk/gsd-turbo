@@ -7,6 +7,7 @@ import { tmpGitRepo } from './helpers/tmp.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 import { gsdCoreDir } from '../lib/paths.mjs';
 import { readVersion, versionInRange } from '../lib/gsd.mjs';
+import { stateSync, trimStateHistory } from '../lib/state-sync.mjs';
 
 const PHASE_REL = '.planning/phases/05-demo';
 
@@ -501,4 +502,170 @@ test('state-sync puts back an owner\'s Last activity that only starts like GSD\'
     await sync(root, { gsd });
     assert.equal(patchOf(calls)['Last activity'], back ? activity : undefined, activity);
   }
+});
+
+// --- Stage 6 §5.4: the STATE.md budget ---
+const rowsOf = (n, f) => Array.from({ length: n }, (_, i) => f(i));
+const HISTORY_SUB = ['### ▶ Resume point 2026-01-02 — history', '', ...rowsOf(30, (i) => `- 2026-01-02 step ${i}: ${'x'.repeat(80)}`), ''];
+const PROTECTED_PARTS = {
+  reference: ['## Project Reference', '', 'See: .planning/PROJECT.md (updated 2026-01-01)', '', '**Core value:** the demo works', ''],
+  position: ['## Current Position', '', 'Phase: 5 of 5 (Demo Feature)', 'Plan: 0 of 4 in current phase', 'Status: Ready to execute', 'Last activity: 2026-01-01 — planned', ''],
+  resume: ['### ▶ Resume point 2026-01-03', '', 'Next: plan 05-03', ''],
+  decisions: ['### Decisions', '', ...rowsOf(20, (i) => `- D-${i}: decided ${'y'.repeat(80)}`), ''],
+  todos: ['### Pending Todos', '', '- none', ''],
+  blockers: ['### Blockers/Concerns', '', '- none', ''],
+  session: ['## Session Continuity', '', 'Last session: 2026-01-01', 'Stopped at: planned', 'Resume file: None', ''],
+};
+// A big STATE.md of GSD's template shape with hand-written history under Current Position.
+function bigState({ metrics = 150, quick = 100 } = {}) {
+  return [
+    '---', "gsd_state_version: '1.0'", 'status: executing', '---', '', '# Project State', '',
+    ...PROTECTED_PARTS.reference, ...PROTECTED_PARTS.position, ...HISTORY_SUB, ...PROTECTED_PARTS.resume,
+    '## Performance Metrics', '', '**Velocity:**', '- Total plans completed: 150', '- Average duration: 12 min', '',
+    '| Phase | Plans | Total | Avg/Plan |', '|-------|-------|-------|----------|', ...rowsOf(metrics, (i) => `| Phase ${i} | 4 plans | 48 min | 12 min |`), '',
+    '## Accumulated Context', '', ...PROTECTED_PARTS.decisions,
+    '### Quick Tasks Completed', '', '| # | Description | Date |', '|---|-------------|------|', ...rowsOf(quick, (i) => `| ${i} | quick task number ${i} | 2026-01-01 |`), '',
+    ...PROTECTED_PARTS.todos, ...PROTECTED_PARTS.blockers, ...PROTECTED_PARTS.session,
+  ].join('\n');
+}
+const KB = 1024;
+const POINTER = '_Older entries moved to STATE-ARCHIVE.md by turbo state-sync (2026-01-05)._';
+// a part of the text, from its first line up to the next h2/h3 heading
+const part = (text, first) => {
+  const lines = text.split('\n');
+  const at = lines.indexOf(first);
+  if (at < 0) return null;
+  let end = at + 1;
+  while (end < lines.length && !/^#{2,3} /.test(lines[end])) end++;
+  return lines.slice(at, end).join('\n');
+};
+const protectedOf = (text) => [...Object.values(PROTECTED_PARTS).map((p) => part(text, p[0])), text.slice(0, text.indexOf('### ▶ Resume point 2026-01-02'))];
+
+test('trimStateHistory leaves a STATE.md within its budget untouched', () => {
+  const text = bigState();
+  const r = trimStateHistory(text, { budgetKb: Math.ceil(Buffer.byteLength(text) / KB), date: '2026-01-05' });
+  assert.deepEqual([r.moved, r.text, r.over, r.archive], [[], text, false, '']);
+});
+
+test('over budget: history sections trimmed largest first until within budget; protected sections byte-identical; table headers and Velocity lines kept', () => {
+  const text = bigState();
+  const size = Buffer.byteLength(text);
+  const r = trimStateHistory(text, { budgetKb: 9, date: '2026-01-05' });
+  assert.ok(size > 9 * KB, String(size));
+  assert.deepEqual(r.moved, ['Performance Metrics', 'Quick Tasks Completed']);
+  assert.ok(r.after <= 9 * KB && r.after === Buffer.byteLength(r.text), String(r.after));
+  assert.equal(r.before, size);
+  assert.equal(r.over, false);
+  assert.equal(part(r.text, HISTORY_SUB[0]), part(text, HISTORY_SUB[0]), 'the history subsection is not needed yet');
+  assert.deepEqual(protectedOf(r.text), protectedOf(text));
+  for (const keep of ['**Velocity:**', '- Total plans completed: 150', '| Phase | Plans | Total | Avg/Plan |', '|-------|-------|-------|----------|', '| # | Description | Date |', '|---|-------------|------|']) assert.ok(r.text.split('\n').includes(keep), keep);
+  assert.ok(!r.text.includes('| Phase 3 | 4 plans'));
+  assert.equal(r.text.split('\n').filter((l) => l === POINTER).length, 2);
+  // a smaller budget: the history subsection goes too, still one pointer per heading
+  const small = trimStateHistory(text, { budgetKb: 4, date: '2026-01-05' });
+  assert.deepEqual(small.moved, ['Performance Metrics', 'Quick Tasks Completed', '▶ Resume point 2026-01-02 — history']);
+  assert.deepEqual(part(small.text, HISTORY_SUB[0]).split('\n'), [HISTORY_SUB[0], '', POINTER, '']);
+  assert.deepEqual(protectedOf(small.text), protectedOf(text));
+  assert.equal(small.text.split('\n').filter((l) => l === POINTER).length, 3);
+});
+
+test('a second trim changes nothing; protected content alone over budget leaves over true and changes nothing protected', () => {
+  const text = bigState();
+  const once = trimStateHistory(text, { budgetKb: 9, date: '2026-01-05' });
+  const twice = trimStateHistory(once.text, { budgetKb: 9, date: '2026-01-06', archiveText: once.archive });
+  assert.deepEqual([twice.text, twice.moved, twice.archive], [once.text, [], once.archive]);
+  // a budget the protected sections alone exceed: every history section goes, over stays true
+  const tiny = trimStateHistory(text, { budgetKb: 2, date: '2026-01-05' });
+  assert.equal(tiny.over, true);
+  assert.equal(tiny.moved.length, 3);
+  assert.deepEqual(protectedOf(tiny.text), protectedOf(text));
+  const again = trimStateHistory(tiny.text, { budgetKb: 2, date: '2026-01-06', archiveText: tiny.archive });
+  assert.deepEqual([again.text, again.moved, again.over], [tiny.text, [], true]);
+});
+
+test('a heading that starts with a protected name or speaks of decisions is never trimmed, whatever words follow', () => {
+  const rows = (n) => rowsOf(n, (i) => `- entry ${i}: ${'w'.repeat(90)}`);
+  const kept = [
+    ['## Current Position — history', '', ...rows(20), ''],
+    ['### Decisions (archived 2026-01)', '', ...rows(20), ''],
+    ['## Журнал решений', '', ...rows(20), ''],
+  ];
+  const text = ['# Project State', '', ...kept.flat(), '## Session Log', '', ...rows(40), ''].join('\n');
+  const r = trimStateHistory(text, { budgetKb: 4, date: '2026-01-05' });
+  assert.deepEqual(r.moved, ['Session Log']);
+  for (const k of kept) assert.equal(part(r.text, k[0]), part(text, k[0]), k[0]);
+});
+
+test('the archive: GSD\'s header once, then one dated block per trim with each moved section', () => {
+  const text = bigState();
+  const r = trimStateHistory(text, { budgetKb: 9, date: '2026-01-05' });
+  const head = '# STATE Archive\n\nPruned entries from STATE.md. Recoverable but no longer loaded into agent context.\n\n';
+  assert.ok(r.archive.startsWith(head + '## Trimmed 2026-01-05 by turbo state-sync (STATE.md budget 9 KB)\n\n### Performance Metrics\n\n| Phase | Plans | Total | Avg/Plan |\n|-------|-------|-------|----------|\n| Phase 0 | 4 plans'), r.archive.slice(0, 400));
+  assert.ok(r.archive.includes('\n### Quick Tasks Completed\n\n| # | Description | Date |\n'));
+  // a later trim appends its block under the same header
+  const grown = bigState().replace('| Phase 0 | 4 plans', '| Phase 0 | 4 plans');
+  const later = trimStateHistory(grown, { budgetKb: 9, date: '2026-01-07', archiveText: r.archive });
+  assert.ok(later.archive.startsWith(r.archive));
+  assert.equal(later.archive.split(head).length, 2, 'the header once');
+  assert.ok(later.archive.includes('## Trimmed 2026-01-07 by turbo state-sync (STATE.md budget 9 KB)'));
+});
+
+// the fixture's STATE.md with a Performance Metrics table that puts it over 16 KB
+const overBudget = () => ['## Performance Metrics', '', '| Phase | Plans | Total | Avg/Plan |', '|-------|-------|-------|----------|', ...rowsOf(600, (i) => `| Phase ${i} | 4 plans | 48 min | 12 min |`), ''];
+
+test('state-sync with a budget trims STATE.md in the same GSD commit as the position, with STATE-ARCHIVE.md', async () => {
+  const root = fixture({ after: overBudget() });
+  const stateFile = path.join(root, '.planning', 'STATE.md');
+  assert.ok(fs.statSync(stateFile).size > 16 * KB);
+  const { gsd, calls } = fakeGsd(root);
+  const r = await sync(root, { gsd, now: new Date(2026, 0, 5, 12) });
+  assert.equal(r.code, 0, r.lines.join('\n'));
+  assert.deepEqual(calls.at(-1), ['commit', 'docs(phase-05): record the resume position in STATE.md', '--files', '.planning/STATE.md', '.planning/STATE-ARCHIVE.md']);
+  assert.ok(fs.statSync(stateFile).size <= 16 * KB);
+  assert.match(fs.readFileSync(path.join(root, '.planning', 'STATE-ARCHIVE.md'), 'utf8'), /^# STATE Archive\n/);
+  assert.ok(r.lines.some((l) => /^STATE\.md: history trimmed to stay within 16 KB \(Performance Metrics\): \d+ → \d+ KB$/.test(l)), r.lines.join('\n'));
+  // nothing to sync (no plans yet): a commit of its own
+  const lone = fixture({ plans: 0, after: overBudget() });
+  const g2 = fakeGsd(lone);
+  await sync(lone, { gsd: g2.gsd, now: new Date(2026, 0, 5, 12) });
+  assert.deepEqual(g2.calls.at(-1), ['commit', 'docs(state): keep STATE.md within its 16 KB budget', '--files', '.planning/STATE.md', '.planning/STATE-ARCHIVE.md']);
+  // a failing commit puts both files' bytes back
+  const bad = fixture({ after: overBudget() });
+  const badState = fs.readFileSync(path.join(bad, '.planning', 'STATE.md'));
+  const g3 = fakeGsd(bad);
+  const failing = (args) => (args[0] === 'commit' ? { committed: false, reason: 'hook refused' } : g3.gsd(args));
+  const r3 = await sync(bad, { gsd: failing, now: new Date(2026, 0, 5, 12) });
+  assert.equal(r3.code, 0);
+  assert.ok(r3.lines.some((l) => /^warn: state-sync: gsd-tools commit: hook refused; STATE\.md was put back as it was$/.test(l)), r3.lines.join('\n'));
+  assert.deepEqual(fs.readFileSync(path.join(bad, '.planning', 'STATE.md')), badState);
+  assert.equal(fs.existsSync(path.join(bad, '.planning', 'STATE-ARCHIVE.md')), false);
+  const lone2 = fixture({ plans: 0, after: overBudget() });
+  const lone2State = fs.readFileSync(path.join(lone2, '.planning', 'STATE.md'));
+  const g4 = fakeGsd(lone2);
+  await sync(lone2, { gsd: (args) => (args[0] === 'commit' ? { committed: false, reason: 'hook refused' } : g4.gsd(args)), now: new Date(2026, 0, 5, 12) });
+  assert.deepEqual(fs.readFileSync(path.join(lone2, '.planning', 'STATE.md')), lone2State);
+  assert.equal(fs.existsSync(path.join(lone2, '.planning', 'STATE-ARCHIVE.md')), false);
+});
+
+test('state-sync without a budget never trims (the supervisor\'s merge path); turbo-run state-sync prints the over-budget warning', async () => {
+  const root = fixture({ after: overBudget() });
+  const stateFile = path.join(root, '.planning', 'STATE.md');
+  const { gsd, calls } = fakeGsd(root);
+  const r = stateSync({ root, phase: '05', gsd });
+  assert.equal(r.trimmed, undefined);
+  assert.deepEqual(calls.at(-1), ['commit', 'docs(phase-05): record the resume position in STATE.md', '--files', '.planning/STATE.md']);
+  assert.ok(fs.statSync(stateFile).size > 16 * KB);
+  assert.equal(fs.existsSync(path.join(root, '.planning', 'STATE-ARCHIVE.md')), false);
+  // lean off in the turbo config: turbo-run state-sync has no budget either
+  const off = fixture({ after: overBudget() });
+  fs.mkdirSync(path.join(off, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(off, '.planning', 'turbo', 'config.json'), JSON.stringify({ lean: { enabled: false } }));
+  const g2 = fakeGsd(off);
+  await sync(off, { gsd: g2.gsd });
+  assert.equal(g2.calls.at(-1).length, 4);
+  // protected text alone over the budget: the warning
+  const big = fixture({ before: ['## Decisions', '', ...rowsOf(200, (i) => `- D-${i}: ${'z'.repeat(100)}`), ''] });
+  const g3 = fakeGsd(big);
+  const r3 = await sync(big, { gsd: g3.gsd });
+  assert.ok(r3.lines.some((l) => /^warn: STATE\.md is \d+ KB, over its 16 KB budget after trimming history: the rest is the current position and decisions$/.test(l)), r3.lines.join('\n'));
 });

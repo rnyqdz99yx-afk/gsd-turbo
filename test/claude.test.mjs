@@ -178,6 +178,15 @@ test('buildBgArgs puts flags before the prompt, disables AskUserQuestion and tur
   assert.equal(withModel.at(-1), 'P');
 });
 
+test('buildBgArgs passes --effort right before the prompt when given, nothing without it; a wake stays flagless', () => {
+  const args = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: 'opus', effort: 'high' });
+  assert.deepEqual(args.slice(-5), ['--model', 'opus', '--effort', 'high', 'P']);
+  const noModel = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: '', effort: 'medium' });
+  assert.deepEqual(noModel.slice(-3), ['--effort', 'medium', 'P']);
+  assert.ok(!buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: 'opus' }).includes('--effort'));
+  assert.deepEqual(buildResumeArgs('abc', 'go'), ['--bg', '--resume', 'abc', 'go']);
+});
+
 test('buildBgArgs points the lane session\'s TMP, TEMP and TMPDIR at its own temp directory, bg isolation still off', () => {
   const tmpDir = path.resolve('/p/.planning/turbo/run/tmp/p3');
   const args = buildBgArgs({ name: 'n', prompt: 'P', systemPrompt: 'S', permissionMode: 'auto', model: '', tmpDir });

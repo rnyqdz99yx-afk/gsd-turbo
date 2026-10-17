@@ -1,6 +1,6 @@
 ---
 name: turbo-plan-milestone
-description: Prepare the rest of the current GSD milestone ahead with gsd-turbo, without running any phase — discuss and research for every phase that has no CONTEXT.md yet (prep jobs in lane slots), then the ROADMAP markup that lets independent phases run at the same time (Areas, Gates, Parallel with). Ends by itself; /turbo-autonomous then runs the phases.
+description: Prepare the next phases of the current GSD milestone ahead with gsd-turbo, without running any phase — discuss and research for the next prep.lookahead phases (1 by default) that have no CONTEXT.md yet, in lane slots, then, when three or more phases are independent, the ROADMAP markup that lets them run at the same time (Areas, Gates, Parallel with). Ends by itself; /turbo-autonomous then runs the phases.
 argument-hint: "[--from <N>] [--to <N>] | --only <N> | --all"
 allowed-tools: [Bash, Read, AskUserQuestion, Skill]
 ---
@@ -18,4 +18,4 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
 5. **Start.** Run `turbo-run start --plan-only <range flags>`, then `turbo-run status`.
    - `start` exits with a non-zero code → show its output and stop.
    - The status prints `supervisor: not running` → show the last lines of `.planning/turbo/logs/supervisor.log` and stop.
-6. **Report to the user, briefly:** the supervisor now prepares every phase of the range that has no CONTEXT.md yet (discuss in assumptions mode with the recommended answers, research and the other planning contracts), each in its own lane slot, and then marks up the ROADMAP for parallel lanes; no phase is planned or executed; it stops by itself when everything is prepared; how to watch it (`/turbo-autonomous status`, the turbo pane); that with `autonomy: standard` one question card may come about phase waits that look like wording only; and that `/turbo-autonomous` runs the phases afterwards.
+6. **Report to the user, briefly:** the supervisor now prepares the next prep.lookahead phases of the range (1 by default) that have no CONTEXT.md yet (discuss in assumptions mode with the recommended answers, research and the other planning contracts), each in its own lane slot, and then marks up the ROADMAP for parallel lanes when three or more phases are independent by their Depends on lines; no phase is planned or executed; it stops by itself when everything is prepared; how to watch it (`/turbo-autonomous status`, the turbo pane); that with `autonomy: standard` one question card may come about phase waits that look like wording only; and that `/turbo-autonomous` runs the phases afterwards.

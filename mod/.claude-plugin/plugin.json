@@ -1,6 +1,6 @@
 {
   "name": "turbo-view",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "gsd-turbo live view: lanes, subagents, owner questions with answer buttons, recent commits",
   "author": {
     "name": "gsd-turbo"

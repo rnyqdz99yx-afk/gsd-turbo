@@ -1,0 +1,319 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { slicePhase } from './slices.mjs';
+import { fakeGsdCore } from './fake-gsd.mjs';
+import { tmpDir } from './tmp.mjs';
+
+// Stage 6 B4: the build path's test project and a scripted claude for it (fake-claude.mjs's act hook).
+
+// A GSD project at phase 5 (B3's slicePhase) with the fake gsd-tools, turbo's config (build.enabled, slice worktrees
+// under a temp lanes.dir, test.full node --test) and its run/logs/locks ignored, all committed.
+// config: merged into turbo's config; its build section merges with { enabled: true }.
+// -> { root, phaseDir, rel, git(...args), write(rel, text), commit(msg) -> sha }
+export function buildProject({ slug = 'demo', context = true, config = {} } = {}) {
+  const root = slicePhase({ slug, context });
+  fakeGsdCore(root);
+  const rel = `.planning/phases/05-${slug}`;
+  const git = (...a) => String(execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })).replace(/\r?\n$/, '');
+  const write = (f, text) => {
+    const abs = path.join(root, ...f.split('/'));
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, text);
+  };
+  const commit = (msg) => {
+    git('add', '-A');
+    git('commit', '-q', '--allow-empty', '-m', msg);
+    return git('rev-parse', 'HEAD');
+  };
+  const { build = {}, ...rest } = config;
+  write('.gitignore', 'node_modules/\n.claude/\n');
+  write('.planning/turbo/.gitignore', 'run/\nlogs/\nlocks/\n');
+  write('.planning/turbo/config.json', `${JSON.stringify({ lang: 'en', lanes: { dir: path.join(tmpDir('lanes'), 'app.turbo') }, test: { full: 'node --test' }, build: { enabled: true, ...build }, ...rest }, null, 2)}\n`);
+  write('package.json', `${JSON.stringify({ name: 'demo', scripts: { test: 'node --test' } })}\n`);
+  commit('chore: turbo build project');
+  return { root, phaseDir: path.join(root, ...rel.split('/')), rel, git, write, commit };
+}
+
+// B3's SUMMARY skeleton (roles/builder.md) for plan <id> ('05-01'), ending with its self-check.
+export function summaryText({ phaseSlug, plan, reqs = [], status = 'complete', check = 'PASSED' }) {
+  const nn = String(plan).slice(String(plan).lastIndexOf('-') + 1);
+  const n = String(Number(String(plan).split('-')[0]));
+  return [
+    '---', `phase: ${phaseSlug}`, `plan: ${nn}`, 'subsystem: api', 'tags: [node]', 'key-files:', '  created: []', '  modified: []',
+    'key-decisions: []', `requirements-completed: [${reqs.join(', ')}]`, 'duration: 1min', 'completed: 2026-10-17', `status: ${status}`, '---', '',
+    `# Phase ${n} Plan ${nn}: slice ${plan} Summary`, '', `**slice ${plan} is built**`, '', '## Task Commits', '1. **Task 1: build** - `0000000` (feat)', '',
+    '## Deviations from Plan', 'None', '', `## Self-Check: ${check}`, '',
+  ].join('\n');
+}
+
+// The act's first half, before the fake claude prints anything: the role, the session id (new sessions numbered
+// b4000000-0000-4000-8000-<12-digit counter>), the call recorded in acts.jsonl. Sets current for the second half.
+// Parallel fakes never share a read-modify-write file: numbers are taken by exclusive creates, a session's role is a
+// file of its own.
+function actBegin({ argv, stdin, resume }) {
+  const fs = require('fs');
+  const path = require('path');
+  const dir = __dirname;
+  // the first free <prefix><k> in <dir>/<sub>, taken by an exclusive create -> k
+  const take = (sub, prefix) => {
+    fs.mkdirSync(path.join(dir, sub), { recursive: true });
+    for (let k = 1; ; k++) {
+      try {
+        fs.closeSync(fs.openSync(path.join(dir, sub, `${prefix}${k}`), 'wx'));
+        return k;
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+      }
+    }
+  };
+  const sessionFile = (sid) => path.join(dir, 'sessions', `${sid}.json`);
+  const ai = argv.indexOf('--agent');
+  let who = null;
+  if (resume) {
+    try {
+      who = JSON.parse(fs.readFileSync(sessionFile(resume), 'utf8'));
+    } catch (e) { /* a session this act did not start */ }
+  }
+  if (!who) {
+    who = { role: 'other', plan: null, summaryPath: null };
+    if (ai >= 0) who.role = argv[ai + 1];
+    else if (/^You are the slicer/.test(stdin)) who.role = 'slicer';
+    else if (/^You are a builder/.test(stdin)) {
+      who.role = 'builder';
+      who.plan = (/plan ([^,\s]+),/.exec(stdin) || [])[1] || null;
+      who.summaryPath = (/write (\S+-SUMMARY\.md):/.exec(stdin) || [])[1] || null;
+    } else if (/^You are the fixer/.test(stdin)) who.role = 'fixer';
+    else if (/^Read and execute/.test(stdin) && stdin.includes('discuss-phase-assumptions')) who.role = 'discuss';
+    else if (stdin.includes('Skill(skill="gsd-verify-work"')) who.role = 'verify-work';
+    else if (/^The merge of the main branch/.test(stdin)) who.role = 'integrate';
+  }
+  let id = resume;
+  if (!resume) {
+    id = `b4000000-0000-4000-8000-${String(take('ids', '')).padStart(12, '0')}`;
+    fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+    fs.writeFileSync(sessionFile(id), JSON.stringify(who));
+  }
+  const n = who.role === 'builder' ? take('calls', `${who.plan}-`) : 0;
+  fs.appendFileSync(path.join(dir, 'acts.jsonl'), `${JSON.stringify({ role: who.role, plan: who.plan, resume: resume || null, at: new Date().toISOString() })}\n`);
+  current = { id, who, n };
+  return { ...current, sessionId: resume ? undefined : id };
+}
+// The act's second half (run inside the fake claude after init, CommonJS; see buildAct). Kept free of outer names but
+// current: it is written out as text.
+function actMain({ argv, stdin, cwd, resume }) {
+  const fs = require('fs');
+  const path = require('path');
+  const { execFileSync } = require('child_process');
+  const dir = __dirname;
+  const scriptFile = path.join(dir, 'script.json');
+  const script = JSON.parse(fs.readFileSync(scriptFile, 'utf8'));
+  const shift = (key) => {
+    const list = Array.isArray(script[key]) ? script[key] : [];
+    const one = list.shift();
+    script[key] = list;
+    fs.writeFileSync(scriptFile, JSON.stringify(script, null, 2));
+    return one;
+  };
+  const git = (...a) => String(execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  const write = (rel, text) => {
+    const abs = path.join(cwd, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, text);
+  };
+  const commit = (files, message) => {
+    for (const f of files) git('add', '-A', '--', f);
+    try {
+      git('diff', '--cached', '--quiet');
+    } catch (e) {
+      git('commit', '-q', '-m', message);
+    }
+  };
+  const writeAll = (map) => {
+    const files = Object.keys(map || {});
+    for (const f of files) write(f, map[f]);
+    return files;
+  };
+  const { id, who, n } = current || actBegin({ argv, stdin, cwd, resume });
+  const answer = (o = {}) => {
+    const queued = Array.isArray(script.results) && script.results.length ? shift('results') : undefined;
+    return { ...(resume ? {} : { sessionId: id }), result: 'done', ...o, ...(queued !== undefined ? { result: queued } : {}) };
+  };
+  const times = (v) => (v === true ? 1 : Number(v) || 0);
+  const role = who.role;
+  if (role === 'slicer') {
+    writeAll(script.plans);
+    return answer({ result: 'plans written' });
+  }
+  if (role === 'builder') {
+    const cfg = (script.slices || {})[who.plan] || {};
+    const wait = (n === 1 && cfg.firstDelayMs) || cfg.delayMs;
+    if (wait) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    if (cfg.ask && !resume) return answer({ result: cfg.ask });
+    if (n <= times(cfg.fail)) return answer({ result: 'failed', isError: true, exitCode: 1 });
+    // blocked: the builder stops for a file outside its list (B3's blocked SUMMARY), the first blockedTimes calls
+    if (cfg.blocked && n <= (cfg.blockedTimes || 1)) {
+      const rel = who.summaryPath || `${script.phaseDir || '.planning/phases/05-demo'}/${who.plan}-SUMMARY.md`;
+      const text = summaryText({ phaseSlug: path.posix.basename(path.posix.dirname(rel)), plan: who.plan, status: 'blocked', check: 'FAILED' });
+      write(rel, text.replace('## Task Commits', `Blocked: needs \`${cfg.blocked}\` because the slice cannot pass without it\n\n## Task Commits`));
+      commit([rel], `docs(${who.plan}): blocked`);
+      return answer({ result: `slice ${who.plan} blocked` });
+    }
+    commit(writeAll(cfg.files), `feat(${who.plan}): build`);
+    writeAll(cfg.extra);
+    if (n > times(cfg.noSummary)) {
+      const rel = who.summaryPath || `${script.phaseDir || '.planning/phases/05-demo'}/${who.plan}-SUMMARY.md`;
+      write(rel, (script.summaries || {})[who.plan] || summaryText({ phaseSlug: path.posix.basename(path.posix.dirname(rel)), plan: who.plan }));
+      commit([rel], `docs(${who.plan}): complete`);
+    }
+    return answer({ result: `slice ${who.plan} built` });
+  }
+  if (role === 'fixer') {
+    const fx = shift('fixes');
+    if (!fx) return answer({ result: 'nothing to fix' });
+    commit(writeAll(fx.files), fx.message || 'fix: build path fix');
+    return answer({ result: fx.result || 'fixed' });
+  }
+  if (role === 'gsd-code-reviewer' || role === 'gsd-verifier') {
+    const doc = shift(role === 'gsd-code-reviewer' ? 'reviews' : 'verifications');
+    if (doc) write(doc.path, doc.text);
+    return answer({ result: doc ? `wrote ${doc.path}` : 'nothing written' });
+  }
+  if (role === 'gsd-security-auditor') return answer({ result: shift('audits') || '## SECURED\n**threats_open:** 0' });
+  if (role === 'gsd-phase-researcher') {
+    if (script.research) write(script.research.path, script.research.text);
+    return answer({ result: 'research written' });
+  }
+  if (role === 'discuss') {
+    if (script.context) commit(writeAll({ [script.context.path]: script.context.text }), 'docs(05): capture phase context');
+    return answer({ result: script.discuss || 'context written' });
+  }
+  if (role === 'turbo-uat') {
+    if (script.uatResult) write(script.uatResult.path, script.uatResult.text);
+    return answer({ result: script.uat || 'UAT done' });
+  }
+  if (role === 'verify-work') {
+    if (script.verifyWork) write(script.verifyWork.path, script.verifyWork.text);
+    return answer({ result: 'verify-work done' });
+  }
+  if (role === 'integrate') {
+    for (const f of writeAll(script.resolve)) git('add', '-A', '--', f);
+    return answer({ result: 'resolved' });
+  }
+  return answer();
+}
+
+// A scripted claude act in dir: <dir>/build-act.cjs (pass it as fakeClaude's behavior act) and <dir>/script.json, read
+// again on every call. Each call appends { role, plan, resume, at } to <dir>/acts.jsonl; new sessions are numbered
+// b4000000-0000-4000-8000-<12-digit counter>, and a resumed session keeps the role it had. The role: --agent, else the
+// prompt's start (slicer, builder with its plan, fixer, discuss, verify-work, integrate), else other. script:
+//   plans { rel: text } (the slicer writes them); slices { <id>: { files { rel: text } committed as feat(<id>): build,
+//   ask (the result of the first call, nothing written), delayMs (before every call's work), firstDelayMs (the first only), fail (the first n calls end with exit 1; true = 1),
+//   noSummary (the first n calls write no SUMMARY), extra { rel: text } written, never staged } }; summaries { <id>:
+//   text } (else summaryText); fixes [{ files, message, result }]; reviews / verifications [{ path, text }]; audits
+//   [text]; research { path, text }; context { path, text } (committed); uat (text); verifyWork { path, text } (written
+//   by the verify-work session); resolve { rel: text } (git added);
+//   phaseDir (when the prompt names no SUMMARY path); results [text] (each call, of any role, takes the next one as
+//   its result after acting).
+// -> { act, acts(), set(patch) }
+export function buildAct(dir, script = {}) {
+  fs.mkdirSync(dir, { recursive: true });
+  const act = path.join(dir, 'build-act.cjs');
+  fs.writeFileSync(act, `'use strict';\nlet current = null;\nconst summaryText = ${summaryText.toString()};\n${actBegin.toString()}\nmodule.exports = ${actMain.toString()};\nmodule.exports.begin = actBegin;\n`);
+  const file = path.join(dir, 'script.json');
+  fs.writeFileSync(file, JSON.stringify(script, null, 2));
+  return {
+    act,
+    acts() {
+      try {
+        return fs.readFileSync(path.join(dir, 'acts.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      } catch {
+        return [];
+      }
+    },
+    set(patch) {
+      const now = JSON.parse(fs.readFileSync(file, 'utf8'));
+      fs.writeFileSync(file, JSON.stringify({ ...now, ...patch }, null, 2));
+    },
+  };
+}
+
+const DEMO_REL = '.planning/phases/05-demo';
+const specText = (name, expect) => `const test = require('node:test');\nconst assert = require('node:assert');\ntest('${name}', () => assert.equal(require('../src/${name}.js')(), ${expect}));\n`;
+// A slice's files: src/<name>.js returning value and test/<name>.test.js expecting expect.
+export const sliceFiles = (name, { value = 1, expect = 1 } = {}) => ({ [`src/${name}.js`]: `module.exports = () => ${value};\n`, [`test/${name}.test.js`]: specText(name, expect) });
+export const OWNER_BLOCK = 'Need you.\n## OWNER QUESTION\nQuestion: Which greeting should the bot use?\nContext: Two styles fit.\nOptions:\n1. Formal — Hello, Ann (recommended)\n2. Casual — Hi, Ann';
+
+// A whole phase 5 for the act: the slicer's four plans (05-03 depends on 05-02), builders with passing code, 05-02
+// asking the owner (ask), 05-04 merging a red test (red) fixed by the first fixer, a review with one warning fixed by
+// the second fixer, then a clean one, a passed verification. slices: per-slice fields merged in (delayMs, …).
+export async function phaseScript({ ask = true, red = true, slices = {} } = {}) {
+  const { compactPlan } = await import('./slices.mjs');
+  const plan = (id, name, o = {}) => compactPlan({ id, files: [`src/${name}.js`, `test/${name}.test.js`], ...o });
+  const review = (body) => ({ path: `${DEMO_REL}/05-REVIEW.md`, text: `---\nstatus: ${body ? 'issues_found' : 'clean'}\n---\n\n# Code Review\n\n${body || 'No findings.\n'}` });
+  return {
+    plans: {
+      [`${DEMO_REL}/05-01-PLAN.md`]: plan('05-01', 'a'),
+      [`${DEMO_REL}/05-02-PLAN.md`]: plan('05-02', 'b', { reqs: ['DEMO-02'], decisions: ['D-02'] }),
+      [`${DEMO_REL}/05-03-PLAN.md`]: plan('05-03', 'c', { wave: 2, deps: ['05-02'] }),
+      [`${DEMO_REL}/05-04-PLAN.md`]: plan('05-04', 'd'),
+    },
+    slices: {
+      '05-01': { files: sliceFiles('a'), ...slices['05-01'] },
+      '05-02': { files: sliceFiles('b'), ...(ask ? { ask: OWNER_BLOCK } : {}), ...slices['05-02'] },
+      '05-03': { files: sliceFiles('c'), ...slices['05-03'] },
+      '05-04': { files: sliceFiles('d', red ? { value: 1, expect: 2 } : {}), ...slices['05-04'] },
+    },
+    fixes: [
+      ...(red ? [{ files: { 'src/d.js': 'module.exports = () => 2;\n' }, message: 'fix(05): the red test', result: 'the red test — fixed' }] : []),
+      { files: { 'src/a.js': 'module.exports = () => 1; // trimmed\n' }, message: 'fix(05): WR-01 trim', result: 'WR-01 — fixed abc1234' },
+    ],
+    reviews: [review('### WR-01: no trim\n\n**File:** `src/a.js:1`\n**Issue:** the name is not trimmed.\n'), review('')],
+    verifications: [{ path: `${DEMO_REL}/05-VERIFICATION.md`, text: '---\nphase: 05-demo\nstatus: passed\nscore: 2/2 must-haves verified\n---\n\n# Phase 5: Verification\n' }],
+  };
+}
+
+// process.env.CLAUDE_CONFIG_DIR set to a fresh directory for the test file (turbo's home: session settings, slots;
+// the fake claude's transcripts), restored by the returned function. -> { home, restore }
+export function claudeHome() {
+  const saved = process.env.CLAUDE_CONFIG_DIR;
+  const home = tmpDir('claude-home');
+  process.env.CLAUDE_CONFIG_DIR = home;
+  return {
+    home,
+    restore() {
+      if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = saved;
+    },
+  };
+}
+
+// A build project, a scripted act and the fake claude running it, with the build deps that use them.
+// -> { root, phaseDir, rel, git, write, commit, a, f, deps, lines (what ctx.log wrote) }
+export async function buildRig({ project = {}, script = {}, deps = {} } = {}) {
+  const { runSession, resumeSession } = await import('../../lib/headless.mjs');
+  const { fakeClaude } = await import('./fake-claude.mjs');
+  const p = buildProject(project);
+  const dir = tmpDir('act');
+  const a = buildAct(dir, script);
+  const f = fakeClaude(dir, { act: a.act });
+  const lines = [];
+  const all = {
+    runSession: (o) => runSession(o, { bin: f.bin, pollMs: 100 }),
+    resumeSession: (id, text, o) => resumeSession(id, text, o, { bin: f.bin, pollMs: 100 }),
+    pollMs: 20,
+    log: (l) => lines.push(l),
+    ...deps,
+  };
+  return { ...p, a, f, deps: all, lines };
+}
+
+// <dir>/bin with a claude that runs <dir>/fake-claude.cjs (fakeClaude's script): claude.cmd as an npm shim (resolveBin
+// maps it to node + the script on Windows) and a posix node script. -> the bin directory, for PATH.
+export function claudeShim(dir) {
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'claude.cmd'), '@"%dp0%\\..\\fake-claude.cjs" %*\r\n');
+  fs.writeFileSync(path.join(bin, 'claude'), "#!/usr/bin/env node\nrequire('../fake-claude.cjs');\n", { mode: 0o755 });
+  return bin;
+}

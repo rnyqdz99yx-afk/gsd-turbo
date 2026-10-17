@@ -92,6 +92,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 - **Targeted tests** — set up by `turbo-run init` when a full test command is known ([how it decides](docs/reference.md#what-happens)).
 - **Autostart after a reboot** — `turbo-run autostart on` brings this project's supervisor back at logon when a run was going; `off` removes it ([what it sets up](docs/reference.md#after-a-crash-or-a-reboot)).
 - **Lean mode** — on by default (`lean.enabled`): leaner GSD settings, less effort for GSD's planner and the lane sessions, a STATE.md budget; `turbo-run lean status` shows it, `turbo-run lean off` restores GSD's settings ([what it changes](docs/reference.md#lean-mode)).
+- **Build path (v0.6)** — on by default (`build.enabled`): eligible phases run by code — parallel slices in their own worktrees, short headless sessions per role, the same GSD files; `build.enabled: false` keeps the lean path, and a project set up with v0.5.x has `false` in its config until you change it ([how](docs/reference.md#build-path-turbo-run-build)).
 
 ## Troubleshooting
 
@@ -108,7 +109,7 @@ The [full reference](docs/reference.md) covers every command, the config, owner 
 3. ✅ **The owner in the loop** — question cards answered ahead (session, pane, Telegram), push and CI, the live view, live sittings.
 4. ✅ **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging.
 5. ✅ **Adoption** — `/turbo-adopt`: plug turbo into a milestone that is already in progress — where it stands, what was skipped, all questions up front, a plan for the rest.
-6. **Lean turbo** — ✅ the lean GSD profile: no gates that catch nothing, less thinking and reading, one fixer pass, one full test run per phase, `turbo-run cost` *(v0.5.x, current)*; the build path: code conducts the phase, and each plan starts in its own short session as soon as the plans it needs are merged *(v0.6, in progress)*.
+6. ✅ **Lean turbo** — ✅ the lean GSD profile: no gates that catch nothing, less thinking and reading, one fixer pass, one full test run per phase, `turbo-run cost` *(v0.5)*; ✅ the build path: code conducts the phase, and each plan starts in its own short session as soon as the plans it needs are merged *(v0.6.x, current)*.
 
 ## License
 

@@ -51,9 +51,12 @@ import { recoverSupervisor } from '../lib/sup-recover.mjs';
 import { WHATIF_VALUE_FLAGS, runExecWhatif } from '../lib/exec-whatif.mjs';
 import { gitRunner } from '../lib/staleness.mjs';
 import { runCostCommand, spawnCostLog } from '../lib/cost.mjs';
+import { buildLaneDeps, runnerOf, runningBuilds, stopBuild, waitBuildPaused } from '../lib/build-lane.mjs';
+import { loadBuildState } from '../lib/build-queue.mjs';
+import { buildOf, buildRows } from '../lib/view.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost|build> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', '--merge', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
@@ -300,25 +303,34 @@ const damagedLine = (d) => `supervisor: state damaged (supervisor.json: ${d.why}
 
 // What status prints next to the lanes: the attended phases, the open questions, the owner's language.
 function statusOpts(root, config) {
-  return { attended: attendedPhases(root), questions: openQuestions(root).length, lang: config?.lang === 'ru' ? 'ru' : 'en', resumes: resumeRequests(root) };
+  return { root, attended: attendedPhases(root), questions: openQuestions(root).length, lang: config?.lang === 'ru' ? 'ru' : 'en', resumes: resumeRequests(root) };
 }
 
 // rangeLine false: the caller printed the range line already. attended: attendedPhases; a mark holds every lane, so
 // the lane line names the hold instead of a session to watch.
 // closed: Stage 5's line about the closed phases turbo skips (lib/cli-adopt.mjs closedLineFor), after the supervisor line.
-function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en', resumes = [], closed = null } = {}) {
+// Stage 6 B4 (spec §6.7): a build lane's step and slices (lib/view.mjs buildRows), under its lane line
+function printBuildRows(root, lane, lang) {
+  if (!root) return;
+  for (const row of buildRows(buildOf(root, lane, { home: claudeHome() }), lang)) out(`  ${row}`);
+}
+
+function printStatus(sup, running, { root = null, rangeLine = true, attended = [], questions = 0, lang = 'en', resumes = [], closed = null } = {}) {
   const finished = sup.range ? ' · range finished' : ' · milestone finished';
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.planOnly ? ' · plan only' : ''}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
   if (closed) out(closed);
   if (sup.range && rangeLine) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
-  if (sup.lanes) return printLanes(sup, { attended, questions, lang, resumes, running });
+  if (sup.lanes) return printLanes(sup, { root, attended, questions, lang, resumes, running });
   // F5: a resume handed to a slots supervisor that a supervisor of this mode has not taken yet
   for (const p of resumes) out(`resume asked: phase ${p} · ${running ? 'the running supervisor takes it at its next check' : 'taken when the supervisor starts (turbo-run start)'}`);
   if (sup.lane?.forceRelaunch) {
     // a resumed lane: its recorded session belongs to the run before the resume and is replaced at the next check
     const when = running ? "at the supervisor's next check" : 'once a supervisor runs: turbo-run start';
     out(`lane: phase ${sup.lane.phase} · relaunch pending (resume) · replaces session ${sup.lane.sessionId} ${when} · mode ${sup.lane.mode || 'safe'}`);
+  } else if (sup.lane?.path === 'build') {
+    out(`lane: phase ${sup.lane.phase} · build pid ${sup.lane.pid} · restarts ${sup.lane.restarts ?? 0} · since ${sup.lane.launchedAt}`);
+    printBuildRows(root, sup.lane, lang);
   } else if (sup.lane) {
     const held = attended.map((a) => a.phase).join(', ');
     const next = held ? `held: phase ${held} attended in the owner's session; no lane runs until turbo-run attend <phase> --done` : `watch: claude attach ${sup.lane.sessionId}`;
@@ -327,12 +339,18 @@ function printStatus(sup, running, { rangeLine = true, attended = [], questions 
 }
 
 // spec §8 (D16): the summary line, then one block per lane: what it runs, where, and what to do next.
-function printLanes(sup, { attended, questions, lang, resumes = [], running = false }) {
+function printLanes(sup, { root = null, attended, questions, lang, resumes = [], running = false }) {
   const held = new Set(attended.map((a) => a.phase));
   const asked = new Set(resumes);
   const lanes = supervisorLanes(sup);
   out(lanesSummary({ lanes: lanes.length, questions, next: sup.next || null }, lang));
   for (const l of lanes) {
+    if (l.path === 'build') {
+      // Stage 6 B4: a build lane runs turbo-run build N, no session
+      out(`lane ${l.key}: ${laneLabel(l)} · slot ${l.slot} ${l.slotPath} · build pid ${l.pid} · restarts ${l.restarts ?? 0} · since ${l.launchedAt || '-'}`);
+      printBuildRows(root, l, lang);
+      continue;
+    }
     out(`lane ${l.key}: ${laneLabel(l)} · slot ${l.slot} ${l.slotPath} · session ${l.sessionId || 'none yet'} · restarts ${l.restarts ?? 0} · since ${l.launchedAt || '-'}`);
     // F5: a resume handed to the running supervisor that it has not taken yet
     if (l.job === 'phase' && asked.has(l.phase)) out(`  resume asked: ${running ? 'the running supervisor relaunches it at its next check' : 'taken when the supervisor starts (turbo-run start)'}`);
@@ -418,6 +436,8 @@ async function makeCtx(root, mode = 'safe') {
       strays: ({ sinceMs, seen }) => findStrays({ watch: strayWatch(root, config, { slots }), sinceMs, seen }),
       // Stage 6 D10: lean mode at a phase's boundary, before its launch (checkout) or its slot (slots)
       leanBoundary: (phase) => leanBoundary({ root, phase, core, log: (l) => ctx.deps.log(l), effort: () => effortApply({ root, env: process.env }) }),
+      // Stage 6 B4 (spec §6.1): eligible phases run turbo-run build N as a detached lane (lib/build-lane.mjs)
+      build: buildLaneDeps(root, config),
     },
   };
   if (plugins) {
@@ -769,9 +789,33 @@ function ownerClaude(root) {
 // A job that Claude Code's idle-exited background service no longer runs (no pid) is stopped as it is, and so is one
 // listed alive when the service is gone and no process carries it; one it may run gets the service kicked up and its
 // stop tried once more (lib/claude.mjs daemonAware).
-function stopLanes(root, before) {
+function stopLanes(root, before, { prevStop = null } = {}) {
   const after = readJson(supPath(root), null);
   const warn = (line) => process.stderr.write(`warn: ${line}\n`);
+  // Stage 6 B4 (spec §6.6, §6.7): a running build pauses on the owner's first stop (the owner-stop mark: running
+  // sessions finish and merge, nothing new starts); a stop while it already pauses for one ends its process tree
+  let buildCode = 0;
+  for (const b of runningBuilds(root)) {
+    let hold = null;
+    try {
+      hold = loadBuildState(runDir(root), b.phase)?.hold ?? null;
+    } catch { /* a damaged state: it pauses */ }
+    // the second stop: the build already pauses for one (its hold), or an earlier stop came after the build started
+    const started = Date.parse(runnerOf(root, b.phase)?.startedAt);
+    const stoppedOnce = Number.isFinite(started) && Date.parse(prevStop?.at) >= started;
+    const held = hold?.reason === 'stop' && Number.isFinite(started) && Date.parse(hold.at) >= started;
+    if (!held && !stoppedOnce) {
+      out(`phase ${b.phase}: the build stops after its running sessions; run turbo-run stop again to end them now`);
+      continue;
+    }
+    try {
+      stopBuild({ pid: b.pid });
+      out(`phase ${b.phase}: build pid ${b.pid} ended`);
+    } catch (e) {
+      warn(`phase ${b.phase}: ${e.message}`);
+      buildCode = 1;
+    }
+  }
   const claude = ownerClaude(root);
   const list = () => { try { return claude.list(); } catch (e) { return e; } };
   let ok = true;
@@ -802,6 +846,7 @@ function stopLanes(root, before) {
   }
   if (!ok) return 1;
   out('stopped');
+  if (buildCode) return buildCode;
   // spec §8: stop never touches the slots: their work and their branches stay for review
   if ([before, after].some((x) => x?.lanes && Object.keys(x.lanes).length)) out('their slots and branches stay for review');
   return 0;
@@ -933,6 +978,28 @@ function attendSettleMs() {
 // stops first, so no tick (a wake, a relaunch) runs alongside; then the mark, which holds every lane of any later
 // daemon until attend N --done or resume N clears it; then every lane session of this checkout stops (claude stop
 // keeps the conversation). The checkpoints the lane stopped at are asked ahead again.
+// Stage 6 B4 (spec §6.7): attend N of a build phase: the mark, then the wait until the build paused (it dispatches
+// nothing new, its running sessions finish and merge, and it exits); the phase is then the owner's. attend N --done
+// lets the supervisor relaunch `build N --resume`, which goes on from disk. GSD's gates stay on: the build path reviews
+// and verifies after the sitting.
+async function attendBuild(root, id, { plans, owner, slotPath = null }) {
+  writeAttend(root, id, { sessionId: null, owner });
+  cancelResume(root, id);
+  const minutes = buildSettings(loadConfig(root)).timeoutMin + 10;
+  const r = await waitBuildPaused(root, id, { timeoutMs: minutes * 60000, out });
+  if (!r.paused) {
+    process.stderr.write(`phase ${id}: the build has not paused after ${minutes} min; turbo-run stop twice ends it\n`);
+    return 1;
+  }
+  const released = releaseStops(root, id, slotPath ? { phaseRoot: slotPath } : {});
+  out(`phase ${id}: attended in this session; no lane starts, relaunches or wakes until turbo-run attend ${id} --done`);
+  if (slotPath) out(`open: cd "${slotPath}" && claude`);
+  out(`open plans: ${plans.join(', ')}`);
+  out(`gates: keep on (the build path reviews and verifies after attend ${id} --done)`);
+  printReleased(root, id, released);
+  return 0;
+}
+
 async function attend(root, id) {
   const damaged = readSupervisor(root).damaged;
   if (damaged?.unreadable) die(`supervisor.json cannot be read (${damaged.why}): no lane is known to attend; nothing was stopped. Check the file and the disk, then attend ${id}`);
@@ -946,6 +1013,11 @@ async function attend(root, id) {
   const sup = readJson(supPath(root), null);
   const lane = sup?.lane ? String(sup.lane.phase) : null;
   if (lane !== id) die(`phase ${id} is not the supervisor's lane${lane ? ` (that is phase ${lane})` : ''}: attend takes over the lane of the run (turbo-run status names it); nothing was stopped`);
+  // Stage 6 B4 (spec §6.7): a build pauses on its own: no new dispatch, its running sessions finish and merge
+  if (sup.lane.path === 'build') {
+    stopDaemon(root, sup);
+    return attendBuild(root, id, { plans, owner: sittingSession(root) });
+  }
   // GSD's gates in the sitting, decided here from the lane's mode and next step; the skill follows the gates: line
   const gates = attendGates({ mode: sup.lane.mode, next: nextStep(readProgress(root, id)) });
   if (gates.refuse) die(`phase ${id} is not ready to attend: ${gates.refuse}; nothing was stopped`);
@@ -984,6 +1056,8 @@ async function attendLane(root, id, sup) {
   const plans = openPlans(lane.slotPath, id);
   if (plans === null) die(`no single phase directory for phase ${id} under ${path.join(lane.slotPath, '.planning', 'phases')}: nothing to attend`);
   if (!plans.length) die(`phase ${id} has no plan without a summary: nothing to attend. For owner-only UAT items run /gsd-verify-work ${id} in ${lane.slotPath}, then /turbo-autonomous resume ${id}`);
+  // Stage 6 B4 (spec §6.7): a build lane pauses on its own; the daemon and the other lanes go on
+  if (lane.path === 'build') return attendBuild(root, id, { plans, owner: sittingSession(lane.slotPath), slotPath: lane.slotPath });
   const gates = attendGates({ mode: lane.mode, next: nextStep(readProgress(root, id)) });
   if (gates.refuse) die(`phase ${id} is not ready to attend: ${gates.refuse}; nothing was stopped`);
   writeAttend(root, id, { sessionId: lane.sessionId || null, owner: sittingSession(lane.slotPath) });
@@ -1129,12 +1203,17 @@ async function main() {
     case 'stop': {
       if (!root) die('no .planning directory found');
       // the owner's stop: a start at logon (autostart) leaves the run stopped until the owner's start or resume
+      // Stage 6 B4: the stop before this one, which a running build may still be pausing for
+      let prevStop = null;
+      try {
+        prevStop = readOwnerStop(root);
+      } catch { /* none */ }
       if (fs.existsSync(path.dirname(runDir(root)))) writeOwnerStop(root);
       const sup = readJson(supPath(root), null);
       stopDaemon(root, sup);
       // supervisor.json may be missing (never started) or unreadable for any reason: this
       // project's lane sessions are swept either way
-      const code = stopLanes(root, sup);
+      const code = stopLanes(root, sup, { prevStop });
       printLeftovers(gatesLeftovers(root));
       const damaged = readSupervisor(root).damaged;
       if (damaged) out(damaged.unreadable ? `supervisor.json cannot be read (${damaged.why}): kept as it is` : `supervisor.json is damaged (${damaged.why}): kept as it is; turbo-run start keeps it aside and rebuilds the lanes`);
@@ -1194,6 +1273,13 @@ async function main() {
       // Stage 6 M (spec §7): a phase's time and tokens by step and role; --log appends its line to supervisor.log
       if (!root) die('no .planning directory found');
       return runCostCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`) });
+    }
+    case 'build': {
+      // Stage 6 B4 (spec §6.3): the build path runs phase N by code; the supervisor launches it for eligible phases
+      if (process.env.TURBO_LANE) die("refused: build is the owner's: a lane never runs it", 2);
+      if (!root) die('no .planning directory found');
+      const { runBuildCommand } = await import('../lib/build.mjs');
+      return runBuildCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`) });
     }
     case 'annotate': {
       // spec §6.2 (L3): the markup session's brief and apply

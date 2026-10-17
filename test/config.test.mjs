@@ -307,7 +307,7 @@ test('Stage 5 B13: plan_drafts defaults, digit strings accepted, every invalid v
 test('Stage 6 L1 keys: lean, prep, lanes.effort and build: defaults, digit strings, partial objects, every invalid value names its key', () => {
   assert.deepEqual(EFFORTS, ['low', 'medium', 'high', 'xhigh', 'max']);
   assert.deepEqual(BUILD_ROLES, ['slicer', 'builder', 'fixer', 'researcher', 'reviewer', 'verifier']);
-  const build = { enabled: false, maxBuilders: 4, maxSessions: 6, effort: { slicer: 'high', builder: 'high', fixer: 'high', researcher: 'medium', reviewer: 'high', verifier: 'medium' }, stallMin: 15, timeoutMin: 120, adoptPlans: false };
+  const build = { enabled: true, maxBuilders: 4, maxSessions: 6, effort: { slicer: 'high', builder: 'high', fixer: 'high', researcher: 'medium', reviewer: 'high', verifier: 'medium' }, stallMin: 15, timeoutMin: 120, adoptPlans: false };
   assert.deepEqual(leanSettings(DEFAULTS), { enabled: true, stateBudgetKb: 16 });
   assert.deepEqual(prepSettings(DEFAULTS), { lookahead: 1 });
   assert.equal(laneEffort(DEFAULTS), 'high');

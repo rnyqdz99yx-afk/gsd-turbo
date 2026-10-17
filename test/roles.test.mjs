@@ -205,7 +205,7 @@ test('slicer prompt carries the slicing rules the spec fixes', () => {
     /Cite the decisions a slice implements \(D-NN/,
     /never the whole test suite/,
     /do not commit/,
-    /no globs, no directories, nothing under \.planning\//,
+    /no globs, no directories, nothing GSD or turbo keeps \(the top of \.planning\/, its turbo\/, this phase's directory\)/,
   ]) assert.match(p, re);
   assert.match(p, /Before you ask, write the plan files that are done; do not commit them\./);
   assert.ok(!p.includes('commit the work that is done'), 'the slicer is never told to commit');

@@ -20,7 +20,7 @@ Requirements (each id goes into the requirements of at least one slice):
 
 ## Slices
 - A slice is work one builder finishes alone within an hour: its own files, at most 5 tasks, its plan at most 8 KB. Two slices never change the same file unless one depends on the other: split the work by file so slices run in parallel, and use depends_on only for a real need (it uses what the other creates).
-- Behaviour comes with its test in the same slice. List every file the slice creates, changes or deletes, tests included, as exact paths: no globs, no directories, nothing under .planning/.
+- Behaviour comes with its test in the same slice. List every file the slice creates, changes or deletes, tests included, as exact paths: no globs, no directories, nothing GSD or turbo keeps (the top of .planning/, its turbo/, this phase's directory).
 - Cite the decisions a slice implements (D-NN in its objective or in a task's action). Together the slices cite every decision of CONTEXT, except discretion and deferred items.
 - Every unverified assumption about an external system (an API's shape or limits, auth, a library's behaviour, a version) becomes a spike slice first: spike: true, wave 1, no depends_on; its one task proves or disproves the assumption with the smallest script or test and records the answer in its SUMMARY; the slices that rely on it depend on it.
 - Verification is commands with their expected result: the slice's targeted tests and checks, never the whole test suite.

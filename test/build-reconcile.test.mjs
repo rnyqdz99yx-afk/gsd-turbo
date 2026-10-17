@@ -121,6 +121,22 @@ test('partial work is salvaged', () => {
   assert.ok(createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.git('rev-parse', 'HEAD') }).path);
 });
 
+test('partial work is salvaged though the killed builder left its index.lock (CI Windows, B5)', () => {
+  const l = lane();
+  const w = inFlight(l, '33-02', (wt) => {
+    fs.writeFileSync(path.join(wt.path, 'more.js'), 'export const more = 1;\n');
+    fs.writeFileSync(path.resolve(wt.path, gitIn(wt.path, 'rev-parse', '--git-path', 'index.lock')), '');
+  });
+  const pauses = [];
+  const r = reconcile(l, { deps: { sleep: (ms) => pauses.push(ms) } });
+  const name = 'turbo-salvage/33-02-20261017T120000Z';
+  assert.deepEqual(r.actions.find((a) => a.id === '33-02'), { id: '33-02', action: 'salvaged', detail: name });
+  assert.equal(r.state.slices['33-02'].state, 'waiting');
+  assert.equal(l.git('show', `${name}:more.js`), 'export const more = 1;');
+  assert.deepEqual(pauses, [2000, 4000, 8000], 'the lock is waited for first: it may be a dying process');
+  assert.equal(exists(w.path), false);
+});
+
 // What a removal Windows stopped halfway leaves: git dropped the worktree's record and its .git file, the files stay.
 function halfRemoved(l, w) {
   const admin = path.resolve(w.path, gitIn(w.path, 'rev-parse', '--git-dir'));

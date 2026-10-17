@@ -47,7 +47,60 @@ export function summaryText({ phaseSlug, plan, reqs = [], status = 'complete', c
   ].join('\n');
 }
 
-// The act (run inside the fake claude, CommonJS; see buildAct). Kept free of outer names: it is written out as text.
+// The act's first half, before the fake claude prints anything: the role, the session id (new sessions numbered
+// b4000000-0000-4000-8000-<12-digit counter>), the call recorded in acts.jsonl. Sets current for the second half.
+// Parallel fakes never share a read-modify-write file: numbers are taken by exclusive creates, a session's role is a
+// file of its own.
+function actBegin({ argv, stdin, resume }) {
+  const fs = require('fs');
+  const path = require('path');
+  const dir = __dirname;
+  // the first free <prefix><k> in <dir>/<sub>, taken by an exclusive create -> k
+  const take = (sub, prefix) => {
+    fs.mkdirSync(path.join(dir, sub), { recursive: true });
+    for (let k = 1; ; k++) {
+      try {
+        fs.closeSync(fs.openSync(path.join(dir, sub, `${prefix}${k}`), 'wx'));
+        return k;
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+      }
+    }
+  };
+  const sessionFile = (sid) => path.join(dir, 'sessions', `${sid}.json`);
+  const ai = argv.indexOf('--agent');
+  let who = null;
+  if (resume) {
+    try {
+      who = JSON.parse(fs.readFileSync(sessionFile(resume), 'utf8'));
+    } catch (e) { /* a session this act did not start */ }
+  }
+  if (!who) {
+    who = { role: 'other', plan: null, summaryPath: null };
+    if (ai >= 0) who.role = argv[ai + 1];
+    else if (/^You are the slicer/.test(stdin)) who.role = 'slicer';
+    else if (/^You are a builder/.test(stdin)) {
+      who.role = 'builder';
+      who.plan = (/plan ([^,\s]+),/.exec(stdin) || [])[1] || null;
+      who.summaryPath = (/write (\S+-SUMMARY\.md):/.exec(stdin) || [])[1] || null;
+    } else if (/^You are the fixer/.test(stdin)) who.role = 'fixer';
+    else if (/^Read and execute/.test(stdin) && stdin.includes('discuss-phase-assumptions')) who.role = 'discuss';
+    else if (stdin.includes('Skill(skill="gsd-verify-work"')) who.role = 'verify-work';
+    else if (/^The merge of the main branch/.test(stdin)) who.role = 'integrate';
+  }
+  let id = resume;
+  if (!resume) {
+    id = `b4000000-0000-4000-8000-${String(take('ids', '')).padStart(12, '0')}`;
+    fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+    fs.writeFileSync(sessionFile(id), JSON.stringify(who));
+  }
+  const n = who.role === 'builder' ? take('calls', `${who.plan}-`) : 0;
+  fs.appendFileSync(path.join(dir, 'acts.jsonl'), `${JSON.stringify({ role: who.role, plan: who.plan, resume: resume || null, at: new Date().toISOString() })}\n`);
+  current = { id, who, n };
+  return { ...current, sessionId: resume ? undefined : id };
+}
+// The act's second half (run inside the fake claude after init, CommonJS; see buildAct). Kept free of outer names but
+// current: it is written out as text.
 function actMain({ argv, stdin, cwd, resume }) {
   const fs = require('fs');
   const path = require('path');
@@ -62,11 +115,6 @@ function actMain({ argv, stdin, cwd, resume }) {
     fs.writeFileSync(scriptFile, JSON.stringify(script, null, 2));
     return one;
   };
-  const stateFile = path.join(dir, 'act-state.json');
-  let st = { counter: 0, sessions: {}, calls: {} };
-  try {
-    st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-  } catch (e) { /* the first call */ }
   const git = (...a) => String(execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
   const write = (rel, text) => {
     const abs = path.join(cwd, ...rel.split('/'));
@@ -86,30 +134,7 @@ function actMain({ argv, stdin, cwd, resume }) {
     for (const f of files) write(f, map[f]);
     return files;
   };
-  const ai = argv.indexOf('--agent');
-  let who = resume ? st.sessions[resume] : null;
-  if (!who) {
-    who = { role: 'other', plan: null, summaryPath: null };
-    if (ai >= 0) who.role = argv[ai + 1];
-    else if (/^You are the slicer/.test(stdin)) who.role = 'slicer';
-    else if (/^You are a builder/.test(stdin)) {
-      who.role = 'builder';
-      who.plan = (/plan ([^,\s]+),/.exec(stdin) || [])[1] || null;
-      who.summaryPath = (/write (\S+-SUMMARY\.md):/.exec(stdin) || [])[1] || null;
-    } else if (/^You are the fixer/.test(stdin)) who.role = 'fixer';
-    else if (/^Read and execute/.test(stdin) && stdin.includes('discuss-phase-assumptions')) who.role = 'discuss';
-    else if (stdin.includes('Skill(skill="gsd-verify-work"')) who.role = 'verify-work';
-    else if (/^The merge of the main branch/.test(stdin)) who.role = 'integrate';
-  }
-  let id = resume;
-  if (!resume) {
-    st.counter += 1;
-    id = `b4000000-0000-4000-8000-${String(st.counter).padStart(12, '0')}`;
-  }
-  st.sessions[id] = who;
-  const n = who.role === 'builder' ? (st.calls[who.plan] = (st.calls[who.plan] || 0) + 1) : 0;
-  fs.writeFileSync(stateFile, JSON.stringify(st));
-  fs.appendFileSync(path.join(dir, 'acts.jsonl'), `${JSON.stringify({ role: who.role, plan: who.plan, resume: resume || null, at: new Date().toISOString() })}\n`);
+  const { id, who, n } = current || actBegin({ argv, stdin, cwd, resume });
   const answer = (o = {}) => {
     const queued = Array.isArray(script.results) && script.results.length ? shift('results') : undefined;
     return { ...(resume ? {} : { sessionId: id }), result: 'done', ...o, ...(queued !== undefined ? { result: queued } : {}) };
@@ -182,7 +207,7 @@ function actMain({ argv, stdin, cwd, resume }) {
 export function buildAct(dir, script = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const act = path.join(dir, 'build-act.cjs');
-  fs.writeFileSync(act, `'use strict';\nconst summaryText = ${summaryText.toString()};\nmodule.exports = ${actMain.toString()};\n`);
+  fs.writeFileSync(act, `'use strict';\nlet current = null;\nconst summaryText = ${summaryText.toString()};\n${actBegin.toString()}\nmodule.exports = ${actMain.toString()};\nmodule.exports.begin = actBegin;\n`);
   const file = path.join(dir, 'script.json');
   fs.writeFileSync(file, JSON.stringify(script, null, 2));
   return {
@@ -198,6 +223,41 @@ export function buildAct(dir, script = {}) {
       const now = JSON.parse(fs.readFileSync(file, 'utf8'));
       fs.writeFileSync(file, JSON.stringify({ ...now, ...patch }, null, 2));
     },
+  };
+}
+
+const DEMO_REL = '.planning/phases/05-demo';
+const specText = (name, expect) => `const test = require('node:test');\nconst assert = require('node:assert');\ntest('${name}', () => assert.equal(require('../src/${name}.js')(), ${expect}));\n`;
+// A slice's files: src/<name>.js returning value and test/<name>.test.js expecting expect.
+export const sliceFiles = (name, { value = 1, expect = 1 } = {}) => ({ [`src/${name}.js`]: `module.exports = () => ${value};\n`, [`test/${name}.test.js`]: specText(name, expect) });
+export const OWNER_BLOCK = 'Need you.\n## OWNER QUESTION\nQuestion: Which greeting should the bot use?\nContext: Two styles fit.\nOptions:\n1. Formal — Hello, Ann (recommended)\n2. Casual — Hi, Ann';
+
+// A whole phase 5 for the act: the slicer's four plans (05-03 depends on 05-02), builders with passing code, 05-02
+// asking the owner (ask), 05-04 merging a red test (red) fixed by the first fixer, a review with one warning fixed by
+// the second fixer, then a clean one, a passed verification. slices: per-slice fields merged in (delayMs, …).
+export async function phaseScript({ ask = true, red = true, slices = {} } = {}) {
+  const { compactPlan } = await import('./slices.mjs');
+  const plan = (id, name, o = {}) => compactPlan({ id, files: [`src/${name}.js`, `test/${name}.test.js`], ...o });
+  const review = (body) => ({ path: `${DEMO_REL}/05-REVIEW.md`, text: `---\nstatus: ${body ? 'issues_found' : 'clean'}\n---\n\n# Code Review\n\n${body || 'No findings.\n'}` });
+  return {
+    plans: {
+      [`${DEMO_REL}/05-01-PLAN.md`]: plan('05-01', 'a'),
+      [`${DEMO_REL}/05-02-PLAN.md`]: plan('05-02', 'b', { reqs: ['DEMO-02'], decisions: ['D-02'] }),
+      [`${DEMO_REL}/05-03-PLAN.md`]: plan('05-03', 'c', { wave: 2, deps: ['05-02'] }),
+      [`${DEMO_REL}/05-04-PLAN.md`]: plan('05-04', 'd'),
+    },
+    slices: {
+      '05-01': { files: sliceFiles('a'), ...slices['05-01'] },
+      '05-02': { files: sliceFiles('b'), ...(ask ? { ask: OWNER_BLOCK } : {}), ...slices['05-02'] },
+      '05-03': { files: sliceFiles('c'), ...slices['05-03'] },
+      '05-04': { files: sliceFiles('d', red ? { value: 1, expect: 2 } : {}), ...slices['05-04'] },
+    },
+    fixes: [
+      ...(red ? [{ files: { 'src/d.js': 'module.exports = () => 2;\n' }, message: 'fix(05): the red test', result: 'the red test — fixed' }] : []),
+      { files: { 'src/a.js': 'module.exports = () => 1; // trimmed\n' }, message: 'fix(05): WR-01 trim', result: 'WR-01 — fixed abc1234' },
+    ],
+    reviews: [review('### WR-01: no trim\n\n**File:** `src/a.js:1`\n**Issue:** the name is not trimmed.\n'), review('')],
+    verifications: [{ path: `${DEMO_REL}/05-VERIFICATION.md`, text: '---\nphase: 05-demo\nstatus: passed\nscore: 2/2 must-haves verified\n---\n\n# Phase 5: Verification\n' }],
   };
 }
 

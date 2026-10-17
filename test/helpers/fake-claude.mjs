@@ -13,8 +13,9 @@ import { SESSION, usage } from './transcripts.mjs';
 //   when tickSubagent, no stdout, then the result), grandchild: 'ignore' | 'inherit' (a node child with that stdout,
 //   its pid in <dir>/grandchild.pid; detached off Windows, as Claude Code starts its shell-tool commands),
 //   transcriptKey (the project directory's name instead of projectKey(cwd)), transcriptLateMs (the transcript's first
-//   line written that long after init instead of before it), act (Stage 6 B4: the absolute path of a CommonJS module,
-//   called with { argv, stdin, cwd, env, resume } after stdin is read; its { sessionId, result, isError, exitCode } win).
+//   line written that long after init instead of before it), act (Stage 6 B4: the absolute path of a CommonJS module
+//   called with { argv, stdin, cwd, env, resume }: its begin() before any output names the session, the module itself
+//   after init does the work; its { result, isError, exitCode } win).
 export const FAKE_MESSAGES = [
   ['msg_1', { input_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 1 }],
   ['msg_1', { input_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 5 }],
@@ -35,19 +36,26 @@ process.stdin.on('end', () => {
   const envOf = (k) => (process.env[k] === undefined ? null : process.env[k]);
   fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify({ argv, stdin, env: { CLAUDECODE: envOf('CLAUDECODE'), CLAUDE_CODE_SESSION_ID: envOf('CLAUDE_CODE_SESSION_ID'), CLAUDE_CONFIG_DIR: envOf('CLAUDE_CONFIG_DIR') } }) + '\\n');
   const ri = argv.indexOf('--resume');
-  // act (Stage 6 B4): a CommonJS module run before any output; its answer may name a new session and replace the
-  // result, isError and exitCode; a throw ends the run with its message on stderr, exit 1, no result event
-  let o = {};
+  // act (Stage 6 B4): a CommonJS module. Its optional begin(input) runs before any output and may name a new session
+  // ({ sessionId }); the module itself runs after init (the session is known, as a live claude's is, while it works)
+  // and its { result, isError, exitCode } replace the behavior's; a throw ends the run with its message on stderr,
+  // exit 1, no result event
+  const input = { argv, stdin, cwd: process.cwd(), env: process.env, resume: ri >= 0 ? argv[ri + 1] : null };
+  const failAct = (e) => {
+    process.stderr.write(String((e && e.message) || e) + '\\n');
+    process.exit(1);
+  };
+  let act = null;
+  let b = {};
   if (B.act) {
     try {
-      o = require(B.act)({ argv, stdin, cwd: process.cwd(), env: process.env, resume: ri >= 0 ? argv[ri + 1] : null }) || {};
+      act = require(B.act);
+      b = (typeof act.begin === 'function' && act.begin(input)) || {};
     } catch (e) {
-      process.stderr.write(String((e && e.message) || e) + '\\n');
-      process.exit(1);
+      failAct(e);
     }
   }
-  for (const k of ['result', 'isError', 'exitCode']) if (o[k] !== undefined) B[k] = o[k];
-  const id = ri >= 0 && !B.resumeNewId ? argv[ri + 1] : o.sessionId || B.sessionId;
+  const id = ri >= 0 && !B.resumeNewId ? argv[ri + 1] : b.sessionId || B.sessionId;
   const tdir = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', B.transcriptKey || process.cwd().replace(/[^A-Za-z0-9]/g, '-'));
   const tfile = path.join(tdir, id + '.jsonl');
   const firstLine = () => {
@@ -64,6 +72,15 @@ process.stdin.on('end', () => {
   }
   out({ type: 'system', subtype: 'hook_started', hook_name: 'SessionStart:startup' });
   out({ type: 'system', subtype: 'init', session_id: id, model: 'claude-opus-5-5', tools: ['Read'], permissionMode: 'bypassPermissions' });
+  if (act) {
+    let o = {};
+    try {
+      o = act(input) || {};
+    } catch (e) {
+      failAct(e);
+    }
+    for (const k of ['result', 'isError', 'exitCode']) if (o[k] !== undefined) B[k] = o[k];
+  }
   const finish = () => {
     for (const [mid, u] of B.messages) out({ type: 'assistant', session_id: id, parent_tool_use_id: null, message: { id: mid, usage: u } });
     if (!B.noResult) out({ type: 'result', subtype: B.isError ? 'error_during_execution' : 'success', is_error: Boolean(B.isError), result: B.result, session_id: id, usage: B.resultUsage });

@@ -134,8 +134,8 @@ test('a merge conflict rebuilds the slice once from the new HEAD, then asks the 
   let moved = false;
   every(t, () => {
     const x = Object.values(r2.ctx.state.slices).find((y) => y.rebuilds === 1);
-    // the fake claude acts before it starts its session: a slice is dispatched until then
-    if (!moved && x?.state === 'dispatched') {
+    // dispatched until its session starts, then running while the fake act waits before it writes
+    if (!moved && ['dispatched', 'running'].includes(x?.state)) {
       r2.write('src/shared.js', "module.exports = 'main';\n");
       r2.commit('feat: shared on the phase branch');
       moved = true;
@@ -181,7 +181,7 @@ test('attend and stop pause the queue: running slices finish and merge, nothing 
   for (const how of ['attend', 'stop']) {
     const r = await loopRig(t, { plans, slices, config: { build: { max_builders: 1 } } });
     every(t, () => {
-      if (r.ctx.state.slices['05-01'].state !== 'dispatched') return false;
+      if (!['dispatched', 'running'].includes(r.ctx.state.slices['05-01'].state)) return false;
       if (how === 'attend') writeAttend(r.root, '5');
       else writeOwnerStop(r.root);
       return true;

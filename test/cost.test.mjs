@@ -2,10 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpDir } from './helpers/tmp.mjs';
 import { writeBuildPhase4, writeLanePhase3, writeLanePhase5 } from './fixtures/cost.mjs';
 import { FORK, SESSION } from './helpers/transcripts.mjs';
-import { GAP_CAP_MS, IEU_WEIGHTS, costLine, eachLine, ieuOf, laneJobIds, laneTranscripts, phaseCost, recordSessionUsage, turboStepOf } from '../lib/cost.mjs';
+import { GAP_CAP_MS, IEU_WEIGHTS, costLine, eachLine, ieuOf, laneJobIds, laneTranscripts, phaseCost, recordSessionUsage, spawnCostLog, turboStepOf } from '../lib/cost.mjs';
 
 const U = { input_tokens: 100, cache_creation_input_tokens: 1000, cache_read_input_tokens: 0, output_tokens: 50 };
 
@@ -163,4 +165,29 @@ test('costLine names path, wall clock, IEU, sessions, slices, fix rounds and eac
   assert.equal(costLine(phaseCost({ root, phase: '9', env }), { path: 'lane' }), 'phase 9 cost: path lane · wall 0m00s · ≈IEU 0 · sessions 0 · slices 0 · fix rounds 0');
   assert.match(costLine(build), /^phase 4 cost: path build · /);
   assert.match(costLine(lane), /^phase 3 cost: path lane · /);
+});
+
+test('spawnCostLog logs a child that cannot start and never throws', async () => {
+  const logs = [];
+  const child = spawnCostLog({ script: path.resolve('bin/turbo-run.mjs'), root: tmpDir('cost'), phase: '4', log: (l) => logs.push(l), node: path.join(tmpDir('cost'), 'no-such-node.exe') });
+  await once(child, 'error');
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /^phase 4 cost: not measured: /);
+});
+
+test('spawnCostLog\'s detached child appends the cost line to supervisor.log', async () => {
+  const root = tmpDir('cost-b');
+  writeBuildPhase4(root);
+  const logs = [];
+  spawnCostLog({ script: path.resolve('bin/turbo-run.mjs'), root, phase: '4', log: (l) => logs.push(l), env: { ...process.env, CLAUDE_CONFIG_DIR: tmpDir('cost-home') } });
+  const file = path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log');
+  let text = '';
+  for (let i = 0; i < 200 && !/phase 4 cost: path build · wall 17m00s/.test(text); i++) {
+    await delay(100);
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch { /* not written yet */ }
+  }
+  assert.match(text, /phase 4 cost: path build · wall 17m00s/);
+  assert.deepEqual(logs, []);
 });

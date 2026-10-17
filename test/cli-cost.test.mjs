@@ -72,3 +72,17 @@ test('turbo-run cost: no data, and usage errors', () => {
     assert.equal(r.stderr.trim(), COST_USAGE, args.join(' '));
   }
 });
+
+test('turbo-run cost --project before --log measures the named project from anywhere; after --log it measures nothing', () => {
+  const p = project();
+  const other = tmpDir('cli-cost-other');
+  fs.mkdirSync(path.join(other, '.planning'));
+  const elsewhere = { ...p, root: other };
+  const logOf = (root) => path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log');
+  assert.match(run(['cost', '4', '--project', p.root, '--log'], elsewhere), /^phase 4 cost: path build · /);
+  assert.match(fs.readFileSync(logOf(p.root), 'utf8'), /Z phase 4 cost: path build · /);
+  const r = failure(['cost', '4', '--log', '--project', p.root], elsewhere);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--project .* was not taken \(it must come before --log\); nothing measured/);
+  assert.equal(fs.existsSync(logOf(other)), false, 'the working directory\'s project is never written');
+});

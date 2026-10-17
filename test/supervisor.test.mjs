@@ -1085,3 +1085,23 @@ test('every tick records the unfinished phases of the run in phase order (remain
   s = await tick({ ...fresh(), range: { from: '1', to: '2' } }, h.ctx);
   assert.deepEqual(s.remaining, [], 'only the range counts');
 });
+
+test('a finished phase starts its cost measurement once; one that cannot start is logged and the run goes on (Stage 6 M)', async () => {
+  for (const fail of [false, true]) {
+    const h = harness({ phases: [P('4')] });
+    const calls = [];
+    h.ctx.deps.phaseCost = (p) => {
+      calls.push(p);
+      if (fail) throw new Error('boom');
+    };
+    let s = await tick(fresh(), h.ctx);
+    h.phases[0].complete = true;
+    h.agents[0].state = 'done';
+    s = await tick(s, h.ctx);
+    assert.deepEqual(calls, ['4']);
+    assert.ok(h.notes.some((x) => x.key === 'phaseDone' && x.vars.phase === '4'), JSON.stringify(h.notes));
+    assert.equal(h.logs.includes('phase 4 cost: not measured: boom'), fail, h.logs.join('\n'));
+    s = await tick(s, h.ctx);
+    assert.deepEqual(calls, ['4'], 'measured once');
+  }
+});

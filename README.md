@@ -92,6 +92,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 - **Targeted tests** — set up by `turbo-run init` when a full test command is known ([how it decides](docs/reference.md#what-happens)).
 - **Autostart after a reboot** — `turbo-run autostart on` brings this project's supervisor back at logon when a run was going; `off` removes it ([what it sets up](docs/reference.md#after-a-crash-or-a-reboot)).
 - **Lean mode** — on by default (`lean.enabled`): leaner GSD settings, less effort for GSD's planner and the lane sessions, a STATE.md budget; `turbo-run lean status` shows it, `turbo-run lean off` restores GSD's settings ([what it changes](docs/reference.md#lean-mode)).
+- **Build path (v0.6)** — `build.enabled: true` runs eligible phases by code: parallel slices in their own worktrees, short headless sessions per role, the same GSD files ([how](docs/reference.md#build-path-turbo-run-build)).
 
 ## Troubleshooting
 

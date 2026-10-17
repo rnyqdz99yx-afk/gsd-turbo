@@ -123,7 +123,7 @@ To watch a phase live, run `claude attach <session id>` (the id is in the status
 The same commands work without the skill, in a bash-compatible shell (Git Bash on Windows):
 
 ```sh
-node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor   # also: init, start [--from <N>] [--to <N>], start --only <N>, start --all, status [--watch], view [--json], stop, resume <phase> [--start], autostart on|off|status, context [<phase>] [--json], adopt scan|plan|reverify|apply, cost <phase> [--compare <phase>] [--json]
+node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor   # also: init, start [--from <N>] [--to <N>], start --only <N>, start --all, status [--watch], view [--json], stop, resume <phase> [--start], autostart on|off|status, context [<phase>] [--json], adopt scan|plan|reverify|apply, cost <phase> [--compare <phase>] [--json], build <phase> [--resume] [--json]
 ```
 
 Below, `turbo-run` stands for this `node …/turbo-run.mjs` call; the installer does not put it on your PATH. Its other subcommands, such as `phase-step`, `staleness`, `gates`, `jobs`, `uat`, `lane-status`, `integrate`, `state-sync`, `context` and `test-changed`, are the deterministic steps the supervisor and the sessions call. You need them only for recovery: `turbo-run gates restore <N>` ([GSD settings turbo writes](#gsd-settings-turbo-writes)), `turbo-run lane-status <N> done` ([Full and safe mode](#full-and-safe-mode)) and `turbo-run state-sync <N>` ([Context and the resume position](#context-and-the-resume-position)).
@@ -406,6 +406,48 @@ Options:
 - **The slice check** (`lib/slice-lint.mjs`, `lintSlices(root, phase)`, no model). Kinds: `phase` (no phase directory), `empty` (no plans), `size` (over 8 KB), `structure` (GSD's `verify plan-structure` errors), `tasks` (none, or more than 5), `files` (none listed, a glob or directory, outside the project, under `.planning/`), `depends` (a `depends_on` naming no slice, or the slice itself), `coverage` (a phase requirement in no slice's `requirements`), `decisions` (a CONTEXT decision no slice cites, from GSD's `check decision-coverage-plan`), `cycle` (a `depends_on` cycle), `gsd` (gsd-tools could not run: code stops or retries, never sends it to the slicer). Shared files are not problems: they become edges of the build graph (`lib/exec-graph.mjs`). Problems go back to the slicer's session once (`formatProblems`); if they remain, the owner decides.
 - **GSD compatibility** (spec §6.9). The plans and summaries in the role prompts' format are valid for the installed GSD: `verify plan-structure`, `frontmatter validate`, `check decision-coverage-plan`, and `init manager`, `progress` and `verification status` read the phase as planned, then executed, then complete, and `phase complete` closes it. `test/slice-gsd-compat.test.mjs` pins this against the installed GSD (it skips where GSD is not installed).
 
+## Build path (`turbo-run build`)
+
+With `build.enabled: true` the supervisor runs an eligible phase by code instead of a `/turbo-phase` lane session: `turbo-run build <N>` (detached, its output in `.planning/turbo/logs/build-p<N>.log`) takes the phase through eleven steps, and a model works only in short headless sessions ([Headless sessions](#headless-sessions)), each with one role and the files it needs. The phase's files stay GSD's (CONTEXT, PLAN, SUMMARY, REVIEW, VERIFICATION, SECURITY, UAT; ROADMAP, STATE and REQUIREMENTS only through `gsd-tools`), so `/gsd-progress`, `/gsd-resume-work` and the lean path read the same phase.
+
+**Which phases.** The supervisor asks before each launch; the phase runs its lane session instead, with the reason in `supervisor.log` (`phase <N>: build path refused (<reason>); it runs /turbo-phase`, once per phase and reason; nothing is logged for `build.enabled is false`), when:
+- `build.enabled is false`;
+- `phase <N> is attended`;
+- `phase <N> started on the lean path (/turbo-phase): it finishes there` (a lane session's relaunch never asks: it stays a lane session);
+- `gsd-core not found`, or `gsd-core <version> is outside the tested range`;
+- `GSD commit_docs is false: the build path commits plans and summaries`;
+- `the project has git submodules: the build path does not build inside them`;
+- `phase <N> has GSD plans without a summary (<ids>): the lean path finishes them (build.adopt_plans: true lets the build path take them)`;
+- `depends_on cycle among: <ids>` (with plans to take).
+
+A phase that started on the build path (its `run/build-p<N>.json` exists) finishes on it, whatever the switches say; the only way back is `attend`.
+
+**The steps** (each idempotent, recorded in `run/build-p<N>.json` next to the slice state of [Build path: slices, worktrees and merges](#build-path-slices-worktrees-and-merges)):
+
+| Step | What runs | Session (role, agent, effort key) |
+|---|---|---|
+| `begin` | `gsd-tools query state.begin-phase`, `state-sync`; the phase base (HEAD) is recorded | — |
+| `discuss` | only without a CONTEXT.md: GSD's `discuss-phase-assumptions` with `--auto` | `discuss`, the workflow, `lanes.effort` |
+| `research` | only when the phase calls for it (the signals of [Lean mode](#lean-mode)) and has no RESEARCH.md; under 25 KB, no second code scan; committed `docs(phase-<N>): research` | `researcher`, `gsd-phase-researcher`, `researcher` |
+| `slice` | the slicer writes compact plans, the code check ([roles](#build-path-roles-and-slice-plans)) goes back to the same session once, then to you; committed `docs(phase-<N>): slice plans`. With `build.adopt_plans: true` GSD's plans are the slices | `slicer`, —, `slicer` |
+| `build` | the ready queue: up to `build.max_builders` builders in their worktrees, each merge tested at once; red: nothing new starts, one fixer, the retest, then you; a conflict: one rebuild from the new HEAD (the old branch kept as `turbo-salvage/<id>-<UTC>`), then you; a failed builder: one fresh try, then you; one `docs(phase-<N>): progress` commit per green merge | `builder`, `fixer` |
+| `review` | `gsd-code-reviewer` (standard) on the code the phase changed (`.planning/` left out); critical or warning findings: one fixer pass, the retest, then a review of the fix diff only (findings the fixer left open named in it); a second round only for a new critical; an old critical still there goes to you, never closed by a document | `reviewer`, `gsd-code-reviewer`, `reviewer`; `fixer` |
+| `verify` | `gsd-verifier`, one pass; `gaps_found`: a gap round (the slicer with VERIFICATION.md, plans with `gap_closure: true`, `docs(phase-<N>): gap slices (round <k>)`, then build again), at most `gap_rounds`, then you | `verifier`, `gsd-verifier`, `verifier` |
+| `security` | only when the phase touches authorization, private data or data routing: `gsd-security-auditor` returns its verdict, turbo writes `<NN>-SECURITY.md`; open threats: one fixer with their ids, one more audit, then you | `security`, `gsd-security-auditor`, `reviewer` |
+| `uat` | only when verification says `human_needed` or a UAT file exists (written from the verifier's human items when missing): `turbo-uat` and the `uat` commands in the skill's order, a sign-off card for the rows only you can accept, `uat.complete-session`, `gsd-verify-work`; an `issue` row starts a gap round | `uat`, `turbo-uat`, `verifier` |
+| `tests` | the full run (`test.full`, `TURBO_FULL=1`), red: one fixer, then you; then push and CI ([Push and CI](#push-and-ci-optional)) with one fixer per red CI round, at most `push.ci_fix_rounds` | `fixer` |
+| `close` | a checkout: `gsd-tools phase.complete`, `docs(phase-<N>): complete phase (build path)`, the owner answers committed, the lane record `done`; a slot: the main branch taken in (conflicts: one resolving session, then you), the full run, the lane record `ready` for the supervisor's merge | `integrate` (`fixer` effort) |
+
+**Owner cards.** Every card the build asks is held: only the slice that asks and the slices that depend on it wait, the others go on, and the lane status stays `running`. A session's own question goes back to the same session with your answer (`--resume`). When a step cannot go on alone it asks once: Try again (the step runs once more), Go on (only for the slice check, the review, the verification and the security audit: accept it as it is and go to the next step), Stop here (the phase waits as `failed`; `turbo-run resume <N>` starts it again, and the stopped step runs afresh). Your own words count as Stop here.
+
+**Attend, stop, restart.** `turbo-run attend <N>` of a build phase kills nothing: the build dispatches nothing new, lets its running sessions finish and merge, and exits; attend waits for that (up to `build.timeout_min` + 10 minutes) and hands you the open plans; `gates: keep on` (the build path reviews and verifies after `attend <N> --done`, when the supervisor relaunches the build and it goes on from disk). The first `turbo-run stop` pauses a build the same way (`phase <N>: the build stops after its running sessions; run turbo-run stop again to end them now`), between steps and before any new session too; a second stop ends its process tree. Stop here on a card leaves nothing behind: the next `turbo-run resume <N>` tries that step (or slice, or red fix) afresh. A build whose process died is relaunched with `--resume` and counted like a lane restart: the sessions of the dead run are ended first (their output cannot be read again), the slices are checked against git and the disk (nothing merged twice; partial work kept on `turbo-salvage/…`), and cards the questions file lost are asked again. An answered card, a `reintegrate` or a `ci-red` relaunches it with `--resume` as well: the build reads its cards and its inbox itself. A live build is never stall-woken; one per phase runs (`locks/build-run-p<N>.json`, a heartbeat every minute).
+
+**By hand.** `turbo-run build <N> [--resume] [--json]` runs it in the checkout (never in a lane session: `refused: build is the owner's: a lane never runs it`). Exit codes: 0 closed, 1 failed, 2 usage or refused (`refused: <reason>; phase <N> runs the lean path (/turbo-phase)`, or `phase <N> has a build in progress (step <step>): turbo-run build <N> --resume continues it`), 3 paused or already running (`phase <N>: a build runs already (pid <pid>)`). It prints `phase <N>: build closed`, `phase <N>: build paused (<why>)` or `phase <N>: build failed: <why>`; `--json` prints `{ phase, outcome, step, why, slices: { total, merged } }` and sends the build's own lines to stderr.
+
+**What you see.** The pane, the band and `turbo-run status` show a build phase by its step (`Phase 5 — building slices`), its slices counted (`Slices: 1 of 4 merged · 1 building · 1 waits for you`) and each slice at work, waiting for you, failed or blocked, with its last action and time. Every line of the build also goes to `supervisor.log` as `phase <N> build: …`. Each session's usage goes to `run/cost-p<N>.json` by step and role ([Measuring a phase](#measuring-a-phase-turbo-run-cost)); a build run by hand logs the phase's cost line itself.
+
+**The demo.** `node scripts/build-demo.mjs` from a clone builds a scratch two-phase GSD project with the real claude (about 20–40 Opus sessions, 30–90 minutes): parallel slices, one card, one red merge, review, verification and `phase.complete`, then one `PASS|FAIL` line per check and `turbo-run cost`. `--dry-run` only makes the project; `--keep` keeps it (a failed run keeps it anyway).
+
 ## Build path: slices, worktrees and merges
 
 On the build path each plan of the phase is a slice, built by its own short session in its own git worktree and merged into the phase branch as soon as it is done; the plans form the same graph as in [What-if](#what-if-plans-as-a-graph) (`depends_on`, shared written files, `key_links` reads, edges only forward in plan order).
@@ -581,13 +623,13 @@ node <gsd-turbo checkout>/bin/turbo-run.mjs cost 33 --project <path to the proje
 | `lean.state_budget_kb` | `16` | The size STATE.md is kept within in lean mode, in KB (4–1024); only history sections are trimmed. |
 | `prep.lookahead` | `1` | How many of the next unfinished phases are prepared ahead (1–10; see [Prep and lane markup](#prep-and-lane-markup)). |
 | `lanes.effort` | `"high"` | `--effort` of every lane session: `low`, `medium`, `high`, `xhigh` or `max`. |
-| `build.enabled` | `false` | The build path of a phase (v0.6); not used yet. |
-| `build.max_builders` | `4` | Builder sessions of one phase at once (1–12); the build path (v0.6), not used yet. |
-| `build.max_sessions` | `6` | Headless sessions on this machine at once (1–20); the build path (v0.6), not used yet. |
-| `build.effort` | `{ "slicer": "high", "builder": "high", "fixer": "high", "researcher": "medium", "reviewer": "high", "verifier": "medium" }` | Effort by role (each `low`…`max`; a partial object keeps the other roles' defaults); the build path (v0.6), not used yet. |
-| `build.stall_min` | `15` | Minutes without a new transcript line before a headless session is stopped (1–120, less than `build.timeout_min`); the build path (v0.6), not used yet. |
-| `build.timeout_min` | `120` | Minutes before a headless session is stopped (5–720); the build path (v0.6), not used yet. |
-| `build.adopt_plans` | `false` | Let the build path take a phase whose plans GSD's planner wrote; the build path (v0.6), not used yet. |
+| `build.enabled` | `false` | The build path of eligible phases (v0.6): `turbo-run build N` instead of a lane session ([Build path](#build-path-turbo-run-build)). |
+| `build.max_builders` | `4` | Builder sessions of one phase at once (1–12); the build path (v0.6). |
+| `build.max_sessions` | `6` | Headless sessions on this machine at once (1–20); the build path (v0.6). |
+| `build.effort` | `{ "slicer": "high", "builder": "high", "fixer": "high", "researcher": "medium", "reviewer": "high", "verifier": "medium" }` | Effort by role (each `low`…`max`; a partial object keeps the other roles' defaults); the build path (v0.6). |
+| `build.stall_min` | `15` | Minutes without a new transcript line before a headless session is stopped (1–120, less than `build.timeout_min`); the build path (v0.6). |
+| `build.timeout_min` | `120` | Minutes before a headless session is stopped (5–720); the build path (v0.6). |
+| `build.adopt_plans` | `false` | Let the build path take a phase whose plans GSD's planner wrote; the build path (v0.6). |
 
 ### Several packages in `test.full`
 

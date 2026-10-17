@@ -5,6 +5,7 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { tick } from '../lib/supervisor.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
+import { freshLanes, lanesHarness, P as LP } from './helpers/lanes.mjs';
 
 // lane temp directories live under turbo's own directory: a throwaway Claude home for the whole test file
 process.env.CLAUDE_CONFIG_DIR = tmpDir('lean-home');
@@ -51,4 +52,49 @@ test('a lane launches with lanes.effort: high by default, the configured value o
   m.ctx.config.lanes.effort = 'medium';
   await tick(fresh(), m.ctx);
   assert.equal(m.launched[0].effort, 'medium');
+});
+
+test('checkout mode: leanBoundary runs for the phase right before its launch, and before a relaunch', async () => {
+  const h = harness({ phases: [P('2')] });
+  h.ctx.deps.leanBoundary = (phase) => {
+    h.order.push(`lean ${phase}`);
+    return { applied: false, why: 'current' };
+  };
+  let s = await tick(fresh(), h.ctx);
+  assert.deepEqual(h.order, ['lean 2', 'launch 2']);
+  // a relaunch (resume N --start): the old session gone
+  s.lane.forceRelaunch = true;
+  h.agents = [];
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.order, ['lean 2', 'launch 2', 'lean 2', 'launch 2']);
+  // a dep that throws is logged and never stops the launch
+  const t2 = harness({ phases: [P('3')] });
+  const logs = [];
+  t2.ctx.deps.log = (l) => logs.push(l);
+  t2.ctx.deps.leanBoundary = () => { throw new Error('lean broke\nmore'); };
+  await tick(fresh(), t2.ctx);
+  assert.equal(t2.launched.length, 1);
+  assert.ok(logs.includes('lean: lean broke'), logs.join('\n'));
+});
+
+test('slots mode: leanBoundary runs before the slot is prepared; no call without the dep', async () => {
+  const h = lanesHarness({ phases: [LP('1')] });
+  const order = [];
+  const prepare = h.ctx.deps.slots.prepare;
+  h.ctx.deps.slots.prepare = (slot, job) => {
+    order.push(`prepare ${job.phase}`);
+    return prepare(slot, job);
+  };
+  h.ctx.deps.leanBoundary = (phase) => {
+    order.push(`lean ${phase}`);
+    return { applied: true, why: null };
+  };
+  await tick(freshLanes(), h.ctx);
+  assert.deepEqual(order, ['lean 1', 'prepare 1']);
+  assert.equal(h.launched.length, 1);
+  // the slot lane's own launch (startLane with a control root) runs no boundary: the slot took the commit
+  assert.equal(order.filter((x) => x.startsWith('lean')).length, 1);
+  const plain = lanesHarness({ phases: [LP('1')] });
+  await tick(freshLanes(), plain.ctx);
+  assert.equal(plain.launched.length, 1);
 });

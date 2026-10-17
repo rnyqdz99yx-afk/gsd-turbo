@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
 import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
 import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings, leanSettings, prepSettings, laneEffort, buildSettings } from '../lib/config.mjs';
-import { effortApply, effortOffHint, runLeanCommand } from '../lib/lean.mjs';
+import { effortApply, effortOffHint, leanBoundary, runLeanCommand } from '../lib/lean.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
 import { InitAborted, initProject } from '../lib/project-init.mjs';
 import { closedLineFor, runAdoptCommand } from '../lib/cli-adopt.mjs';
@@ -410,6 +410,8 @@ async function makeCtx(root, mode = 'safe') {
       leaseHeld: () => !lostLease(root),
       // smoke F2: new entries next to the project while lanes run (lib/strays.mjs)
       strays: ({ sinceMs, seen }) => findStrays({ watch: strayWatch(root, config, { slots }), sinceMs, seen }),
+      // Stage 6 D10: lean mode at a phase's boundary, before its launch (checkout) or its slot (slots)
+      leanBoundary: (phase) => leanBoundary({ root, phase, core, log: (l) => ctx.deps.log(l), effort: () => effortApply({ root, env: process.env }) }),
     },
   };
   if (plugins) {

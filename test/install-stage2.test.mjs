@@ -2,13 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { tmpDir } from './helpers/tmp.mjs';
+import { slicePhase } from './helpers/slices.mjs';
 import { install, uninstall } from '../install.mjs';
 
 test('install ships the stage-2 skill, agent and libraries under turbo-* names only', () => {
   const home = tmpDir('home');
   const m = install({ repoDir: path.resolve('.'), claudeHome: home, dryRun: false });
-  assert.equal(m.version, '0.4.0');
+  assert.equal(m.version, '0.5.0');
   for (const f of ['skills/turbo-phase/SKILL.md', 'agents/turbo-uat.md', 'turbo/lib/cli-phase.mjs', 'turbo/lib/staleness.mjs', 'turbo/lib/gates.mjs', 'turbo/lib/uat.mjs', 'turbo/lib/uat-stand.mjs']) {
     assert.ok(m.files.includes(f), f);
     assert.ok(fs.existsSync(path.join(home, f)), f);
@@ -16,4 +18,23 @@ test('install ships the stage-2 skill, agent and libraries under turbo-* names o
   assert.ok(m.files.every((f) => /^(turbo\/|skills\/turbo-|agents\/turbo-)/.test(f)), 'turbo namespace only');
   assert.equal(uninstall({ claudeHome: home }), m.files.length);
   assert.ok(!fs.existsSync(path.join(home, 'agents', 'turbo-uat.md')));
+});
+
+test('install ships the build-path role prompts and the installed roles.mjs reads them', async () => {
+  const home = tmpDir('home');
+  const m = install({ repoDir: path.resolve('.'), claudeHome: home });
+  for (const f of ['turbo/roles/slicer.md', 'turbo/roles/builder.md', 'turbo/roles/fixer.md', 'turbo/roles/owner-question.md', 'turbo/lib/roles.mjs', 'turbo/lib/slice-lint.mjs']) {
+    assert.ok(m.files.includes(f), f);
+    assert.ok(fs.existsSync(path.join(home, f)), f);
+  }
+  assert.ok(JSON.parse(fs.readFileSync('package.json', 'utf8')).files.includes('roles'), 'package.json files ships roles/');
+  fs.appendFileSync(path.join(home, 'turbo', 'roles', 'fixer.md'), '\nInstalled copy.\n');
+  const { rolePrompt } = await import(pathToFileURL(path.join(home, 'turbo', 'lib', 'roles.mjs')).href);
+  const root = slicePhase();
+  const dir = path.join(root, '.planning', 'phases', '05-demo');
+  const p = rolePrompt('fixer', { root, phase: '5', contextPath: path.join(dir, '05-CONTEXT.md'), findingsPath: path.join(dir, '05-REVIEW.md'), lang: 'en' });
+  assert.ok(p.includes('is a GSD code review.'), p);
+  assert.ok(p.includes('Installed copy.'), 'the installed roles.mjs reads the installed roles/, not the checkout');
+  assert.equal(uninstall({ claudeHome: home }), m.files.length);
+  assert.ok(!fs.existsSync(path.join(home, 'turbo', 'roles')));
 });

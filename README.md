@@ -74,6 +74,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 | `/turbo-autonomous away` | answer ahead everything that can be, then leave; `back` shows what happened |
 | `/turbo-autonomous attend N` | run the rest of phase N here with you (for plans that need a device, a login…) |
 | `/turbo-autonomous stop` | stop the supervisor and its sessions |
+| `/turbo-adopt` | move a milestone already running on plain GSD onto turbo: where it stands, the closed phases turbo skips, all questions at once, one commit; then `/turbo-autonomous` ([details](docs/reference.md#adopting-a-running-milestone)) |
 
 ## Before you start
 
@@ -90,6 +91,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 - **Push and CI** — the supervisor pushes and watches GitHub Actions; a red run goes back to the phase to fix ([setup](docs/reference.md#push-and-ci-optional)).
 - **Targeted tests** — set up by `turbo-run init` when a full test command is known ([how it decides](docs/reference.md#what-happens)).
 - **Autostart after a reboot** — `turbo-run autostart on` brings this project's supervisor back at logon when a run was going; `off` removes it ([what it sets up](docs/reference.md#after-a-crash-or-a-reboot)).
+- **Lean mode** — on by default (`lean.enabled`): leaner GSD settings, less effort for GSD's planner and the lane sessions, a STATE.md budget; `turbo-run lean status` shows it, `turbo-run lean off` restores GSD's settings ([what it changes](docs/reference.md#lean-mode)).
 
 ## Troubleshooting
 
@@ -104,9 +106,9 @@ The [full reference](docs/reference.md) covers every command, the config, owner 
 1. ✅ **Core** — supervisor, automatic continuation, targeted tests, safe mode.
 2. ✅ **Faster phases** — `/turbo-phase` with a parallel prologue, gates in parallel, `turbo-uat`.
 3. ✅ **The owner in the loop** — question cards answered ahead (session, pane, Telegram), push and CI, the live view, live sittings.
-4. ✅ **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging. *(v0.4.x, current)*
-5. **Adoption** — `/turbo-adopt`: plug turbo into a milestone that is already in progress — where it stands, what was skipped, all questions up front, a plan for the rest.
-6. **Execution graph** — each plan starts as soon as its dependencies are done instead of waiting for whole waves.
+4. ✅ **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging.
+5. ✅ **Adoption** — `/turbo-adopt`: plug turbo into a milestone that is already in progress — where it stands, what was skipped, all questions up front, a plan for the rest.
+6. **Lean turbo** — ✅ the lean GSD profile: no gates that catch nothing, less thinking and reading, one fixer pass, one full test run per phase, `turbo-run cost` *(v0.5.x, current)*; the build path: code conducts the phase, and each plan starts in its own short session as soon as the plans it needs are merged *(v0.6, in progress)*.
 
 ## License
 

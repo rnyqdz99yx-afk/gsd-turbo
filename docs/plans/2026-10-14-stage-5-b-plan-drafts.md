@@ -20,6 +20,33 @@ What this plan consumes, by exact name (it re-implements none of it):
 - `lib/view.mjs` and `mod/hooks/view-model.mjs`: the step words tables (`step: { plan: … }`), `laneCwd` (via `lib/lanes-state.mjs`).
 - Tests: `test/helpers/tmp.mjs` (`tmpDir`, `tmpGitRepo`), `test/helpers/plans.mjs` (`writePhase`), `test/helpers/slots.mjs` (`ISOLATED`, `gitIn`).
 
+## As implemented (after the spec review of 2026-10-14)
+
+The spec (§5, §6, §7, §9) is corrected to match; where this plan's text differs, the spec and the code win:
+- Cut: the rolling "draft later" re-dispatch (drafts go out once, at most `max_parallel`, default **8**; the rest is
+  GSD's), `plan-drafts --status`, the pane line (Task 9), timings for steps other than `plan`.
+- Timings live in `run/plan-clock-p<N>.json`, not in `phase-p<N>.json` (no writer of that file has to carry them).
+- `--plan` also removes drafts an agent left in the phase directory and prints `commit first: <ids>`; it applies only
+  to the waves after the one GSD plans now; `min_waves` decides only before the first draft; `drafts off: plan checker
+  disabled` when GSD's `plan_checker` / `workflow.plan_check` is false.
+- `--drafting`/`--reconcile` record the phase directory's plan files; `--drafted`/`--reconciled`/`--replan` remove
+  (with a commit when committed) and refuse on the agent's own `<id>-PLAN.md` or any new plan file no outline row
+  names. ROADMAP.md, STATE.md and commits are not looked at: GSD's own chunked planners touch them in every run (G16;
+  second review C1). Every `use: gsd` marks the record `replanned`.
+- Predecessors also include the earlier plans the draft's `## Draft assumptions` names. The guard (B11) reads the
+  newest adding commit and goes over every plan file of the phase, refusing any equal to a recorded drafted/reconciled
+  blob; a plan file no outline row names is not refused (GSD's revision may split a plan; third review C1). A lost
+  agent's plan files go when its plan is handed to GSD; `--replan` uses an agent's base only while it may be at work;
+  `--plan` answering `drafts off` on a resume marks every draft not promoted `replanned`.
+- Every Wave GSD dispatches after `drafts on` (a resumed session's first runnable Wave too) runs `--reconcile` per
+  entry; draft returns of a Wave are handled before GSD's resume check of it (second review C2, I1).
+- `plan_drafts.enabled: false` writes `lastPlan` too, for the measurement line. `planCheckState` (web-hygiene2) counts a
+  `create phase plan` commit only when it changes STATE.md and adds no plan file (a planner's own commit: I3, I-b).
+- `filesModified` of `lib/annotate.mjs` is not imported (it would pull annotate's imports into the lane commands):
+  `lib/plan-drafts.mjs` reads `files_modified` with its own `frontList`, which also reads `depends_on`.
+- The skill section **Plan drafts** sits after **Stale report**; its tests are `test/skill-plan-drafts.test.mjs`, and
+  the clock tests `test/plan-clock.test.mjs` (both separate files, so the merge with other branches stays clean).
+
 ## Decisions this plan makes where the spec is open
 
 - **B1 Where things live.** Draft files and the record: `<localRunDir(root)>/drafts-p<N>/` (the lane's own checkout: the slot, or the main checkout in `checkout` mode), ignored by git through `.planning/turbo/.gitignore`'s `run/`. A new `prepareSlot` wipes them with the slot; the record and the files go together. The measurement line goes to `<logsDir(root)>/supervisor.log` (the control root), appended the way `lib/watchdog.mjs` appends its line (`<ISO> <line>\n`).

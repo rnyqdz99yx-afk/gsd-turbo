@@ -5,10 +5,12 @@ import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
-import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
+import { cwdInside, laneSessionIds, ownSessionId } from '../lib/transcripts.mjs';
+import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings, leanSettings, prepSettings, laneEffort, buildSettings } from '../lib/config.mjs';
+import { effortApply, effortOffHint, leanApply, leanBoundary, runLeanCommand } from '../lib/lean.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
-import { nestedTestPackages, realTestScript } from '../lib/test-changed.mjs';
+import { InitAborted, initProject } from '../lib/project-init.mjs';
+import { closedLineFor, runAdoptCommand } from '../lib/cli-adopt.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { createGit } from '../lib/push.mjs';
 import { createGh } from '../lib/ci.mjs';
@@ -23,7 +25,7 @@ import { notify } from '../lib/notify.mjs';
 import { PHASE_COMMANDS, VALUE_FLAGS as PHASE_VALUE_FLAGS, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { ownerRequestFiles } from '../lib/uat.mjs';
 import { nextStep, readProgress } from '../lib/phase-progress.mjs';
-import { ABSENT, createGsdConfig, gatesLeftovers } from '../lib/gates.mjs';
+import { gatesLeftovers } from '../lib/gates.mjs';
 import { measureContext } from '../lib/context.mjs';
 import { buildView, clean, formatView, openQuestions, runLineFor, withRunLine } from '../lib/view.mjs';
 import { quietOnClosedPipe, useColor, watch } from '../lib/watch.mjs';
@@ -46,15 +48,16 @@ import { runWorktreesCommand } from '../lib/worktrees.mjs';
 import { watchSupervisor } from '../lib/watchdog.mjs';
 import { readSupervisor } from '../lib/sup-state.mjs';
 import { recoverSupervisor } from '../lib/sup-recover.mjs';
+import { WHATIF_VALUE_FLAGS, runExecWhatif } from '../lib/exec-whatif.mjs';
+import { gitRunner } from '../lib/staleness.mjs';
+import { runCostCommand, spawnCostLog } from '../lib/cost.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|questions|answer|agent-tail|away|back|autostart|worktrees> [args]';
-// GSD runs workflow.test_command through bash -c, so the shell expands the config dir.
-const TURBO_TEST_CMD = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" test-changed';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax']);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', '--merge', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
-const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart']);
+const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart', 'lean']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const START_USAGE = 'usage: turbo-run start [--from <phase>] [--to <phase>] | start --only <phase> | start --all';
@@ -65,8 +68,6 @@ const START_CONFIRM_MS = 5000;
 const EXEC_TIMEOUT_MS = 30000;
 // POSIX single quotes; a ' inside becomes '\''.
 const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-// Why a child process failed, without Node's "Command failed: <argv>" text.
-const execWhy = (e) => (typeof e.status === 'number' ? `exit status ${e.status}` : e.code || e.signal || 'failed');
 
 function die(text, code = 1) { process.stderr.write(text + '\n'); process.exit(code); }
 function flag(args, name, fallback = '') { const i = args.indexOf(name); return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback; }
@@ -145,6 +146,11 @@ function runtimeConfig(config) {
   };
   laneGates(c);
   maxPrep(c, maxLanes(c));
+  // Stage 6 §6.10: lean.*, prep.lookahead, lanes.effort and build.* the same way
+  leanSettings(c);
+  prepSettings(c);
+  laneEffort(c);
+  buildSettings(c);
   return c;
 }
 // stop/resume must work even when the config is broken.
@@ -299,9 +305,11 @@ function statusOpts(root, config) {
 
 // rangeLine false: the caller printed the range line already. attended: attendedPhases; a mark holds every lane, so
 // the lane line names the hold instead of a session to watch.
-function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en', resumes = [] } = {}) {
+// closed: Stage 5's line about the closed phases turbo skips (lib/cli-adopt.mjs closedLineFor), after the supervisor line.
+function printStatus(sup, running, { rangeLine = true, attended = [], questions = 0, lang = 'en', resumes = [], closed = null } = {}) {
   const finished = sup.range ? ' · range finished' : ' · milestone finished';
   out(`supervisor: ${running ? `running pid ${sup.pid}` : 'not running'}${sup.planOnly ? ' · plan only' : ''}${sup.finished ? finished : ''}${sup.halted ? ' · halted' : ''}`);
+  if (closed) out(closed);
   if (sup.range && rangeLine) out(`range: phases ${rangeLabel(sup.range)}`);
   if (sup.failingSince) out(`failing since ${sup.failingSince} · log: ${SUPERVISOR_LOG}`);
   if (sup.lanes) return printLanes(sup, { attended, questions, lang, resumes, running });
@@ -377,6 +385,9 @@ async function makeCtx(root, mode = 'safe') {
   const logFile = path.join(logsDir(root), 'supervisor.log');
   const slots = lanesSettings(config.lanes).mode === 'slots' && mode === 'full';
   const plugins = slots ? await loadLanePlugins() : null;
+  const log = (line) => {
+    try { fs.appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* logging is best-effort */ }
+  };
   const ctx = {
     root, config, mode: mode === 'full' ? 'full' : 'safe', turboRun: `node ${shQuote(SELF.replace(/\\/g, '/'))}`,
     ...(slots ? { lanes: 'slots' } : {}),
@@ -396,13 +407,17 @@ async function makeCtx(root, mode = 'safe') {
       // (a phaseDone tells of a lane still in supervisor.json: its line leaves that lane out, review I5)
       notify: (key, vars) => notify(config, withRunLine(msg(config.lang, key, vars), runLineFor(root, config, { leaving: key === 'phaseDone' ? vars?.phase : null }))),
       now: () => new Date(),
-      log: (line) => {
-        try { fs.appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* logging is best-effort */ }
-      },
+      log,
+      // Stage 6 M (spec §7): the closed phase's cost line, from a detached turbo-run cost <N> --log; a job's session ids
+      // (its job state), logged before claude rm takes them
+      phaseCost: (phase) => spawnCostLog({ script: SELF, root, phase, log }),
+      jobSessions: (jobId, cwd) => laneSessionIds({ home: claudeHome(), root: cwd, jobId }),
       // probed right before a launch: a lease revoked mid-tick (stop, resume, another start) launches nothing
       leaseHeld: () => !lostLease(root),
       // smoke F2: new entries next to the project while lanes run (lib/strays.mjs)
       strays: ({ sinceMs, seen }) => findStrays({ watch: strayWatch(root, config, { slots }), sinceMs, seen }),
+      // Stage 6 D10: lean mode at a phase's boundary, before its launch (checkout) or its slot (slots)
+      leanBoundary: (phase) => leanBoundary({ root, phase, core, log: (l) => ctx.deps.log(l), effort: () => effortApply({ root, env: process.env }) }),
     },
   };
   if (plugins) {
@@ -521,6 +536,9 @@ async function start(root, requested = undefined, { planOnly = false, logon = fa
     writeJsonAtomic(supPath(root), rest);
   }
   if (planOnly) out('plan only: prep and lane markup jobs run in the slots; no phase runs');
+  // Stage 5 §4.10: the closed phases with a stale verification are skipped; said until the owner decides in /turbo-adopt
+  const closed = closedLineFor(root, config.lang);
+  if (closed) out(closed);
   // the run goes on: a start at logon takes it up again after a reboot (Gap 2)
   clearOwnerStop(root);
   ensureDir(logsDir(root));
@@ -789,70 +807,6 @@ function stopLanes(root, before) {
   return 0;
 }
 
-// GSD 1.16 with an empty workflow.test_command runs: xcodebuild test for an Xcode project (within
-// depth 2, not under node_modules; post-merge gate), else `make test` for a Makefile with a
-// test: target, else `just test` for a Justfile, else `npm test` when package.json exists.
-// turbo's default full command is GSD's own choice only in the npm case, and usable only with a
-// test script. Returns why it is not, or null.
-function npmTestBlocker(root) {
-  const has = (f) => fs.existsSync(path.join(root, f));
-  const read = (f) => { try { return fs.readFileSync(path.join(root, f), 'utf8'); } catch { return ''; } };
-  const isX = (n) => n.endsWith('.xcodeproj');
-  let top = [];
-  try { top = fs.readdirSync(root, { withFileTypes: true }); } catch { /* reported below as no package.json */ }
-  for (const e of top) if (isX(e.name)) return `GSD runs xcodebuild test for ${e.name}`;
-  for (const e of top) {
-    if (!e.isDirectory() || e.name === 'node_modules') continue;
-    let names = [];
-    try { names = fs.readdirSync(path.join(root, e.name)); } catch { /* unreadable */ }
-    const x = names.find(isX);
-    if (x) return `GSD runs xcodebuild test for ${e.name}/${x}`;
-  }
-  if (has('Makefile') && /^test:/m.test(read('Makefile'))) return 'GSD runs make test (Makefile has a test target)';
-  if (has('Justfile') || has('justfile')) return 'GSD runs just test (Justfile)';
-  if (!has('package.json')) return 'no package.json';
-  let pkg = null;
-  try { pkg = JSON.parse(read('package.json').replace(/^\uFEFF/, '')); } catch { return 'package.json cannot be parsed'; }
-  const script = pkg?.scripts?.test;
-  return typeof script === 'string' && script.trim() ? null : 'package.json has no test script';
-}
-
-// The full command test-changed falls back to: an explicitly set test.full (a command, or a list of entries,
-// which must be valid), or the default `npm test` where GSD itself would run it. Anything else would let a gate
-// pass on a subset.
-function knownFullCommand(root, config) {
-  const full = config.test?.full;
-  if (Array.isArray(full)) { fullEntries(full, root); return { full }; } // an invalid list throws a config error
-  if (full !== DEFAULTS.test.full) return typeof full === 'string' && full.trim() ? { full } : { why: 'test.full is empty or not a string' };
-  const why = npmTestBlocker(root);
-  return why ? { why } : { full };
-}
-const showFull = (full) => (typeof full === 'string' ? full : JSON.stringify(full));
-
-// Nested packages with their own test script that test.full does not run. A config this init created gets
-// test.full as a list: the root command first (none when the root package.json is missing or has no real test
-// script: a workspaces root, npm's stub), then one entry per package. Otherwise init only warns and prints the
-// entries to add. Returns the list it wrote, or null.
-function coverNestedPackages(root, res, known) {
-  const nested = nestedTestPackages(root);
-  if (!nested.length) return null;
-  const entries = fullEntries(loadConfig(root).test?.full, root);
-  const missing = nested.filter((p) => !entries.some((e) => e.dir === p.dir));
-  if (!missing.length) return null;
-  const rootTests = realTestScript(readJson(path.join(root, 'package.json'), null)?.scripts?.test);
-  const noRootTests = ['no package.json', 'package.json has no test script'].includes(known.why) || (known.full === DEFAULTS.test.full && !rootTests);
-  const rootCommand = noRootTests ? '' : typeof known.full === 'string' ? known.full : null;
-  if (res.created && rootCommand !== null) {
-    const list = [...(rootCommand ? [rootCommand] : []), ...missing];
-    writeJsonAtomic(res.file, deepMerge(readJson(res.file, {}), { test: { full: list } }));
-    out(`test.full set to the root command and every nested package with its own test script: ${JSON.stringify(list)}`);
-    return list;
-  }
-  for (const p of missing) out(`warn: nested package ${p.dir} has its own test script that test.full does not run`);
-  out(`to run them, add to test.full (a list) in .planning/turbo/config.json: ${JSON.stringify(missing)}`);
-  return null;
-}
-
 // The view of the project, read fresh: what view prints and status --watch redraws.
 function readView(root) {
   const config = runtimeConfig(loadConfig(root));
@@ -1101,61 +1055,14 @@ async function main() {
       const lang = flag(args, '--lang', 'en');
       const autonomy = flag(args, '--autonomy', 'standard');
       if (!['en', 'ru'].includes(lang) || !['standard', 'max'].includes(autonomy)) die('init [--lang en|ru] [--autonomy standard|max]');
-      const core = gsdCoreDir(root);
-      const tool = core && path.join(core, 'bin', 'gsd-tools.cjs');
-      // Read the previous test command before anything is written: it is never overwritten
-      // without first being kept as test.full.
-      let prev = '';
-      if (tool) {
-        try {
-          prev = execFileSync(process.execPath, [tool, 'config-get', 'workflow.test_command', '--default', '', '--raw', '--cwd', root], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' }).replace(/\r?\n$/, '');
-        } catch (e) {
-          const detail = String(e.stderr || '').trim().split(/\r?\n/)[0] || '';
-          die(`init aborted: gsd-tools config-get workflow.test_command failed (${execWhy(e)})${detail ? `: ${detail}` : ''}; nothing was changed`);
-        }
+      // lib/project-init.mjs: the same lines and changes; where it stops, the message and exit 1
+      try {
+        // Stage 6 §5.1: lean mode's keys (no commit: init commits nothing) and GSD's agent effort
+        return initProject(root, { lang, autonomy, out, lean: (o) => leanApply({ ...o, effort: () => effortApply({ root, env: process.env }) }) });
+      } catch (e) {
+        if (e instanceof InitAborted) die(e.message);
+        throw e;
       }
-      const res = initConfig(root, { lang, autonomy });
-      const config = loadConfig(root); // an existing corrupt config fails init
-      const prevIsTurbo = prev.includes('turbo-run.mjs');
-      let known;
-      if (prev && !prevIsTurbo) {
-        writeJsonAtomic(res.file, deepMerge(readJson(res.file, {}), { test: { full: prev } }));
-        out(`kept previous workflow.test_command as test.full: ${prev}`);
-        known = { full: prev };
-      } else {
-        known = knownFullCommand(root, config);
-      }
-      const list = coverNestedPackages(root, res, known);
-      if (list) known = { full: list };
-      if (tool) {
-        if (known.full !== undefined) {
-          try {
-            execFileSync(process.execPath, [tool, 'config-set', 'workflow.test_command', TURBO_TEST_CMD, '--cwd', root], { stdio: 'inherit', windowsHide: true, timeout: EXEC_TIMEOUT_MS, killSignal: 'SIGKILL' });
-          } catch (e) { die(`gsd-tools config-set workflow.test_command failed (${execWhy(e)})`); }
-          out(`workflow.test_command set to turbo-run test-changed (full test command: ${showFull(known.full)})`);
-        } else {
-          // GSD keeps choosing the test runner itself; nothing in the GSD config changes
-          out(`no known full test command: ${known.why}`);
-          out('targeted tests not enabled: set test.full in .planning/turbo/config.json, then run init again');
-          if (prevIsTurbo) out('warn: workflow.test_command already runs turbo-run test-changed, but no full test command is known: set test.full and run init again, or reset workflow.test_command (see the README, Uninstall)');
-        }
-        // GSD's adaptive prompts key on its own context_window (200000 when unset); a value the project set stays
-        const gsdCfg = createGsdConfig({ root, core });
-        const window = config.context_window;
-        try {
-          if (gsdCfg.get('context_window') === ABSENT) {
-            if (!Number.isInteger(window) || window <= 0) out(`warn: context_window ${JSON.stringify(window)} in .planning/turbo/config.json is not a positive integer; GSD's context_window not set`);
-            else {
-              gsdCfg.set('context_window', String(window));
-              out(`context_window set to ${window} in .planning/config.json (GSD had none; its default is 200000)`);
-            }
-          }
-        } catch (e) { die(`init: ${e.message}`); }
-      } else {
-        out('gsd-core not found: workflow.test_command not set');
-      }
-      out(`${res.created ? 'created' : 'kept'} ${res.file}`);
-      return 0;
     }
     case 'start': {
       if (!root) die('no .planning directory found');
@@ -1194,10 +1101,12 @@ async function main() {
       const leftovers = gatesLeftovers(root);
       const attended = attendedPhases(root); // spec §8: phases the owner runs in their session; no lane runs meanwhile
       if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ...(damaged ? { damaged } : {}), ownerRequests, gatesOff: leftovers.gates, attended }, null, 2)); return 0; }
+      // Stage 5 §4.10: the closed phases turbo skips, until the owner decides in /turbo-adopt
+      const closed = closedLineFor(root, config.lang, { running });
       if (damaged?.unreadable) out(`supervisor: state cannot be read now (supervisor.json: ${damaged.why}); look again in a moment; if it stays so, check the file and the disk`);
       else if (damaged) out(damagedLine(damaged));
-      else if (!sup) out('supervisor: not running (never started)');
-      else printStatus(sup, running, { ...statusOpts(root, config), attended });
+      else if (!sup) out(`supervisor: not running (never started)${closed ? `\n${closed}` : ''}`);
+      else printStatus(sup, running, { ...statusOpts(root, config), attended, closed });
       for (const f of ownerRequests) out(`owner request: ${f}`);
       // v0.3.3: the questions a phase stopped for, in the owner's words
       const said = config.lang === 'ru' ? ['вопрос к вам: фаза', 'ответить'] : ['owner question: phase', 'answer'];
@@ -1242,6 +1151,49 @@ async function main() {
       const failing = r.code ? r.lines.at(-1) : null;
       for (const line of r.lines) (line === failing ? process.stderr : process.stdout).write(`${line}\n`);
       return r.code;
+    }
+    case 'adopt': {
+      // Stage 5 (spec §4, §7): /turbo-adopt's command; the owner's, never a lane's, and it never starts the run
+      refuseInLane('adopt');
+      return runAdoptCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`), supervisorAlive: (sup) => supAlive(sup, pollOf(root)) });
+    }
+    case 'exec-whatif': {
+      // Stage 6 (spec docs/specs/2026-10-15-stage-6-design.md §5): measure first. Reads a finished phase's plans, git
+      // and transcripts and compares GSD's waves with a ready queue; it writes nothing
+      let config = DEFAULTS;
+      let slotsBase = null;
+      try {
+        if (root) config = loadConfig(root);
+        if (root) slotsBase = slotsDir(root, config);
+      } catch {
+        // a broken config loses only max_executors and lanes.dir: the defaults serve a read-only calculator
+        if (root) slotsBase = slotsDir(root, DEFAULTS);
+      }
+      const deps = root ? { git: gitRunner(root), home: claudeHome(), slotsBase, maxExecutors: Number(config.max_executors) || 20 } : {};
+      return runExecWhatif(args, { root, out, err: (l) => process.stderr.write(`${l}\n`), deps });
+    }
+    case 'lean': {
+      // Stage 6 §5.6 (L1): lean mode's status, apply and off; apply and off are the owner's
+      if (!root) die('no .planning directory found');
+      return runLeanCommand(args, {
+        root,
+        out,
+        err: (l) => process.stderr.write(`${l}\n`),
+        deps: {
+          loadPhases: () => {
+            const core = gsdCoreDir(root);
+            if (!core) throw new Error('gsd-core not found');
+            return loadPhases(root, core).phases;
+          },
+          effort: () => effortApply({ root, env: process.env }),
+          hint: () => effortOffHint(),
+        },
+      });
+    }
+    case 'cost': {
+      // Stage 6 M (spec §7): a phase's time and tokens by step and role; --log appends its line to supervisor.log
+      if (!root) die('no .planning directory found');
+      return runCostCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`) });
     }
     case 'annotate': {
       // spec §6.2 (L3): the markup session's brief and apply
@@ -1378,7 +1330,9 @@ async function main() {
     }
     case 'test-changed': {
       const { runTestChanged } = await import('../lib/test-changed.mjs');
-      return runTestChanged({ root: root || process.cwd() });
+      const m = args.indexOf('--merge');
+      if (m >= 0 && (!args[m + 1] || args[m + 1].startsWith('--'))) die('usage: turbo-run test-changed [--merge <sha>]', 2);
+      return runTestChanged({ root: root || process.cwd(), merge: m >= 0 ? args[m + 1] : null });
     }
     default:
       die(USAGE);

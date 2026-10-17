@@ -11,6 +11,7 @@ import { decodeGuardArg } from '../lib/lane-guard.mjs';
 import { STEPS } from '../lib/phase-progress.mjs';
 import { askOwner } from '../lib/questions.mjs';
 import { writeAttend } from '../lib/attend.mjs';
+import { LEAN_KEYS } from '../lib/lean.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
 // NOT_LANE: turbo's own tests may run inside a turbo lane; a CLI call is the owner's unless a test says otherwise
@@ -569,7 +570,8 @@ test('status and stop name the GSD gates and docs commits a stopped phase left o
   for (const l of want) assert.ok(r.stdout.includes(`${l}\n`), r.stdout);
   assert.equal(fs.readFileSync(path.join(gatesDir, 'p3.json'), 'utf8'), state, 'never restored by status or stop');
   assert.ok(fs.existsSync(docs));
-  assert.equal(p.gsdCalls().length, 0, 'no gsd-tools call: nothing was restored');
+  // Stage 5 §4.10: status reads the phase list (init manager) for its closed-phases line; nothing else
+  assert.deepEqual(p.gsdCalls().filter((a) => !(a[0] === 'init' && a[1] === 'manager')), [], 'no other gsd-tools call: nothing was restored');
   fs.rmSync(gatesDir, { recursive: true });
   fs.rmSync(docs);
   assert.doesNotMatch(run(['status'], p.root, p.env), /off: phase/);
@@ -963,7 +965,10 @@ test('init keeps the previous test command verbatim as test.full and sets the tu
   assert.deepEqual(calls[0], ['config-get', 'workflow.test_command', '--default', '', '--raw', '--cwd', p.root]);
   assert.deepEqual(calls[1], ['config-set', 'workflow.test_command', TURBO_TEST_CMD, '--cwd', p.root]);
   const gsd = spy.calls().filter((c) => /gsd-tools\.cjs$/.test(c.args[0] || ''));
-  assert.deepEqual(gsd.map((c) => [c.args[1], c.args[2], c.timeout]), [['config-get', 'workflow.test_command', 30000], ['config-set', 'workflow.test_command', 30000], ['config-get', 'context_window', 30000], ['config-set', 'context_window', 30000]]);
+  assert.deepEqual(gsd.slice(0, 4).map((c) => [c.args[1], c.args[2], c.timeout]), [['config-get', 'workflow.test_command', 30000], ['config-set', 'workflow.test_command', 30000], ['config-get', 'context_window', 30000], ['config-set', 'context_window', 30000]]);
+  // then lean mode's keys (Stage 6 L1; pinned in test/cli-lean.test.mjs)
+  const leanKeys = LEAN_KEYS.map(([k]) => k);
+  for (const c of gsd.slice(4)) assert.ok(['config-get', 'config-set'].includes(c.args[1]) && leanKeys.includes(c.args[2]) && c.timeout === 30000, JSON.stringify(c.args.slice(1, 3)));
 });
 
 test('init sets workflow.test_command only where GSD itself would run npm test, or a full command is known', () => {
@@ -1009,7 +1014,8 @@ test('init run again keeps test.full and re-sets the command when it is known, w
 });
 
 test('init gives GSD turbo\'s context_window when .planning/config.json sets none, and says so; a set one stays', () => {
-  const p = fakeProject({ config: { context_window: 400000 } });
+  // lean off: lean mode gives GSD its own context_window (pinned in test/cli-lean.test.mjs)
+  const p = fakeProject({ config: { context_window: 400000, lean: { enabled: false } } });
   let stdout = run(['init'], p.root, p.env);
   assert.deepEqual(p.gsdCalls().filter((a) => a[1] === 'context_window'), [
     ['config-get', 'context_window', '--default', '__turbo_absent__', '--raw', '--cwd', p.root],
@@ -1017,7 +1023,7 @@ test('init gives GSD turbo\'s context_window when .planning/config.json sets non
   ]);
   assert.match(stdout, /^context_window set to 400000 in \.planning\/config\.json \(GSD had none; its default is 200000\)$/m);
 
-  const q = fakeProject({ contextWindow: '200000' });
+  const q = fakeProject({ contextWindow: '200000', config: { notify: { desktop: false, telegram: false }, lean: { enabled: false } } });
   stdout = run(['init'], q.root, q.env);
   assert.ok(!q.gsdCalls().some((a) => a[0] === 'config-set' && a[1] === 'context_window'), stdout);
   assert.doesNotMatch(stdout, /context_window set/);

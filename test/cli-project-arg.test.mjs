@@ -69,3 +69,10 @@ test('turbo-run questions and answer take their values through cli-phase VALUE_F
   assert.deepEqual(readAnswers(named, '32').map((r) => [r.answer, r.by]), [['--project', 'pane']]);
   assert.deepEqual(readAnswers(here, '32'), []);
 });
+
+test('Stage 5: adopt\'s value flags (--answers, --plan-sha, --lang) keep a --project text as their value', () => {
+  const { named, here } = projects();
+  for (const f of ['--answers', '--plan-sha', '--lang']) {
+    assert.equal(JSON.parse(run(['view', f, '--project', '--project', named, '--json'], here)).ui.lang, 'ru', f);
+  }
+});

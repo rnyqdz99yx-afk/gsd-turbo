@@ -769,3 +769,25 @@ test('resume N --start while the service is down: the kick brings it up and the 
   t = await tick(t, g.ctx);
   assert.equal(g.launched.length, 2);
 });
+
+test('a wake logs the transcript the job went on in before claude stop: the next wake moves it on (Stage 6 M)', async () => {
+  const h = harness();
+  const order = [];
+  h.ctx.deps.jobSessions = (id, cwd) => {
+    order.push(`ids ${id}`);
+    assert.equal(cwd, h.root);
+    return [id, `${id}-2222-4333-8444-555555555555`, 'b0b0b0b0-0000-4000-8000-000000000001'];
+  };
+  const { stop } = h.ctx.deps.claude;
+  h.ctx.deps.claude.stop = (id) => {
+    order.push(`stop ${id}`);
+    return stop(id);
+  };
+  let s = await stoppedLane(h);
+  owner(h, '02-01-t2', 1);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1);
+  assert.deepEqual(order, ['ids 1a2b3c4d', 'stop 1a2b3c4d']);
+  assert.ok(h.logs.includes('phase 2 job 1a2b3c4d sessions b0b0b0b0-0000-4000-8000-000000000001'), h.logs.join('\n'));
+});

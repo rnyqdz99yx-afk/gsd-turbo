@@ -1,11 +1,11 @@
 {
   "name": "gsd-turbo",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Parallel, unattended execution overlay for GSD (get-shit-done) on Claude Code",
   "type": "module",
   "license": "MIT",
   "engines": { "node": ">=20" },
   "bin": { "turbo-run": "bin/turbo-run.mjs" },
   "scripts": { "test": "node --test" },
-  "files": ["bin", "lib", "mod", "skills", "agents", "install.mjs", "README.md", "LICENSE"]
+  "files": ["bin", "lib", "roles", "mod", "skills", "agents", "install.mjs", "README.md", "LICENSE"]
 }

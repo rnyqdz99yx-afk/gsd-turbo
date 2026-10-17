@@ -21,6 +21,15 @@ test('turbo-prep: frontmatter, /turbo-phase\'s three steps by reference, its own
   for (const banned of ['args="N --chunked"', 'gsd-execute-phase', 'turbo-run ask N', 'needs-owner --job', 'git push', 'gsd-turbo-']) assert.ok(!s.includes(banned), banned);
 });
 
+test('turbo-prep skill (lean): its sections follow the Lean mode section when phase-step --prep prints lean: on', () => {
+  const s = prep().replace(/\r\n/g, '\n');
+  const conv = s.slice(s.indexOf('\n## Conventions\n'), s.indexOf('\n## Changes for prep\n')).split('\n');
+  const line = conv.find((l) => l.startsWith('- **Lean:** '));
+  for (const n of ['`turbo-run phase-step N --prep`', '`lean: on`', '**Lean mode**', '**Finish**']) assert.ok(line?.includes(n), n);
+  assert.ok(conv.indexOf(line) === conv.findIndex((l) => l.startsWith('- The steps are')) + 1, 'right after the bullet on /turbo-phase\'s steps');
+  assert.ok(phase().includes('\n## Lean mode\n'), 'the section it names exists');
+});
+
 test('turbo-prep relies on /turbo-phase sections that exist and say what prep overrides', () => {
   const p = phase();
   for (const step of PREP_STEPS) assert.ok(p.includes(`\n### ${step}\n`), `turbo-phase has ### ${step}`);

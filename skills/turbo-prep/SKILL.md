@@ -15,6 +15,7 @@ This is a prep job (spec §6.1): it saves the phase's lane time later and decide
 
 - `turbo-run` means `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs"`. Always run that full form, from the project root.
 - The steps are `/turbo-phase`'s own. Read `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/turbo-phase/SKILL.md` once, before the step loop, and follow its section **Conventions** and its step sections **freshness**, **discuss** and **prologue** exactly, with the changes in **Changes for prep** below. Nothing else of that skill runs here: no plan, no execution, no gates, no owner questions, no push, no UAT.
+- **Lean:** when `turbo-run phase-step N --prep` prints `lean: on` first, that skill's section **Lean mode** applies to those sections too, except its records commit: the bases it leaves uncommitted go into **Finish**'s commit.
 - Run `turbo-run doctor` once at the start: `mode: full` is required; anything else → **Stop** with the reason `doctor: <mode>`.
 
 ## Changes for prep

@@ -67,7 +67,8 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
   команда turbo (`plan-drafts --promote`) с проверками, коммит — сообщением GSD. Для GSD план выглядит так, будто его
   написал его собственный одноплановый вызов: возобновление chunked-планирования пропускает его (G6), проверка
   планов идёт по всему набору (G8).
-- **D4. Черновики по умолчанию включены** (`plan_drafts.enabled: true`). Почему: владелец выбрал этот способ и принял
+- **D4. Черновики по умолчанию включены** (`plan_drafts.enabled: true`). *Изменено 2026-10-17: в v0.5.0 черновики
+  выключены по умолчанию до их живой проверки (Stage 6, D7).* Почему: владелец выбрал этот способ и принял
   риск переделок (решение 3); каждый план всё равно проходит сверку и затем неизменённую проверку GSD; при любом
   сомнении — обычный путь GSD; ключ выключает всё одной строкой; замер (§5.8) показывает разницу. Условие релиза:
   живая проверка §12 п.5 прошла; иначе v0.5.0 выходит с `false` по умолчанию.
@@ -95,12 +96,14 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
 | G7 | Правило волн планировщика: волна = 1 + max(волн зависимостей); пересечение `files_modified` двигает план в следующую волну; у планов одной волны пересечений быть не должно | `agents/gsd-planner.md:745-761` | `--promote` проверяет это детерминированно |
 | G8 | После всех волн: `## PLANNING COMPLETE` → шаг 10 `gsd-plan-checker` по `*-PLAN.md` → шаг 12 цикл ревизий (до 3) → 13 (покрытие требований и решений, `state.planned-phase`, разметка волн в ROADMAP, коммит) | `plan-phase.md:972,997-1060,1122-1180,1287-1434` | проверка GSD не обходится: черновики заканчиваются до шага 9 |
 | G9 | Контракт ревизии: `required_property` + evidence + severity обязательны; конфликт с решениями — `## REVISION_CONFLICT`; «не перепланировать с нуля» | `plan-phase.md:1160-1180`; `gsd-core/references/planner-revision.md` | сверка — ревизия с измерением `draft-reconcile` |
-| G10 | Для Claude GSD объявляет `maxConcurrency: 20`, `backgroundDispatch: false` | `gsd-core/bin/lib/capability-registry.cjs:580-595` | ≤ 6 черновиков разом укладываются |
-| G11 | `init manager`: `roadmap_complete` — только метаданные (чекбокс); `phase_complete` идёт от проверки (`isPhaseComplete`), `implementation_complete` = все планы с SUMMARY; фаза `executed` с непройденной проверкой → рекомендация `verify` | `gsd-core/bin/lib/init.cjs:196-233,2660-2690,2812-2828` | классификация фаз adopt (§4.2); turbo уже считает `[x]` + все SUMMARY «закрытой» (T1) |
+| G10 | Для Claude GSD объявляет `maxConcurrency: 20`, `backgroundDispatch: false` | `gsd-core/bin/lib/capability-registry.cjs:580-595` | ≤ 8 черновиков разом укладываются |
+| G16 | Собственный ход `gsd-planner` кончается шагами `update_roadmap` (правка ROADMAP.md) и `git_commit` (`docs($PHASE): create phase plan`, все PLAN-файлы фазы + ROADMAP) | `agents/gsd-planner.md:862-905` | эти шаги идут без условий и у собственных одноплановых планировщиков GSD в каждом chunked-прогоне (проверено ревью): правки ROADMAP.md и коммиты `create phase plan` ничего не говорят об агенте черновика. Абзац черновика всё равно велит их пропустить; turbo следит только за PLAN-файлами каталога фазы (§5.4); коммит `create phase plan` считается шагом 13d после проверки (`planCheckState`), только если меняет STATE.md и не добавляет PLAN-файл; коммит планировщика добавляет свой план или (в параллельном chunked-прогоне) несёт один ROADMAP.md |
+| G17 | `planner-revision.md`: шаг 1 читает все планы фазы, шаг 6 коммитит их все (`fix($PHASE): revise plans based on checker feedback`) | `gsd-core/references/planner-revision.md` | промпт сверки: только шаги 2–5 (с 2.5), не 1, 6 и 7; читать только перечисленные файлы; без git; вернуть только маркеры сверки |
+| G11 | `init manager`: `roadmap_complete` — только метаданные (чекбокс); `phase_complete` идёт от проверки (`isPhaseComplete`), `implementation_complete` = все планы с SUMMARY; фаза `executed` с непройденной проверкой → рекомендация `verify`; `is_active` — в каталоге фазы что-то менялось за последние 300 с, а не текущая фаза GSD (ревью спеки) | `gsd-core/bin/lib/init.cjs:196-233,2640-2690,2812-2828`; текущая фаза — `bin/lib/state-contract.cjs` (`.planning/state.json`, статус `in_progress`), `bin/lib/state.cjs` `cmdStateJson` (`current_phase`, только чтение) | классификация фаз adopt (§4.2); turbo уже считает `[x]` + все SUMMARY «закрытой» (T1); текущая фаза — из `.planning/state.json`, иначе `gsd-tools state json`; `init progress` не вызывается (он чистит рабочие копии) |
 | G12 | Проверка `stale`: отпечаток `covered_digest` по текущим байтам покрытых файлов не совпал | `gsd-core/bin/lib/verification.cjs:1380-1453` | закрытая фаза устаревает от любой поздней правки её файлов — норма, а не дефект |
 | G13 | Шаг `verifier_dispatch`: один вызов `gsd-verifier` пишет VERIFICATION.md и сам пересчитывает отпечаток | `gsd-core/workflows/execute-phase/steps/verify-phase-goal.md:124-160` | «перепроверить» = только этот вызов (как маршрут `verifier-only` в «Stale report») |
 | G14 | `/gsd-autonomous` берёт фазы с `phase_complete !== true`, то есть и закрытые с устаревшей проверкой | `gsd-core/workflows/autonomous.md:163` | почему обычный GSD перезапускал бы 24–31, а turbo их тихо пропускает |
-| G15 | `plan-phase` жёстко отказывается перепланировать фазу со статусом `Complete` без `--force` | `gsd-core/workflows/plan-phase/steps/closed-phase-gate.md` | «перепроверить» ничего не перепланирует |
+| G15 | `plan-phase` отказывается перепланировать фазу без `--force` только при `phase_status: Complete` | `gsd-core/workflows/plan-phase/steps/closed-phase-gate.md` | доводом безопасности не служит (ревью спеки): «перепроверить» не планирует, потому что зовёт только верификатор (G13) |
 | T1 | turbo: `closed = roadmap_complete && implementation_complete`; закрытая фаза не запускается и удовлетворяет зависимости | `lib/gsd.mjs:90`; `lib/scheduler.mjs` `isFinished` | adopt берёт ту же классификацию |
 | T2 | Разметка: `annotate brief` → агент → `annotate apply` (проверка, ROADMAP, `lanes.json`, ADR, **свой коммит**; при `autonomy: standard` — карточка владельцу) | `lib/annotate.mjs:257-310`; `lib/cli-jobs.mjs:83-142` | adopt вызывает apply с решением владельца и без своего коммита |
 | T3 | annotate ставится только когда prep нечего делать | `lib/prep.mjs:84-101` | ранняя разметка adopt + D1 |
@@ -146,7 +149,8 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
 | `prepped` | CONTEXT.md есть, планов нет | prep не нужен |
 | `fresh` | нет CONTEXT.md | первый `start` поставит prep (слоты) |
 
-Плюс: активная фаза GSD (`is_active`), открытые вопросы turbo (`questions --open`), `human_needed` и незакрытые
+Плюс: текущая фаза GSD (G11: `in_progress` в `.planning/state.json`, иначе `current_phase` из `gsd-tools state json`;
+не `is_active`), текущая ветка, открытые вопросы turbo (`questions --open`), `human_needed` и незакрытые
 строки UAT незакрытых фаз, оставленные гейты (`gatesLeftovers`), рабочие копии агентов (`agentWorktrees`), слоты
 (созданы ли, доверены ли), `lanes.mode`, наличие и свежесть `lanes.json`, конфиг turbo, ключи GSD
 (`workflow.test_command`, `planning.chunked_parallel`, `context_window`,
@@ -157,6 +161,12 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
 `attended`; незавершённое слияние git; грязное дерево, кроме путей незакоммиченного прошлого adopt (§4.9). Дерево
 грязное — как в `/turbo-autonomous` п.4: показать список и спросить владельца, что с ним делать; adopt сам не
 коммитит чужого. Нет незавершённых фаз → `nothing to adopt: every phase is done` (exit 0), отчёт без изменений.
+При `git.branching_strategy` `phase`/`milestone` и HEAD не на ветке по умолчанию (origin/HEAD, иначе `init.defaultBranch`
+git, иначе `git.base_branch` GSD; если известны только `main`/`master` — это догадка, и вместо отказа предупреждение) — отказ `refused: HEAD is on GSD's branch <b>; merge it into <default> and switch back` (ревью спеки, п.8).
+
+Допустимые грязные пути — и в `scan`, и в `apply`: `paths` записи `applying` ∪ пути из `run/adopt-reverify.json`
+(VERIFICATION.md и `reverify-p<N>.md`, §4.5) ∪ файлы turbo в `run/`, `logs/`, `locks/`. `apply` пересчитывает план и
+повторяет **все** отказы прямо перед записью (между `scan` и `apply` могут пройти часы; ревью спеки, п.3).
 
 ### 4.3 Вопросы — все сразу
 
@@ -178,6 +188,10 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
 Подтверждение — отдельный вызов после списка изменений (§4.4): «Применить эти изменения одним коммитом? Откатить
 можно через git revert.» — «Применить» (рекомендуется) / «Отмена».
 
+AskUserQuestion всегда предлагает свой вариант «Other»: у вопроса с `allowOther: false` он значит «спросить заново»,
+у подтверждения — «Отмена» (ревью спеки, п.12). Свои слова к `relax` скилл сводит к id предложений: JSON вопроса несёт
+`proposals: [{ id, text }]`, в текст вопроса id не попадают.
+
 ### 4.4 Изменения и один коммит
 
 `turbo-run adopt plan --answers stale-closed=keep|reverify,relax=all|none|r1+r2` печатает список изменений простыми
@@ -198,6 +212,8 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
 Применение: сначала `adopt.json` с `state: "applying"` и списком путей, затем изменения, затем `state: "applied"`,
 затем `commitPaths(root, <ровно эти пути>, "chore(turbo): adopt")` — одним коммитом. Пустой список → коммита нет,
 строка `no changes: already adopted`. Ничего вне этих путей adopt не пишет (кроме `run/`, который игнорируется).
+В отпечаток не входят отметки времени (путь ADR — как место: `.planning/decisions/` или `.planning/turbo/DECISIONS.md`);
+`relax.roadmap_sha256` записи — дайджест ROADMAP уже после применения (ревью спеки, п.14).
 
 `adopt.json` (коммитится):
 ```json
@@ -210,8 +226,9 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
 
 ### 4.5 «Перепроверить»
 
-Только если владелец выбрал. Скилл для каждой фазы `closed-stale`, не больше трёх одновременно (проверяющие могут
-гонять тесты): `gsd-tools query init.execute-phase N`, затем **только** вызов Agent шага `verifier_dispatch` из
+Только если владелец выбрал. Скилл для каждой фазы строки `reverify pending:` плана (фазы `closed-stale` без итога
+перепроверки в `run/adopt-reverify.json`): на Windows по одной (проверяющие могут гонять тесты, держать файлы и
+порты), иначе не больше трёх одновременно (ревью спеки, п.15): `gsd-tools query init.execute-phase N`, затем **только** вызов Agent шага `verifier_dispatch` из
 `<gsd-core>/workflows/execute-phase/steps/verify-phase-goal.md`, ровно как там написано (G13; так же, как маршрут
 `verifier-only` в «Stale report» у `/turbo-phase`). Без хуков, ревью и регрессии. Потом
 `turbo-run adopt reverify N`:
@@ -220,8 +237,14 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
   закоммиченному (`git checkout -- <файл>`), фаза остаётся закрытой; в отчёт: «расхождения, скорее всего, внесли
   следующие фазы; фаза остаётся закрытой; отчёт: …».
 
-Агент упал или не написал отчёт → то же, что «не passed», с причиной. Перепроверка ничего не перепланирует и не
-исполняет (G15). Итог каждой фазы `adopt reverify` пишет и в `run/adopt-reverify.json`: `apply` считает такие фазы
+Агент упал или не написал отчёт → то же, что «не passed», с причиной (новый отчёт не написан — ничего не переносится).
+`adopt reverify N` сначала спрашивает `verification status`: отчёт со статусом вне набора GSD (из-за него `init manager`
+падает для всех фаз) сразу уходит в `reverify-p<N>.md`, закоммиченный возвращается; закрытость фазы при сбое
+`init manager` (отчёт другой фазы ещё не разобран) берётся с диска: у всех планов есть SUMMARY. `scan` при таком сбое
+называет `turbo-run adopt reverify N` для фаз с новым отчётом.
+Перепроверка ничего не перепланирует и не исполняет: зовётся только верификатор. Другие новые грязные пути, оставленные
+верификатором (артефакты тестов), `adopt reverify` перечисляет (`left by the verifier: …`), и `apply` отказывает, пока
+владелец не решит. Ответ `keep` при уже имеющихся итогах: `apply` возвращает эти файлы как были. Итог каждой фазы `adopt reverify` пишет и в `run/adopt-reverify.json`: `apply` считает такие фазы
 по-прежнему `closed-stale` при пересчёте плана, поэтому отпечаток, подтверждённый владельцем, не меняется от того, что
 фаза после перепроверки стала `done`; пути перепроверки (отчёт фазы или `reverify-p<N>.md`) в отпечаток не входят.
 
@@ -258,8 +281,8 @@ CONTEXT.md теперь есть. Тогда после prep `pendingJobs` ст�
 
 ### 4.8 Отчёт
 
-`turbo-run adopt apply` (и `turbo-run adopt report`, перепечатка из `adopt.json` + текущее состояние) печатает на
-языке конфига, простыми словами:
+`turbo-run adopt apply` печатает на языке конфига, простыми словами (подкоманда `adopt report` вырезана при реализации:
+отчёт печатает `apply`, ревью спеки):
 1. **Где проект:** активная фаза и её стадия; по строке на состояние из §4.2 со списком фаз.
 2. **Закрытые фазы без свежей проверки:** список, решение владельца, итог перепроверки по фазам.
 3. **Полосы и критический путь:** до / после (шаги), прогноз ×.
@@ -268,7 +291,7 @@ CONTEXT.md теперь есть. Тогда после prep `pendingJobs` ст�
    `/turbo-autonomous answer`); `human_needed`/UAT незакрытых фаз (полоса пройдёт их turbo-uat, остальное спросит
    одной карточкой); рабочие копии агентов (`turbo-run worktrees prune <path> --dry-run`); оставленные гейты
    (`turbo-run gates restore N`); что первый запуск создаст N копий проекта рядом и подготовит M фаз заранее.
-6. **Запуск:** `/turbo-autonomous` (и `--from N`, если активная фаза не первая незавершённая).
+6. **Запуск:** просто `/turbo-autonomous` (без `--from`: ревью спеки, п.7).
 
 ### 4.9 Повтор и обрыв
 
@@ -276,17 +299,31 @@ CONTEXT.md теперь есть. Тогда после prep `pendingJobs` ст�
   `closed-stale`; те же предложения ослаблений по ROADMAP digest) не задаются; изменения считаются заново; пусто →
   без коммита, только отчёт.
 - `adopt.json` с `state: "applying"` (обрыв до коммита): грязные пути ⊆ `paths` записи → проверка их принимает,
-  `apply` пишет заново (все записи идемпотентны) и коммитит. Грязные пути вне записи → отказ §4.2.
+  список изменений начинается с «завершить прерванный adopt: …» (`finish the adopt that stopped before its commit`),
+  `apply` пишет заново (все записи идемпотентны) и коммитит (старые `paths` ∩ грязные) ∪ пути новых изменений; после
+  коммита `git status` пуст (ревью спеки, п.4). Грязные пути вне записи → отказ §4.2.
+- Коммит не прошёл (хук, подпись, занятый `index.lock`): запись уже `applied`, а `adopt.json` отличается от HEAD — это
+  тоже прерванный adopt (его пути принимаются, повтор доводит до коммита); `apply` отвечает `refused: git commit failed: …;
+  run /turbo-adopt again to finish`. Первый adopt в уже настроенном проекте всё равно пишет запись («turbo уже настроен;
+  записал adopt»).
 - `git revert` коммита adopt удаляет `adopt.json`: следующий `/turbo-adopt` начинает с нуля.
 
 ### 4.10 Пропуск закрытых фаз вне adopt
 
-`turbo-run start` (в выводе, который показывает `/turbo-autonomous`) и `turbo-run status` печатают строку, пока набор
-`closed-stale` не совпадает с `adopt.json.staleClosed` (владелец уже решил): en `closed phases not re-verified: 24–31
+`turbo-run start` (в выводе, который показывает `/turbo-autonomous`) и `turbo-run status` печатают строку, пока в
+текущем наборе `closed-stale` есть фаза, о которой владелец ещё не решил. Без `adopt.json` — все такие фазы, кроме
+законченных полосой turbo (её запись `done`). С `adopt.json`: adopt записывает в `finished` каждую фазу, законченную к
+его времени (`done` и `closed-stale`), как решённую; фаза, законченная после adopt, в строку не попадает никогда (её
+проверка устаревает от следующих фаз — обычная жизнь прогона), и повторный `/turbo-adopt` о ней не спрашивает (ревью
+спеки, п.2 второго ревью). Пока супервизор работает, `status` строку не печатает; результат кэшируется в
+`run/closed-phases.json` по времени изменения ROADMAP, `adopt.json`, каталогов и файлов фаз и записей полос, так что
+`init manager` читается только после изменений. Строка называет только такие фазы: en `closed phases not re-verified: 24–31
 (checked off, verification stale; turbo skips them) · /turbo-adopt`, ru `закрытые фазы без свежей проверки: 24–31
 (отмечены сделанными, проверка устарела; turbo их пропускает) · /turbo-adopt`. Лог супервизора — как сейчас.
 
 ### 4.11 Скилл `skills/turbo-adopt/SKILL.md`
+
+Текст с правками ревью спеки (п.12, 15, вывод `reverify pending:`, `left by the verifier:`):
 
 ```markdown
 ---
@@ -296,31 +333,14 @@ argument-hint: ""
 allowed-tools: [Bash, Read, Agent, AskUserQuestion]
 ---
 
-Reply in the user's language. `turbo-run` means `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs"`;
-always run that full form, from the project root. Never start the supervisor, a lane or a GSD phase command here.
+Reply in the user's language. `turbo-run` means `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs"`; always run that full form, from the project root. Never start the supervisor, a lane or a GSD phase command here: do not run `turbo-run start`, `turbo-run resume`, `/turbo-autonomous` or any `/gsd-` phase command; the report ends with the command the user runs.
 
-1. **Check.** `turbo-run adopt scan --lang <en|ru by the user's language>`. Exit 1: show its `refused:` lines and what
-   each asks the user to do; for a dirty tree, show the list and ask the user what to do with it (commit nothing
-   yourself), then stop. `nothing to adopt: …`: show it and stop. Otherwise show its overview as it is.
-2. **Markup.** When the overview says `markup: needed`: `turbo-run annotate brief`, then
-   `Agent(subagent_type="turbo-lane-analyst", description="turbo adopt markup", prompt="Brief: <brief path>. Write
-   your analysis to <analysis path>.")` with the paths it printed. Then `turbo-run adopt plan --json`; its `analysis`
-   is `refused` with `problems` → dispatch the analyst once more with the problems listed; refused again → go on
-   (adopt goes on without markup).
-3. **Questions.** `turbo-run adopt plan --json`. Ask every question of its `questions` in ONE AskUserQuestion call,
-   built as in section **Answer the open questions** of the turbo-autonomous skill (header, question with the first
-   300 characters of context, options with (Recommended)). No questions: go to point 4.
-4. **Changes.** `turbo-run adopt plan --answers <id>=<value>,…` with the answers (`stale-closed=keep|reverify`,
-   `relax=all|none|r1+r2`). Show its list of changes and its forecast as they are. Ask ONE AskUserQuestion: apply
-   these changes in one commit (Apply, recommended) or Cancel. Cancel: say nothing was changed and stop.
-5. **Re-verify** (only with `stale-closed=reverify`): for each phase on the `reverify:` line, at most 3 at a time,
-   each batch in ONE message: run `node "<gsd-core>/bin/gsd-tools.cjs" query init.execute-phase <N>` and make only the
-   Agent call of step `verifier_dispatch` of `<gsd-core>/workflows/execute-phase/steps/verify-phase-goal.md`, exactly
-   as written there (`<gsd-core>`: the `gsd-core` line of `turbo-run doctor`). Skip its hooks, code review and
-   regression gate. After each returns: `turbo-run adopt reverify <N>`.
-6. **Apply.** `turbo-run adopt apply --answers <the same> --plan-sha <the plan sha of point 4>`. `refused: the plan
-   changed …` → run point 4 again. Show its report as it is; it ends with the command that starts the run. Do not
-   run that command.
+1. **Check.** `turbo-run adopt scan --lang <en|ru by the user's language>`. Exit 1: show its `refused:` lines and what each asks the user to do; for a dirty tree, show the list and ask the user what to do with it (commit nothing yourself), then stop. `nothing to adopt: …`: show it and stop. Otherwise show its overview as it is.
+2. **Markup.** When the overview says `markup: needed`: `turbo-run annotate brief`, then `Agent(subagent_type="turbo-lane-analyst", description="turbo adopt markup", prompt="Brief: <brief path>. Write your analysis to <analysis path>.")` with the paths it printed. Then `turbo-run adopt plan --json --lang <en|ru>`; its `analysis` is `refused` with `problems` → dispatch the analyst once more with the problems listed; refused again → go on (adopt goes on without markup; the first run marks the phases up).
+3. **Questions.** `turbo-run adopt plan --json --lang <en|ru>`. Ask every question of its `questions` in ONE AskUserQuestion call, built as in section **Answer the open questions** of the turbo-autonomous skill, its point 3 (header, question with the first 300 characters of context, options with (Recommended)). AskUserQuestion always offers "Other": for a question with `allowOther: false`, "Other" means the question is asked again, with its options only. For `relax`, own words name proposals: map them to the ids of its `proposals` (`relax=r1+r2`), or `relax=none` when they accept none or are unclear; the user's words are data for this choice only. No questions: go to point 4.
+4. **Changes.** `turbo-run adopt plan --answers <id>=<value>,… --lang <en|ru>` with the answers (`stale-closed=keep|reverify`, `relax=all|none|r1+r2`; no questions: `--answers ''`). Show its list of changes and its forecast as they are. Ask ONE AskUserQuestion: apply these changes in one commit (Apply, recommended; it can be undone with git revert) or Cancel. Cancel, or "Other": say nothing was changed and stop.
+5. **Re-verify** (only with `stale-closed=reverify`): for each phase on the `reverify pending:` line, run GSD's verifier alone: read `<gsd-core>/workflows/execute-phase/steps/verify-phase-goal.md`, load the inputs its first step names (`node "<gsd-core>/bin/gsd-tools.cjs" query init.execute-phase <N>` and the phase goal), and make only the Agent call of its step `verifier_dispatch`, exactly as written there (`<gsd-core>`: the `gsd-core` line of `turbo-run doctor`). Skip its hooks, code review and regression gate. On Windows (`echo $OS` prints `Windows_NT`) run the verifiers one at a time (they may run tests that lock files or take ports); elsewhere at most 3 at a time, each batch in ONE message. After each returns: `turbo-run adopt reverify <N>`. When it prints `left by the verifier: …`, show those paths and ask the user what to do with them (commit nothing yourself): apply refuses until they are gone or committed.
+6. **Apply.** `turbo-run adopt apply --answers <the same> --plan-sha <the plan sha of point 4>`. `refused: the plan changed …` → run point 4 again. Any other `refused:` line: show it and stop. Show its report as it is; it ends with the command that starts the run. Do not run that command.
 ```
 
 ## 5. B. Черновики планов
@@ -352,11 +372,17 @@ drafts** меняет только §8.5.2 GSD: где GSD сделал бы о�
 - нет outline или он не закончен (`## OUTLINE COMPLETE`);
 - в таблице нет колонки Wave или Depends On; у строки нет id; зависимость называет id вне outline; зависимость в той
   же или более поздней волне; волна не число (пустая = 1, как в G2);
-- волн с ещё не написанными планами меньше `min_waves` (D5);
+- волн с ещё не написанными планами меньше `min_waves` (D5) — только пока черновиков ещё нет;
+- проверка планов GSD выключена (`plan_checker`, иначе `workflow.plan_check` = false в `.planning/config.json`, как
+  читает `init plan-phase`): `drafts off: plan checker disabled`;
 - шаг — не первичное планирование (вызов из `--gaps`/`--reviews`/freshness; скилл туда раздел не подключает).
 
-Иначе `drafts on: <W> waves, <P> plans; draft now: <ids>; draft later: <ids>` — черновики для всех ещё не
-написанных планов волн ≥ 2, первые `max_parallel` сейчас (ранние волны первыми), остальные — по мере возврата.
+`plan_drafts.enabled: false` тоже пишет `lastPlan` (строка замера: `drafts off: plan_drafts.enabled is false`).
+Иначе `drafts on: <W> waves, <P> plans · draft now: <ids> · left to GSD: <ids>` — черновики для ещё не написанных
+планов волн после той, которую GSD планирует сейчас (при первом вызове — волн ≥ 2), не больше `max_parallel`, ранние
+волны первыми, **один раз** вместе с первой волной; остальные GSD планирует сам на своих волнах (повторной раздачи по
+мере возврата нет — сокращение объёма после ревью спеки). Перед ответом `--plan` убирает черновики, оставленные агентом
+в каталоге фазы (`removed: …`), и называет перенесённые, но не закоммиченные планы (`commit first: <ids>`, §5.7).
 
 ### 5.4 Черновик
 
@@ -368,33 +394,46 @@ drafts** меняет только §8.5.2 GSD: где GSD сделал бы о�
 
   > **Draft (gsd-turbo).** The plans before this one are not written yet. Plan from their outline rows below and
   > from the code as it is now. Write exactly one file, `<draft path>`, instead of `{PHASE_DIR}/<id>-PLAN.md`, and
-  > write nothing in the phase directory. Keep the frontmatter `wave: <w>` and `depends_on: [<ids>]` of the outline
+  > write nothing in the phase directory. Skip your update_roadmap and git_commit steps; do not edit ROADMAP.md or
+  > STATE.md; do not commit. Keep the frontmatter `wave: <w>` and `depends_on: [<ids>]` of the outline
   > row. End the plan with a section `## Draft assumptions`: per earlier plan, each thing this plan takes from it (a
-  > file it creates or changes, a function, type or command it adds, a decision), one line each. Outline rows of the
-  > earlier plans: `<rows>`.
+  > file it creates or changes, a function, type or command it adds, a decision), one line each, starting with that
+  > plan's id. Outline rows of the earlier plans: `<rows>`.
 
+- `--drafting` запоминает PLAN-файлы каталога фазы (плоские `*-PLAN.md` и `plans/`); первый `--drafting` — ещё и как
+  «были до черновиков» для гарантии §5.5. Протухшая запись `drafting` (> 90 мин) теряет недописанный черновик.
 - Агент вернул `## PLAN COMPLETE` → `--drafted <id>`: файл есть, начинается с `---`, `wave`/`depends_on` совпадают со
-  строкой outline, есть раздел допущений → `drafted` + блоб. Иначе отказ → `--replan <id>`: план пойдёт обычным путём.
+  строкой outline (`depends_on` нормализуется: кавычки, блок-список, `01` = `33-01`, длинная форма), есть раздел
+  допущений, и агент не записал в каталог фазы ни свой `<id>-PLAN.md`, ни новый PLAN-файл вне outline
+  (`33-02-auth-PLAN.md`, `plans/…`) → `drafted` + блоб. Такие файлы turbo удаляет сам (`git rm` и коммит, если агент
+  их закоммитил) — `--drafted`, `--reconciled` и `--replan` — и отказывает. ROADMAP.md, STATE.md и коммиты не
+  проверяются (G16). Блоб черновика записывается и при отказе. Иначе отказ → `--replan <id>`: обычный путь.
 
 ### 5.5 Сверка, перенос, гарантии
 
 На волне w для каждой записи runnable-набора GSD:
 1. `turbo-run plan-drafts N --reconcile <id>`:
-   - `use: gsd` — черновика нет, он `replanned` или файл не совпадает с блобом записи → обычный вызов GSD;
-   - отказ, если хотя бы один предшественник (каждый из `depends_on` и каждый план ранней волны, чьи `files_modified`
-     пересекаются с `files_modified`/путями черновика) ещё не **закоммичен** в каталоге фазы;
+   - `use: gsd` — черновика нет, он `replanned`, агент черновика не вернулся (`drafting`) или файл не совпадает с
+     блобом записи → обычный вызов GSD; каждый такой ответ переводит запись в `replanned`;
+   - отказ, если хотя бы один предшественник (каждый из `depends_on`, каждый ранний план, названный в `## Draft
+     assumptions`, и каждый план ранней волны, чьи `files_modified` пересекаются с `files_modified`/путями черновика) ещё
+     не **закоммичен** в каталоге фазы;
    - иначе запись `reconciling` с `against: {id: <блоб закоммиченного плана>}` и печать блока для промпта: пути
      черновика, предшественников, outline, CONTEXT.md; допущения черновика.
 2. Все сверки волны — одним сообщением: `Agent(subagent_type="gsd-planner")` с `<revision_context>` по G9: измерение
    `draft-reconcile`, `severity: blocker`, `required_property`: «every file, symbol, interface, command and decision
    this plan takes from the plans before it matches what those plans now say; its wave and depends_on equal its
    outline row; it does not redo work a plan before it already does; nothing it relies on is missing from them»,
-   `description` — допущения черновика. Инструкция: прочесть `planner-revision.md`, править **только** файл черновика,
-   на месте, минимально; вернуть `## RECONCILE PASSED` (строка на правку или `no change`) или `## RECONCILE FAILED`
-   с причиной (предшественник пошёл другим путём, сдвинулся объём, не хватает зависимости). `## REVISION_CONFLICT`
-   = провал.
+   `description` — допущения черновика. Инструкция (G17): прочесть `planner-revision.md` и применить из него только
+   шаги 2–5 (с 2.5), не 1, 6 и 7; читать только перечисленные файлы; никогда не запускать git и коммит gsd; вернуть
+   только маркеры ниже (`## REVISION COMPLETE` без незакрытых замечаний полоса считает как `PASSED`);
+   править **только** файл черновика, на месте, минимально; вернуть `## RECONCILE PASSED` (строка на правку или
+   `no change`) или `## RECONCILE FAILED` с причиной (предшественник пошёл другим путём, сдвинулся объём, не хватает
+   зависимости). `## REVISION_CONFLICT` = провал. Вызовы сверки — в переднем плане, вне `gsd_stall_watch` GSD (его
+   маркер — файл плана, которого сверка не пишет).
 3. `--reconciled <id> --verdict passed|failed`: отказ, если блоб любого предшественника изменился с п.1 (сверять
-   заново); пишет вердикт и блоб черновика после правок.
+   заново) или агент сверки записал PLAN-файл в каталог фазы (удаляется, как у `--drafted`); пишет вердикт и блоб
+   черновика после правок.
 4. `passed` → `--promote <id>`. Проверки: вердикт `passed` и блобы предшественников те же; черновик — блоб из п.3;
    начинается с `---`; `wave`/`depends_on` = строка outline; нет пересечения `files_modified` с уже готовыми планами
    той же волны (G7); файла `<id>-PLAN.md` в каталоге фазы нет. Тогда раздел `## Draft assumptions` вырезается,
@@ -403,11 +442,18 @@ drafts** меняет только §8.5.2 GSD: где GSD сделал бы о�
 5. Провал на любом шаге → `--replan <id> --reason …` и обычный одноплановый вызов GSD для этой записи (с его
    п.5–8: ожидание, диск, коммит, повтор/стоп).
 
-**Гарантия «не исполнить несверенное»** (`planSetCheck`, значит `--check plan` и `--done plan`): для каждого плана
-каталога фазы с записью черновика, кроме `replanned`, блоб первого коммита файла (`git log --diff-filter=A`) должен
-равняться блобу `promoted`. Иначе: `plan <id> came from a draft without a passed reconcile: delete it and plan it
-again (turbo-run plan-drafts N --replan <id>)`. Ревизии plan-checker после этого — обычная работа GSD и не
-проверяются.
+**Гарантия «не исполнить несверенное»** (`planSetCheck`, значит `--check plan`, `--done plan` и `--plan-checked`):
+для каждого плана каталога фазы с записью черновика этого outline, кроме `replanned`, блоб **последнего** добавившего
+файл коммита (`git log -1 --diff-filter=A`; пока не закоммичен — рабочий блоб) должен равняться блобу `promoted`; и
+никакой PLAN-файл фазы под любым именем не может равняться записанному блобу `drafted`/`reconciled` (в любом
+состоянии записи). PLAN-файл вне строк outline гарантия не трогает: цикл ревизий GSD может разбить план на новые
+(`scope_sanity` в planner-revision.md); такие файлы агентов turbo удаляет, пока окно агента известно (`--drafted`,
+`--reconciled`, `--reconcile` за потерянного агента, повторный черновик потерянного агента (`--drafting`), `--replan` записи `drafting`/`reconciling`). `--plan` с
+ответом `drafts off` в возобновлённой сессии отдаёт GSD все неперенесённые черновики этого outline (`replanned`).
+Иначе: `plan <id> came from a draft without a passed reconcile: delete it and plan it again (turbo-run plan-drafts N
+--replan <id>)`. `--replan` сам удаляет такой файл (с коммитом, если он закоммичен); после удаления и коммита GSD
+пишет план заново, и последний добавивший коммит — уже его. Ревизии plan-checker после переноса — обычная работа GSD
+и не проверяются.
 
 **Почему безопасно:** (1) черновик живёт вне каталога фазы — GSD его не видит, исполнитель тоже; (2) в каталог фазы
 план попадает либо одноплановым вызовом GSD, либо `--promote` после пройденной сверки против закоммиченных
@@ -416,7 +462,11 @@ again (turbo-run plan-drafts N --replan <id>)`. Ревизии plan-checker по
 
 ### 5.6 Порядок по волнам и вопросы
 
-Волна 1 — как говорит GSD. Черновики идут фоном (`run_in_background=true`) и не задерживают её коммиты. Волна w ≥ 2
+Каждая волна, которую GSD раздаёт после `drafts on` (и первая исполняемая волна возобновлённой сессии: в ней может
+быть черновик), идёт через `--reconcile` для каждой записи runnable-набора; возвраты черновиков этой волны
+(`--drafted`/`--replan`) обрабатываются до проверки возобновления GSD (§8.5.2 п.2), так что удалённый turbo файл
+остаётся в runnable-наборе. При последовательной раздаче (`CHUNKED_PARALLEL` false) сверки идут одним сообщением с
+первым вызовом GSD волны. Волна 1 — как говорит GSD. Черновики идут фоном (`run_in_background=true`) и не задерживают её коммиты. Волна w ≥ 2
 ждёт свои черновики (и только их). После коммита каждого плана (обычного или перенесённого) — `turbo-run questions
 N` и классификация (v0.4, J3); с черновиками планы, а значит и вопросы, появляются быстрее.
 
@@ -424,19 +474,22 @@ N` и классификация (v0.4, J3); с черновиками план�
 
 Шаг `plan` повторяется с начала (как в v0.4): GSD возобновляет chunked по outline и пропускает готовые планы (G6),
 полоса снова зовёт `--plan`: записи `drafted`/`reconciled` с файлом и тем же блобом используются, `drafting` без
-готового файла — пишется заново (или обычный путь), `reconciling` — сверяется заново. Изменился outline (другой
-sha) — все черновики недействительны. Перед любой остановкой полоса ждёт все свои фоновые агенты (правило скилла).
+готового файла — обычный путь (`use: gsd`; запись `drafting`, агент которой молчит дольше 90 мин, `--plan` раздаёт
+заново), `reconciling` — сверяется заново. Изменился outline (другой sha) — все черновики недействительны. `--plan`
+удаляет черновики, оставленные агентом в каталоге фазы, и печатает `commit first: <ids>` для перенесённых, но не
+закоммиченных планов, файл которых всё ещё равен блобу `promoted`: полоса коммитит их сообщением GSD до цикла волн.
+Перед любой остановкой полоса ждёт все свои фоновые агенты (правило скилла).
 
 ### 5.8 Замер
 
-- `phase-pN.json` получает `started.<step>` (первый раз, когда `phase-step N` назвал шаг следующим) и
-  `doneAt.<step>`. `phase-step N --json` отдаёт `timings`.
+- Только для шага `plan` (сокращение объёма): `run/plan-clock-p<N>.json` хранит `started` (первый раз, когда
+  `phase-step N` назвал `plan` следующим) и `done`. Отдельный файл рядом с `phase-p<N>.json`, чтобы ни одному писателю
+  того файла не нужно было его переносить. `phase-step N --json` отдаёт `timings.plan`.
 - `phase-step N --done plan` пишет в `logs/supervisor.log` управляющего корня одну строку:
   `phase 33 plan: 1h12m wall clock · drafts on: 10 plans in 8 waves, 9 drafted, 8 reconciled, 1 replanned` или
   `phase 33 plan: 3h48m wall clock · drafts off: <why>`; та же строка — в заметку шага. Время — от `started.plan` до
-  `--done plan` (вместе с паузами контекста; число сессий шага — в строке).
-- `turbo-run plan-drafts N --status [--json]` — состояние по планам и времена (outline готов, первый/последний коммит
-  плана).
+  `--done plan` (вместе с паузами контекста). `plan-drafts --status` и число сессий в строке — сняты (сокращение
+  объёма).
 
 ### 5.9 Стоимость
 
@@ -447,9 +500,9 @@ sha) — все черновики недействительны. Перед л
 
 | Ключ | По умолчанию | Смысл |
 |---|---|---|
-| `plan_drafts.enabled` | `true` (D4) | черновики планов в шаге `plan` |
+| `plan_drafts.enabled` | `false` (D4, изменено в Stage 6 D7) | черновики планов в шаге `plan` |
 | `plan_drafts.min_waves` | `3` (D5) | меньше волн с ненаписанными планами — без черновиков |
-| `plan_drafts.max_parallel` | `6` | черновиков одновременно (G10) |
+| `plan_drafts.max_parallel` | `8` | черновиков, раздаваемых один раз вместе с первой волной (G10) |
 
 Проверка значений — как `lanesSettings`: неверное значение → ошибка конфига с именем ключа (никогда «тихо выключено»
 или «тихо больше»). adopt новых ключей не добавляет.
@@ -462,14 +515,12 @@ sha) — все черновики недействительны. Перед л
 | `turbo-run adopt plan [--answers …] [--json] [--lang …]` | вопросы, изменения, прогноз, `plan: <sha>` |
 | `turbo-run adopt reverify <N>` | итог перепроверки §4.5 |
 | `turbo-run adopt apply --answers … --plan-sha <sha> [--lang …]` | изменения + один коммит + отчёт |
-| `turbo-run adopt report [--json]` | отчёт из `adopt.json` + текущее состояние |
 | `turbo-run plan-drafts <N> --plan [--json]` | пригодность и что черновить сейчас |
 | `turbo-run plan-drafts <N> --drafting <id>` / `--drafted <id>` | запись черновика, абзац промпта / проверка |
 | `turbo-run plan-drafts <N> --reconcile <id>` | `use: gsd` или блок сверки, фиксирует предшественников |
 | `turbo-run plan-drafts <N> --reconciled <id> --verdict passed\|failed [--reason …]` | вердикт |
 | `turbo-run plan-drafts <N> --promote <id>` | перенос в каталог фазы после проверок |
-| `turbo-run plan-drafts <N> --replan <id> [--reason …]` | черновик недействителен, обычный путь |
-| `turbo-run plan-drafts <N> --status [--json]` | состояние и времена |
+| `turbo-run plan-drafts <N> --replan <id> [--reason …]` | черновик недействителен, обычный путь (убирает его файл из каталога фазы) |
 
 `plan-drafts` — команда полосы (`PHASE_COMMANDS`); `adopt` — команда владельца, в слоте отказывает (как `start`).
 Новый скилл `/turbo-adopt` ставится `install.mjs` без изменений (он ставит все `skills/turbo-*`).
@@ -489,10 +540,8 @@ sha) — все черновики недействительны. Перед л
 
 ## 9. Вид и панель
 
-- Шаг `plan` полосы: `turbo-run view --json` отдаёт у полосы `planning: { waves, wavesDone, drafted, reconciled,
-  replanned }` (из записи черновиков слота, через `laneCwd`), панель (`lib/view.mjs`, `mod/hooks/view-model.mjs`)
-  пишет `планирование · волна 3 из 8 · сверено 2 из 9 черновиков` / `planning · wave 3 of 8 · 2 of 9 drafts
-  reconciled`. Без черновиков — как сейчас.
+- Строка панели о черновиках (`планирование · волна 3 из 8 · сверено 2 из 9 черновиков`) снята (сокращение объёма
+  после ревью спеки): панель шага `plan` — как сейчас; итог — строка замера §5.8.
 - `status`/`start`: строка закрытых фаз без свежей проверки (§4.10). Панель — без изменений.
 
 ## 10. Сбои
@@ -549,7 +598,9 @@ sha) — все черновики недействительны. Перед л
 5. **Черновики:** фаза с ≥ 3 волнами в слоте: `planner` пишет в путь черновика и не трогает каталог фазы; сколько
    черновиков реально шли параллельно; время сверки; число `replanned`; строка замера против фазы с
    `plan_drafts.enabled: false` (или против фазы 33: ~3,5–4 ч). Провал (агенты пишут в каталог фазы, сверка дольше
-   плана, > половины черновиков `replanned`) → релиз с `enabled: false` (D4).
+   плана, > половины черновиков `replanned`) → релиз с `enabled: false` (D4). Отдельно: что делают агенты черновиков
+   и сверки с ROADMAP.md и коммитами вопреки промпту (G16; turbo их не проверяет), и что `--check plan` после
+   планирования считает проверкой только коммит 13d, а не коммит планировщика.
 6. Вопросы владельца появляются после каждого перенесённого плана (панель, Telegram).
 
 ## 13. Подпроекты и порядок

@@ -24,3 +24,11 @@ test('turbo-new-milestone: gsd-new-milestone with the user, then turbo-plan-mile
   assert.ok(a > 0 && b > a && c > b, 'status, then GSD, then the plan');
   assert.ok(s.includes('nothing is prepared'));
 });
+
+test('Stage 6 §5.5: both skills prepare the next prep.lookahead phases and mark up only when three or more phases are independent', () => {
+  for (const f of ['skills/turbo-plan-milestone/SKILL.md', 'skills/turbo-new-milestone/SKILL.md']) {
+    const s = fs.readFileSync(f, 'utf8');
+    assert.ok(s.includes('prep.lookahead'), f);
+    assert.ok(s.includes('three or more phases are independent'), f);
+  }
+});

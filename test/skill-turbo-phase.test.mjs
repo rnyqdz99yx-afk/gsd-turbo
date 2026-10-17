@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { STEPS } from '../lib/phase-progress.mjs';
-import { ASK_RULE, GAP_PLAN_RULE, HUMAN_ACTION_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
+import { ASK_RULE, GAP_PLAN_RULE, HUMAN_ACTION_RULE, LEAN_CHECKER_RULE, LEAN_EXECUTOR_REFS, LEAN_PLANNER_RULE, LEAN_RESEARCH_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
+import { LEAN_LINE, stripLean } from './helpers/lean.mjs';
 
 test('turbo-phase skill: frontmatter, every step in order, the commands it drives', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
@@ -414,4 +415,53 @@ test('turbo-phase skill: the lane\'s write guard is named, and a denial is never
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
   const line = s.split('\n').find((l) => l.startsWith('- Temporary files'));
   for (const n of ['write guard', 'Write, Edit, MultiEdit and NotebookEdit', "the lane's temporary directory", "the control root's `.planning/turbo`", 'never get around a denial through Bash']) assert.ok(line.includes(n), n);
+});
+
+// --- Stage 6 L2: lean mode (spec §5.2-§5.4) ---------------------------------------------------------------------------
+
+const skillText = () => fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8').replace(/\r\n/g, '\n');
+
+test('turbo-phase skill (lean): the Lean mode section carries the inserts verbatim and the lean procedures', () => {
+  const s = skillText();
+  const at = s.indexOf('\n## Lean mode\n');
+  assert.ok(at > 0, 'the section exists');
+  const lean = s.slice(at, s.indexOf('\n## Steps\n'));
+  for (const rule of [LEAN_RESEARCH_RULE, LEAN_PLANNER_RULE, LEAN_CHECKER_RULE]) assert.ok(lean.includes(rule), rule.slice(0, 40));
+  for (const n of [
+    'lean: on', 'When the workflow spawns gsd-phase-researcher', 'When the workflow spawns gsd-code-reviewer', 'turbo-run jobs N regate --json',
+    'turbo-run jobs N review --json', '`n` above 2', '`fallback`', 'verifier_dispatch', '--about-review', 'skip: lean:',
+    'turbo-run state-sync N --no-commit', '"docs(phase-N): <step> records"', 'stop records', 'pause records',
+    // review: the diff reviews are bounded and survive GSD skipping every --files path; the re-gate checks its gates ran
+    'turbo-run phase-step N --attempt review-diff', '`n` above 3', 'the same without `--files`', 'sub-points 1 to 3',
+    'produced no artifact', 'With `code-review` among the jobs', 'never open threats',
+    // second review: the re-gate's gates are checked by outcome; a review GSD skipped is run without --files
+    'turbo-run jobs N outcome --json`: a job in `missing`', 'runs once more with args `N`', 'the same again → as `done`',
+  ]) assert.ok(lean.includes(n), n);
+  assert.ok(!lean.includes('\n### '), 'bold labels only: no ### inside, so every step section keeps its own end');
+  assert.ok(!lean.includes('draft later'));
+});
+
+test('turbo-phase skill (lean): every step that changes has its one Lean line', () => {
+  const s = skillText();
+  const conv = s.slice(s.indexOf('\n## Conventions\n'), s.indexOf('\n## The step loop\n')).split('\n');
+  const bullet = conv.find((l) => l.startsWith('- **Lean:** '));
+  assert.ok(bullet && bullet.includes(LEAN_EXECUTOR_REFS), 'the executor reference diet');
+  const lines = (text) => text.split('\n').filter((l) => LEAN_LINE.test(l));
+  assert.equal(lines(s.slice(s.indexOf('## The step loop'), s.indexOf('### Stopping early'))).length, 3, 'step loop points 1, 2 and 4');
+  for (const name of ['Stopping early', 'Stale report', 'freshness', 'prologue', 'plan', 'execute', 'fanout', 'fix', 'final-gate']) {
+    assert.ok(lines(section(s, name)).length > 0, name);
+  }
+  const plan = lines(section(s, 'plan')).join('\n');
+  for (const n of ['--skip-research', 'turbo-run jobs N research']) assert.ok(plan.includes(n), n);
+  const fanout = lines(section(s, 'fanout')).join('\n');
+  for (const n of ['secure-phase.md', 'never Accept', 'direct: true']) assert.ok(fanout.includes(n), n);
+  assert.ok(lines(section(s, 'final-gate')).join('\n').includes('**Re-gate**'));
+  assert.ok(lines(section(s, 'Stale report')).join('\n').includes('**Re-gate**'));
+  assert.ok(lines(section(s, 'Stopping early')).join('\n').includes('stop records'));
+});
+
+test('turbo-phase skill (lean): the lean text stays under 9000 bytes', () => {
+  const s = skillText();
+  const size = Buffer.byteLength(s) - Buffer.byteLength(stripLean(s));
+  assert.ok(size > 0 && size < 9000, `${size} bytes`);
 });

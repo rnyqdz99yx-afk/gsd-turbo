@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpDir } from './helpers/tmp.mjs';
 import { MANAGER, adoptProject, closedRow, commitAll, write } from './helpers/adopt.mjs';
 
@@ -108,7 +109,12 @@ test('start and status name the closed phases turbo skips until the owner decide
   assert.deepEqual(r.lines.slice(0, 2), ['supervisor: not running (never started)', line]);
   r = await run(['start'], p.root, e);
   assert.ok(r.lines.includes(line), r.stdout + r.stderr);
-  r = await run(['status'], p.root, e);
+  // the supervisor finishes at once, but status names the closed phases only once none runs (a slow runner: CI Windows)
+  for (let i = 0; i < 60; i++) {
+    r = await run(['status'], p.root, e);
+    if (!String(r.lines[0]).startsWith('supervisor: running')) break;
+    await sleep(500);
+  }
   assert.ok(r.lines.includes(line), r.stdout);
   write(p.root, '.planning/turbo/config.json', JSON.stringify({ ...QUIET, lang: 'ru' }));
   commitAll(p.root);

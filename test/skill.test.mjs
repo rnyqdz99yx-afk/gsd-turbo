@@ -44,7 +44,8 @@ test('turbo-autonomous skill never commits during a run and commits only the set
   assert.ok(status >= 0 && porcelain > status, 'the running check comes before any commit step');
   assert.ok(start.includes('supervisor: running'), 'stops when the supervisor is already running');
   const commit = start.slice(porcelain);
-  for (const f of ['`.planning/turbo/config.json`', '`.planning/turbo/.gitignore`', '`.planning/config.json`']) assert.ok(commit.includes(f), `setup file ${f}`);
+  // Stage 6: init's lean apply writes lean-prev.json (lean off reads it) and commits nothing
+  for (const f of ['`.planning/turbo/config.json`', '`.planning/turbo/.gitignore`', '`.planning/config.json`', '`.planning/turbo/lean-prev.json`']) assert.ok(commit.includes(f), `setup file ${f}`);
   assert.ok(commit.indexOf('git status --porcelain', 1) > 0, 'a final clean-tree check after the commit');
 });
 

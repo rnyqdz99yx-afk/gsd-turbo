@@ -101,7 +101,7 @@ test('unsupported when claude too old', () => {
 
 test('safe mode when GSD version is outside the tested range', () => {
   const e = env();
-  fs.writeFileSync(path.join(e.core, 'VERSION'), '1.17.2');
+  fs.writeFileSync(path.join(e.core, 'VERSION'), '1.18.0');
   const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.291'), claudeBin: BIN });
   assert.equal(r.mode, 'safe');
 });

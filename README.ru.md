@@ -8,7 +8,7 @@
 [![Version](https://img.shields.io/github/v/tag/rnyqdz99yx-afk/gsd-turbo?label=version)](https://github.com/rnyqdz99yx-afk/gsd-turbo/tags)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Claude Code ≥ 2.1.290](https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.290-d97757)
-![GSD 1.16.x](https://img.shields.io/badge/GSD-1.16.x-6e40c9)
+![GSD 1.16–1.17](https://img.shields.io/badge/GSD-1.16%E2%80%931.17-6e40c9)
 
 [English](README.md) · Русский
 
@@ -49,7 +49,7 @@
 
 ## Быстрый старт
 
-Нужны Node.js ≥ 20, git, Claude Code ≥ 2.1.290 и GSD core 1.16.x (`npx @opengsd/gsd-core@1.16`).
+Нужны Node.js ≥ 20, git, Claude Code ≥ 2.1.290 и GSD core 1.16.x или 1.17.x (`npx @opengsd/gsd-core@1.17`).
 
 ```bash
 # 1. Установка (копирует файлы в ~/.claude; --dry-run покажет, что будет сделано)
@@ -79,7 +79,7 @@ cd /путь/к/вашему-gsd-проекту && claude
 
 - **Разрешения.** Фоновые сессии запускаются с `--permission-mode bypassPermissions`, чтобы никому не приходилось подтверждать вызовы инструментов. Ваши хуки Claude Code при этом работают. Для первого прогона построже задайте `lane_permission_mode` в `.planning/turbo/config.json` ([настройки](docs/reference.md#config)).
 - **Расход.** Фазы идут на вашей модели в фоне, с параллельными помощниками и автоматическим UAT. Лимиты подписки закончатся быстрее, чем с обычным GSD.
-- **Версия GSD.** Проверено с GSD core 1.16.x. С другой версией `turbo-run doctor` переходит в безопасный режим, а если GSD изменился несовместимо — отказывается запускаться.
+- **Версия GSD.** Проверено с GSD core 1.16.x и 1.17.x. С другой версией `turbo-run doctor` переходит в безопасный режим, а если GSD изменился несовместимо — отказывается запускаться.
 - **Что остаётся за вами.** Подписи, ваши аккаунты на сторонних сайтах, физические устройства, 2FA, деньги. Всё остальное прогон сделает сам, а потом остановится и спросит. Безопасный вопрос, оставленный без ответа на час (рекомендованный планом вариант, проверка, которую решают автоматические доказательства), turbo решит сам и сообщит об этом вместе с командой отмены ([какие именно](docs/reference.md#owner-questions)).
 - **Предохранители.** Без force-push, без переписывания опубликованной истории, без удаления данных без пробного прогона (dry run), без перезаписи запущенного исполняемого файла. Подробности в разделе [Safety](docs/reference.md#safety).
 - **Удаление:** `node install.mjs --uninstall` ([что проверить сначала](docs/reference.md#uninstall)).

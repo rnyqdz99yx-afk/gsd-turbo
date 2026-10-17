@@ -12,7 +12,9 @@ const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/init-manager.json
 test('versionInRange', () => {
   assert.equal(versionInRange('1.16.0'), true);
   assert.equal(versionInRange('1.16.9'), true);
-  assert.equal(versionInRange('1.17.0'), false);
+  assert.equal(versionInRange('1.17.0'), true);
+  assert.equal(versionInRange('1.17.9'), true);
+  assert.equal(versionInRange('1.18.0'), false);
   assert.equal(versionInRange('1.15.4'), false);
   assert.equal(versionInRange('garbage'), false);
 });

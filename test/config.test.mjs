@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { DEFAULTS, GATE_NAMES, LANE_MODES, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
+import { DEFAULTS, GATE_NAMES, LANE_MODES, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, planDraftsSettings, pushSettings } from '../lib/config.mjs';
 import { findProjectRoot, turboDir, claudeHome } from '../lib/paths.mjs';
 import { writeJsonAtomic, readJson } from '../lib/fsx.mjs';
 
@@ -278,4 +278,27 @@ test('Stage 4 L1 keys: max_prep, merge_rounds and lanes.gates, their defaults an
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ max_prep: 1, lanes: { gates: ['db-migrate'] } }));
   const c = loadConfig(root);
   assert.deepEqual([maxPrep(c, 3), mergeRounds(c), laneGates(c).at(-1), c.lanes.mode], [1, 3, 'db-migrate', 'slots']);
+});
+
+test('Stage 5 B13: plan_drafts defaults, digit strings accepted, every invalid value stops with the key named', () => {
+  assert.deepEqual(DEFAULTS.plan_drafts, { enabled: true, min_waves: 3, max_parallel: 6 });
+  assert.deepEqual(planDraftsSettings(), { enabled: true, min_waves: 3, max_parallel: 6 });
+  assert.deepEqual(planDraftsSettings({}), { enabled: true, min_waves: 3, max_parallel: 6 });
+  assert.deepEqual(planDraftsSettings({ enabled: false, min_waves: '4', max_parallel: ' 2 ' }), { enabled: false, min_waves: 4, max_parallel: 2 });
+  const bad = [
+    [{ enabled: 'yes' }, /plan_drafts\.enabled: must be true or false/],
+    [{ min_waves: 1 }, /plan_drafts\.min_waves: must be a whole number from 2 to 20/],
+    [{ min_waves: 21 }, /plan_drafts\.min_waves: must be a whole number from 2 to 20/],
+    [{ min_waves: 2.5 }, /plan_drafts\.min_waves/],
+    [{ max_parallel: 0 }, /plan_drafts\.max_parallel: must be a whole number from 1 to 20/],
+    [{ max_parallel: 21 }, /plan_drafts\.max_parallel/],
+    [{ max_parallel: 'x' }, /plan_drafts\.max_parallel/],
+  ];
+  for (const [raw, re] of bad) assert.throws(() => planDraftsSettings(raw), (e) => /^invalid turbo config plan_drafts\./.test(e.message) && re.test(e.message), JSON.stringify(raw));
+  assert.throws(() => planDraftsSettings('on'), /^Error: invalid turbo config plan_drafts: must be an object/);
+  // a hand-edited file reaches it through loadConfig; the rest keeps its default
+  const root = tmpDir('drafts-cfg');
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ plan_drafts: { min_waves: 5 } }));
+  assert.deepEqual(planDraftsSettings(loadConfig(root).plan_drafts), { enabled: true, min_waves: 5, max_parallel: 6 });
 });

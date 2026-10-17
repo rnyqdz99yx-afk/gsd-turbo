@@ -95,7 +95,9 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
 | G7 | Правило волн планировщика: волна = 1 + max(волн зависимостей); пересечение `files_modified` двигает план в следующую волну; у планов одной волны пересечений быть не должно | `agents/gsd-planner.md:745-761` | `--promote` проверяет это детерминированно |
 | G8 | После всех волн: `## PLANNING COMPLETE` → шаг 10 `gsd-plan-checker` по `*-PLAN.md` → шаг 12 цикл ревизий (до 3) → 13 (покрытие требований и решений, `state.planned-phase`, разметка волн в ROADMAP, коммит) | `plan-phase.md:972,997-1060,1122-1180,1287-1434` | проверка GSD не обходится: черновики заканчиваются до шага 9 |
 | G9 | Контракт ревизии: `required_property` + evidence + severity обязательны; конфликт с решениями — `## REVISION_CONFLICT`; «не перепланировать с нуля» | `plan-phase.md:1160-1180`; `gsd-core/references/planner-revision.md` | сверка — ревизия с измерением `draft-reconcile` |
-| G10 | Для Claude GSD объявляет `maxConcurrency: 20`, `backgroundDispatch: false` | `gsd-core/bin/lib/capability-registry.cjs:580-595` | ≤ 6 черновиков разом укладываются |
+| G10 | Для Claude GSD объявляет `maxConcurrency: 20`, `backgroundDispatch: false` | `gsd-core/bin/lib/capability-registry.cjs:580-595` | ≤ 8 черновиков разом укладываются |
+| G16 | Собственный ход `gsd-planner` кончается шагами `update_roadmap` (правка ROADMAP.md) и `git_commit` (`docs($PHASE): create phase plan`, все PLAN-файлы фазы + ROADMAP) | `agents/gsd-planner.md:862-905` | абзац черновика велит пропустить оба шага; turbo проверяет, что за время работы агента не было чужого коммита и правок ROADMAP/STATE/каталога фазы (§5.5) |
+| G17 | `planner-revision.md`: шаг 1 читает все планы фазы, шаг 6 коммитит их все (`fix($PHASE): revise plans based on checker feedback`) | `gsd-core/references/planner-revision.md` | промпт сверки: только шаги 2–5 и 7, читать только перечисленные файлы, без git |
 | G11 | `init manager`: `roadmap_complete` — только метаданные (чекбокс); `phase_complete` идёт от проверки (`isPhaseComplete`), `implementation_complete` = все планы с SUMMARY; фаза `executed` с непройденной проверкой → рекомендация `verify` | `gsd-core/bin/lib/init.cjs:196-233,2660-2690,2812-2828` | классификация фаз adopt (§4.2); turbo уже считает `[x]` + все SUMMARY «закрытой» (T1) |
 | G12 | Проверка `stale`: отпечаток `covered_digest` по текущим байтам покрытых файлов не совпал | `gsd-core/bin/lib/verification.cjs:1380-1453` | закрытая фаза устаревает от любой поздней правки её файлов — норма, а не дефект |
 | G13 | Шаг `verifier_dispatch`: один вызов `gsd-verifier` пишет VERIFICATION.md и сам пересчитывает отпечаток | `gsd-core/workflows/execute-phase/steps/verify-phase-goal.md:124-160` | «перепроверить» = только этот вызов (как маршрут `verifier-only` в «Stale report») |
@@ -352,11 +354,16 @@ drafts** меняет только §8.5.2 GSD: где GSD сделал бы о�
 - нет outline или он не закончен (`## OUTLINE COMPLETE`);
 - в таблице нет колонки Wave или Depends On; у строки нет id; зависимость называет id вне outline; зависимость в той
   же или более поздней волне; волна не число (пустая = 1, как в G2);
-- волн с ещё не написанными планами меньше `min_waves` (D5);
+- волн с ещё не написанными планами меньше `min_waves` (D5) — только пока черновиков ещё нет;
+- проверка планов GSD выключена (`plan_checker`, иначе `workflow.plan_check` = false в `.planning/config.json`, как
+  читает `init plan-phase`): `drafts off: plan checker disabled`;
 - шаг — не первичное планирование (вызов из `--gaps`/`--reviews`/freshness; скилл туда раздел не подключает).
 
-Иначе `drafts on: <W> waves, <P> plans; draft now: <ids>; draft later: <ids>` — черновики для всех ещё не
-написанных планов волн ≥ 2, первые `max_parallel` сейчас (ранние волны первыми), остальные — по мере возврата.
+Иначе `drafts on: <W> waves, <P> plans · draft now: <ids> · left to GSD: <ids>` — черновики для ещё не написанных
+планов волн после той, которую GSD планирует сейчас (при первом вызове — волн ≥ 2), не больше `max_parallel`, ранние
+волны первыми, **один раз** вместе с первой волной; остальные GSD планирует сам на своих волнах (повторной раздачи по
+мере возврата нет — сокращение объёма после ревью спеки). Перед ответом `--plan` убирает черновики, оставленные агентом
+в каталоге фазы (`removed: …`), и называет перенесённые, но не закоммиченные планы (`commit first: <ids>`, §5.7).
 
 ### 5.4 Черновик
 
@@ -368,33 +375,44 @@ drafts** меняет только §8.5.2 GSD: где GSD сделал бы о�
 
   > **Draft (gsd-turbo).** The plans before this one are not written yet. Plan from their outline rows below and
   > from the code as it is now. Write exactly one file, `<draft path>`, instead of `{PHASE_DIR}/<id>-PLAN.md`, and
-  > write nothing in the phase directory. Keep the frontmatter `wave: <w>` and `depends_on: [<ids>]` of the outline
+  > write nothing in the phase directory. Skip your update_roadmap and git_commit steps; do not edit ROADMAP.md or
+  > STATE.md; do not commit. Keep the frontmatter `wave: <w>` and `depends_on: [<ids>]` of the outline
   > row. End the plan with a section `## Draft assumptions`: per earlier plan, each thing this plan takes from it (a
-  > file it creates or changes, a function, type or command it adds, a decision), one line each. Outline rows of the
-  > earlier plans: `<rows>`.
+  > file it creates or changes, a function, type or command it adds, a decision), one line each, starting with that
+  > plan's id. Outline rows of the earlier plans: `<rows>`.
 
+- `--drafting` запоминает HEAD и `git status` каталога фазы, ROADMAP.md и STATE.md (G16).
 - Агент вернул `## PLAN COMPLETE` → `--drafted <id>`: файл есть, начинается с `---`, `wave`/`depends_on` совпадают со
-  строкой outline, есть раздел допущений → `drafted` + блоб. Иначе отказ → `--replan <id>`: план пойдёт обычным путём.
+  строкой outline (`depends_on` нормализуется: кавычки, блок-список, `01` = `33-01`, длинная форма), есть раздел
+  допущений, и с `--drafting` нет коммита планировщика (`create phase plan`, `revise plans…`) и изменений в каталоге
+  фазы/ROADMAP/STATE, кроме PLAN-файлов других планов outline (коммиты самой полосы) → `drafted` + блоб. Иначе отказ →
+  `--replan <id>`: план пойдёт обычным путём. Файл `<id>-PLAN.md`, который агент записал в каталог фазы, turbo
+  удаляет сам (`git rm` и коммит, если агент его закоммитил) — `--drafted` и `--replan`.
 
 ### 5.5 Сверка, перенос, гарантии
 
 На волне w для каждой записи runnable-набора GSD:
 1. `turbo-run plan-drafts N --reconcile <id>`:
-   - `use: gsd` — черновика нет, он `replanned` или файл не совпадает с блобом записи → обычный вызов GSD;
-   - отказ, если хотя бы один предшественник (каждый из `depends_on` и каждый план ранней волны, чьи `files_modified`
-     пересекаются с `files_modified`/путями черновика) ещё не **закоммичен** в каталоге фазы;
+   - `use: gsd` — черновика нет, он `replanned`, агент черновика не вернулся (`drafting`) или файл не совпадает с
+     блобом записи → обычный вызов GSD; каждый такой ответ переводит запись в `replanned`;
+   - отказ, если хотя бы один предшественник (каждый из `depends_on`, каждый ранний план, названный в `## Draft
+     assumptions`, и каждый план ранней волны, чьи `files_modified` пересекаются с `files_modified`/путями черновика) ещё
+     не **закоммичен** в каталоге фазы;
    - иначе запись `reconciling` с `against: {id: <блоб закоммиченного плана>}` и печать блока для промпта: пути
      черновика, предшественников, outline, CONTEXT.md; допущения черновика.
 2. Все сверки волны — одним сообщением: `Agent(subagent_type="gsd-planner")` с `<revision_context>` по G9: измерение
    `draft-reconcile`, `severity: blocker`, `required_property`: «every file, symbol, interface, command and decision
    this plan takes from the plans before it matches what those plans now say; its wave and depends_on equal its
    outline row; it does not redo work a plan before it already does; nothing it relies on is missing from them»,
-   `description` — допущения черновика. Инструкция: прочесть `planner-revision.md`, править **только** файл черновика,
-   на месте, минимально; вернуть `## RECONCILE PASSED` (строка на правку или `no change`) или `## RECONCILE FAILED`
-   с причиной (предшественник пошёл другим путём, сдвинулся объём, не хватает зависимости). `## REVISION_CONFLICT`
-   = провал.
+   `description` — допущения черновика. Инструкция (G17): прочесть `planner-revision.md` и применить из него только
+   шаги 2–5 и 7; читать только перечисленные файлы; шаг 6 не выполнять; никогда не запускать git и коммит gsd;
+   править **только** файл черновика, на месте, минимально; вернуть `## RECONCILE PASSED` (строка на правку или
+   `no change`) или `## RECONCILE FAILED` с причиной (предшественник пошёл другим путём, сдвинулся объём, не хватает
+   зависимости). `## REVISION_CONFLICT` = провал. Вызовы сверки — в переднем плане, вне `gsd_stall_watch` GSD (его
+   маркер — файл плана, которого сверка не пишет).
 3. `--reconciled <id> --verdict passed|failed`: отказ, если блоб любого предшественника изменился с п.1 (сверять
-   заново); пишет вердикт и блоб черновика после правок.
+   заново) или с `--reconcile` был коммит планировщика либо изменения каталога фазы/ROADMAP/STATE, кроме PLAN-файлов
+   других планов (как у `--drafted`); пишет вердикт и блоб черновика после правок.
 4. `passed` → `--promote <id>`. Проверки: вердикт `passed` и блобы предшественников те же; черновик — блоб из п.3;
    начинается с `---`; `wave`/`depends_on` = строка outline; нет пересечения `files_modified` с уже готовыми планами
    той же волны (G7); файла `<id>-PLAN.md` в каталоге фазы нет. Тогда раздел `## Draft assumptions` вырезается,
@@ -403,11 +421,14 @@ drafts** меняет только §8.5.2 GSD: где GSD сделал бы о�
 5. Провал на любом шаге → `--replan <id> --reason …` и обычный одноплановый вызов GSD для этой записи (с его
    п.5–8: ожидание, диск, коммит, повтор/стоп).
 
-**Гарантия «не исполнить несверенное»** (`planSetCheck`, значит `--check plan` и `--done plan`): для каждого плана
-каталога фазы с записью черновика, кроме `replanned`, блоб первого коммита файла (`git log --diff-filter=A`) должен
-равняться блобу `promoted`. Иначе: `plan <id> came from a draft without a passed reconcile: delete it and plan it
-again (turbo-run plan-drafts N --replan <id>)`. Ревизии plan-checker после этого — обычная работа GSD и не
-проверяются.
+**Гарантия «не исполнить несверенное»** (`planSetCheck`, значит `--check plan`, `--done plan` и `--plan-checked`):
+для каждого плана каталога фазы с записью черновика этого outline, кроме `replanned`, блоб **последнего** добавившего
+файл коммита (`git log -1 --diff-filter=A`; пока не закоммичен — рабочий блоб) должен равняться блобу `promoted`; и
+никакой PLAN-файл плана с записью (в любом состоянии) не может равняться записанному блобу `drafted`/`reconciled`.
+Иначе: `plan <id> came from a draft without a passed reconcile: delete it and plan it again (turbo-run plan-drafts N
+--replan <id>)`. `--replan` сам удаляет такой файл (с коммитом, если он закоммичен); после удаления и коммита GSD
+пишет план заново, и последний добавивший коммит — уже его. Ревизии plan-checker после переноса — обычная работа GSD
+и не проверяются.
 
 **Почему безопасно:** (1) черновик живёт вне каталога фазы — GSD его не видит, исполнитель тоже; (2) в каталог фазы
 план попадает либо одноплановым вызовом GSD, либо `--promote` после пройденной сверки против закоммиченных
@@ -424,19 +445,22 @@ N` и классификация (v0.4, J3); с черновиками план�
 
 Шаг `plan` повторяется с начала (как в v0.4): GSD возобновляет chunked по outline и пропускает готовые планы (G6),
 полоса снова зовёт `--plan`: записи `drafted`/`reconciled` с файлом и тем же блобом используются, `drafting` без
-готового файла — пишется заново (или обычный путь), `reconciling` — сверяется заново. Изменился outline (другой
-sha) — все черновики недействительны. Перед любой остановкой полоса ждёт все свои фоновые агенты (правило скилла).
+готового файла — обычный путь (`use: gsd`; запись `drafting`, агент которой молчит дольше 90 мин, `--plan` раздаёт
+заново), `reconciling` — сверяется заново. Изменился outline (другой sha) — все черновики недействительны. `--plan`
+удаляет черновики, оставленные агентом в каталоге фазы, и печатает `commit first: <ids>` для перенесённых, но не
+закоммиченных планов, файл которых всё ещё равен блобу `promoted`: полоса коммитит их сообщением GSD до цикла волн.
+Перед любой остановкой полоса ждёт все свои фоновые агенты (правило скилла).
 
 ### 5.8 Замер
 
-- `phase-pN.json` получает `started.<step>` (первый раз, когда `phase-step N` назвал шаг следующим) и
-  `doneAt.<step>`. `phase-step N --json` отдаёт `timings`.
+- Только для шага `plan` (сокращение объёма): `run/plan-clock-p<N>.json` хранит `started` (первый раз, когда
+  `phase-step N` назвал `plan` следующим) и `done`. Отдельный файл рядом с `phase-p<N>.json`, чтобы ни одному писателю
+  того файла не нужно было его переносить. `phase-step N --json` отдаёт `timings.plan`.
 - `phase-step N --done plan` пишет в `logs/supervisor.log` управляющего корня одну строку:
   `phase 33 plan: 1h12m wall clock · drafts on: 10 plans in 8 waves, 9 drafted, 8 reconciled, 1 replanned` или
   `phase 33 plan: 3h48m wall clock · drafts off: <why>`; та же строка — в заметку шага. Время — от `started.plan` до
-  `--done plan` (вместе с паузами контекста; число сессий шага — в строке).
-- `turbo-run plan-drafts N --status [--json]` — состояние по планам и времена (outline готов, первый/последний коммит
-  плана).
+  `--done plan` (вместе с паузами контекста). `plan-drafts --status` и число сессий в строке — сняты (сокращение
+  объёма).
 
 ### 5.9 Стоимость
 
@@ -449,7 +473,7 @@ sha) — все черновики недействительны. Перед л
 |---|---|---|
 | `plan_drafts.enabled` | `true` (D4) | черновики планов в шаге `plan` |
 | `plan_drafts.min_waves` | `3` (D5) | меньше волн с ненаписанными планами — без черновиков |
-| `plan_drafts.max_parallel` | `6` | черновиков одновременно (G10) |
+| `plan_drafts.max_parallel` | `8` | черновиков, раздаваемых один раз вместе с первой волной (G10) |
 
 Проверка значений — как `lanesSettings`: неверное значение → ошибка конфига с именем ключа (никогда «тихо выключено»
 или «тихо больше»). adopt новых ключей не добавляет.
@@ -468,8 +492,7 @@ sha) — все черновики недействительны. Перед л
 | `turbo-run plan-drafts <N> --reconcile <id>` | `use: gsd` или блок сверки, фиксирует предшественников |
 | `turbo-run plan-drafts <N> --reconciled <id> --verdict passed\|failed [--reason …]` | вердикт |
 | `turbo-run plan-drafts <N> --promote <id>` | перенос в каталог фазы после проверок |
-| `turbo-run plan-drafts <N> --replan <id> [--reason …]` | черновик недействителен, обычный путь |
-| `turbo-run plan-drafts <N> --status [--json]` | состояние и времена |
+| `turbo-run plan-drafts <N> --replan <id> [--reason …]` | черновик недействителен, обычный путь (убирает его файл из каталога фазы) |
 
 `plan-drafts` — команда полосы (`PHASE_COMMANDS`); `adopt` — команда владельца, в слоте отказывает (как `start`).
 Новый скилл `/turbo-adopt` ставится `install.mjs` без изменений (он ставит все `skills/turbo-*`).
@@ -489,10 +512,8 @@ sha) — все черновики недействительны. Перед л
 
 ## 9. Вид и панель
 
-- Шаг `plan` полосы: `turbo-run view --json` отдаёт у полосы `planning: { waves, wavesDone, drafted, reconciled,
-  replanned }` (из записи черновиков слота, через `laneCwd`), панель (`lib/view.mjs`, `mod/hooks/view-model.mjs`)
-  пишет `планирование · волна 3 из 8 · сверено 2 из 9 черновиков` / `planning · wave 3 of 8 · 2 of 9 drafts
-  reconciled`. Без черновиков — как сейчас.
+- Строка панели о черновиках (`планирование · волна 3 из 8 · сверено 2 из 9 черновиков`) снята (сокращение объёма
+  после ревью спеки): панель шага `plan` — как сейчас; итог — строка замера §5.8.
 - `status`/`start`: строка закрытых фаз без свежей проверки (§4.10). Панель — без изменений.
 
 ## 10. Сбои
@@ -549,7 +570,10 @@ sha) — все черновики недействительны. Перед л
 5. **Черновики:** фаза с ≥ 3 волнами в слоте: `planner` пишет в путь черновика и не трогает каталог фазы; сколько
    черновиков реально шли параллельно; время сверки; число `replanned`; строка замера против фазы с
    `plan_drafts.enabled: false` (или против фазы 33: ~3,5–4 ч). Провал (агенты пишут в каталог фазы, сверка дольше
-   плана, > половины черновиков `replanned`) → релиз с `enabled: false` (D4).
+   плана, > половины черновиков `replanned`) → релиз с `enabled: false` (D4). Отдельно: правят ли собственные
+   одноплановые планировщики GSD первой волны ROADMAP.md или коммитят `create phase plan` (G16) — тогда проверка
+   «ничего не менялось» `--drafted`/`--reconciled` отказывает всем черновикам (безопасно, но выигрыша нет), и набор
+   отслеживаемых путей надо сузить.
 6. Вопросы владельца появляются после каждого перенесённого плана (панель, Telegram).
 
 ## 13. Подпроекты и порядок

@@ -20,6 +20,26 @@ What this plan consumes, by exact name (it re-implements none of it):
 - `lib/view.mjs` and `mod/hooks/view-model.mjs`: the step words tables (`step: { plan: … }`), `laneCwd` (via `lib/lanes-state.mjs`).
 - Tests: `test/helpers/tmp.mjs` (`tmpDir`, `tmpGitRepo`), `test/helpers/plans.mjs` (`writePhase`), `test/helpers/slots.mjs` (`ISOLATED`, `gitIn`).
 
+## As implemented (after the spec review of 2026-10-14)
+
+The spec (§5, §6, §7, §9) is corrected to match; where this plan's text differs, the spec and the code win:
+- Cut: the rolling "draft later" re-dispatch (drafts go out once, at most `max_parallel`, default **8**; the rest is
+  GSD's), `plan-drafts --status`, the pane line (Task 9), timings for steps other than `plan`.
+- Timings live in `run/plan-clock-p<N>.json`, not in `phase-p<N>.json` (no writer of that file has to carry them).
+- `--plan` also removes drafts an agent left in the phase directory and prints `commit first: <ids>`; it applies only
+  to the waves after the one GSD plans now; `min_waves` decides only before the first draft; `drafts off: plan checker
+  disabled` when GSD's `plan_checker` / `workflow.plan_check` is false.
+- `--drafting`/`--reconcile` record HEAD and the state of the phase directory, ROADMAP.md and STATE.md;
+  `--drafted`/`--reconciled` refuse on a planner's own commit or another change there (G16, G17). Every `use: gsd`
+  marks the record `replanned`; `--drafted`, `--reconciled` and `--replan` remove a draft written into the phase
+  directory (with a commit when it was committed).
+- Predecessors also include the earlier plans the draft's `## Draft assumptions` names. The guard (B11) reads the
+  newest adding commit and refuses any plan file equal to a recorded drafted/reconciled blob.
+- `filesModified` of `lib/annotate.mjs` is not imported (it would pull annotate's imports into the lane commands):
+  `lib/plan-drafts.mjs` reads `files_modified` with its own `frontList`, which also reads `depends_on`.
+- The skill section **Plan drafts** sits after **Stale report**; its tests are `test/skill-plan-drafts.test.mjs`, and
+  the clock tests `test/plan-clock.test.mjs` (both separate files, so the merge with other branches stays clean).
+
 ## Decisions this plan makes where the spec is open
 
 - **B1 Where things live.** Draft files and the record: `<localRunDir(root)>/drafts-p<N>/` (the lane's own checkout: the slot, or the main checkout in `checkout` mode), ignored by git through `.planning/turbo/.gitignore`'s `run/`. A new `prepareSlot` wipes them with the slot; the record and the files go together. The measurement line goes to `<logsDir(root)>/supervisor.log` (the control root), appended the way `lib/watchdog.mjs` appends its line (`<ISO> <line>\n`).

@@ -9,6 +9,8 @@ import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus, readLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName, parseAgents, projectHash } from '../lib/claude.mjs';
 import { clearAttend, writeAttend } from '../lib/attend.mjs';
+import { LEAN_EXECUTOR_REFS } from '../lib/lane-prompt.mjs';
+import { pinLean } from '../lib/phase-progress.mjs';
 
 // lane temp directories live under turbo's own directory: a throwaway one for this file
 const HOME = tmpDir('home');
@@ -1019,6 +1021,17 @@ test('a lane launched with push on gets the push rule in its system prompt; with
   const off = harness({ phases: [P('2')] });
   await tick(fresh(), off.ctx);
   assert.ok(!off.launched[0].systemPrompt.includes('push-request'));
+});
+
+// Stage 6 L2 (spec §5.4): a lean phase's lane hands its executors fewer reference files.
+test('supervisor: a lean phase\'s lane gets the reference diet; a phase pinned lean off does not', async () => {
+  const on = harness({ phases: [P('2')] });
+  await tick(fresh(), on.ctx);
+  assert.ok(on.launched[0].systemPrompt.includes(LEAN_EXECUTOR_REFS));
+  const off = harness({ phases: [P('2')] });
+  pinLean(off.root, '2', false);
+  await tick(fresh(), off.ctx);
+  assert.ok(!off.launched[0].systemPrompt.includes(LEAN_EXECUTOR_REFS));
 });
 
 test('the daemon lends its ticks its heartbeat writer, so long push work keeps the supervisor alive (S2)', async () => {

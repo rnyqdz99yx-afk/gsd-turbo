@@ -281,9 +281,9 @@ test('Stage 4 L1 keys: max_prep, merge_rounds and lanes.gates, their defaults an
 });
 
 test('Stage 5 B13: plan_drafts defaults, digit strings accepted, every invalid value stops with the key named', () => {
-  assert.deepEqual(DEFAULTS.plan_drafts, { enabled: true, min_waves: 3, max_parallel: 6 });
-  assert.deepEqual(planDraftsSettings(), { enabled: true, min_waves: 3, max_parallel: 6 });
-  assert.deepEqual(planDraftsSettings({}), { enabled: true, min_waves: 3, max_parallel: 6 });
+  assert.deepEqual(DEFAULTS.plan_drafts, { enabled: true, min_waves: 3, max_parallel: 8 });
+  assert.deepEqual(planDraftsSettings(), { enabled: true, min_waves: 3, max_parallel: 8 });
+  assert.deepEqual(planDraftsSettings({}), { enabled: true, min_waves: 3, max_parallel: 8 });
   assert.deepEqual(planDraftsSettings({ enabled: false, min_waves: '4', max_parallel: ' 2 ' }), { enabled: false, min_waves: 4, max_parallel: 2 });
   const bad = [
     [{ enabled: 'yes' }, /plan_drafts\.enabled: must be true or false/],
@@ -300,5 +300,5 @@ test('Stage 5 B13: plan_drafts defaults, digit strings accepted, every invalid v
   const root = tmpDir('drafts-cfg');
   fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ plan_drafts: { min_waves: 5 } }));
-  assert.deepEqual(planDraftsSettings(loadConfig(root).plan_drafts), { enabled: true, min_waves: 5, max_parallel: 6 });
+  assert.deepEqual(planDraftsSettings(loadConfig(root).plan_drafts), { enabled: true, min_waves: 5, max_parallel: 8 });
 });

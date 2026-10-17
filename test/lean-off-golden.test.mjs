@@ -18,7 +18,22 @@ const PROMPTS = {
 const P = { phase: '3', hooks: [step('research'), step('ui'), step('ai-integration'), step('intel', { command: 'intel api-surface' })], artifacts: { plans: [] }, frontend: true, goal: 'an LLM agent' };
 const F = { phase: '3', active: ['security', 'ui', 'code-review', 'nyquist'], artifacts: { uiSpec: '03-UI-SPEC.md' } };
 
-const skill = (name) => sha256(stripLean(fs.readFileSync(`skills/${name}/SKILL.md`, 'utf8')));
+// Deliberate changes of the lean-off text since stage 5, per skill [now, stage-5's]: each is put back before the hash,
+// so the fixture stays stage-5's and every other line stays pinned. v0.5.1: the fan-out commit names the gates that ran.
+const SINCE_STAGE5 = {
+  'turbo-phase': [[
+    '`gsd-tools commit "docs(phase-N): gate fan-out (<gates>)" --files <each of the phase\'s SECURITY.md, UI-REVIEW.md and REVIEW.md that exists>`, where `<gates>` names only the read-only gates point 3 ran, in this order: `security`, `UI review`, `code review`, comma-separated (only the code review ran: `docs(phase-N): gate fan-out (code review)`).',
+    '`gsd-tools commit "docs(phase-N): gate fan-out (security, UI review, code review)" --files <each of the phase\'s SECURITY.md, UI-REVIEW.md and REVIEW.md that exists>`.',
+  ]],
+};
+const skill = (name) => {
+  let text = stripLean(fs.readFileSync(`skills/${name}/SKILL.md`, 'utf8'));
+  for (const [now, was] of SINCE_STAGE5[name] ?? []) {
+    assert.equal(text.split(now).length, 2, `${name}: the v0.5.1 line appears once`);
+    text = text.replace(now, () => was);
+  }
+  return sha256(text);
+};
 const prompts = (extra) => Object.fromEntries(Object.entries(PROMPTS).map(([k, v]) => [k, sha256(laneSystemPrompt({ ...v, ...extra }))]));
 const current = () => ({ turboPhase: skill('turbo-phase'), turboPrep: skill('turbo-prep'), lanePrompts: prompts({}), prologue: prologueJobs(P), fanout: fanoutJobs(F) });
 

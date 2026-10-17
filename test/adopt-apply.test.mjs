@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { STALE_REPORT, MANAGER, adoptDeps, adoptProject, closedRow, write } from './helpers/adopt.mjs';
+import { STALE_REPORT, MANAGER, adoptDeps, adoptProject, closedRow, wideProject, write } from './helpers/adopt.mjs';
 import { createGsdConfig } from '../lib/gates.mjs';
 import { LEAN_KEYS, leanApply, leanChanges, leanCurrent } from '../lib/lean.mjs';
 import { initProject } from '../lib/project-init.mjs';
@@ -31,8 +31,9 @@ function snapshot(root) {
 const confirm = (root, deps, answers) => adoptPlan(root, { deps, answers }).plan;
 
 test('apply: exactly one commit chore(turbo): adopt with exactly the listed paths; git revert gives the tree back', () => {
-  const { root, git, deps } = adoptProject();
-  write(root, '.planning/turbo/run/annotate/analysis.json', JSON.stringify({ phases: { 2: { areas: ['src/**'], gates: [], confidence: 'high' }, 3: { areas: ['web/**'], gates: [], confidence: 'high' }, 4: { areas: ['docs/**'], gates: [], confidence: 'high' } }, pairs: [], relax: [{ phase: '4', drop: ['3'], kind: 'prose', reason: 'wording only' }] }));
+  // three independent phases (2, 5, 6): the markup runs (spec §5.5)
+  const { root, git, deps } = wideProject();
+  write(root, '.planning/turbo/run/annotate/analysis.json', JSON.stringify({ phases: { 2: { areas: ['src/**'], gates: [], confidence: 'high' }, 3: { areas: ['web/**'], gates: [], confidence: 'high' }, 4: { areas: ['docs/**'], gates: [], confidence: 'high' }, 5: { areas: ['cli/**'], gates: [], confidence: 'high' }, 6: { areas: ['tools/**'], gates: [], confidence: 'high' } }, pairs: [], relax: [{ phase: '4', drop: ['3'], kind: 'prose', reason: 'wording only' }] }));
   const before = snapshot(root);
   const head = headOf(git);
   const answers = { 'stale-closed': 'keep', relax: 'all' };

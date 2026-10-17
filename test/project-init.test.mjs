@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
 import { fakeGsdCore } from './helpers/fake-gsd.mjs';
 import { InitAborted, TURBO_TEST_CMD, initChanges, initProject } from '../lib/project-init.mjs';
@@ -66,6 +67,30 @@ test('initProject prints the lines of turbo-run init: the previous test command 
   // the changes list named the same command
   const again = project({ gsdConfig: { workflow: { test_command: prev } } });
   assert.equal(initChanges(again.root, { core: again.core }).find((c) => c.kind === 'test-command').value, prev);
+});
+
+test('initProject keeps GSD\'s runtime files out of git status through the checkout\'s exclude, once, with a line; outside git nothing (v0.5.1)', () => {
+  const { root, core } = project();
+  const git = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git('init', '-q');
+  const lines = [];
+  initProject(root, { core, out: (l) => lines.push(l), inherit: false });
+  const exclude = path.resolve(root, git('rev-parse', '--git-path', 'info/exclude'));
+  assert.ok(lines.includes(`GSD's runtime files (.planning/state.json, milestone.lock and its locks) kept out of git status: ${exclude}`), lines.join('\n'));
+  assert.match(lines.at(-1), /^created /);
+  for (const f of ['state.json', 'milestone.lock', 'STATE.md.lock', 'WAITING.json']) fs.writeFileSync(path.join(root, '.planning', f), '{}\n');
+  assert.equal(git('status', '--porcelain', '--untracked-files=all', '--', '.planning/state.json', '.planning/milestone.lock', '.planning/STATE.md.lock', '.planning/WAITING.json'), '');
+  const again = [];
+  initProject(root, { core, out: (l) => again.push(l), inherit: false });
+  assert.ok(!again.some((l) => l.startsWith("GSD's runtime files")), again.join('\n'));
+  assert.equal(fs.readFileSync(exclude, 'utf8').split('# gsd-turbo: GSD runtime files: begin').length, 2);
+  // a project below the repository's top: its own .planning paths
+  const top = tmpDir('init-top');
+  execFileSync('git', ['init', '-q'], { cwd: top });
+  const sub = path.join(top, 'app');
+  fs.mkdirSync(path.join(sub, '.planning'), { recursive: true });
+  initProject(sub, { core: fakeGsdCore(sub), inherit: false });
+  assert.match(fs.readFileSync(path.join(top, '.git', 'info', 'exclude'), 'utf8'), /^\/app\/\.planning\/state\.json$/m);
 });
 
 test('initProject stops with InitAborted when GSD cannot read its test command; nothing is written', () => {

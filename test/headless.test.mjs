@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { SESSION } from './helpers/transcripts.mjs';
-import { buildHeadlessArgs, headlessEnv, sessionSettings, killTree, parseStreamLine, newStreamState, foldEvent, usageOf, transcriptPath } from '../lib/headless.mjs';
+import { buildHeadlessArgs, headlessEnv, sessionSettings, killTree, parseStreamLine, newStreamState, foldEvent, usageOf, transcriptPath, parseOwnerQuestion, OWNER_CONTEXT_MAX, OWNER_OPTIONS_MAX } from '../lib/headless.mjs';
 import { projectKey } from '../lib/transcripts.mjs';
 import { decodeGuardArg, GUARD_MATCHER } from '../lib/lane-guard.mjs';
 import { pidAlive } from '../lib/merge-lock.mjs';
@@ -141,4 +141,51 @@ test('transcriptPath: the found file, else <home>/projects/<projectKey(cwd)>/<id
   assert.equal(transcriptPath({ home, cwd, sessionId: SESSION }), elsewhere); // a found file as is
   assert.equal(transcriptPath({ home: 'C:\\h', cwd: 'C:\\Users\\u\\my proj', sessionId: SESSION, platform: 'win32' }),
     `C:\\h\\projects\\C--Users-u-my-proj\\${SESSION}.jsonl`);
+});
+
+// Task 3: the OWNER QUESTION block
+const Q = ['Done: slices 01–03.', '## OWNER QUESTION', 'Question: Which store keeps the sessions?',
+  'Context: The bot needs sessions across restarts.', 'Redis is not installed on the VPS.', 'Options:',
+  '1. SQLite — one file next to the bot (recommended)', '2. Redis – install and run a service', '3. Memory - lost on restart'];
+
+test('parseOwnerQuestion: the full block', () => {
+  assert.deepEqual(parseOwnerQuestion(Q.join('\n')), {
+    question: 'Which store keeps the sessions?',
+    context: 'The bot needs sessions across restarts.\nRedis is not installed on the VPS.',
+    options: [
+      { label: 'SQLite', description: 'one file next to the bot', recommended: true },
+      { label: 'Redis', description: 'install and run a service', recommended: false },
+      { label: 'Memory', description: 'lost on restart', recommended: false }] });
+});
+
+test('parseOwnerQuestion: CRLF reads the same', () => assert.deepEqual(parseOwnerQuestion(Q.join('\r\n')), parseOwnerQuestion(Q.join('\n'))));
+
+test('parseOwnerQuestion: no options is a free-text question; no Context is empty', () => {
+  assert.deepEqual(parseOwnerQuestion('## OWNER QUESTION\nQuestion: What is the bot token name?'), { question: 'What is the bot token name?', context: '', options: [] });
+});
+
+test('parseOwnerQuestion: at most 4 options, one recommended (the first marked), 1) numbering, (Recommended)/(рекомендуется), wrapped lines', () => {
+  const r = parseOwnerQuestion(['## OWNER QUESTION', 'Question: q', 'Options:', '1) a — x (Recommended)', '2. b — y (рекомендуется)',
+    '   continues here', '3. c', '4. d — w', '5. e — v'].join('\n'));
+  assert.equal(r.options.length, 4);
+  assert.deepEqual(r.options.map((o) => o.recommended), [true, false, false, false]);
+  assert.equal(r.options[1].description, 'y continues here');
+  assert.deepEqual(r.options[2], { label: 'c', description: '', recommended: false });
+});
+
+test('parseOwnerQuestion: context cut to 600 characters', () => {
+  assert.equal(OWNER_CONTEXT_MAX, 600);
+  assert.equal(OWNER_OPTIONS_MAX, 4);
+  assert.equal(parseOwnerQuestion(`## OWNER QUESTION\nQuestion: q\nContext: ${'x'.repeat(900)}`).context.length, 600);
+});
+
+test('parseOwnerQuestion: null without the heading or the question; the last heading wins', () => {
+  for (const t of ['', 'Question: q', '## OWNER QUESTION\nContext: c', '## OWNER QUESTION\nQuestion:   ', null]) assert.equal(parseOwnerQuestion(t), null);
+  assert.equal(parseOwnerQuestion('## OWNER QUESTION\nQuestion: old\n\n## OWNER QUESTION\nQuestion: new').question, 'new');
+});
+
+test('parseOwnerQuestion: a later heading ends the block; ### and trailing spaces are a heading too', () => {
+  const r = parseOwnerQuestion('### OWNER QUESTION  \nQuestion: q\nContext: c\nOptions:\n1. a — x\n## Notes\n2. b — y');
+  assert.deepEqual(r, { question: 'q', context: 'c', options: [{ label: 'a', description: 'x', recommended: false }] });
+  assert.equal(parseOwnerQuestion('## OWNER QUESTION\nQuestion: q\nContext: c\n## Next\nmore').context, 'c');
 });

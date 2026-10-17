@@ -153,6 +153,29 @@ test('verify: passed ends; gaps start a gap round through the slicer, at most ga
   assert.equal(ctx.state.gapRounds, 1);
 });
 
+test('verify at the gap-round limit: Try again is one more gap round, never the same check again (B5 A/B: it looped)', async (t) => {
+  const gap = compactPlan({ id: '05-04', files: ['src/d.js'], extra: ['gap_closure: true'] });
+  const r = await gatesRig(t, {
+    script: { verifications: [verification('gaps_found')], plans: { [`${REL}/05-04-PLAN.md`]: gap } },
+    setup: (x) => {
+      x.write(`${REL}/05-01-PLAN.md`, compactPlan({ id: '05-01', files: ['src/a.js'], reqs: ['DEMO-01', 'DEMO-02'] }));
+      x.write(`${REL}/05-01-SUMMARY.md`, summaryText({ phaseSlug: '05-demo', plan: '05-01' }));
+      x.commit('docs: plan and summary');
+    },
+  });
+  const { ctx } = r;
+  adoptRound(ctx, { round: 0 });
+  for (const s of ['slice', 'build', 'review']) setStep(ctx.state, s, { state: 'done' });
+  ctx.state.gapRounds = 1;
+  ctx.save();
+  const seen = answerCard(t, r.root, 'Try again');
+  assert.equal(await runStep(ctx, 'verify'), 'gap');
+  assert.equal(seen[0].options[0].description, 'the build runs one more round of fixes for the gaps, then checks again');
+  assert.equal(byAgent(r, 'gsd-verifier').length, 1);
+  assert.equal(ctx.state.gapRounds, 2);
+  assert.match(r.f.calls().find((c) => c.stdin.startsWith('You are the slicer')).stdin, /## Gap round/);
+});
+
 test('security: by the phase\'s signal; the auditor\'s verdict becomes SECURITY.md', async (t) => {
   const neutral = await gatesRig(t);
   assert.equal(await runStep(neutral.ctx, 'security'), 'skipped');

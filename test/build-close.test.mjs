@@ -138,6 +138,28 @@ test('uat: human_needed runs turbo-uat and the uat commands in the skill\'s orde
   assert.ok(slicer.stdin.includes(`${REL}/05-UAT.md`));
 });
 
+test('uat at the gap-round limit: an issue asks the owner; Try again is one more gap round (B5 A/B: the same UAT again and again)', async (t) => {
+  const gap = compactPlan({ id: '05-03', files: ['src/c.js'], extra: ['gap_closure: true'] });
+  const u = await closeRig(t, {
+    script: { plans: { [`${REL}/05-03-PLAN.md`]: gap } },
+    setup: (x) => {
+      x.write(`${REL}/05-01-PLAN.md`, compactPlan({ id: '05-01', files: ['src/05-01.js'], reqs: ['DEMO-01', 'DEMO-02'] }));
+      x.write(`${REL}/05-01-SUMMARY.md`, summaryText({ phaseSlug: '05-demo', plan: '05-01' }));
+      x.write(`${REL}/05-VERIFICATION.md`, verification('human_needed'));
+      x.write(`${REL}/05-UAT.md`, uatFile([[1, 'the greeting shows', 'issue']]));
+      x.commit('docs: plan, v and uat');
+    },
+    turbo: { 'uat plan': json({ items: [] }), 'uat owner-request': json({ needsOwner: false, sign: [] }) },
+  });
+  u.ctx.state.gapRounds = 1;
+  u.ctx.save();
+  const seen = answerNext(t, u.root, '5', 1);
+  assert.equal(await runStep(u.ctx, 'uat'), 'gap');
+  assert.match(seen[0].question, /still finds gaps/);
+  assert.equal(u.ctx.state.gapRounds, 2);
+  assert.equal(u.turbo.args().filter((a) => a.join(' ') === 'uat plan 5').length, 1);
+});
+
 test('tests: one full run; red → one fixer → full again → else the owner', async (t) => {
   const r = await closeRig(t, { turbo: { 'test-changed': [{ code: 1, out: 'red\n' }, { code: 0, out: '' }] }, script: { fixes: [{ files: {}, result: 'x' }] } });
   assert.equal(await runStep(r.ctx, 'tests'), 'done');

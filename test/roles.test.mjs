@@ -44,7 +44,7 @@ function slicerCtx(over = {}) {
     contextPath: path.join(phaseDir(root), '05-CONTEXT.md'),
     researchPath,
     info: INFO6,
-    signals: { research: { yes: true, why: 'the goal names the Telegram Bot API' }, security: { yes: false, why: '' } },
+    signals: { research: { yes: true, why: 'external API: "Telegram Bot API" in the goal' }, security: { yes: false, why: '' } },
     lang: 'ru',
     preanswers: PRE,
     ...over,
@@ -124,7 +124,7 @@ test('slicer prompt: the phase, the plan files to write, within 8192 bytes', () 
     `Write .planning/phases/05-${SLUG}/05-NN-PLAN.md, NN two digits from 01 up:`,
     `phase: 05-${SLUG}`,
     '## Signals',
-    'External systems: the goal names the Telegram Bot API.',
+    'Research signal: external API: "Telegram Bot API" in the goal. Every assumption about an external system that the research or the code does not prove is a spike slice first.',
   ]) assert.ok(p.includes(s), s);
   for (const s of ['Security:', '## Open questions', '## Gap round', '{{', '\\']) assert.ok(!p.includes(s), s);
 });
@@ -138,7 +138,7 @@ test('slicer prompt: open questions without research, the security signal, a gap
 
   const sec = rolePrompt('slicer', slicerCtx({ signals: { research: { yes: false, why: '' }, security: { yes: true, why: 'it changes files under auth/' } } }));
   assert.ok(sec.includes('## Signals\nSecurity: it changes files under auth/. Keep auth, private data and data routing between users in slices of their own, each protection with a must_haves truth and a test.\n'), sec);
-  assert.ok(!sec.includes('External systems:'));
+  assert.ok(!sec.includes('Research signal:'));
   assert.ok(!rolePrompt('slicer', slicerCtx({ signals: NO_SIGNALS })).includes('## Signals'));
 
   const ctx = slicerCtx({ findingsPath: undefined });
@@ -153,6 +153,48 @@ test('slicer prompt: open questions without research, the security signal, a gap
   assert.ok(none.includes('Success criteria:\n- none listed\n'));
   assert.ok(none.includes('Goal: (none in ROADMAP)\n'));
   assert.ok(rolePrompt('slicer', slicerCtx({ info: { ...INFO6, requirements: [{ id: 'X-01', text: '' }] } })).includes('\n- X-01\n'));
+});
+
+// L1's answers (lib/phase-signals.mjs): the discussion log's topics (each up to 300 characters), words, RESEARCH.md
+const TOPICS = Array.from({ length: 4 }, (_, i) => long(`Does the API limit ${i + 1}?`, 300));
+const L1_TOPICS = { yes: true, why: `the discussion log lists 4 research topics: ${TOPICS.join('; ')}` };
+const L1_SECURITY = { yes: true, why: `auth: "login" in the goal ${'z'.repeat(400)}` };
+
+test('slicer prompt: signals in L1\'s words are not repeated, and stay short', () => {
+  const info = { ...INFO6, needsResearchItems: TOPICS };
+  const open = rolePrompt('slicer', slicerCtx({ info, researchPath: undefined, signals: { research: L1_TOPICS, security: { yes: false, why: '' } } }));
+  assert.ok(open.includes(`- ${TOPICS[0].slice(0, 159)}…\n`), 'the topics are open questions, in short');
+  const logged = slicerCtx({ info: { ...info, needsResearchItems: [...TOPICS, 'a', 'b', 'c'] }, researchPath: undefined });
+  fs.writeFileSync(path.join(phaseDir(logged.root), '05-DISCUSSION-LOG.md'), '# log\n');
+  const all = rolePrompt('slicer', logged);
+  assert.ok(all.includes(`The discussion left these unchecked (in full in .planning/phases/05-${SLUG}/05-DISCUSSION-LOG.md); each becomes`), all);
+  assert.ok(all.includes('\n- a\n- and 2 more\n'), 'at most five topics');
+  assert.ok(!open.includes('Research signal:'), 'the topics are not repeated as a signal');
+  assert.ok(!open.includes('## Signals'));
+  const researched = rolePrompt('slicer', slicerCtx({ info, signals: { research: L1_TOPICS, security: { yes: false, why: '' } } }));
+  assert.ok(!researched.includes('## Open questions') && !researched.includes('Research signal:'), 'RESEARCH.md answers the topics');
+  const exists = rolePrompt('slicer', slicerCtx({ signals: { research: { yes: true, why: 'RESEARCH.md already exists' }, security: { yes: false, why: '' } } }));
+  assert.ok(!exists.includes('## Signals'), 'RESEARCH.md is already in the Read list');
+  const sec = rolePrompt('slicer', slicerCtx({ signals: { research: { yes: false, why: '' }, security: L1_SECURITY } }));
+  const line = sec.split('\n').find((l) => l.startsWith('Security: '));
+  assert.ok(line.startsWith('Security: auth: "login" in the goal z') && line.includes('…. Keep auth, private data'), line);
+  assert.ok(line.length < 200 + 'Security: '.length + 160, `${line.length} characters`);
+});
+
+test('slicer prompt: the worst case stays within 8192 bytes', () => {
+  const ctx = slicerCtx({
+    info: { ...INFO6, needsResearchItems: TOPICS },
+    researchPath: undefined,
+    signals: { research: { yes: true, why: `external API: "${'Q'.repeat(300)} API" in the goal` }, security: L1_SECURITY },
+  });
+  for (const id of ['05-01', '05-02']) writePlan(ctx.root, id, compactPlan({ id }), SLUG);
+  const p = rolePrompt('slicer', { ...ctx, info: { ...ctx.info, needsResearchItems: [] }, findingsPath: path.join(phaseDir(ctx.root), '05-VERIFICATION.md') });
+  const q = rolePrompt('slicer', { ...ctx, findingsPath: path.join(phaseDir(ctx.root), '05-VERIFICATION.md') });
+  for (const x of [p, q]) {
+    assert.ok(x.includes('## Gap round') && x.includes('Security: ') && x.includes('## Owner answers given ahead'));
+    assert.ok(Buffer.byteLength(x) <= 8192, `${Buffer.byteLength(x)} bytes`);
+  }
+  assert.ok(p.includes('Research signal: ') && q.includes('## Open questions'));
 });
 
 test('slicer prompt carries the slicing rules the spec fixes', () => {
@@ -221,6 +263,7 @@ test('fillTemplate: CRLF, missing values, blank runs', () => {
   assert.throws(() => fillTemplate('{{nope}}', {}), /no value for \{\{nope\}\}/);
   assert.equal(fillTemplate('{{a}}', { a: '$& {{b}}' }), '$& {{b}}\n', 'values are inserted as they are, never re-read');
   assert.equal(fillTemplate('- a\r\n{{x}}\r\n- b\n', { x: '' }), '- a\n- b\n', 'an empty item leaves no gap in a list');
+  assert.equal(fillTemplate('a\n{{x}}\nb', { x: 'one\r\n\r\n\r\ntwo\r' }), 'a\none\n\ntwo\n\nb\n', 'values lose their CRs too');
 });
 
 test('rolePrompt refuses what it cannot fill', () => {
@@ -228,4 +271,6 @@ test('rolePrompt refuses what it cannot fill', () => {
   assert.throws(() => rolePrompt('planner', ctx), /unknown role: planner/);
   assert.throws(() => rolePrompt('builder', { ...ctx, planPath: undefined }), /builder: planPath is required/);
   assert.throws(() => rolePrompt('builder', { ...ctx, contextPath: 'x.md' }), /contextPath must name a <phase>-CONTEXT\.md/);
+  assert.throws(() => rolePrompt('slicer', { ...ctx, contextPath: '05-CONTEXT.md' }), /slicer: contextPath must be in the phase directory inside the project/);
+  assert.throws(() => rolePrompt('fixer', { ...ctx, findingsPath: 'r-REVIEW.md', contextPath: path.join(ctx.root, '..', '05-CONTEXT.md') }), /fixer: contextPath must be in the phase directory/);
 });

@@ -48,6 +48,8 @@ must_haves:
   key_links:
     - from: "src/a.js"
       to: "src/b.js"
+      via: "a.js imports greet from b.js"
+      pattern: "./b.js"
 ---
 
 <objective>
@@ -69,7 +71,7 @@ What the slice delivers and why. Decisions: D-01.
 </verification>
 ```
 
-wave is 1 plus the longest chain of depends_on before the slice (ids like {{prefix}}-01). type: tdd when every task is test first. key_links name only files another slice writes; leave the list empty otherwise. Add spike: true to a spike slice. No checkpoint tasks: autonomous is always true, and a question for the owner goes as below.
+wave is 1 plus the longest chain of depends_on before the slice (ids like {{prefix}}-01). type: tdd when every task is test first. key_links name only files another slice writes; leave the list empty otherwise. Each link has via (how from uses to) and pattern (a regex found in the from file, such as its import of to: GSD's verifier checks it). Add spike: true to a spike slice. No checkpoint tasks: autonomous is always true, and a question for the owner goes as below.
 
 ## Finish
 Write only the plan files; change nothing else and do not commit. Code then checks the plans (fields, size, tasks, requirement and decision coverage, files); if it finds problems it sends them to this session once: fix exactly those. Your last message: one line per plan, `<id> — <objective in a few words>`.

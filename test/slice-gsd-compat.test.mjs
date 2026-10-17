@@ -48,13 +48,22 @@ function block(p) {
 // The slicer's plan format as two slices: 05-01, and 05-02 depending on it.
 function slicePlans({ root, contextPath }) {
   const t = block(rolePrompt('slicer', { root, phase: '5', contextPath, info: DEMO_INFO, signals: NO_SIGNALS, lang: 'en' }));
-  const one = t.replace('plan: NN', 'plan: 01').replace('REQ-01', 'DEMO-01');
+  assert.ok(t.includes('pattern: "./b.js"') && t.includes('autonomous: true\n'), 'the slicer format has a key link pattern');
+  // 05-01 is a spike slice (spike: true, a key GSD ignores)
+  const one = t.replace('plan: NN', 'plan: 01').replace('REQ-01', 'DEMO-01').replace('autonomous: true\n', 'autonomous: true\nspike: true\n');
   const two = t.replace('plan: NN', 'plan: 02').replace('REQ-01', 'DEMO-02').replace('wave: 1', 'wave: 2').replace('depends_on: []', 'depends_on: ["05-01"]')
     .replaceAll('src/a.js', 'src/b.js').replaceAll('test/a.test.js', 'test/b.test.js').replaceAll('D-01', 'D-02')
-    .replace('to: "src/b.js"', 'to: "src/a.js"');
+    .replace('to: "src/b.js"', 'to: "src/a.js"').replace('pattern: "./b.js"', 'pattern: "./a.js"').replace('a.js imports greet from b.js', 'b.js imports hi from a.js');
   assert.notEqual(one, t, 'the slicer format has plan: NN and REQ-01');
   assert.match(two, /^plan: 02$/m);
   return [one, two];
+}
+
+// The code the two slices' key links describe: a.js imports b.js, b.js imports a.js.
+function writeSources(root) {
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'a.js'), "import { greet } from './b.js';\nexport const hi = () => greet();\n");
+  fs.writeFileSync(path.join(root, 'src', 'b.js'), "import { hi } from './a.js';\nexport const greet = () => 'hi';\nexport const again = () => hi();\n");
 }
 
 // The builder's SUMMARY format filled for a plan: the requirements, x for every other placeholder.
@@ -87,6 +96,16 @@ test('slices and summaries in the prompts\' format read as planned, executed and
   const L = () => [tool('init', 'manager').phases[0].disk_status, tool('progress').phases[0].status, tool('verification', 'status', REL).status];
   assert.deepEqual(L(), ['planned', 'Planned', 'missing']);
 
+  // the verifier's checks of must_haves pass on code that does what the slices say
+  writeSources(root);
+  commit('feat(05): sources');
+  for (const id of ['05-01', '05-02']) {
+    const k = tool('verify', 'key-links', `${REL}/${id}-PLAN.md`);
+    assert.deepEqual([k.all_verified, k.total], [true, 1], `${id}: ${JSON.stringify(k)}`);
+    const a = tool('verify', 'artifacts', `${REL}/${id}-PLAN.md`);
+    assert.deepEqual([a.all_passed, a.total], [true, 1], `${id}: ${JSON.stringify(a)}`);
+  }
+
   const s1 = summary(p, '05-01', 'DEMO-01');
   fs.writeFileSync(path.join(dir, '05-01-SUMMARY.md'), s1);
   const sv = tool('frontmatter', 'validate', `${REL}/05-01-SUMMARY.md`, '--schema', 'summary');
@@ -110,6 +129,10 @@ test('slices and summaries in the prompts\' format read as planned, executed and
   assert.equal(tool('phase', 'complete', '5').roadmap_updated, true);
   assert.equal(tool('init', 'manager').phases[0].roadmap_complete, true);
   assert.match(fs.readFileSync(path.join(root, '.planning', 'ROADMAP.md'), 'utf8'), /^- \[x\] \*\*Phase 5: Demo Feature\*\*/m);
+  // GSD's own phase complete leaves STATE.md at "All phases complete" for the last phase, which its drift guard cannot
+  // rank; what matters is that STATE.md and ROADMAP.md never contradict each other
+  const drift = tool('drift-guard', 'phase-status', '--phase', '5');
+  assert.ok(['consistent', 'uncheckable'].includes(drift.verdict) && drift.roadmapStatus === 'Complete', JSON.stringify(drift));
 });
 
 test('lintSlices with the installed GSD names an uncited decision and a plan GSD rejects', SKIP, () => {
@@ -119,8 +142,12 @@ test('lintSlices with the installed GSD names an uncited decision and a plan GSD
   assert.ok(!noMustHaves.includes('key_links') && !noMustHaves.includes('must_haves'), noMustHaves);
   fs.writeFileSync(path.join(p.dir, '05-01-PLAN.md'), one);
   fs.writeFileSync(path.join(p.dir, '05-02-PLAN.md'), noMustHaves);
+  // a gap round's slice (gap_closure: true, a key GSD reads) after them
+  const gap = one.replace('plan: 01', 'plan: 03').replace('spike: true\n', 'gap_closure: true\n').replaceAll('src/a.js', 'src/c.js').replaceAll('test/a.test.js', 'test/c.test.js');
+  fs.writeFileSync(path.join(p.dir, '05-03-PLAN.md'), gap);
   const r = lintSlices(p.root, '5', { info: DEMO_INFO });
   assert.equal(r.ok, false);
+  assert.deepEqual(r.problems.filter((x) => x.plan === '05-01' || x.plan === '05-03'), [], JSON.stringify(r.problems));
   assert.deepEqual(r.problems.filter((x) => x.kind === 'gsd'), [], JSON.stringify(r.problems));
   assert.ok(r.problems.some((x) => x.plan === null && x.kind === 'decisions' && x.detail === 'D-03 (logs nothing) is cited by no slice'), JSON.stringify(r.problems));
   assert.ok(r.problems.some((x) => x.plan === '05-02' && x.kind === 'structure' && x.detail === 'Missing required frontmatter field: must_haves'), JSON.stringify(r.problems));

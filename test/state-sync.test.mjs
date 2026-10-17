@@ -583,6 +583,19 @@ test('a second trim changes nothing; protected content alone over budget leaves 
   assert.deepEqual([again.text, again.moved, again.over], [tiny.text, [], true]);
 });
 
+test('a heading that starts with a protected name or speaks of decisions is never trimmed, whatever words follow', () => {
+  const rows = (n) => rowsOf(n, (i) => `- entry ${i}: ${'w'.repeat(90)}`);
+  const kept = [
+    ['## Current Position — history', '', ...rows(20), ''],
+    ['### Decisions (archived 2026-01)', '', ...rows(20), ''],
+    ['## Журнал решений', '', ...rows(20), ''],
+  ];
+  const text = ['# Project State', '', ...kept.flat(), '## Session Log', '', ...rows(40), ''].join('\n');
+  const r = trimStateHistory(text, { budgetKb: 4, date: '2026-01-05' });
+  assert.deepEqual(r.moved, ['Session Log']);
+  for (const k of kept) assert.equal(part(r.text, k[0]), part(text, k[0]), k[0]);
+});
+
 test('the archive: GSD\'s header once, then one dated block per trim with each moved section', () => {
   const text = bigState();
   const r = trimStateHistory(text, { budgetKb: 9, date: '2026-01-05' });

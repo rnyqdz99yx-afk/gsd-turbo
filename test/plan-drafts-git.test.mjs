@@ -147,7 +147,7 @@ test('promote refuses: a draft edited after its reconcile, a wave or depends_on 
 test('a failed reconcile and --replan hand the plan to GSD; every use: gsd answer records replanned', () => {
   const p = drafted();
   startReconcile(p.root, '33', '33-03', { now: NOW });
-  assert.deepEqual(finishReconcile(p.root, '33', '33-03', 'failed', { reason: 'RECONCILE FAILED: 33-01 took another approach', now: NOW }), { ok: 'replanned' });
+  assert.deepEqual(finishReconcile(p.root, '33', '33-03', 'failed', { reason: 'RECONCILE FAILED: 33-01 took another approach', now: NOW }), { ok: 'replanned', removed: [] });
   assert.deepEqual(startReconcile(p.root, '33', '33-03', { now: NOW }), { gsd: 'replanned: RECONCILE FAILED: 33-01 took another approach' });
   assert.deepEqual(replan(p.root, '33', '33-04', { reason: 'no marker', now: NOW }), { removed: [] });
   assert.deepEqual(startReconcile(p.root, '33', '33-04', { now: NOW }), { gsd: 'replanned: no marker' });
@@ -198,26 +198,60 @@ test('critical 1: a draft the agent wrote and committed into the phase directory
   assert.equal(fs.existsSync(p.planFile('33-04')), false);
 });
 
-test('critical 2: --drafted and --reconciled refuse when a planner committed on its own or touched ROADMAP.md meanwhile; the lane\'s plan commits are fine', () => {
+test('review C1: GSD\'s own planners updating ROADMAP.md and committing create phase plan refuse no draft; a plan file an agent wrote under another name is removed and refused', () => {
   const p = project();
   draftsPlan(p.root, '33', { config: CFG, now: NOW });
   for (const id of ['33-03', '33-04']) startDraft(p.root, '33', id, { config: CFG, now: NOW });
   p.writeDraft('33-03', draftText('33-03', 2, ['33-01'], ['src/c.ts']));
   p.writeDraft('33-04', draftText('33-04', 3, ['33-03']));
-  p.commitPlan('33-01', planText('33-01', 1, [], FILES['33-01']));
-  assert.deepEqual(markDrafted(p.root, '33', '33-03', { now: NOW }), { ok: true });
-  fs.appendFileSync(path.join(p.root, '.planning', 'ROADMAP.md'), '- [ ] 33-04-PLAN.md\n');
-  assert.match(markDrafted(p.root, '33', '33-04', { now: NOW }).refused, /\.planning\/ROADMAP\.md changed since the agent was sent/);
+  // wave 1 as GSD 1.16 runs it: the planner's own update_roadmap and git_commit, then the orchestrator's commit
+  fs.writeFileSync(p.planFile('33-01'), planText('33-01', 1, [], FILES['33-01']));
+  fs.appendFileSync(path.join(p.root, '.planning', 'ROADMAP.md'), '- [ ] 33-01-PLAN.md\n');
   p.git('add', '-A');
   p.git('commit', '-q', '-m', 'docs(33): create phase plan');
-  assert.match(markDrafted(p.root, '33', '33-04', { now: NOW }).refused, /a planner committed on its own since the agent was sent \("docs\(33\): create phase plan"\)/);
-  // a reconcile agent that commits its revision
+  fs.appendFileSync(path.join(p.root, '.planning', 'STATE.md'), 'x\n');
+  assert.deepEqual(markDrafted(p.root, '33', '33-03', { now: NOW }), { ok: true });
+  // the 33-04 agent also wrote a misnamed plan into the phase directory, and committed it
+  p.commitPlan('33-04-auth', draftText('33-04', 3, ['33-03']));
+  const r = markDrafted(p.root, '33', '33-04', { now: NOW });
+  assert.match(r.refused, /the draft agent wrote into the phase directory: removed \.planning\/phases\/33-demo\/33-04-auth-PLAN\.md/);
+  assert.equal(fs.existsSync(p.planFile('33-04-auth')), false);
+  assert.match(p.git('log', '-1', '--format=%s'), /^docs\(33\): drop 33-04-auth-PLAN\.md: a draft agent wrote it/);
+  assert.match(readDrafts(p.root, '33').plans['33-04'].blobs.drafted, /^[0-9a-f]{40}$/, 'the refused draft\'s blob is kept for the guard');
+  // a reconcile agent that writes a plan file of its own
   for (const id of ['33-02', '33-05']) p.commitPlan(id, planText(id, 1, [], FILES[id]));
   assert.ok(startReconcile(p.root, '33', '33-03', { now: NOW }).block);
-  fs.writeFileSync(path.join(p.root, 'src.txt'), 'x\n');
-  p.git('add', '-A');
-  p.git('commit', '-q', '-m', 'fix(33): revise plans based on checker feedback');
-  assert.match(finishReconcile(p.root, '33', '33-03', 'passed', { now: NOW }).refused, /a planner committed on its own/);
+  fs.mkdirSync(path.join(p.dir, 'plans'));
+  fs.writeFileSync(path.join(p.dir, 'plans', 'PLAN-03.md'), planText('33-03', 2, ['33-01']));
+  assert.match(finishReconcile(p.root, '33', '33-03', 'passed', { now: NOW }).refused, /reconcile agent wrote into the phase directory: removed \.planning\/phases\/33-demo\/plans\/PLAN-03\.md/);
+});
+
+test('review I2: the guard goes over every plan file: a misnamed copy of a draft, and a plan file no outline names, are refused', () => {
+  const p = drafted();
+  const why = () => draftsGuard(p.root, '33');
+  assert.equal(why(), null);
+  fs.copyFileSync(draftFile(p.root, '33', '33-04'), path.join(p.dir, '33-04-x-PLAN.md'));
+  assert.match(why(), /^plan file 33-04-x-PLAN\.md is the draft of 33-04, not a plan: delete it, commit the deletion and plan 33-04 again/);
+  fs.writeFileSync(path.join(p.dir, '33-04-x-PLAN.md'), planText('33-04', 3, ['33-03']));
+  assert.match(why(), /^plan file 33-04-x-PLAN\.md is no plan of GSD's outline 33-PLAN-OUTLINE\.md/);
+  // once execution began, plans no outline names are GSD's gap plans
+  fs.writeFileSync(path.join(p.dir, '33-01-SUMMARY.md'), '# done\n');
+  assert.equal(why(), null);
+});
+
+test('review C2: a resumed session whose first wave holds a drafted plan reconciles it (or hands it to GSD) at that wave; GSD\'s plan then passes the guard', async () => {
+  const p = drafted();
+  // the first session stopped after wave 2 was planned by GSD; 33-04 (wave 3) is drafted
+  replan(p.root, '33', '33-03', { now: NOW });
+  p.commitPlan('33-03', planText('33-03', 2, ['33-01'], ['src/c.ts']));
+  const resumed = draftsPlan(p.root, '33', { config: CFG, now: NOW });
+  assert.deepEqual([resumed.use, resumed.draftNow, resumed.removed, resumed.commitFirst], [true, [], [], []]);
+  // wave 3 is the first runnable wave of this session: point 3 runs for it too
+  assert.ok(startReconcile(p.root, '33', '33-04', { now: NOW }).block.startsWith('reconcile 33-04: 1 plan before it'));
+  assert.deepEqual(finishReconcile(p.root, '33', '33-04', 'failed', { reason: 'RECONCILE FAILED', now: NOW }), { ok: 'replanned', removed: [] });
+  p.commitPlan('33-04', planText('33-04', 3, ['33-03']));
+  assert.equal(draftsGuard(p.root, '33'), null);
+  assert.ok(planSetCheck(p.root, '33').ok);
 });
 
 test('B11: a plan that came from a draft without a passed reconcile is refused by --check plan and --done plan, committed or not', async () => {

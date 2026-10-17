@@ -87,10 +87,10 @@ test('usage errors exit 2: no action, two actions, a verdict other than passed o
   usage('33', '--drafting', '33-09');
   usage('33', '--replan', '');
   usage('../x', '--plan');
-  // drafts disabled: off, and no record
+  // drafts disabled: off, and the record says why (the measurement line)
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ plan_drafts: { enabled: false } }));
   assert.equal(cli(root, 'plan-drafts', '33', '--plan').first, 'drafts off: plan_drafts.enabled is false');
-  assert.equal(fs.existsSync(path.join(root, '.planning', 'turbo', 'run', 'drafts-p33')), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.planning', 'turbo', 'run', 'drafts-p33', 'drafts.json'), 'utf8')).lastPlan.why, 'plan_drafts.enabled is false');
   // a bad value is a config error, never off
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ plan_drafts: { max_parallel: 0 } }));
   const r = cli(root, 'plan-drafts', '33', '--plan');

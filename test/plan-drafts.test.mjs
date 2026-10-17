@@ -17,10 +17,12 @@ const phase = (root, files = {}) => writePhase(root, '33-demo', { '33-PLAN-OUTLI
 const cfg = (d = {}) => ({ plan_drafts: { enabled: true, min_waves: 3, max_parallel: 8, ...d } });
 const plan = (root, opts = {}) => draftsPlan(root, '33', { config: cfg(opts), now: NOW });
 
-test('B4: every drafts off reason in its order; enabled false writes no record, the others a lastPlan with use false', () => {
+test('B4: every drafts off reason in its order; every one, enabled false too, leaves a lastPlan with use false', () => {
   const root = project();
   assert.deepEqual(draftsPlan(root, '33', { config: cfg({ enabled: false }), now: NOW }), { use: false, why: 'plan_drafts.enabled is false', removed: [], commitFirst: [] });
-  assert.equal(fs.existsSync(draftsDir(root, '33')), false, 'no record with drafts disabled');
+  assert.deepEqual(readDrafts(root, '33').lastPlan, { use: false, why: 'plan_drafts.enabled is false', at: NOW.toISOString() }, 'the measurement line says why');
+  assert.deepEqual(readDrafts(root, '33').plans, {});
+  assert.ok(fs.existsSync(draftsDir(root, '33')));
   const off = (why) => {
     const r = plan(root);
     assert.equal(r.use, false);
@@ -77,6 +79,13 @@ test('B4: a fresh 4-wave outline drafts waves 2-4 up to max_parallel; in-flight 
   // a drafting record its agent left long ago is drafted again
   const later = draftsPlan(root, '33', { config: cfg({ max_parallel: 2 }), now: new Date(NOW.getTime() + DRAFTING_STALE_MS + 60000) });
   assert.deepEqual(later.draftNow, ['33-02', '33-03']);
+  // ... and the dead agent's partial draft goes first; a draft at work keeps its file
+  fs.writeFileSync(draftFile(root, '33', '33-02'), '---\nwave: 2\n');
+  assert.ok(startDraft(root, '33', '33-02', { config: cfg(), now: NOW }).paragraph);
+  assert.ok(fs.existsSync(draftFile(root, '33', '33-02')));
+  const stale = new Date(fs.statSync(draftFile(root, '33', '33-02')).mtimeMs + DRAFTING_STALE_MS + 60000);
+  assert.ok(startDraft(root, '33', '33-02', { config: cfg(), now: stale }).paragraph);
+  assert.equal(fs.existsSync(draftFile(root, '33', '33-02')), false);
   // wave 1 written: GSD plans wave 2 now, drafts are for the waves after it
   fs.writeFileSync(path.join(dir, '33-01-PLAN.md'), planText('33-01', 1));
   const resumed = plan(root);

@@ -197,7 +197,7 @@ test('nextReady stops', () => {
   const o = stateOf(['33-01', '33-02', '33-03'], [['33-01', '33-02']]);
   setSlice(o, '33-01', 'dispatched', {}, now);
   setSlice(o, '33-01', 'running', {}, now);
-  setSlice(o, '33-01', 'owner', { ownerQuestion: 'ask-1' }, now);
+  setSlice(o, '33-01', 'owner', { question: 'ask-1' }, now);
   assert.deepEqual(nextReady(o), ['33-03'], 'an owner slice holds its dependents only');
 
   const d = stateOf(['33-01', '33-02'], [['33-01', '33-02']]);

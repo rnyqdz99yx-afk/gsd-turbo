@@ -208,3 +208,19 @@ test('security: while GSD\'s own workflow.security_enforcement is on the audit r
   assert.equal(await runStep(off.ctx, 'security'), 'skipped');
   assert.equal(byAgent(off, 'gsd-security-auditor').length, 0);
 });
+
+test('security: OPEN_THREATS with threats_open 0 (only threats below block_on) passes, as GSD\'s gate does (B5 demo: a fixer with nothing to fix, then a card, again and again)', async (t) => {
+  const LOW = '## OPEN_THREATS\n\n**threats_open:** 0\n\n### Open (non-blocking, below block_on)\n\n| Threat ID | Category | Severity | Mitigation |\n|---|---|---|---|\n| T-5-05 | Tampering | low | escape control characters |\n';
+  const r = await gatesRig(t, { script: { audits: [LOW] }, setup: (x) => {
+    x.write(`${REL}/05-01-PLAN.md`, compactPlan({ id: '05-01', files: ['src/auth/session.js'] }));
+    x.commit('docs: auth plan');
+  } });
+  assert.equal(await runStep(r.ctx, 'security'), 'done');
+  assert.equal(byAgent(r, 'gsd-security-auditor').length, 1);
+  assert.equal(fixers(r).length, 0);
+  assert.deepEqual(readQuestions(r.root, '5'), []);
+  const report = fs.readFileSync(path.join(r.phaseDir, '05-SECURITY.md'), 'utf8');
+  assert.match(report, /^threats_open: 0$/m);
+  assert.match(report, /^status: secured$/m);
+  assert.ok(report.includes('T-5-05'));
+});

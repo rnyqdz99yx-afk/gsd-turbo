@@ -98,6 +98,10 @@ test('lean apply refused while gates are off: exit 1, the refusal line', () => {
   const r = cli(['lean', 'apply']);
   assert.equal(r.code, 1);
   assert.equal(r.err.trim(), "refused: phase 3 has GSD's built-in gates off (.planning/turbo/gates/p3.json): run turbo-run gates restore 3 first; nothing was changed");
+  // lean off too: that restore would put lean's values back after it
+  const off = cli(['lean', 'off']);
+  assert.equal(off.code, 1);
+  assert.equal(off.err.trim(), "refused: phase 3 has GSD's built-in gates off (.planning/turbo/gates/p3.json): run turbo-run gates restore 3 first; nothing was changed");
 });
 
 test('unknown subcommand: usage, exit 2', () => {

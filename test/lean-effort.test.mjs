@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { effortHome } from './helpers/effort-gsd.mjs';
-import { LEAN_EFFORT, agentEffort, effortApply, effortOffHint, effortPaths } from '../lib/lean.mjs';
+import { LEAN_EFFORT, agentEffort, effortApply, effortOffHint, effortPaths, leanLines } from '../lib/lean.mjs';
 
 const THREE = [
   { agent: 'gsd-assumptions-analyzer', from: 'xhigh', to: 'high' },
@@ -71,6 +71,17 @@ test('effort apply as a dry run lists the agents that would change and writes no
   assert.deepEqual(r, { defaultsChanged: true, changes: [THREE[2], THREE[0], THREE[1]], dryRun: true });
   assert.equal(fs.existsSync(path.join(h.home, '.gsd')), false);
   assert.deepEqual(h.argv(), []);
+});
+
+test('the owner\'s own overrides of these agents are named when lean replaces them', () => {
+  const h = effortHome({ defaults: { effort: { agent_overrides: { 'gsd-planner': 'max', 'gsd-executor': 'low', 'gsd-phase-researcher': 'medium' } } } });
+  const file = path.join(h.home, '.gsd', 'defaults.json');
+  const r = effortApply({ root: tmpDir('effort-root'), env: h.env, home: h.home });
+  assert.deepEqual(r.replaced, { file, agents: [{ agent: 'gsd-planner', from: 'max', to: 'high' }] });
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).effort.agent_overrides['gsd-executor'], 'low');
+  assert.ok(leanLines({ changed: [], effort: r }).includes(`lean: effort.agent_overrides in ${file}: your gsd-planner max is now high`));
+  // a second apply replaces nothing
+  assert.equal(effortApply({ root: tmpDir('effort-root'), env: h.env, home: h.home }).replaced, undefined);
 });
 
 test('agentEffort: the frontmatter effort line, inherit without one, null without the file', () => {

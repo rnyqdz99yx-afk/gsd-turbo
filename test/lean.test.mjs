@@ -45,6 +45,7 @@ test('lean apply writes the ten GSD keys through config-set, keeps the previous 
   assert.deepEqual(json(root, LEAN_PREV_REL), {
     v: 1,
     at: '2026-10-17T10:00:00.000Z',
+    base: before,
     keys: {
       'workflow.nyquist_validation': 'true',
       'workflow.pattern_mapper': ABSENT,
@@ -99,9 +100,12 @@ test('lean apply after a key drifted sets it again and keeps the value from befo
 
 test('lean off restores every previous value, removes absent keys, deletes lean-prev, sets lean.enabled false and commits', () => {
   const { root, core } = leanProject();
+  const bytes = read(root, '.planning/config.json');
   leanApply({ root, core });
   const r = leanOff({ root, core, hint: () => 'effort: how to undo' });
   assert.ok(sameConfig(json(root, '.planning/config.json'), ORIGINAL), read(root, '.planning/config.json'));
+  // the bytes from before lean (no "graphify": {} left behind by config-set)
+  assert.equal(read(root, '.planning/config.json'), bytes);
   assert.equal(fs.existsSync(path.join(root, LEAN_PREV_REL)), false);
   assert.equal(json(root, '.planning/turbo/config.json').lean.enabled, false);
   assert.equal(git(root, 'log', '-1', '--format=%s'), 'chore(turbo): lean mode off, GSD settings restored');
@@ -125,6 +129,37 @@ test('lean apply refuses while a phase has its gates off', () => {
   assert.throws(() => leanApply({ root, core }), (e) => e instanceof LeanRefused && /^phase 3 has GSD's built-in gates off \(\.planning\/turbo\/gates\/p3\.json\): run turbo-run gates restore 3 first; nothing was changed$/.test(e.message));
   assert.equal(read(root, '.planning/config.json'), bytes);
   assert.equal(fs.existsSync(path.join(root, LEAN_PREV_REL)), false);
+});
+
+test('lean off refuses while a phase has its gates off: its restore would put lean\'s values back as the originals', () => {
+  const { root, core } = leanProject();
+  leanApply({ root, core });
+  write(root, '.planning/turbo/gates/p4.json', JSON.stringify({ phase: '4', original: {} }));
+  const bytes = read(root, '.planning/config.json');
+  const prev = read(root, LEAN_PREV_REL);
+  assert.throws(() => leanOff({ root, core }), (e) => e instanceof LeanRefused && /^phase 4 has GSD's built-in gates off/.test(e.message));
+  assert.equal(read(root, '.planning/config.json'), bytes);
+  assert.equal(read(root, LEAN_PREV_REL), prev);
+  assert.equal(fs.existsSync(path.join(root, '.planning', 'turbo', 'config.json')), false);
+});
+
+test('a failing commit or no repository: the keys are written, the commit is named not made, never an error', () => {
+  const { root, core } = leanProject();
+  // a pre-commit hook that refuses (core.hooksPath is the repository's own hooks directory)
+  fs.mkdirSync(path.join(root, '.git', 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\necho no >&2\nexit 1\n', { mode: 0o755 });
+  const r = leanApply({ root, core });
+  assert.equal(leanCurrent(root), true);
+  assert.equal(r.commit.committed, false);
+  assert.match(leanLines(r).find((l) => l.startsWith('lean: not committed')), /^lean: not committed \(git commit failed: /);
+  // outside git: written, not committed
+  const bare = fs.mkdtempSync(path.join(path.dirname(root), 'turbo-lean-nogit-'));
+  write(bare, '.planning/config.json', '{}');
+  const coreBare = fakeGsdCore(bare);
+  const logs = [];
+  assert.equal(leanBoundary({ root: bare, phase: '1', core: coreBare, log: (l) => logs.push(l) }).applied, true);
+  assert.ok(logs.some((l) => /^lean: not committed \(git ls-files failed: /.test(l)), logs.join('\n'));
+  assert.equal(leanCurrent(bare), true);
 });
 
 test('lean apply --dry-run lists the changes and writes nothing', () => {
@@ -228,6 +263,17 @@ test('leanBoundary leaves a phase whose execute step began alone and says why', 
   logs = [];
   assert.deepEqual(leanBoundary({ root: b.root, phase: '4', core: b.core, log: (l) => logs.push(l) }), { applied: false, why: 'its execute step has begun' });
   assert.deepEqual(logs, [NOT]);
+  // no turbo record and no SUMMARY yet, but GSD's begin-phase marked STATE.md: execute has begun
+  const s = leanProject();
+  write(s.root, '.planning/STATE.md', '# Project State\n\n## Current Position\n\nPhase: 4 of 5 (Work)\nStatus: Executing Phase 04\n');
+  logs = [];
+  assert.equal(executeBegun(s.root, '4'), true);
+  assert.equal(executeBegun(s.root, '5'), false, 'another phase executing is no sign for this one');
+  assert.deepEqual(leanBoundary({ root: s.root, phase: '4', core: s.core, log: (l) => logs.push(l) }), { applied: false, why: 'its execute step has begun' });
+  write(s.root, '.planning/STATE.md', '# Project State\n\n## Current Position\n\n**Status:** Ready to execute (Executing Phase 4)\n');
+  assert.equal(executeBegun(s.root, '4'), true);
+  write(s.root, '.planning/STATE.md', '# Project State\n\nStatus: Phase complete\n\nNotes: Executing Phase 4 went well\n');
+  assert.equal(executeBegun(s.root, '4'), false, 'only the Status line counts');
   // another phase's gates are off: lean waits for their restore
   const c = leanProject();
   write(c.root, '.planning/turbo/gates/p3.json', JSON.stringify({ phase: '3', original: {} }));
@@ -274,4 +320,17 @@ test('a held merge lock or a failing gsd-tools: not applied, logged, never throw
   const failing = leanBoundary({ root, phase: '4', core, exec: () => { throw Object.assign(new Error('boom'), { stderr: 'gsd broke' }); }, log: () => {} });
   assert.equal(failing.applied, false);
   assert.match(failing.why, /^gsd-tools config-get workflow\.nyquist_validation failed: gsd broke$/);
+});
+
+test('leanBoundary runs GSD\'s effort sync after the merge lock is released, and logs its lines', () => {
+  const { root, core } = leanProject();
+  let held = null;
+  const logs = [];
+  const r = leanBoundary({ root, phase: '4', core, log: (l) => logs.push(l), effort: () => {
+    held = fs.existsSync(mergeLockFile(root));
+    return { defaultsChanged: true, changes: [{ agent: 'gsd-planner', from: 'xhigh', to: 'high' }] };
+  } });
+  assert.equal(r.applied, true);
+  assert.equal(held, false);
+  assert.ok(logs.includes('lean: effort gsd-planner xhigh → high (GSD effort sync, every project on this machine)'), logs.join('\n'));
 });

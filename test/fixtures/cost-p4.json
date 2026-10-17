@@ -1,0 +1,38 @@
+{
+  "v": 1,
+  "phase": "4",
+  "sessions": [
+    {
+      "step": "slice",
+      "role": "slicer",
+      "sessionId": "b0000000-0000-4000-8000-00000000000a",
+      "usage": { "input_tokens": 1000, "cache_creation_input_tokens": 20000, "cache_read_input_tokens": 50000, "output_tokens": 3000 },
+      "wallMs": 300000,
+      "at": "2026-10-17T12:05:00.000Z"
+    },
+    {
+      "step": "build",
+      "role": "builder",
+      "sessionId": "b0000000-0000-4000-8000-00000000000b",
+      "usage": { "input_tokens": 500, "cache_creation_input_tokens": 10000, "cache_read_input_tokens": 100000, "output_tokens": 4000 },
+      "wallMs": 600000,
+      "at": "2026-10-17T12:15:00.000Z"
+    },
+    {
+      "step": "build",
+      "role": "builder",
+      "sessionId": "b0000000-0000-4000-8000-00000000000c",
+      "usage": { "input_tokens": 500, "cache_creation_input_tokens": 10000, "cache_read_input_tokens": 100000, "output_tokens": 4000 },
+      "wallMs": 300000,
+      "at": "2026-10-17T12:10:00.000Z"
+    },
+    {
+      "step": "review",
+      "role": "fixer",
+      "sessionId": "b0000000-0000-4000-8000-00000000000d",
+      "usage": { "input_tokens": 130, "cache_creation_input_tokens": 1000, "cache_read_input_tokens": 10000, "output_tokens": 1000 },
+      "wallMs": 120000,
+      "at": "2026-10-17T12:30:00.000Z"
+    }
+  ]
+}

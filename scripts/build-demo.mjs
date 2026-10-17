@@ -6,7 +6,10 @@
 // PASS|FAIL line per check; exit 0 only when every check passed. A manual controller step: not installed (install.mjs
 // copies bin/, lib/ and roles/ only), never run by the tests (they run --dry-run). The build runs as it would for the
 // owner: its sessions use the real Claude config directory and turbo's own home there (session slots, settings).
-// Usage: node scripts/build-demo.mjs [--dry-run] [--keep] [--dir <path>]
+// --crash (spec §6.11 item 2): once phase 1 has a merged slice and a running one, the build process alone is killed (its
+// sessions left as a crash leaves them) and `build 1 --resume` continues; extra checks: no slice merged twice, no step or
+// merged slice of before the crash run again.
+// Usage: node scripts/build-demo.mjs [--dry-run] [--keep] [--crash] [--dir <path>]
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +24,7 @@ const BIN = fileURLToPath(new URL('../bin/turbo-run.mjs', import.meta.url));
 const args = process.argv.slice(2);
 const dry = args.includes('--dry-run');
 let keep = args.includes('--keep');
+const crash = args.includes('--crash');
 const at = args.indexOf('--dir');
 const dir = path.resolve(at >= 0 && args[at + 1] ? args[at + 1] : path.join(os.tmpdir(), `turbo-build-demo-${randomBytes(3).toString('hex')}`));
 
@@ -172,12 +176,43 @@ const readJson = (file) => {
 };
 const runDir = path.join(dir, '.planning', 'turbo', 'run');
 
+const stepSessions = (p) => {
+  const n = {};
+  for (const c of readJson(path.join(runDir, `cost-p${p}.json`))?.sessions ?? []) n[c.step] = (n[c.step] ?? 0) + 1;
+  return n;
+};
+// What the crash leaves: the merged slices and their sessions, the steps done and their session counts.
+let crashed = null;
+const crashSnapshot = (p, state, pid) => ({
+  phase: p,
+  pid,
+  at: new Date().toISOString(),
+  merged: Object.fromEntries(Object.entries(state.slices ?? {}).filter(([, s]) => s.state === 'merged').map(([id, s]) => [id, (s.sessions ?? []).length])),
+  running: Object.entries(state.slices ?? {}).filter(([, s]) => ['dispatched', 'running'].includes(s.state)).map(([id]) => id),
+  steps: Object.entries(state.steps ?? {}).filter(([, s]) => s.state === 'done' || s.state === 'skipped').map(([k]) => k),
+  sessions: stepSessions(p),
+});
+
 // One phase built by `turbo-run build <p>`, its output mirrored; open cards answered with option 1 every 10 s.
 async function buildPhase(p) {
-  console.log(`build ${p}: turbo-run build ${p} --project ${dir}`);
   const env = sessionFreeEnv();
-  const child = spawn(process.execPath, [BIN, 'build', String(p), '--project', dir], { cwd: dir, env, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
   const answered = new Set();
+  const once = async (resume) => {
+    console.log(`build ${p}: turbo-run build ${p}${resume ? ' --resume' : ''} --project ${dir}`);
+    const child = spawn(process.execPath, [BIN, 'build', String(p), '--project', dir, ...(resume ? ['--resume'] : [])], { cwd: dir, env, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
+    const watch = crash && p === 1 && !crashed && setInterval(() => {
+      const st = readJson(path.join(runDir, `build-p${p}.json`));
+      const slices = Object.values(st?.slices ?? {});
+      if (st?.step !== 'build' || !slices.some((s) => s.state === 'merged') || !slices.some((s) => s.state === 'running')) return;
+      crashed = crashSnapshot(p, st, child.pid);
+      clearInterval(watch);
+      console.log(`crash: kills build ${p} (pid ${child.pid}) with merged ${Object.keys(crashed.merged).join(', ')} and running ${crashed.running.join(', ')}`);
+      child.kill('SIGKILL');
+    }, 5000);
+    const code = await new Promise((resolve) => child.on('close', (c) => resolve(c ?? 1)));
+    if (watch) clearInterval(watch);
+    return code;
+  };
   const timer = setInterval(() => {
     for (const q of readJson(path.join(runDir, `p${p}-questions.json`)) ?? []) {
       if (q?.state !== 'open' || answered.has(q.id)) continue;
@@ -188,7 +223,11 @@ async function buildPhase(p) {
       }
     }
   }, 10000);
-  const code = await new Promise((resolve) => child.on('close', (c) => resolve(c ?? 1)));
+  let code = await once(false);
+  if (crashed && crashed.phase === p && !crashed.resumed) {
+    crashed.resumed = true;
+    code = await once(true);
+  }
   clearInterval(timer);
   return code;
 }
@@ -235,6 +274,20 @@ async function main() {
   check('GSD sees both phases complete', ['1', '2'].every((n) => manager.some((x) => String(x.number) === n && x.disk_status === 'complete' && x.roadmap_complete === true)));
   for (const [n, rel] of [['1', '.planning/phases/01-greeting-library'], ['2', '.planning/phases/02-greeting-cli']]) {
     check(`phase ${n} verification status passed`, gsd('verification', 'status', rel)?.status === 'passed');
+  }
+  if (crash) {
+    check('crash: build 1 was killed mid-build and resumed', crashed?.resumed, crashed ? `at ${crashed.at}` : 'no moment with a merged and a running slice');
+    if (crashed) {
+      const merges = git('log', '--format=%s', '--merges').split(/\r?\n/).map((l) => /merge slice (\S+)$/.exec(l)?.[1]).filter(Boolean);
+      const twice = [...new Set(merges.filter((id, i) => merges.indexOf(id) !== i))];
+      check('crash: no slice merged twice', twice.length === 0, twice.join(', '));
+      const rebuilt = Object.entries(crashed.merged).filter(([id, n]) => (s1?.slices?.[id]?.sessions ?? []).length !== n).map(([id]) => id);
+      check('crash: no slice merged before the crash built again', rebuilt.length === 0, rebuilt.join(', '));
+      const after = stepSessions(1);
+      const again = crashed.steps.filter((k) => (after[k] ?? 0) !== (crashed.sessions[k] ?? 0));
+      check('crash: no step done before the crash ran again', again.length === 0, again.join(', '));
+      console.log(`crash: snapshot ${JSON.stringify(crashed)}`);
+    }
   }
   for (const c of checks) console.log(`${c.ok ? 'PASS' : 'FAIL'} ${c.name}${c.detail ? `: ${c.detail}` : ''}`);
   for (const p of [1, 2]) spawnSync(process.execPath, [BIN, 'cost', String(p), '--project', dir], { cwd: dir, stdio: 'inherit', windowsHide: true });

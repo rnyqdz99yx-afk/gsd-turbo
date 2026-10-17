@@ -5,8 +5,9 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpGitRepo } from './helpers/tmp.mjs';
 import { fakeGsdCore } from './helpers/fake-gsd.mjs';
+import { effortHome } from './helpers/effort-gsd.mjs';
 import { ABSENT, createGsdConfig, sameConfig } from '../lib/gates.mjs';
-import { LEAN_KEYS, LEAN_PREV_REL, LeanRefused, leanApply, leanChanges, leanCurrent, leanLines, leanOff } from '../lib/lean.mjs';
+import { LEAN_KEYS, LEAN_PREV_REL, LeanRefused, effortApply, effortOffHint, leanApply, leanChanges, leanCurrent, leanLines, leanOff } from '../lib/lean.mjs';
 
 const ORIGINAL = { workflow: { nyquist_validation: true, auto_advance: true }, context_window: 1000000 };
 const git = (root, ...args) => String(execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })).trim();
@@ -161,4 +162,21 @@ test('lean apply sets lean.enabled true when the turbo config had it false', () 
   assert.deepEqual(git(root, 'show', '--name-only', '--format=', 'HEAD').split(/\r?\n/).sort(), ['.planning/config.json', '.planning/turbo/config.json', '.planning/turbo/lean-prev.json']);
   // leanChanges is read-only: nothing left to change
   assert.deepEqual(leanChanges({ root, cfg: createGsdConfig({ root, core }) }), []);
+});
+
+test('lean apply with an effort step returns its result and prints effort lines; lean off prints the hint', () => {
+  const { root, core } = leanProject();
+  const h = effortHome();
+  const r = leanApply({ root, core, effort: (o = {}) => effortApply({ root, env: h.env, home: h.home, ...o }) });
+  assert.equal(r.effort.changes.length, 3);
+  const lines = leanLines(r);
+  assert.ok(lines.includes('lean: effort gsd-planner xhigh → high (GSD effort sync, every project on this machine)'), lines.join('\n'));
+  // the effort step runs after the commit: the lean commit is the last one and holds only the project's files
+  assert.equal(git(root, 'log', '-1', '--format=%s'), 'chore(turbo): lean mode GSD settings');
+  assert.ok(leanLines(leanApply({ root, core, effort: () => effortApply({ root, env: h.env, home: h.home }) })).includes('lean: effort already lean'));
+  // a failing effort step never undoes the keys: its error is the skipped reason
+  const failing = leanApply({ root, core, effort: () => { throw new Error('gsd-tools effort sync failed: boom'); } });
+  assert.deepEqual(leanLines(failing).at(-1), 'lean: effort not changed: gsd-tools effort sync failed: boom');
+  const off = leanOff({ root, core, hint: () => effortOffHint({ env: h.env, home: h.home }) });
+  assert.match(leanLines(off, { off: true }).at(-1), /^effort: GSD's agents keep gsd-planner high, gsd-assumptions-analyzer high, gsd-phase-researcher medium on this machine\. To return to GSD's defaults/);
 });

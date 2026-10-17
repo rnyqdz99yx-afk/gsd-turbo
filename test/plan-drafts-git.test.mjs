@@ -226,17 +226,63 @@ test('review C1: GSD\'s own planners updating ROADMAP.md and committing create p
   assert.match(finishReconcile(p.root, '33', '33-03', 'passed', { now: NOW }).refused, /reconcile agent wrote into the phase directory: removed \.planning\/phases\/33-demo\/plans\/PLAN-03\.md/);
 });
 
-test('review I2: the guard goes over every plan file: a misnamed copy of a draft, and a plan file no outline names, are refused', () => {
+test('review I2: the guard goes over every plan file: a misnamed copy of a draft is refused', () => {
   const p = drafted();
   const why = () => draftsGuard(p.root, '33');
   assert.equal(why(), null);
   fs.copyFileSync(draftFile(p.root, '33', '33-04'), path.join(p.dir, '33-04-x-PLAN.md'));
   assert.match(why(), /^plan file 33-04-x-PLAN\.md is the draft of 33-04, not a plan: delete it, commit the deletion and plan 33-04 again/);
-  fs.writeFileSync(path.join(p.dir, '33-04-x-PLAN.md'), planText('33-04', 3, ['33-03']));
-  assert.match(why(), /^plan file 33-04-x-PLAN\.md is no plan of GSD's outline 33-PLAN-OUTLINE\.md/);
-  // once execution began, plans no outline names are GSD's gap plans
-  fs.writeFileSync(path.join(p.dir, '33-01-SUMMARY.md'), '# done\n');
-  assert.equal(why(), null);
+  p.commitPlan('33-04-x', fs.readFileSync(path.join(p.dir, '33-04-x-PLAN.md'), 'utf8'));
+  assert.match(why(), /is the draft of 33-04/, 'committed as well');
+});
+
+test('second review C1: a plan GSD\'s revision loop splits off (scope_sanity) passes the guard and survives --replan of another plan', async () => {
+  const p = drafted();
+  for (const id of ['33-03', '33-04']) {
+    startReconcile(p.root, '33', id, { now: NOW });
+    finishReconcile(p.root, '33', id, 'passed', { now: NOW });
+    promote(p.root, '33', id, { now: NOW });
+    p.commitPlan(id, fs.readFileSync(p.planFile(id), 'utf8'));
+  }
+  // planner-revision Step 3: 33-04 split into 33-04 and a new 33-06, committed by the revision
+  fs.writeFileSync(p.planFile('33-06'), planText('33-06', 3, ['33-03'], ['src/f.ts']));
+  fs.appendFileSync(p.planFile('33-04'), '\n<!-- split -->\n');
+  p.git('add', '-A');
+  p.git('commit', '-q', '-m', 'fix(33): revise plans based on checker feedback');
+  assert.equal(draftsGuard(p.root, '33'), null);
+  assert.ok(planSetCheck(p.root, '33').ok);
+  // a --replan of a plan whose agent is no longer at work keeps GSD's split plan
+  const q = drafted();
+  fs.writeFileSync(q.planFile('33-06'), planText('33-06', 3, ['33-03']));
+  q.git('add', '-A');
+  q.git('commit', '-q', '-m', 'fix(33): revise plans based on checker feedback');
+  assert.deepEqual(replan(q.root, '33', '33-04', { now: NOW }), { removed: [] });
+  assert.ok(fs.existsSync(q.planFile('33-06')));
+  // a lost drafting agent's misnamed plan, though, goes when its plan is handed to GSD at its wave
+  const r = project([['33-01', 1], ['33-03', 2, '33-01'], ['33-04', 3, '33-03']]);
+  draftsPlan(r.root, '33', { config: CFG, now: NOW });
+  startDraft(r.root, '33', '33-04', { config: CFG, now: NOW });
+  fs.writeFileSync(path.join(r.dir, '33-04-lost-PLAN.md'), planText('33-04', 3, ['33-03']));
+  r.commitPlan('33-01', planText('33-01', 1));
+  r.commitPlan('33-03', planText('33-03', 2, ['33-01']));
+  assert.deepEqual(startReconcile(r.root, '33', '33-04', { now: NOW }), { gsd: 'the draft agent never returned' });
+  assert.equal(fs.existsSync(path.join(r.dir, '33-04-lost-PLAN.md')), false);
+});
+
+test('review I-a: a resumed session with drafts now off hands every draft not promoted to GSD; GSD\'s plans then pass the guard', async () => {
+  const p = drafted();
+  const off = draftsPlan(p.root, '33', { config: { plan_drafts: { enabled: false } }, now: NOW });
+  assert.equal(off.why, 'plan_drafts.enabled is false');
+  const rec = readDrafts(p.root, '33');
+  assert.deepEqual([rec.plans['33-03'].state, rec.plans['33-03'].reason, rec.plans['33-04'].state], ['replanned', 'drafts off: plan_drafts.enabled is false', 'replanned']);
+  p.commitPlan('33-03', planText('33-03', 2, ['33-01'], ['src/c.ts']));
+  p.commitPlan('33-04', planText('33-04', 3, ['33-03']));
+  assert.equal(draftsGuard(p.root, '33'), null);
+  // GSD's checker switched off works the same way
+  const q = drafted();
+  fs.writeFileSync(path.join(q.root, '.planning', 'config.json'), JSON.stringify({ workflow: { plan_check: false } }));
+  assert.match(draftsPlan(q.root, '33', { config: CFG, now: NOW }).why, /^plan checker disabled/);
+  assert.equal(readDrafts(q.root, '33').plans['33-04'].state, 'replanned');
 });
 
 test('review C2: a resumed session whose first wave holds a drafted plan reconciles it (or hands it to GSD) at that wave; GSD\'s plan then passes the guard', async () => {

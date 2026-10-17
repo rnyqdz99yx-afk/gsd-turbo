@@ -91,6 +91,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 - **Push and CI** — the supervisor pushes and watches GitHub Actions; a red run goes back to the phase to fix ([setup](docs/reference.md#push-and-ci-optional)).
 - **Targeted tests** — set up by `turbo-run init` when a full test command is known ([how it decides](docs/reference.md#what-happens)).
 - **Autostart after a reboot** — `turbo-run autostart on` brings this project's supervisor back at logon when a run was going; `off` removes it ([what it sets up](docs/reference.md#after-a-crash-or-a-reboot)).
+- **Lean mode** — on by default (`lean.enabled`): leaner GSD settings, less effort for GSD's planner and the lane sessions, a STATE.md budget; `turbo-run lean status` shows it, `turbo-run lean off` restores GSD's settings ([what it changes](docs/reference.md#lean-mode)).
 
 ## Troubleshooting
 

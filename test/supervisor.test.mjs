@@ -1098,3 +1098,66 @@ test('every tick records the unfinished phases of the run in phase order (remain
   s = await tick({ ...fresh(), range: { from: '1', to: '2' } }, h.ctx);
   assert.deepEqual(s.remaining, [], 'only the range counts');
 });
+
+test('a finished phase starts its cost measurement once; one that cannot start is logged and the run goes on (Stage 6 M)', async () => {
+  for (const fail of [false, true]) {
+    const h = harness({ phases: [P('4')] });
+    const calls = [];
+    h.ctx.deps.phaseCost = (p) => {
+      calls.push(p);
+      if (fail) throw new Error('boom');
+    };
+    let s = await tick(fresh(), h.ctx);
+    h.phases[0].complete = true;
+    h.agents[0].state = 'done';
+    s = await tick(s, h.ctx);
+    assert.deepEqual(calls, ['4']);
+    assert.ok(h.notes.some((x) => x.key === 'phaseDone' && x.vars.phase === '4'), JSON.stringify(h.notes));
+    assert.equal(h.logs.includes('phase 4 cost: not measured: boom'), fail, h.logs.join('\n'));
+    s = await tick(s, h.ctx);
+    assert.deepEqual(calls, ['4'], 'measured once');
+  }
+});
+
+test('a lane job\'s other transcripts are logged before claude rm takes its state: at a relaunch and at phase close (Stage 6 M)', async () => {
+  const h = harness({ phases: [P('4'), P('5', ['4'])] });
+  const order = [];
+  h.ctx.deps.jobSessions = (id, cwd) => {
+    order.push(`ids ${id}`);
+    assert.equal(cwd, h.root);
+    return new Set([id, `${id}-0000-4000-8000-000000000000`, `fork-${id}`]);
+  };
+  const { rm } = h.ctx.deps.claude;
+  h.ctx.deps.claude.rm = (id) => {
+    order.push(`rm ${id}`);
+    return rm(id);
+  };
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'done';
+  h.fp = 'B';
+  s = await tick(s, h.ctx); // relaunched: s1 goes, s2 starts
+  assert.equal(s.lane.sessionId, 's2');
+  h.phases[0].complete = true;
+  h.agents.find((a) => a.id === 's2').state = 'blocked';
+  s = await tick(s, h.ctx); // phase 4 done
+  assert.deepEqual(order, ['ids s1', 'rm s1', 'ids s2', 'rm s2']);
+  assert.deepEqual(h.logs.filter((l) => / job /.test(l)), ['phase 4 job s1 sessions fork-s1', 'phase 4 job s2 sessions fork-s2']);
+});
+
+test('a job state that cannot be read before claude rm is logged; the phase still closes and is measured (Stage 6 M)', async () => {
+  const h = harness({ phases: [P('4')] });
+  const calls = [];
+  h.ctx.deps.phaseCost = (p) => calls.push(p);
+  h.ctx.deps.jobSessions = () => {
+    throw new Error('EACCES: state.json');
+  };
+  let s = await tick(fresh(), h.ctx);
+  h.phases[0].complete = true;
+  h.agents[0].state = 'blocked';
+  s = await tick(s, h.ctx);
+  assert.ok(h.logs.includes('phase 4 job s1: its sessions were not read: EACCES: state.json'), h.logs.join('\n'));
+  assert.deepEqual(h.removed, ['s1']);
+  assert.deepEqual(calls, ['4']);
+  assert.ok(h.notes.some((x) => x.key === 'phaseDone'));
+  assert.equal(s.lane, null);
+});

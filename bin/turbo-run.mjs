@@ -5,7 +5,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
-import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
+import { cwdInside, laneSessionIds, ownSessionId } from '../lib/transcripts.mjs';
 import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings, leanSettings, prepSettings, laneEffort, buildSettings } from '../lib/config.mjs';
 import { effortApply, effortOffHint, leanApply, leanBoundary, runLeanCommand } from '../lib/lean.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
@@ -50,9 +50,10 @@ import { readSupervisor } from '../lib/sup-state.mjs';
 import { recoverSupervisor } from '../lib/sup-recover.mjs';
 import { WHATIF_VALUE_FLAGS, runExecWhatif } from '../lib/exec-whatif.mjs';
 import { gitRunner } from '../lib/staleness.mjs';
+import { runCostCommand, spawnCostLog } from '../lib/cost.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
@@ -384,6 +385,9 @@ async function makeCtx(root, mode = 'safe') {
   const logFile = path.join(logsDir(root), 'supervisor.log');
   const slots = lanesSettings(config.lanes).mode === 'slots' && mode === 'full';
   const plugins = slots ? await loadLanePlugins() : null;
+  const log = (line) => {
+    try { fs.appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* logging is best-effort */ }
+  };
   const ctx = {
     root, config, mode: mode === 'full' ? 'full' : 'safe', turboRun: `node ${shQuote(SELF.replace(/\\/g, '/'))}`,
     ...(slots ? { lanes: 'slots' } : {}),
@@ -403,9 +407,11 @@ async function makeCtx(root, mode = 'safe') {
       // (a phaseDone tells of a lane still in supervisor.json: its line leaves that lane out, review I5)
       notify: (key, vars) => notify(config, withRunLine(msg(config.lang, key, vars), runLineFor(root, config, { leaving: key === 'phaseDone' ? vars?.phase : null }))),
       now: () => new Date(),
-      log: (line) => {
-        try { fs.appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* logging is best-effort */ }
-      },
+      log,
+      // Stage 6 M (spec §7): the closed phase's cost line, from a detached turbo-run cost <N> --log; a job's session ids
+      // (its job state), logged before claude rm takes them
+      phaseCost: (phase) => spawnCostLog({ script: SELF, root, phase, log }),
+      jobSessions: (jobId, cwd) => laneSessionIds({ home: claudeHome(), root: cwd, jobId }),
       // probed right before a launch: a lease revoked mid-tick (stop, resume, another start) launches nothing
       leaseHeld: () => !lostLease(root),
       // smoke F2: new entries next to the project while lanes run (lib/strays.mjs)
@@ -1183,6 +1189,11 @@ async function main() {
           hint: () => effortOffHint(),
         },
       });
+    }
+    case 'cost': {
+      // Stage 6 M (spec §7): a phase's time and tokens by step and role; --log appends its line to supervisor.log
+      if (!root) die('no .planning directory found');
+      return runCostCommand(args, { root, out, err: (l) => process.stderr.write(`${l}\n`) });
     }
     case 'annotate': {
       // spec §6.2 (L3): the markup session's brief and apply

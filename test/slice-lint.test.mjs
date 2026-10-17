@@ -68,6 +68,8 @@ test('files are exact paths inside the project, outside .planning', () => {
     ['src/../../x.js', 'outside the project'],
     ['/x.js', 'outside the project'],
     ['C:/x.js', 'outside the project'],
+    ['src/../x.js', 'write it as x.js'],
+    ['src//b.js', 'write it as src/b.js'],
   ]) assert.deepEqual(files({ files: ['src/a.js', p] }), [{ plan: '05-01', kind: 'files', detail: `${p}: ${why}` }], p);
   assert.deepEqual(files({ files: ['src/a.js'], deleted: ['src/old/'] }), [{ plan: '05-01', kind: 'files', detail: 'src/old/: a glob or a directory, not an exact path' }]);
 });
@@ -86,6 +88,13 @@ test('no phase directory, no plans, no GSD', () => {
   assert.deepEqual(r.problems, [{ plan: '05-01', kind: 'gsd', detail: 'gsd-tools verify plan-structure: exit 69: File not found' }]);
   const silent = lint(root, { structure: { '05-02': { code: 0, json: null } } }).r;
   assert.deepEqual(silent.problems, [{ plan: '05-02', kind: 'gsd', detail: 'gsd-tools verify plan-structure: exit 0' }]);
+  const said = lint(root, { structure: { '05-01': { code: 2, json: { message: 'bad\n input' } }, '05-02': { code: -1, json: null, error: 'ETIMEDOUT' } } }).r;
+  assert.deepEqual(said.problems, [
+    { plan: '05-01', kind: 'gsd', detail: 'gsd-tools verify plan-structure: exit 2: bad input' },
+    { plan: '05-02', kind: 'gsd', detail: 'gsd-tools verify plan-structure: exit -1: ETIMEDOUT' },
+  ]);
+  const early = lint(root, { structure: { '05-01': { code: 1, json: { valid: false, errors: ['Plan file is not valid UTF-8'] } } } }).r;
+  assert.deepEqual(early.problems, [{ plan: '05-01', kind: 'structure', detail: 'Plan file is not valid UTF-8' }], 'no task count, no task problem');
 });
 
 test('gsdVerdict: exit 0 and 1 are verdicts, any other exit is not', () => {
@@ -112,6 +121,9 @@ test('gsdVerdict: exit 0 and 1 are verdicts, any other exit is not', () => {
   assert.deepEqual(run({ STUB_EXIT: '1' }), { code: 1, json: { argv } });
   assert.equal(run({ STUB_EXIT: '69' }).code, 69);
   assert.deepEqual(run({ STUB_SILENT: '1' }), { code: 0, json: null });
+  const missing = gsdVerdict(tmpDir('nocore'), ['verify', 'plan-structure', 'p'], { cwd });
+  assert.equal(missing.json, null);
+  assert.match(missing.error, /Cannot find module/, 'the reason it could not run');
 });
 
 test('every phase requirement is in some slice\'s requirements', () => {
@@ -163,4 +175,5 @@ test('formatProblems', () => {
     { plan: '05-01', kind: 'size', detail: '9000 bytes, more than 8192' },
     { plan: null, kind: 'coverage', detail: "DEMO-02 is in no slice's requirements" },
   ]), "The code check of your slice plans found these problems. Fix exactly these in the plan files, change nothing else, and end with your one-line-per-plan list again:\n- 05-01 size: 9000 bytes, more than 8192\n- phase coverage: DEMO-02 is in no slice's requirements\n");
+  assert.throws(() => formatProblems([{ plan: null, kind: 'gsd', detail: 'GSD core not found' }]), /never send them to the slicer/);
 });

@@ -18,12 +18,13 @@ test('strayWatch: the folder above the project, and in slots mode the slots fold
   const checkout = strayWatch(root, DEFAULTS);
   assert.deepEqual(checkout.map((w) => w.dir), [path.resolve('/w/desk')]);
   assert.equal(checkout[0].own('demo-app'), true);
-  assert.equal(checkout[0].own('demo-app.turbo'), false, 'checkout mode: no slots of its own');
+  assert.equal(checkout[0].own('demo-app.turbo'), true, 'checkout mode: the build path\'s slice worktrees live there too');
+  assert.equal(checkout[0].own('other-app.turbo'), false);
   const slots = strayWatch(root, DEFAULTS, { slots: true });
   assert.deepEqual(slots.map((w) => w.dir), [path.resolve('/w/desk'), path.resolve('/w/desk/demo-app.turbo')], 'the folder above the slots is the folder above the project: once');
   for (const n of ['demo-app', 'demo-app.turbo']) assert.equal(slots[0].own(n), true, n);
-  for (const n of ['lane-1', 'lane-12', 'lane-2.removing-123-456']) assert.equal(slots[1].own(n), true, n);
-  for (const n of ['exec-03-01', 'lane-0', 'notes.txt']) assert.equal(slots[1].own(n), false, n);
+  for (const n of ['lane-1', 'lane-12', 'lane-2.removing-123-456', 'b']) assert.equal(slots[1].own(n), true, n);
+  for (const n of ['exec-03-01', 'lane-0', 'notes.txt', 'bb']) assert.equal(slots[1].own(n), false, n);
   // lanes.dir elsewhere: that folder and the one above it
   const moved = strayWatch(root, { ...DEFAULTS, lanes: { ...DEFAULTS.lanes, dir: '../../slots/demo' } }, { slots: true });
   assert.deepEqual(moved.map((w) => w.dir), [path.resolve('/w/desk'), path.resolve('/w/slots/demo'), path.resolve('/w/slots')]);

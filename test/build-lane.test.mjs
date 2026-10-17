@@ -160,7 +160,8 @@ test('launchBuild starts a detached turbo-run build; stopBuild ends its tree', a
   assert.deepEqual(a.argv, ['build', '5', '--project', p.root]);
   assert.deepEqual([a.lane, a.control], ['1', null]);
   stopBuild({ pid: a.pids[0] });
-  for (let i = 0; i < 50 && pidAlive(a.pids[1]); i++) await sleep(100);
+  // POSIX: the killed build stays a zombie of this process until the event loop reaps it
+  for (let i = 0; i < 50 && a.pids.some(pidAlive); i++) await sleep(100);
   assert.deepEqual(a.pids.map(pidAlive), [false, false]);
   for (let i = 0; i < 50 && !fs.readFileSync(buildLogFile(p.root, '5'), 'utf8').includes('hello'); i++) await sleep(50);
   assert.match(fs.readFileSync(buildLogFile(p.root, '5'), 'utf8'), /hello/);

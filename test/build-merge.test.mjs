@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { gitIn } from './helpers/slots.mjs';
 import { buildRepo } from './helpers/build.mjs';
-import { BuildLocked, MERGE_RETRY_MS, buildLockFile, createSliceWorktree, mergeSlice, mergeSubject, runMergeTests } from '../lib/build-queue.mjs';
+import { BuildLocked, MERGE_RETRY_MS, buildLockFile, createSliceWorktree, mergeSlice, mergeSubject, redLine, runMergeTests } from '../lib/build-queue.mjs';
 
 const PLANS = ['33-01', '33-02', '33-03', '33-04'].map((id) => ({ id, files: [`src/${id}.js`] }));
 const TEST_OF = (name) => `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { ${name} } from '../src/${name}.js';\ntest('${name}', () => assert.equal(${name}, 1));\n`;
@@ -220,6 +220,21 @@ test('runMergeTests: the targeted tests of one merge, a red one, a retest', asyn
   assert.equal(x.green, false);
   assert.notEqual(x.code, 0);
   const lines = fs.readFileSync(x.log, 'utf8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  assert.equal(x.line, lines.at(-1));
+  // the first failing test, not the runner's last line (B5 demo: an error object's closing brace)
+  assert.equal(x.line, lines.find((s) => /^✖ /.test(s) && !/^✖ failing tests:?$/.test(s)) ?? lines.at(-1));
   assert.ok(lines.some((s) => s.includes(`merge ${m.sha.slice(0, 7)}: targeted`)));
+});
+
+test('redLine: the first failing test of node --test, vitest or pytest; else the last line', () => {
+  const node = [
+    '[turbo-test] merge 69b438f: full: no previous full green run', '✖ farewell contract (1.0492ms)', '✔ shout (0.7ms)', 'ℹ fail 1', '',
+    '✖ failing tests:', '', 'test at test\\contract.test.js:3:1', '✖ farewell contract (1.0492ms)', "  Error: Cannot find module '../src/farewell.js'", '  }',
+  ].join('\n');
+  assert.equal(redLine(node), '✖ farewell contract (1.0492ms)');
+  assert.equal(redLine(['✖ failing tests:', '', '✖ b (1ms)', '}'].join('\r\n')), '✖ b (1ms)');
+  assert.equal(redLine(' FAIL  src/a.test.ts > lightbox > closes\n Test Files  1 failed (1)\n'), 'FAIL  src/a.test.ts > lightbox > closes');
+  assert.equal(redLine('tests/test_a.py F\nFAILED tests/test_a.py::test_one - AssertionError\n1 failed in 0.1s\n'), 'FAILED tests/test_a.py::test_one - AssertionError');
+  assert.equal(redLine('not ok 2 - b\n# fail 1\n'), 'not ok 2 - b');
+  assert.equal(redLine('[turbo-test] red\nexit 1\n'), 'exit 1');
+  assert.equal(redLine(''), '');
 });

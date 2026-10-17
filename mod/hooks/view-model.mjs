@@ -38,10 +38,15 @@ const idList = (l, one, many) => (ids(l).length > 1 ? `${many} ${ids(l).join(', 
 export const WORDS = {
   en: {
     step: { freshness: 'freshness check', discuss: 'discussion', prologue: 'planning prep', plan: 'planning', 'gates-off': 'execution prep', execute: 'running plans', restore: 'restoring settings', fanout: 'quality checks', fix: 'fixes', 'final-gate': 'final check', uat: 'acceptance', close: 'wrap-up', integrate: 'merge into main', ci: 'CI check' },
+    // Stage 6 B4: a build phase's steps (lib/build.mjs BUILD_STEPS) and its slices' states (lib/build-queue.mjs SLICE_STATES)
+    buildStep: { begin: 'starting the build', discuss: 'discussing the phase', research: 'researching', slice: 'cutting the work into slices', build: 'building slices', review: 'reviewing the code', verify: 'checking the phase goals', security: 'checking security', uat: 'checking it works', tests: 'running all tests', close: 'closing the phase' },
+    sliceState: { waiting: 'waits', dispatched: 'starting', running: 'building', merged: 'merged', owner: 'waits for you', failed: 'failed', blocked: 'blocked', 'done-before': 'done before' },
     agent: { 'gsd-executor': 'Executor', 'gsd-verifier': 'Verifier', 'gsd-code-reviewer': 'Reviewer', 'gsd-code-fixer': 'Fixer', 'gsd-planner': 'Planner', 'gsd-plan-checker': 'Plan checker', 'gsd-phase-researcher': 'Researcher', 'gsd-security-auditor': 'Security auditor', 'gsd-nyquist-auditor': 'Test auditor', 'gsd-integration-checker': 'Integration checker', 'gsd-debugger': 'Debugger', 'turbo-uat': 'Acceptance tester', 'general-purpose': 'Helper', Explore: 'Scout' },
   },
   ru: {
     step: { freshness: 'проверка актуальности', discuss: 'обсуждение', prologue: 'подготовка к планированию', plan: 'планирование', 'gates-off': 'подготовка к выполнению', execute: 'выполняются планы', restore: 'восстановление настроек', fanout: 'проверки качества', fix: 'исправления', 'final-gate': 'финальная проверка', uat: 'приёмка', close: 'завершение', integrate: 'слияние с основной веткой', ci: 'проверка CI' },
+    buildStep: { begin: 'запускаю сборку', discuss: 'обсуждаю фазу', research: 'исследую', slice: 'режу работу на куски', build: 'собираю куски', review: 'ревью кода', verify: 'сверяю с целями фазы', security: 'проверяю безопасность', uat: 'проверяю, что работает', tests: 'гоняю все тесты', close: 'закрываю фазу' },
+    sliceState: { waiting: 'ждёт', dispatched: 'запускается', running: 'собирается', merged: 'слит', owner: 'ждёт вас', failed: 'не получился', blocked: 'заблокирован', 'done-before': 'был готов' },
     // all masculine, so «… молчит» and «… закончил» agree with each
     agent: { 'gsd-executor': 'Исполнитель', 'gsd-verifier': 'Проверяющий', 'gsd-code-reviewer': 'Ревьюер', 'gsd-code-fixer': 'Исправляющий', 'gsd-planner': 'Планировщик', 'gsd-plan-checker': 'Контролёр плана', 'gsd-phase-researcher': 'Исследователь', 'gsd-security-auditor': 'Аудитор безопасности', 'gsd-nyquist-auditor': 'Аудитор тестов', 'gsd-integration-checker': 'Контролёр связей', 'gsd-debugger': 'Отладчик', 'turbo-uat': 'Приёмщик', 'general-purpose': 'Помощник', Explore: 'Разведчик' },
   },
@@ -87,6 +92,11 @@ const VIEW_WORDS = {
     quietAgent: (who, d) => `⚠️ ${who} silent${d ? ` for ${d}` : ''}`,
     // a command in flight within its timeout: busy, never silent (lib/liveness.mjs)
     busy: (d) => `a long command is running${d ? ` · ${d}` : ''}`,
+    // Stage 6 B4: a build phase's slices (buildRows)
+    slicesHead: (m, n) => `Slices: ${m} of ${n} merged`,
+    slicesBuilding: (k) => `${k} building`,
+    slicesYours: (k) => `${k} ${k === 1 ? 'waits' : 'wait'} for you`,
+    slicesRed: 'tests red, fixing',
     helpersDone: (n, more) => `${n} ${more ? 'more ' : ''}${n === 1 ? 'helper' : 'helpers'} finished`,
     askHead: (n) => `Needs your answer (${n}):`,
     // v0.4.0: sleep mode and the answers turbo took itself (lib/auto-answer.mjs)
@@ -189,6 +199,10 @@ const VIEW_WORDS = {
     idle: (d) => `тишина${d ? ` ${d}` : ''}`,
     quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''}`,
     busy: (d) => `идёт долгая команда${d ? ` · ${d}` : ''}`,
+    slicesHead: (m, n) => `Куски: слито ${m} из ${n}`,
+    slicesBuilding: (k) => `собираются ${k}`,
+    slicesYours: (k) => `ждут вас ${k}`,
+    slicesRed: 'тесты красные, чиню',
     helpersDone: (n, more) => `${more ? 'ещё ' : ''}${n} ${ruPlural(n, 'помощник закончил', 'помощника закончили', 'помощников закончили')}`,
     askHead: (n) => `Нужен ваш ответ (${n}):`,
     awayOn: 'Режим «ушёл» — безопасные вопросы turbo решает сам; когда вернётесь: turbo-run back',
@@ -427,7 +441,10 @@ const laneHeadText = (t, lane) => (lane.job === 'annotate' ? t.laneHead(slotOf(l
 const GAP_PLANNERS = new Set(['gsd-planner', 'gsd-plan-checker']);
 const gapPlanning = (lane) => (lane?.job ?? 'phase') === 'phase' && STEPS.indexOf(lane?.step) > STEPS.indexOf('plan')
   && list(lane?.agents).some((a) => ACTIVE.has(a?.state) && GAP_PLANNERS.has(a.type));
-const stepText = (t, lane) => (lane.job === 'annotate' ? t.job.annotate : lane.job === 'prep' ? t.job.prep(stepWord(t, lane.step)) : gapPlanning(lane) ? t.gapPlan : stepWord(t, lane.step));
+// a build phase (Stage 6 B4) by its build step
+const buildWord = (t, step) => t.buildStep[step] ?? cut(step, 40);
+const isBuild = (lane) => Boolean(lane?.build) && typeof lane.build === 'object' && !Array.isArray(lane.build);
+const stepText = (t, lane) => (lane.job === 'annotate' ? t.job.annotate : lane.job === 'prep' ? t.job.prep(stepWord(t, lane.step)) : isBuild(lane) ? buildWord(t, lane.build.step) : gapPlanning(lane) ? t.gapPlan : stepWord(t, lane.step));
 // spec §8: a phase the owner attends (turbo-run attend N) runs in their own session. Its lane's record, transcript and
 // helpers are the stopped lane session's: the mark wins over them (no stop, no silence, no lane age).
 const attendedLane = (view, lane) => (lane?.job ?? 'phase') === 'phase' && lane?.phase != null && list(view?.attended).some((p) => String(p) === String(lane.phase));
@@ -678,6 +695,25 @@ function lastSign(lane) {
 // instead, dim), the reason it stopped,
 // the helpers at work, and the finished ones as one dim count. Several lanes (Stage 4 D7): the verdict and the run's
 // summary line first, then a block per lane without the verdict; past two lanes a calm lane is its line alone.
+// Stage 6 B4 (spec §6.7): the rows under a build phase's lane line: its slices counted, then each slice at work, waiting
+// for the owner, failed or blocked, with its last action and time (lane.build, lib/view.mjs buildOf). [] without one.
+const SLICE_ROWS = new Set(['dispatched', 'running', 'owner', 'failed', 'blocked']);
+export function buildRows(build, lang) {
+  if (!build || typeof build !== 'object' || Array.isArray(build)) return [];
+  const t = TEXT[lang === 'ru' ? 'ru' : 'en'];
+  const slices = list(build.slices);
+  const building = slices.filter((s) => s?.state === 'dispatched' || s?.state === 'running').length;
+  const yours = slices.filter((s) => s?.state === 'owner').length;
+  const rows = [];
+  if (build.total > 0) rows.push([t.slicesHead(build.merged, build.total), building ? t.slicesBuilding(building) : null, yours ? t.slicesYours(yours) : null, build.red ? t.slicesRed : null].filter(Boolean).join(' · '));
+  for (const s of slices) {
+    if (!SLICE_ROWS.has(s?.state)) continue;
+    const time = Number.isFinite(s.elapsedMs) ? fmtDuration(t, s.elapsedMs) : null;
+    rows.push(`  ${[cut(s.id, 20), t.sliceState[s.state] ?? s.state, s.action ? doingWords(t, s.action) : null, time].filter(Boolean).join(' · ')}`);
+  }
+  return rows;
+}
+
 function runSection(t, view, v, columns) {
   const lanes = list(view.lanes);
   const multi = lanes.length > 1;
@@ -721,6 +757,7 @@ function runSection(t, view, v, columns) {
       why ? text(toned(STOPPED.has(lane.status) ? 'bad' : 'dim', { wrap: 'wrap' }), `${t.reason}: ${cut(why, 200)}`) : null,
       ...working.map((a) => agentRow(t, a, view.at, live, columns)),
       finished ? text(TONES.dim, t.helpersDone(finished, working.length > 0)) : null,
+      ...buildRows(lane.build, view.ui?.lang).map((r) => text({ wrap: 'wrap' }, r)),
     ].filter(Boolean);
     if (under.length) rows.push(box({ flexDirection: 'column', paddingLeft: 2 }, under));
   });
@@ -763,6 +800,8 @@ function questionCard(t, view, q, field) {
 const NOW_ORDER = ['gsd-code-fixer', 'gsd-debugger', 'gsd-code-reviewer', 'gsd-security-auditor', 'gsd-nyquist-auditor', 'gsd-integration-checker', 'gsd-verifier', 'turbo-uat', 'gsd-executor', 'gsd-planner', 'gsd-plan-checker', 'gsd-phase-researcher'];
 function nowOf(t, view, lane) {
   if (!lane || laneForm(view, lane) !== 'running') return null;
+  // a build phase: its lane line names the step, the build rows its slices
+  if (isBuild(lane)) return null;
   const fix = selfFixing(view, lane);
   if (fix) return { tone: 'warn', text: fix.last ? t.now.ciLast : t.now.ciFix(fix.n, fix.m) };
   const plain = (s) => ({ tone: 'plain', text: s });

@@ -384,6 +384,8 @@ test('turbo-run view and status --watch speak the pane\'s words: every phrase eq
     textView({ questions: [] }, { step: 'final-gate', agents: [], push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'pending' } }),
     textView({ questions: [] }, { step: 'restore', agents: [{ type: 'gsd-code-fixer', state: 'running', action: null, elapsedMs: 5000 }, { type: 'gsd-executor', state: 'running', action: null, elapsedMs: 5000 }] }),
     textView({ questions: [] }, { step: 'odd-step', status: 'needs-owner', reason: 'a live check' }),
+    // Stage 6 B4: a build phase, its slices at work and its card
+    textView({ questions: [] }, { agents: [], build: { step: 'build', round: 0, red: true, hold: null, merged: 1, total: 4, slices: [{ id: '32-02', state: 'running', question: null, action: { tool: 'Edit', detail: 'src/b.js' }, elapsedMs: 360000, lastAt: at('10:59') }, { id: '32-03', state: 'owner', question: 'ask-1', action: null, elapsedMs: null, lastAt: null }], session: null } }),
     textView({ questions: [], supervisor: null }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }),
     textView({ questions: [], commits: [{ sha: 'a', at: at('10:59'), subject: 'feat(32): x' }, { sha: 'b', at: at('10:58'), subject: 'docs(phase-32): y' }, { sha: 'c', at: at('10:57'), subject: 'feat: z' }] }),
     // liveness: a long command in flight (the lane and its helper), and a silent lane with what turbo did about it

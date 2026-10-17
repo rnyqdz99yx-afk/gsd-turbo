@@ -53,7 +53,7 @@ import { gitRunner } from '../lib/staleness.mjs';
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', ...WHATIF_VALUE_FLAGS]);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', '--merge', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
 const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
@@ -1292,7 +1292,9 @@ async function main() {
     }
     case 'test-changed': {
       const { runTestChanged } = await import('../lib/test-changed.mjs');
-      return runTestChanged({ root: root || process.cwd() });
+      const m = args.indexOf('--merge');
+      if (m >= 0 && (!args[m + 1] || args[m + 1].startsWith('--'))) die('usage: turbo-run test-changed [--merge <sha>]', 2);
+      return runTestChanged({ root: root || process.cwd(), merge: m >= 0 ? args[m + 1] : null });
     }
     default:
       die(USAGE);

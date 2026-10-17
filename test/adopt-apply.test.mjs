@@ -114,12 +114,13 @@ test('re-check: the digest the owner confirmed holds; the passing report and the
   const { root, git, deps } = adoptProject({ manager, files: { [v2]: STALE_REPORT.replace('01-base', '02-api') } });
   const answers = { 'stale-closed': 'reverify' };
   const p = adoptPlan(root, { deps, answers });
-  assert.deepEqual(p.reverify, ['1', '2']);
+  assert.deepEqual([p.reverify, p.reverifyPending], [['1', '2'], ['1', '2']]);
   // the verifiers (the skill's agents) write their reports; adopt reverify judges each
   write(root, '.planning/phases/01-base/01-VERIFICATION.md', '---\nstatus: passed\n---\nfresh\n');
   write(root, v2, '---\nstatus: gaps_found\n---\ngaps\n');
   assert.equal(reverifyResult(root, '1', { deps }).status, 'passed');
   assert.equal(reverifyResult(root, '2', { deps }).status, 'gaps_found');
+  assert.deepEqual(adoptPlan(root, { deps, answers }).reverifyPending, [], 'a rerun of the skill skips the phases already re-checked');
   const r = applyAdopt(root, { answers, plan: p.plan, deps });
   assert.equal(r.refused, undefined, String(r.refused));
   assert.ok(shown(git).includes('.planning/phases/01-base/01-VERIFICATION.md'));

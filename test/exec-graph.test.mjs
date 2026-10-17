@@ -23,6 +23,10 @@ test('keyLinkPaths: object links (from/to), bare-string links by their path word
   assert.deepEqual(keyLinkPaths(text), ['src/ui/Chat.tsx', 'src/api/chat.ts', 'src/a.ts', 'src/b.ts']);
   assert.deepEqual(keyLinkPaths('---\nkey_links: ["lib/x.mjs calls lib/y.mjs"]\n---\n'), ['lib/x.mjs', 'lib/y.mjs']);
   assert.deepEqual(keyLinkPaths('no frontmatter'), []);
+  // a sequence at its key's own indent (valid YAML, what PyYAML writes) is the same list; the next key still ends it
+  const indentless = '---\nmust_haves:\n  key_links:\n  - from: "src/ui/Chat.tsx"\n    to: src/api/chat.ts\n  artifacts: [src/z.ts]\n---\n';
+  assert.deepEqual(keyLinkPaths(indentless), ['src/ui/Chat.tsx', 'src/api/chat.ts']);
+  assert.deepEqual(keyLinkPaths('---\nkey_links:\n- from: lib/x.mjs\n  to: lib/y.mjs\nautonomous: true\n---\n'), ['lib/x.mjs', 'lib/y.mjs']);
 });
 
 test('ids and paths compare as GSD reads them', () => {

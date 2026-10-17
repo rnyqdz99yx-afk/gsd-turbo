@@ -207,13 +207,17 @@ async function live(ids, { keep }) {
       const result = resultOf(ev);
       const assistants = ev.filter((e) => e.type === 'assistant' && e.message?.id && e.message?.usage);
       const types = ev.map((e) => (e.subtype ? `${e.type}/${e.subtype}` : e.type));
-      const first = ev[0];
-      const initOk = first?.type === 'system' && first?.subtype === 'init' && typeof first.session_id === 'string' && first.permissionMode === 'bypassPermissions' && Array.isArray(first.tools) && !first.tools.includes('AskUserQuestion');
+      // SessionStart hook events (system/hook_started, system/hook_response) come before init even without
+      // --include-hook-events (probe 2026-10-17): init is the first event of any other kind
+      const first = ev.find((e) => !(e.type === 'system' && /^hook_/.test(String(e.subtype))));
+      const ownSocket = String(ownEnv.CLAUDE_CODE_MESSAGING_SOCKET ?? '');
+      const socketLeak = Boolean(ownSocket) && String(first?.messaging_socket_path ?? '') === ownSocket;
+      const initOk = first?.type === 'system' && first?.subtype === 'init' && typeof first.session_id === 'string' && first.permissionMode === 'bypassPermissions' && Array.isArray(first.tools) && !first.tools.includes('AskUserQuestion') && !socketLeak;
       const resultOk = ev.at(-1)?.type === 'result' && result?.is_error === false && String(result?.result ?? '').includes('PONG') && USAGE_KEYS.every((k) => typeof result?.usage?.[k] === 'number');
       const usagePair = { result: result?.usage ? Object.fromEntries(USAGE_KEYS.map((k) => [k, result.usage[k]])) : null, stream: streamUsage(ev) };
       Object.assign(summary, { p1Types: [...new Set(types)], initKeys: init ? Object.keys(init) : null, resultKeys: result ? Object.keys(result) : null, initModel: init?.model ?? null, usage: usagePair, initIndex: ev.indexOf(init) });
       record('P1', p1.code === 0 && initOk && assistants.length >= 1 && resultOk,
-        `exit ${p1.code}; events ${types.join(',')}; init keys [${init ? Object.keys(init).join(',') : '-'}]; result keys [${result ? Object.keys(result).join(',') : '-'}]; init.model ${init?.model}; result.usage ${JSON.stringify(usagePair.result)} vs stream ${JSON.stringify(usagePair.stream)}`);
+        `exit ${p1.code}; events ${types.join(',')}; init at ${ev.indexOf(init)}, permissionMode ${init?.permissionMode}, AskUserQuestion ${init?.tools?.includes('AskUserQuestion') ? 'offered' : 'absent'}, messaging socket ${socketLeak ? 'THE CALLER\'S' : 'own'}; result ${JSON.stringify(String(result?.result ?? '').slice(0, 40))}; init keys [${init ? Object.keys(init).join(',') : '-'}]; result keys [${result ? Object.keys(result).join(',') : '-'}]; init.model ${init?.model}; result.usage ${JSON.stringify(usagePair.result)} vs stream ${JSON.stringify(usagePair.stream)}`);
     });
 
     if (ids.has('P2')) await guarded('P2', async () => {

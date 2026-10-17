@@ -308,6 +308,15 @@ test('turbo-phase skill: during chunked planning each committed plan\'s question
   assert.match(owner, /\*\*List and classify\*\* \(step \*\*plan\*\*: after each plan's commit and once more at its end;/);
 });
 
+test('turbo-phase skill: the fan-out commit names only the read-only gates that ran (v0.5.1)', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const point = section(s, 'fanout').split('\n').find((l) => l.startsWith('5. '));
+  assert.ok(point.includes('`gsd-tools commit "docs(phase-N): gate fan-out (<gates>)" --files'), point);
+  assert.ok(point.includes('`<gates>` names only the read-only gates point 3 ran, in this order: `security`, `UI review`, `code review`'), point);
+  assert.ok(point.includes('`docs(phase-N): gate fan-out (code review)`'), point);
+  assert.ok(!s.includes('gate fan-out (security, UI review, code review)"'), 'no fixed list of gates');
+});
+
 test('turbo-phase skill: the merged Nyquist worktree goes through turbo-run worktrees prune, dry run first, never forced; a conflict keeps the unmerged work', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
   const point = section(s, 'fanout').split('\n').find((l) => l.startsWith('6. '));

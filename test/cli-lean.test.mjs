@@ -6,7 +6,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpGitRepo } from './helpers/tmp.mjs';
 import { fakeGsdCore } from './helpers/fake-gsd.mjs';
 import { effortHome } from './helpers/effort-gsd.mjs';
-import { LEAN_PREV_REL } from '../lib/lean.mjs';
+import { LEAN_KEYS, LEAN_PREV_REL } from '../lib/lean.mjs';
 
 const CLI = path.resolve('bin/turbo-run.mjs');
 const write = (root, rel, text) => {
@@ -107,6 +107,21 @@ test('unknown subcommand: usage, exit 2', () => {
     assert.equal(r.code, 2);
     assert.equal(r.err.trim(), 'usage: turbo-run lean status [--json] | lean apply [--dry-run] | lean off');
   }
+});
+
+test('init applies lean mode: GSD keys set, lean lines printed, nothing committed, the temp HOME gets no .gsd when the Claude config directory has no GSD agents', () => {
+  const { root, h, cli } = cliProject({ effort: { efforts: {}, tool: false } });
+  const head = git(root, 'rev-parse', 'HEAD');
+  const r = cli(['init']);
+  assert.equal(r.code, 0, r.err);
+  const cfg = JSON.parse(fs.readFileSync(path.join(root, '.planning', 'config.json'), 'utf8'));
+  for (const [k, v] of LEAN_KEYS) assert.equal(k.split('.').reduce((x, s) => x?.[s], cfg), v, k);
+  assert.ok(r.lines.includes('lean: workflow.nyquist_validation absent → false'), r.out);
+  assert.ok(r.lines.includes(`lean: effort not changed: GSD agents not found in ${path.join(h.claudeDir, 'agents')}; agent effort left as it is`), r.out);
+  assert.match(r.lines.at(-1), /^created /);
+  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
+  assert.equal(fs.existsSync(path.join(root, LEAN_PREV_REL)), true);
+  assert.equal(fs.existsSync(path.join(h.home, '.gsd')), false);
 });
 
 test('start stops on an invalid lanes.effort with the config error', () => {

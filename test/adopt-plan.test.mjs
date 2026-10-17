@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { STALE_REPORT, adoptProject, closedRow, commitAll, MANAGER, write } from './helpers/adopt.mjs';
+import { STALE_REPORT, adoptDeps, adoptProject, closedRow, commitAll, MANAGER, write } from './helpers/adopt.mjs';
+import { createGsdConfig } from '../lib/gates.mjs';
+import { LEAN_KEYS, leanApply, leanChanges } from '../lib/lean.mjs';
 import { setManager } from './helpers/fake-gsd.mjs';
 import { jargonIn, plainWords } from '../lib/questions.mjs';
 import { analysisFile } from '../lib/annotate.mjs';
@@ -130,4 +132,33 @@ test('reverifyResult: a verifier that wrote nothing new moves nothing', () => {
   const r = reverifyResult(root, '1', { deps });
   assert.deepEqual([r.status, r.report, r.reason], ['stale', null, 'the verifier wrote no new report']);
   assert.deepEqual(readReverified(root)['1'].files, []);
+});
+
+test('a lean change is listed when lean is on and GSD\'s keys differ; none when lean is off, already lean, or deps have no lean', () => {
+  const { root, core } = adoptProject({ config: null });
+  const lean = { changes: () => leanChanges({ cfg: createGsdConfig({ root, core }) }), apply: () => leanApply({ root, core, commit: false }) };
+  const deps = adoptDeps(root, core, { lean });
+  const p = adoptPlan(root, { deps, answers: { 'stale-closed': 'keep' } });
+  assert.deepEqual(kinds(p), ['turbo-config', 'test-command', 'context-window', 'chunked', 'lean', 'record']);
+  const c = p.changes.find((x) => x.kind === 'lean');
+  assert.deepEqual(c.paths, ['.planning/config.json', '.planning/turbo/lean-prev.json']);
+  assert.deepEqual(c.value, LEAN_KEYS.map(([k]) => k));
+  assert.match(c.text, /^lean mode: 10 GSD settings for a faster phase \(`workflow\.nyquist_validation`, /);
+  assert.match(c.text, /GSD's planner and assumptions analyzer think at effort high, its researcher at medium \(on this machine, for every project\)$/);
+  // deps without lean (every caller before Stage 6): no change
+  assert.ok(!kinds(adoptPlan(root, { deps: adoptDeps(root, core), answers: { 'stale-closed': 'keep' } })).includes('lean'));
+  // lean off in the turbo config
+  write(root, '.planning/turbo/config.json', JSON.stringify({ lean: { enabled: false } }));
+  commitAll(root);
+  assert.ok(!kinds(adoptPlan(root, { deps, answers: { 'stale-closed': 'keep' } })).includes('lean'));
+  // already lean
+  write(root, '.planning/turbo/config.json', JSON.stringify({}));
+  commitAll(root);
+  leanApply({ root, core, commit: false });
+  commitAll(root);
+  assert.ok(!kinds(adoptPlan(root, { deps, answers: { 'stale-closed': 'keep' } })).includes('lean'));
+  // the Russian text
+  const ru = adoptProject({ config: { lang: 'ru' } });
+  const r = adoptPlan(ru.root, { deps: adoptDeps(ru.root, ru.core, { lean: { changes: () => leanChanges({ cfg: createGsdConfig({ root: ru.root, core: ru.core }) }), apply: () => ({}) } }), answers: { 'stale-closed': 'keep' } });
+  assert.match(r.changes.find((x) => x.kind === 'lean').text, /^облегчённый режим: 10 настроек GSD для быстрой фазы/);
 });

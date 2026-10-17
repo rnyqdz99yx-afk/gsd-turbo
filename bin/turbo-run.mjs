@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
 import { cwdInside, ownSessionId } from '../lib/transcripts.mjs';
 import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings, leanSettings, prepSettings, laneEffort, buildSettings } from '../lib/config.mjs';
-import { effortApply, effortOffHint, leanBoundary, runLeanCommand } from '../lib/lean.mjs';
+import { effortApply, effortOffHint, leanApply, leanBoundary, runLeanCommand } from '../lib/lean.mjs';
 import { acquireGate, gateDeclaredBy, releaseGate } from '../lib/gate-locks.mjs';
 import { InitAborted, initProject } from '../lib/project-init.mjs';
 import { closedLineFor, runAdoptCommand } from '../lib/cli-adopt.mjs';
@@ -1051,7 +1051,8 @@ async function main() {
       if (!['en', 'ru'].includes(lang) || !['standard', 'max'].includes(autonomy)) die('init [--lang en|ru] [--autonomy standard|max]');
       // lib/project-init.mjs: the same lines and changes; where it stops, the message and exit 1
       try {
-        return initProject(root, { lang, autonomy, out });
+        // Stage 6 §5.1: lean mode's keys (no commit: init commits nothing) and GSD's agent effort
+        return initProject(root, { lang, autonomy, out, lean: (o) => leanApply({ ...o, effort: () => effortApply({ root, env: process.env }) }) });
       } catch (e) {
         if (e instanceof InitAborted) die(e.message);
         throw e;

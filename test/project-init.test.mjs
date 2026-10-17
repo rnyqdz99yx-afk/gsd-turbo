@@ -5,6 +5,7 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { fakeGsdCore } from './helpers/fake-gsd.mjs';
 import { InitAborted, TURBO_TEST_CMD, initChanges, initProject } from '../lib/project-init.mjs';
+import { ABSENT } from '../lib/gates.mjs';
 
 // A project with GSD's (fake) core: .planning/config.json as given, a package.json with a real test script.
 function project({ gsdConfig = null, pkg = { scripts: { test: 'node --test' } } } = {}) {
@@ -73,4 +74,38 @@ test('initProject stops with InitAborted when GSD cannot read its test command; 
   assert.throws(() => initProject(root, { core, inherit: false }), (e) => e instanceof InitAborted && /^init aborted: gsd-tools config-get workflow\.test_command failed \(exit status 1\): broken; nothing was changed$/.test(e.message));
   assert.throws(() => initChanges(root, { core }), InitAborted);
   assert.equal(fs.existsSync(path.join(root, '.planning', 'turbo')), false);
+});
+
+test('initProject calls the lean function after its own setup when lean.enabled, prints its lines, and only warns when it fails', () => {
+  const { root, core } = project();
+  const calls = [];
+  const lines = [];
+  const lean = (o) => {
+    calls.push({ ...o, gsd: gsdConfigOf(root) });
+    return { changed: [{ key: 'workflow.nyquist_validation', from: ABSENT, to: 'false' }], enabled: null, effort: null, paths: [], commit: null };
+  };
+  assert.equal(initProject(root, { core, out: (l) => lines.push(l), inherit: false, lean }), 0);
+  assert.equal(calls.length, 1);
+  assert.deepEqual([calls[0].root, calls[0].core, calls[0].commit, typeof calls[0].exec], [root, core, false, 'function']);
+  // after init's own config-set calls
+  assert.equal(calls[0].gsd.workflow.test_command, TURBO_TEST_CMD);
+  assert.equal(calls[0].gsd.context_window, 1000000);
+  assert.deepEqual(lines.slice(-3), ['lean: workflow.nyquist_validation absent → false', 'lean: previous values in .planning/turbo/lean-prev.json', `created ${path.join(root, '.planning', 'turbo', 'config.json')}`]);
+  // lean off in the turbo config: not called
+  const off = project();
+  fs.mkdirSync(path.join(off.root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(off.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lean: { enabled: false } }));
+  let called = false;
+  initProject(off.root, { core: off.core, inherit: false, lean: () => { called = true; } });
+  assert.equal(called, false);
+  // without GSD (no core): not called either
+  const none = project();
+  initProject(none.root, { core: null, inherit: false, lean: () => { called = true; } });
+  assert.equal(called, false);
+  // a lean that throws: a warning, init still succeeds
+  const bad = project();
+  const out = [];
+  assert.equal(initProject(bad.root, { core: bad.core, out: (l) => out.push(l), inherit: false, lean: () => { throw new Error('boom\nmore'); } }), 0);
+  assert.ok(out.includes('warn: lean mode not applied: boom; run turbo-run lean apply'), out.join('\n'));
+  assert.match(out.at(-1), /^created /);
 });

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { DEFAULTS, GATE_NAMES, LANE_MODES, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, planDraftsSettings, pushSettings } from '../lib/config.mjs';
+import { DEFAULTS, GATE_NAMES, LANE_MODES, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, planDraftsSettings, pushSettings, EFFORTS, BUILD_ROLES, leanSettings, prepSettings, laneEffort, buildSettings } from '../lib/config.mjs';
 import { findProjectRoot, turboDir, claudeHome } from '../lib/paths.mjs';
 import { writeJsonAtomic, readJson } from '../lib/fsx.mjs';
 
@@ -223,7 +223,7 @@ test('pushSettings: off by default; every key validated; a bad value is a one-li
 });
 
 test('lanes (Stage 4 L0): defaults, a valid hand-edited value, and every invalid one stops with the key named', () => {
-  assert.deepEqual(DEFAULTS.lanes, { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true, gates: [], write_guard: true });
+  assert.deepEqual(DEFAULTS.lanes, { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true, gates: [], write_guard: true, effort: 'high' });
   assert.deepEqual(LANE_MODES, ['slots', 'checkout']);
   assert.deepEqual(lanesSettings(), DEFAULTS.lanes);
   assert.deepEqual(
@@ -302,4 +302,60 @@ test('Stage 5 B13: plan_drafts defaults, digit strings accepted, every invalid v
   fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ plan_drafts: { min_waves: 5 } }));
   assert.deepEqual(planDraftsSettings(loadConfig(root).plan_drafts), { enabled: false, min_waves: 5, max_parallel: 8 });
+});
+
+test('Stage 6 L1 keys: lean, prep, lanes.effort and build: defaults, digit strings, partial objects, every invalid value names its key', () => {
+  assert.deepEqual(EFFORTS, ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(BUILD_ROLES, ['slicer', 'builder', 'fixer', 'researcher', 'reviewer', 'verifier']);
+  const build = { enabled: false, maxBuilders: 4, maxSessions: 6, effort: { slicer: 'high', builder: 'high', fixer: 'high', researcher: 'medium', reviewer: 'high', verifier: 'medium' }, stallMin: 15, timeoutMin: 120, adoptPlans: false };
+  assert.deepEqual(leanSettings(DEFAULTS), { enabled: true, stateBudgetKb: 16 });
+  assert.deepEqual(prepSettings(DEFAULTS), { lookahead: 1 });
+  assert.equal(laneEffort(DEFAULTS), 'high');
+  assert.deepEqual(buildSettings(DEFAULTS), build);
+  assert.equal(DEFAULTS.plan_drafts.enabled, false);
+  for (const get of [leanSettings, prepSettings, laneEffort, buildSettings]) {
+    assert.deepEqual(get({}), get(DEFAULTS), get.name);
+    assert.deepEqual(get(), get(DEFAULTS), get.name);
+  }
+  // a hand-edited file reaches them through loadConfig; partial objects keep the other defaults
+  const root = tmpDir('s6-keys');
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lean: { state_budget_kb: '32' }, prep: { lookahead: 3 }, lanes: { effort: 'medium' }, build: { effort: { builder: 'xhigh' } } }));
+  const c = loadConfig(root);
+  assert.deepEqual(leanSettings(c), { enabled: true, stateBudgetKb: 32 });
+  assert.deepEqual(prepSettings(c), { lookahead: 3 });
+  assert.equal(laneEffort(c), 'medium');
+  assert.deepEqual(buildSettings(c).effort, { ...build.effort, builder: 'xhigh' });
+  // direct partial objects too
+  assert.deepEqual(buildSettings({ build: { effort: { builder: 'low' }, max_builders: ' 2 ' } }), { ...build, maxBuilders: 2, effort: { ...build.effort, builder: 'low' } });
+  const bad = [
+    [{ lean: 'on' }, 'lean', /must be an object/],
+    [{ lean: { enabled: 'yes' } }, 'lean.enabled', /must be true or false/],
+    [{ lean: { state_budget_kb: 3 } }, 'lean.state_budget_kb', /must be a whole number of KB from 4 to 1024/],
+    [{ lean: { state_budget_kb: 1025 } }, 'lean.state_budget_kb', /from 4 to 1024/],
+    [{ lean: { state_budget_kb: 2.5 } }, 'lean.state_budget_kb', /from 4 to 1024/],
+    [{ prep: { lookahead: 0 } }, 'prep.lookahead', /must be a whole number from 1 to 10/],
+    [{ prep: { lookahead: 11 } }, 'prep.lookahead', /from 1 to 10/],
+    [{ prep: { lookahead: 'x' } }, 'prep.lookahead', /from 1 to 10/],
+    [{ prep: 2 }, 'prep', /must be an object/],
+    [{ lanes: { effort: 'turbo' } }, 'lanes.effort', /must be one of low, medium, high, xhigh, max$/],
+    [{ build: { enabled: 1 } }, 'build.enabled', /must be true or false/],
+    [{ build: { max_builders: 0 } }, 'build.max_builders', /must be a whole number from 1 to 12/],
+    [{ build: { max_builders: 13 } }, 'build.max_builders', /from 1 to 12/],
+    [{ build: { max_sessions: 21 } }, 'build.max_sessions', /must be a whole number from 1 to 20/],
+    [{ build: { effort: 'high' } }, 'build.effort', /must be an object/],
+    [{ build: { effort: { builder: 'ultra' } } }, 'build.effort.builder', /must be one of low, medium, high, xhigh, max/],
+    [{ build: { effort: { planner: 'high' } } }, 'build.effort.planner', /unknown role.*slicer, builder, fixer, researcher, reviewer, verifier/],
+    [{ build: { stall_min: 0 } }, 'build.stall_min', /must be a whole number of minutes from 1 to 120/],
+    [{ build: { stall_min: 121 } }, 'build.stall_min', /from 1 to 120/],
+    [{ build: { timeout_min: 4 } }, 'build.timeout_min', /must be a whole number of minutes from 5 to 720/],
+    [{ build: { timeout_min: 721 } }, 'build.timeout_min', /from 5 to 720/],
+    [{ build: { stall_min: 60, timeout_min: 60 } }, 'build.stall_min', /must be less than build\.timeout_min/],
+    [{ build: { adopt_plans: 'no' } }, 'build.adopt_plans', /must be true or false/],
+  ];
+  const getter = { lean: leanSettings, prep: prepSettings, lanes: laneEffort, build: buildSettings };
+  for (const [cfg, key, re] of bad) {
+    const get = getter[key.split('.')[0]];
+    assert.throws(() => get(cfg), (e) => e.message.startsWith(`invalid turbo config ${key}: `) && re.test(e.message), `${key} ${JSON.stringify(cfg)}`);
+  }
 });

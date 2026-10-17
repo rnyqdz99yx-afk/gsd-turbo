@@ -74,8 +74,10 @@ test('GSD\'s runtime files never show in a slot\'s git status: setup lists them 
   const p = mainProject();
   const t = slotFixture(p.root, { max: 1 });
   setupSlots(p.root, t.config, t.deps);
-  setupSlots(p.root, t.config, t.deps);
   const s = slotPath(p.root, t.config, 1);
+  const first = fs.readFileSync(path.join(s, '.git', 'info', 'exclude'), 'utf8');
+  setupSlots(p.root, t.config, t.deps);
+  assert.equal(fs.readFileSync(path.join(s, '.git', 'info', 'exclude'), 'utf8'), first, 'each block stays where it is');
   for (const f of ['state.json', 'milestone.lock', 'STATE.md.lock', '.lock', '.WINDOWS.lock', 'WAITING.json', 'workstreams/ws1/state.json']) {
     fs.mkdirSync(path.dirname(path.join(s, '.planning', f)), { recursive: true });
     fs.writeFileSync(path.join(s, '.planning', f), '{}\n');

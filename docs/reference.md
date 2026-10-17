@@ -507,6 +507,33 @@ A project with nested packages that have their own test scripts (and CI that run
 - `turbo-run doctor` prints `warn nested package <dir> has its own test script that test.full does not run` for each nested package no entry runs. When such a package changes, `test-changed` logs a warning and runs as with a single command (the entry that contains the package runs in full).
 - Each record of the last-green marker names the command of its full run; when an entry's command changes (also in a config git does not track), that entry runs in full. After an upgrade, an older last-green marker counts as the root entry's until its next full run; a nested entry without a record of its own runs in full once.
 
+## Headless sessions
+
+The build path (v0.6, `build.enabled`) runs its role sessions (slicer, builder, fixer, reviewer, verifier) as short headless Claude Code sessions that turbo's code starts, not as subagents of a lane session. Each one runs:
+
+```
+claude -p --output-format stream-json --verbose --model opus --effort <e> --permission-mode bypassPermissions --settings <file> --disallowedTools AskUserQuestion [--agent <name>] [--append-system-prompt-file <role.md>]
+```
+
+with the prompt on stdin, never as an argument. `AskUserQuestion` is disabled: a session that needs you asks with an OWNER QUESTION block (below). The calling session's variables are removed from its environment, so a session started from your own Claude Code session never reports into it or takes itself for a nested session: `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_EXECPATH`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `AI_AGENT`, `CLAUDE_CODE_SESSION_ID` and `CLAUDE_JOB_DIR`. `CLAUDE_CONFIG_DIR` and your other settings stay.
+
+- **Write guard.** The settings file carries the same write guard as lanes (`lanes.write_guard`): file-tool writes are allowed only inside the session's working directory (its slice worktree), its temporary directory `~/.claude/turbo/tmp/<project key>/p<key>/` (its `TMP`, `TEMP` and `TMPDIR`) and the control root's `.planning/turbo`. The settings file lies next to that temporary directory, not in it, so a session cannot rewrite its own guard. Your own Claude Code hooks, GSD's among them, run in these sessions as in any other.
+- **Transcripts.** A headless session's transcript is an ordinary one: `<Claude config dir>/projects/<cwd key>/<session id>.jsonl` (`CLAUDE_CONFIG_DIR` respected), shown in the live view and listed by `claude -r` in that directory.
+- **Limits.** `build.max_sessions` (default 6) headless sessions run on the machine at once, counted through `~/.claude/turbo/sessions/slot-<n>.json`: one pool per Claude config directory, shared by all projects (projects with different values never run more than the largest). A crashed holder's slot is freed at once when its process is gone, or after 30 minutes without its one-minute heartbeat. A session is stopped after `build.timeout_min` (120) minutes, or after `build.stall_min` (15) minutes without activity: a stream event, or a write to the transcript of the session or of any of its subagents. A stopped session's whole process tree is killed (`taskkill /T /F` on Windows, the process group elsewhere), with the commands, test runners and servers it started.
+- **Owner questions.** A session that needs you ends its final message with this block and stops:
+
+  ```
+  ## OWNER QUESTION
+  Question: <one line>
+  Context: <up to 600 characters, may span lines>
+  Options:
+  1. <label> — <description> (recommended)
+  2. <label> — <description>
+  ```
+
+  At most 4 options, at most one recommended; no options makes a free-text question. After your answer the same session continues with `claude -p --resume <session id>` and your answer on stdin, with its whole context.
+- **Probe.** From a clone of gsd-turbo, `node scripts/headless-probe.mjs` checks these `claude -p` behaviours on your machine: stream-json, `--effort`, `--agent`, the write guard, `--resume`, the transcript path, your hooks, the tree kill and `--append-system-prompt-file`. It is not installed, runs in a throwaway repository and spends about 10 small Opus calls; `--dry-run` prints its command lines only.
+
 ## Safety
 
 - **Permissions.** Background sessions run with `--permission-mode bypassPermissions` by default, so nobody has to approve tool calls. Set `lane_permission_mode` to another Claude Code permission mode to change that. Your existing Claude Code hooks still apply in every session.

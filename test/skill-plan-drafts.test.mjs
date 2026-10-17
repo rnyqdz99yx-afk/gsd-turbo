@@ -51,7 +51,7 @@ test('section Plan drafts: the commands in order, one message per wave, GSD\'s p
   inOrder(d, ['**Every Wave GSD dispatches after `drafts on`**', 'its first runnable Wave too', "Before GSD's §8.5.2 point 2 (its resume check)",
     'keeps that entry in the runnable set', "At GSD's §8.5.2 point 4", '`CHUNKED_PARALLEL` false', "GSD's first serial call of the Wave"]);
   assert.ok(d.includes('a `## REVISION COMPLETE` that leaves no issue unaddressed'));
-  assert.ok(d.includes('is no plan of GSD\'s outline'));
+  assert.ok(d.includes('is the draft of <id>, not a plan'));
 });
 
 test('the reconcile prompt: GSD\'s revision contract, the draft-reconcile blocker, Steps 2-5 (2.5) only, no commit, the three returns', () => {

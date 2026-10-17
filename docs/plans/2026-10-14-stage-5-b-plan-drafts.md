@@ -34,12 +34,14 @@ The spec (§5, §6, §7, §9) is corrected to match; where this plan's text diff
   names. ROADMAP.md, STATE.md and commits are not looked at: GSD's own chunked planners touch them in every run (G16;
   second review C1). Every `use: gsd` marks the record `replanned`.
 - Predecessors also include the earlier plans the draft's `## Draft assumptions` names. The guard (B11) reads the
-  newest adding commit, goes over every plan file of the phase and refuses any equal to a recorded drafted/reconciled
-  blob, and (before execution) any plan file no outline row names that was not there before the first draft.
+  newest adding commit and goes over every plan file of the phase, refusing any equal to a recorded drafted/reconciled
+  blob; a plan file no outline row names is not refused (GSD's revision may split a plan; third review C1). A lost
+  agent's plan files go when its plan is handed to GSD; `--replan` uses an agent's base only while it may be at work;
+  `--plan` answering `drafts off` on a resume marks every draft not promoted `replanned`.
 - Every Wave GSD dispatches after `drafts on` (a resumed session's first runnable Wave too) runs `--reconcile` per
   entry; draft returns of a Wave are handled before GSD's resume check of it (second review C2, I1).
-- `plan_drafts.enabled: false` writes `lastPlan` too, for the measurement line. `planCheckState` (web-hygiene2) no
-  longer counts a `create phase plan` commit that adds a plan file (a planner's own commit, review I3).
+- `plan_drafts.enabled: false` writes `lastPlan` too, for the measurement line. `planCheckState` (web-hygiene2) counts a
+  `create phase plan` commit only when it changes STATE.md and adds no plan file (a planner's own commit: I3, I-b).
 - `filesModified` of `lib/annotate.mjs` is not imported (it would pull annotate's imports into the lane commands):
   `lib/plan-drafts.mjs` reads `files_modified` with its own `frontList`, which also reads `depends_on`.
 - The skill section **Plan drafts** sits after **Stale report**; its tests are `test/skill-plan-drafts.test.mjs`, and

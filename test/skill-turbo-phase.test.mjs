@@ -434,6 +434,8 @@ test('turbo-phase skill (lean): the Lean mode section carries the inserts verbat
     // review: the diff reviews are bounded and survive GSD skipping every --files path; the re-gate checks its gates ran
     'turbo-run phase-step N --attempt review-diff', '`n` above 3', 'the same without `--files`', 'sub-points 1 to 3',
     'produced no artifact', 'With `code-review` among the jobs', 'never open threats',
+    // second review: the re-gate's gates are checked by outcome; a review GSD skipped is run without --files
+    'turbo-run jobs N outcome --json`: a job in `missing`', 'runs once more with args `N`', 'the same again → as `done`',
   ]) assert.ok(lean.includes(n), n);
   assert.ok(!lean.includes('\n### '), 'bold labels only: no ### inside, so every step section keeps its own end');
   assert.ok(!lean.includes('draft later'));

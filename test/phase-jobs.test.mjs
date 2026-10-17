@@ -334,4 +334,7 @@ test('jobs CLI (lean): signals that cannot be read run research and the audit', 
   writeJsonAtomic(activeFile(root), { phase: '3', active: ['code-review'] });
   assert.equal(await run('3', 'fanout', '--json'), 0);
   assert.deepEqual(JSON.parse(lines.at(-1)).map((j) => [j.id, j.direct ?? false]), [['security', true], ['code-review', false]]);
+  const vague = (...a) => runPhaseCommand('jobs', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd, signals: { research: () => ({}), security: () => null } } });
+  assert.equal(await vague('3', 'research', '--json'), 0);
+  assert.equal(JSON.parse(lines.at(-1)).yes, true, 'a verdict without yes: false runs the step');
 });

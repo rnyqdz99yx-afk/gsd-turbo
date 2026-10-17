@@ -560,17 +560,33 @@ test('changedSince: committed, uncommitted and untracked paths since a commit, p
   assert.deepEqual(changedSince(git, base, { worktree: false }), { code: ['src/a.js'], planning: [] });
 });
 
-test('changedSince: code a merge took in from another branch is not the branch\'s own change', async () => {
+test('changedSince: code a turbo integrate merge took in from the main branch is another phase\'s; the phase\'s own merges and both-sided files count', async () => {
   const { changedSince } = await import('../lib/staleness.mjs');
   const r = repo();
   r.write('src/a.js', 'a\n');
+  r.write('src/shared.js', 'one\n\n\n\ntwo\n');
+  r.write('src/later.js', 'l\n');
   const base = r.commit('base');
   r.g('checkout', '-q', '-b', 'main-moved');
   r.write('src/other.js', 'from main\n');
+  r.write('src/later.js', 'l from main\n');
+  r.write('src/shared.js', 'ONE\n\n\n\ntwo\n');
   r.commit('another phase');
   r.g('checkout', '-q', '-');
+  // an executor worktree merged --no-ff, as GSD's execute-phase does
+  r.g('checkout', '-q', '-b', 'executor');
+  r.write('src/wt.js', 'from the executor\n');
+  r.commit('feat: executor work');
+  r.g('checkout', '-q', '-');
+  r.g('merge', '-q', '--no-ff', '-m', 'chore: merge executor worktree', 'executor');
   r.write('src/a.js', 'a fixed\n');
+  r.write('src/shared.js', 'one\n\n\n\nTWO\n');
   r.commit('fix');
-  r.g('merge', '-q', '--no-ff', '-m', 'take in main', 'main-moved');
-  assert.deepEqual(changedSince(gitRunner(r.root), base), { code: ['src/a.js'], planning: [] });
+  const branch = r.g('rev-parse', '--abbrev-ref', 'HEAD');
+  r.g('merge', '-q', '--no-ff', '-m', `Merge main-moved into ${branch} (turbo integrate)`, 'main-moved');
+  r.write('src/later.js', 'l from main, then this phase\n');
+  r.commit('the phase changes a file main brought');
+  const git = gitRunner(r.root);
+  assert.deepEqual(changedSince(git, base).code, ['src/a.js', 'src/later.js', 'src/shared.js', 'src/wt.js'], 'src/other.js came from main unchanged');
+  assert.deepEqual(changedSince(git, base, { worktree: false }).code, ['src/a.js', 'src/later.js', 'src/shared.js', 'src/wt.js']);
 });

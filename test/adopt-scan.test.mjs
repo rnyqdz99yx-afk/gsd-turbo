@@ -101,9 +101,14 @@ test('a dirty tree is accepted only inside an adopt that stopped before its comm
   const r = scanProject(root, { deps: deps(root) });
   assert.deepEqual(r.refused, []);
   assert.deepEqual(r.dirty.sort(), ['.planning/config.json', ADOPT_REL].sort());
-  // an applied record covers nothing
+  // an applied record whose own file is committed covers nothing
   write(root, ADOPT_REL, JSON.stringify({ v: 1, state: 'applied', at: '2026-10-14T00:00:00.000Z', paths: ['.planning/config.json', ADOPT_REL] }));
-  assert.match(scanProject(root, { deps: deps(root) }).refused.join('\n'), /uncommitted changes/);
+  git(root)(['add', '--', ADOPT_REL]);
+  git(root)(['commit', '-q', '-m', 'adopt']);
+  assert.match(scanProject(root, { deps: deps(root) }).refused.join('\n'), /uncommitted changes: \.planning\/config\.json:/);
+  // review 1: an applied record that is not committed itself (the commit failed) is an interrupted adopt
+  write(root, ADOPT_REL, JSON.stringify({ v: 1, state: 'applied', at: '2026-10-14T00:00:01.000Z', paths: ['.planning/config.json', ADOPT_REL] }));
+  assert.deepEqual(scanProject(root, { deps: deps(root) }).refused, []);
 });
 
 test('GSD branching per phase or milestone: refused while HEAD is on another branch than the default one', () => {
@@ -111,8 +116,25 @@ test('GSD branching per phase or milestone: refused while HEAD is on another bra
   const cfg = { config: { 'git.branching_strategy': 'phase' } };
   assert.deepEqual(scanProject(root, { deps: deps(root, cfg) }).refused, []);
   git(root)(['switch', '-q', '-c', 'gsd/phase-33-demo']);
+  // only main suggests the default branch: a guess warns, never refuses
+  let r = scanProject(root, { deps: deps(root, cfg) });
+  assert.deepEqual(r.refused, []);
+  assert.deepEqual(r.overview.warnings, ["HEAD is on GSD's branch gsd/phase-33-demo; merge it into main and switch back (git switch main), if main is this project's default branch"]);
+  assert.ok(formatOverview(r.overview, 'en').includes(`warn: ${r.overview.warnings[0]}`));
+  // git's init.defaultBranch, or GSD's git.base_branch, makes it sure: refused
+  git(root)(['config', 'init.defaultBranch', 'main']);
   assert.deepEqual(scanProject(root, { deps: deps(root, cfg) }).refused, ["HEAD is on GSD's branch gsd/phase-33-demo; merge it into main and switch back (git switch main)"]);
+  git(root)(['config', '--unset', 'init.defaultBranch']);
+  r = scanProject(root, { deps: deps(root, { config: { 'git.branching_strategy': 'milestone', 'git.base_branch': 'main' } }) });
+  assert.equal(r.refused.length, 1);
   assert.deepEqual(scanProject(root, { deps: deps(root, { config: { 'git.branching_strategy': 'none' } }) }).refused, []);
+});
+
+test('review 4: GSD cannot list the phases while a new report it cannot read is in the tree: scan names adopt reverify', () => {
+  const root = project();
+  write(root, '.planning/phases/24-old/24-VERIFICATION.md', '---\nstatus: weird\n---\n');
+  const r = scanProject(root, { deps: { ...deps(root), gsd: () => { throw new Error('verification status weird is not one of passed, gaps_found, human_needed'); } } });
+  assert.match(r.refused.join('\n'), /GSD cannot list the phases \(verification status weird .*\): a re-check report it cannot read may be the cause: run turbo-run adopt reverify 24$/);
 });
 
 test('nothing to adopt when every phase is done; the overview in Russian names the closed phases without file names', () => {

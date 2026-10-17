@@ -104,7 +104,7 @@ test('the report in Russian: six sections in order, the commit and how to undo i
   assert.deepEqual(heads, ['## Где проект', '## Закрытые фазы без свежей проверки', '## Полосы и критический путь', '## Что изменено', '## Что остаётся вам', '## Запуск']);
   assert.ok(text.includes(`коммит ${r.committed} chore(turbo): adopt; откатить: \`git revert ${r.committed}\``), text);
   assert.match(text, /1: оставлены закрытыми/);
-  assert.match(text, /обычный GSD: 3 фаз подряд/);
+  assert.match(text, /обычный GSD: 3 фазы подряд/);
   assert.equal(r.report.at(-1), '/turbo-autonomous');
 });
 

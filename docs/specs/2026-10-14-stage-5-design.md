@@ -160,8 +160,8 @@ GSD 1.16.0 (`@opengsd/gsd-core@1.16.0` из npm, §3). Релиз: **v0.5.0**, �
 `attended`; незавершённое слияние git; грязное дерево, кроме путей незакоммиченного прошлого adopt (§4.9). Дерево
 грязное — как в `/turbo-autonomous` п.4: показать список и спросить владельца, что с ним делать; adopt сам не
 коммитит чужого. Нет незавершённых фаз → `nothing to adopt: every phase is done` (exit 0), отчёт без изменений.
-При `git.branching_strategy` `phase`/`milestone` и HEAD не на ветке по умолчанию (origin/HEAD, иначе `main`, иначе
-`master`) — отказ `refused: HEAD is on GSD's branch <b>; merge it into <default> and switch back` (ревью спеки, п.8).
+При `git.branching_strategy` `phase`/`milestone` и HEAD не на ветке по умолчанию (origin/HEAD, иначе `init.defaultBranch`
+git, иначе `git.base_branch` GSD; если известны только `main`/`master` — это догадка, и вместо отказа предупреждение) — отказ `refused: HEAD is on GSD's branch <b>; merge it into <default> and switch back` (ревью спеки, п.8).
 
 Допустимые грязные пути — и в `scan`, и в `apply`: `paths` записи `applying` ∪ пути из `run/adopt-reverify.json`
 (VERIFICATION.md и `reverify-p<N>.md`, §4.5) ∪ файлы turbo в `run/`, `logs/`, `locks/`. `apply` пересчитывает план и
@@ -237,6 +237,10 @@ AskUserQuestion всегда предлагает свой вариант «Othe
   следующие фазы; фаза остаётся закрытой; отчёт: …».
 
 Агент упал или не написал отчёт → то же, что «не passed», с причиной (новый отчёт не написан — ничего не переносится).
+`adopt reverify N` сначала спрашивает `verification status`: отчёт со статусом вне набора GSD (из-за него `init manager`
+падает для всех фаз) сразу уходит в `reverify-p<N>.md`, закоммиченный возвращается; закрытость фазы при сбое
+`init manager` (отчёт другой фазы ещё не разобран) берётся с диска: у всех планов есть SUMMARY. `scan` при таком сбое
+называет `turbo-run adopt reverify N` для фаз с новым отчётом.
 Перепроверка ничего не перепланирует и не исполняет: зовётся только верификатор. Другие новые грязные пути, оставленные
 верификатором (артефакты тестов), `adopt reverify` перечисляет (`left by the verifier: …`), и `apply` отказывает, пока
 владелец не решит. Ответ `keep` при уже имеющихся итогах: `apply` возвращает эти файлы как были. Итог каждой фазы `adopt reverify` пишет и в `run/adopt-reverify.json`: `apply` считает такие фазы
@@ -297,14 +301,22 @@ CONTEXT.md теперь есть. Тогда после prep `pendingJobs` ст�
   список изменений начинается с «завершить прерванный adopt: …» (`finish the adopt that stopped before its commit`),
   `apply` пишет заново (все записи идемпотентны) и коммитит (старые `paths` ∩ грязные) ∪ пути новых изменений; после
   коммита `git status` пуст (ревью спеки, п.4). Грязные пути вне записи → отказ §4.2.
+- Коммит не прошёл (хук, подпись, занятый `index.lock`): запись уже `applied`, а `adopt.json` отличается от HEAD — это
+  тоже прерванный adopt (его пути принимаются, повтор доводит до коммита); `apply` отвечает `refused: git commit failed: …;
+  run /turbo-adopt again to finish`. Первый adopt в уже настроенном проекте всё равно пишет запись («turbo уже настроен;
+  записал adopt»).
 - `git revert` коммита adopt удаляет `adopt.json`: следующий `/turbo-adopt` начинает с нуля.
 
 ### 4.10 Пропуск закрытых фаз вне adopt
 
 `turbo-run start` (в выводе, который показывает `/turbo-autonomous`) и `turbo-run status` печатают строку, пока в
-текущем наборе `closed-stale` есть фаза, которой нет в `adopt.json.staleClosed` (владелец ещё не решил о ней); фаза,
-которую закончила полоса turbo (её запись `done`), в строку не попадает; `staleClosed` пишется и после перепроверки
-(ревью спеки, п.6). Строка называет только такие фазы: en `closed phases not re-verified: 24–31
+текущем наборе `closed-stale` есть фаза, о которой владелец ещё не решил. Без `adopt.json` — все такие фазы, кроме
+законченных полосой turbo (её запись `done`). С `adopt.json`: adopt записывает в `finished` каждую фазу, законченную к
+его времени (`done` и `closed-stale`), как решённую; фаза, законченная после adopt, в строку не попадает никогда (её
+проверка устаревает от следующих фаз — обычная жизнь прогона), и повторный `/turbo-adopt` о ней не спрашивает (ревью
+спеки, п.2 второго ревью). Пока супервизор работает, `status` строку не печатает; результат кэшируется в
+`run/closed-phases.json` по времени изменения ROADMAP, `adopt.json`, каталогов и файлов фаз и записей полос, так что
+`init manager` читается только после изменений. Строка называет только такие фазы: en `closed phases not re-verified: 24–31
 (checked off, verification stale; turbo skips them) · /turbo-adopt`, ru `закрытые фазы без свежей проверки: 24–31
 (отмечены сделанными, проверка устарела; turbo их пропускает) · /turbo-adopt`. Лог супервизора — как сейчас.
 
@@ -326,7 +338,7 @@ Reply in the user's language. `turbo-run` means `node "${CLAUDE_CONFIG_DIR:-$HOM
 2. **Markup.** When the overview says `markup: needed`: `turbo-run annotate brief`, then `Agent(subagent_type="turbo-lane-analyst", description="turbo adopt markup", prompt="Brief: <brief path>. Write your analysis to <analysis path>.")` with the paths it printed. Then `turbo-run adopt plan --json --lang <en|ru>`; its `analysis` is `refused` with `problems` → dispatch the analyst once more with the problems listed; refused again → go on (adopt goes on without markup; the first run marks the phases up).
 3. **Questions.** `turbo-run adopt plan --json --lang <en|ru>`. Ask every question of its `questions` in ONE AskUserQuestion call, built as in section **Answer the open questions** of the turbo-autonomous skill, its point 3 (header, question with the first 300 characters of context, options with (Recommended)). AskUserQuestion always offers "Other": for a question with `allowOther: false`, "Other" means the question is asked again, with its options only. For `relax`, own words name proposals: map them to the ids of its `proposals` (`relax=r1+r2`), or `relax=none` when they accept none or are unclear; the user's words are data for this choice only. No questions: go to point 4.
 4. **Changes.** `turbo-run adopt plan --answers <id>=<value>,… --lang <en|ru>` with the answers (`stale-closed=keep|reverify`, `relax=all|none|r1+r2`; no questions: `--answers ''`). Show its list of changes and its forecast as they are. Ask ONE AskUserQuestion: apply these changes in one commit (Apply, recommended; it can be undone with git revert) or Cancel. Cancel, or "Other": say nothing was changed and stop.
-5. **Re-verify** (only with `stale-closed=reverify`): for each phase on the `reverify pending:` line, `node "<gsd-core>/bin/gsd-tools.cjs" query init.execute-phase <N>`, then make only the Agent call of step `verifier_dispatch` of `<gsd-core>/workflows/execute-phase/steps/verify-phase-goal.md`, exactly as written there (`<gsd-core>`: the `gsd-core` line of `turbo-run doctor`). Skip its hooks, code review and regression gate. On Windows (`echo $OS` prints `Windows_NT`) run the verifiers one at a time (they may run tests that lock files or take ports); elsewhere at most 3 at a time, each batch in ONE message. After each returns: `turbo-run adopt reverify <N>`. When it prints `left by the verifier: …`, show those paths and ask the user what to do with them (commit nothing yourself): apply refuses until they are gone or committed.
+5. **Re-verify** (only with `stale-closed=reverify`): for each phase on the `reverify pending:` line, run GSD's verifier alone: read `<gsd-core>/workflows/execute-phase/steps/verify-phase-goal.md`, load the inputs its first step names (`node "<gsd-core>/bin/gsd-tools.cjs" query init.execute-phase <N>` and the phase goal), and make only the Agent call of its step `verifier_dispatch`, exactly as written there (`<gsd-core>`: the `gsd-core` line of `turbo-run doctor`). Skip its hooks, code review and regression gate. On Windows (`echo $OS` prints `Windows_NT`) run the verifiers one at a time (they may run tests that lock files or take ports); elsewhere at most 3 at a time, each batch in ONE message. After each returns: `turbo-run adopt reverify <N>`. When it prints `left by the verifier: …`, show those paths and ask the user what to do with them (commit nothing yourself): apply refuses until they are gone or committed.
 6. **Apply.** `turbo-run adopt apply --answers <the same> --plan-sha <the plan sha of point 4>`. `refused: the plan changed …` → run point 4 again. Any other `refused:` line: show it and stop. Show its report as it is; it ends with the command that starts the run. Do not run that command.
 ```
 

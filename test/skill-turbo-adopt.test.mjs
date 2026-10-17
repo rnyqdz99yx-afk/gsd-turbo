@@ -24,7 +24,7 @@ test('turbo-adopt: the six points in order, one batch of questions, ONE confirma
     'turbo-run adopt scan --lang', 'turbo-run annotate brief', 'subagent_type="turbo-lane-analyst"', 'Ask every question of its `questions` in ONE AskUserQuestion call',
     'section **Answer the open questions** of the turbo-autonomous skill', '"Other" means the question is asked again', 'turbo-run adopt plan --answers',
     'Ask ONE AskUserQuestion: apply these changes in one commit', 'Cancel, or "Other": say nothing was changed and stop',
-    'make only the Agent call of step `verifier_dispatch`', 'Skip its hooks, code review and regression gate', 'one at a time', 'at most 3 at a time',
+    'read `<gsd-core>/workflows/execute-phase/steps/verify-phase-goal.md`, load the inputs its first step names', 'make only the Agent call of its step `verifier_dispatch`', 'Skip its hooks, code review and regression gate', 'one at a time', 'at most 3 at a time',
     '`reverify pending:`', 'turbo-run adopt reverify <N>', 'left by the verifier', 'turbo-run adopt apply --answers <the same> --plan-sha',
     'Do not run that command.',
   ]) assert.ok(s.includes(n), n);

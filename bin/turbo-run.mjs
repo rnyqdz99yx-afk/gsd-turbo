@@ -1085,7 +1085,7 @@ async function main() {
       const attended = attendedPhases(root); // spec §8: phases the owner runs in their session; no lane runs meanwhile
       if (args.includes('--json')) { out(JSON.stringify({ running, ...sup, ...(damaged ? { damaged } : {}), ownerRequests, gatesOff: leftovers.gates, attended }, null, 2)); return 0; }
       // Stage 5 §4.10: the closed phases turbo skips, until the owner decides in /turbo-adopt
-      const closed = closedLineFor(root, config.lang);
+      const closed = closedLineFor(root, config.lang, { running });
       if (damaged?.unreadable) out(`supervisor: state cannot be read now (supervisor.json: ${damaged.why}); look again in a moment; if it stays so, check the file and the disk`);
       else if (damaged) out(damagedLine(damaged));
       else if (!sup) out(`supervisor: not running (never started)${closed ? `\n${closed}` : ''}`);

@@ -44,7 +44,8 @@ test('a question answered for the same set is not asked again; a new closed phas
   setManager(core, { ...MANAGER, phases: [...MANAGER.phases.slice(0, 1), closedRow('2', ['1']), ...MANAGER.phases.slice(2)] });
   const q = adoptPlan(root, { deps }).questions;
   assert.deepEqual(q.map((x) => x.id), ['stale-closed']);
-  assert.match(q[0].question, /^Phases 1, 2 are checked off/);
+  // only the phase the record did not decide on
+  assert.match(q[0].question, /^Phase 2 is checked off/);
 });
 
 test('a valid analysis with relaxations: the relax card joins the questions at standard; at max no question, the markup change carries the decision record', () => {

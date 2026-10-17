@@ -7,6 +7,8 @@ import { SESSION, usage } from './helpers/transcripts.mjs';
 import { fakeClaude } from './helpers/fake-claude.mjs';
 import { runSession, resumeSession, buildHeadlessArgs } from '../lib/headless.mjs';
 import { projectKey } from '../lib/transcripts.mjs';
+import { pidAlive } from '../lib/merge-lock.mjs';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const u = (i, c, r, o) => ({ input_tokens: i, cache_creation_input_tokens: c, cache_read_input_tokens: r, output_tokens: o });
 
@@ -119,4 +121,48 @@ test('runSession rejects when claude cannot start or cwd is no directory', async
   await assert.rejects(runSession({ cwd: path.join(dir, 'nope'), prompt: 'x', env }, deps), /not a directory/);
   await assert.rejects(runSession({ cwd, prompt: '', env }, deps), /prompt/);
   await assert.rejects(runSession({ cwd, prompt: 'x', env }, { bin: { cmd: 'claude.cmd', prefix: [], shell: false, unsupported: 'claude is installed as an unrecognized .cmd shim' } }), /unrecognized/);
+  for (const bad of [{ timeoutMin: 0 }, { stallMin: -1 }, { stallMin: 'x' }]) await assert.rejects(runSession({ cwd, prompt: 'x', env, ...bad }, deps), /timeoutMin and stallMin/);
+});
+
+// Task 5: the watch
+const gone = async (pid) => {
+  for (let i = 0; i < 50; i++) {
+    if (!pidAlive(pid)) return true;
+    await sleep(100);
+  }
+  return false;
+};
+
+test('a silent session is stalled after stallMin and its whole tree is killed', { timeout: 20000 }, async (t) => {
+  const { cwd, f, env, deps } = setup(t, { hang: true, grandchild: 'ignore' });
+  const r = await runSession({ cwd, prompt: 'x', env, stallMin: 0.02, timeoutMin: 5 }, deps);
+  assert.deepEqual([r.stalled, r.timedOut, r.sessionId, r.ownerQuestion, r.isError], [true, false, SESSION, null, true]);
+  assert.ok(r.wallMs < 10000);
+  assert.ok(f.grandchildPid());
+  assert.ok(await gone(f.grandchildPid()), 'the grandchild survived the stall kill');
+});
+
+test('a session past timeoutMin is timedOut even while it keeps talking', { timeout: 20000 }, async (t) => {
+  const { cwd, f, env, deps } = setup(t, { chatter: true, grandchild: 'ignore' });
+  const r = await runSession({ cwd, prompt: 'x', env, stallMin: 1, timeoutMin: 0.03 }, deps);
+  assert.deepEqual([r.timedOut, r.stalled], [true, false]);
+  assert.ok(await gone(f.grandchildPid()), 'the grandchild survived the timeout kill');
+});
+
+test('transcript writes keep a session alive without stream events (its own and a subagent\'s)', { timeout: 30000 }, async (t) => {
+  const { cwd, f, env, deps } = setup(t);
+  for (const tickSubagent of [false, true]) {
+    f.set({ transcriptTicks: 16, tickMs: 150, tickSubagent });
+    const r = await runSession({ cwd, prompt: 'x', env, stallMin: 0.02, timeoutMin: 5 }, deps);
+    assert.deepEqual([r.stalled, r.result], [false, 'done'], `tickSubagent ${tickSubagent}`);
+  }
+});
+
+test('a session the tree kill misses is killed alone and finished after killGraceMs', { timeout: 20000 }, async (t) => {
+  const { cwd, env, deps } = setup(t, { hang: true });
+  const seen = [];
+  const r = await runSession({ cwd, prompt: 'x', env, stallMin: 0.01 }, { ...deps, killGraceMs: 300, kill: (pid) => seen.push(pid) });
+  assert.equal(r.stalled, true);
+  assert.equal(seen.length, 1);
+  assert.ok(await gone(seen[0]), 'claude survived child.kill');
 });

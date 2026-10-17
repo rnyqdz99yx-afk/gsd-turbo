@@ -529,3 +529,31 @@ test('verificationRoute: while turbo has GSD\'s gates off, the code review setti
   gates({ 'workflow.nyquist_validation': true });
   assert.equal(verificationRoute({ root: r.root, phaseDir }).route, 'verifier-only', 'no saved code_review: the live config');
 });
+
+// Stage 6 L2 (spec §5.3): re-gate reads what changed since each gate's report.
+test('changedSince: committed, uncommitted and untracked paths since a commit, project-relative, .planning apart', async () => {
+  const { changedSince, lastCommitOf } = await import('../lib/staleness.mjs');
+  const r = repo();
+  r.write('src/a.js', 'a\n');
+  r.write('src/b.js', 'b\n');
+  r.write('.planning/phases/03-x/03-01-PLAN.md', 'plan\n');
+  const base = r.commit('base');
+  r.write('src/a.js', 'a2\n');
+  r.commit('a');
+  r.write('src/b.js', 'b2\n');
+  r.write('src/c.js', 'c\n');
+  r.write('.planning/phases/03-x/03-01-PLAN.md', 'plan 2\n');
+  const git = gitRunner(r.root);
+  assert.deepEqual(changedSince(git, base), { code: ['src/a.js', 'src/b.js', 'src/c.js'], planning: ['.planning/phases/03-x/03-01-PLAN.md'] });
+  assert.equal(lastCommitOf(git, 'src/c.js'), null, 'never committed');
+  assert.equal(lastCommitOf(git, 'src/b.js'), base);
+  // a project below the repository root: paths stay relative to the project
+  const sub = repo();
+  sub.write('app/src/x.js', 'x\n');
+  sub.write('other/y.js', 'y\n');
+  const s0 = sub.commit('base');
+  sub.write('app/src/x.js', 'x2\n');
+  sub.write('other/y.js', 'y2\n');
+  sub.write('app/.planning/STATE.md', 's\n');
+  assert.deepEqual(changedSince(gitRunner(path.join(sub.root, 'app')), s0), { code: ['src/x.js'], planning: ['.planning/STATE.md'] });
+});

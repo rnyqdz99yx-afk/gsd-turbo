@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmpDir } from './helpers/tmp.mjs';
-import { AI_GOAL_RE, prologueJobs, fanoutJobs, gateOutcome } from '../lib/phase-jobs.mjs';
+import { execFileSync } from 'node:child_process';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
+import { AI_GOAL_RE, prologueJobs, fanoutJobs, gateOutcome, regateJobs } from '../lib/phase-jobs.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { gatesRel } from '../lib/gates.mjs';
@@ -214,6 +215,59 @@ test('jobs CLI reads hooks, gate state and frontmatter through injected GSD quer
   assert.equal(await run('3', 'fanout', '--json'), 0);
   assert.deepEqual(JSON.parse(lines.at(-1)).map((j) => j.id), ['security']);
   assert.equal(await run('3', 'bogus'), 2);
+});
+
+// --- Stage 6 L2: re-gate, the gates whose inputs changed (spec §5.3) --------------------------------------------------
+
+test('regateJobs: a gate re-runs only when its inputs changed since its report, or without a committed report; the code review gets --files and the diff paragraph', () => {
+  const S = 'a'.repeat(40);
+  const jobs = fanoutJobs({ phase: '3', active: ['ui', 'code-review', 'nyquist'], artifacts: { uiSpec: '03-UI-SPEC.md' }, lean: { security: { yes: true, why: 'plans touch auth' } } });
+  const phaseRel = '.planning/phases/03-x';
+  const none = { since: S, code: [], planning: [] };
+  const regate = (changes) => regateJobs({ phase: '3', phaseRel, jobs, changes, exists: (p) => p !== 'src/gone.js' });
+  const all = regate({ 'code-review': { since: S, code: ['src/a.js', 'src/gone.js'], planning: [] }, security: none, ui: none, nyquist: { since: null, code: [], planning: [] } });
+  const by = Object.fromEntries(all.map((j) => [j.id, j]));
+  assert.deepEqual(all.map((j) => j.id), ['code-review', 'nyquist']);
+  assert.equal(by['code-review'].args, '3 --files=src/a.js');
+  assert.deepEqual(by['code-review'].files, ['src/a.js']);
+  assert.ok(by['code-review'].paragraph.includes(`git diff ${S}`), by['code-review'].paragraph);
+  assert.equal(by.nyquist.args, '3', 'no committed report: the gate re-runs as it is');
+  const plan = regate({ 'code-review': none, security: { since: S, code: [], planning: [`${phaseRel}/03-01-PLAN.md`] }, ui: { since: S, code: [], planning: [`${phaseRel}/03-01-PLAN.md`] }, nyquist: none });
+  assert.deepEqual(plan.map((j) => j.id), ['security'], 'a plan change re-runs the security audit, never the UI review');
+  assert.equal(plan[0].args, '3');
+  assert.equal(plan[0].direct, true, 'the direct audit stays direct');
+  const code = regate({ 'code-review': none, security: { since: S, code: ['src/a.js'], planning: [] }, ui: { since: S, code: [], planning: [`${phaseRel}/03-UI-SPEC.md`] }, nyquist: { since: S, code: [], planning: ['.planning/phases/04-y/04-01-PLAN.md'] } });
+  assert.deepEqual(code.map((j) => j.id), ['security', 'ui'], 'code for security, its UI-SPEC for the UI review, another phase\'s plan for nobody');
+  assert.deepEqual(regate({ 'code-review': { since: S, code: ['src/gone.js'], planning: [] }, security: none, ui: none, nyquist: none }), [], 'nothing left to review');
+});
+
+test('jobs regate CLI: report commits from git; refuses while the gates are off', async () => {
+  const root = tmpGitRepo();
+  const g = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const write = (f, s) => { fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true }); fs.writeFileSync(path.join(root, f), s); };
+  const commit = (m) => { g('add', '-A'); g('commit', '-q', '-m', m); return g('rev-parse', 'HEAD'); };
+  write('.gitignore', '.planning/turbo/run/\n');
+  write('src/a.js', 'a\n');
+  write('.planning/phases/03-alpha/03-REVIEW.md', '---\nstatus: clean\n---\n');
+  const reviewed = commit('review');
+  write('src/a.js', 'a2\n');
+  commit('fix');
+  write('.planning/phases/03-alpha/03-SECURITY.md', '---\nthreats_open: 0\n---\n');
+  commit('security');
+  const gsd = { hooks: () => [], frontend: () => false, goal: () => '', frontmatter: stubFrontmatter() };
+  const lines = [];
+  const run = (...a) => runPhaseCommand('jobs', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd } });
+  writeJsonAtomic(activeFile(root), { phase: '3', active: ['security', 'code-review'] });
+  assert.equal(await run('3', 'regate', '--json'), 0);
+  const list = JSON.parse(lines.at(-1));
+  assert.deepEqual(list.map((j) => j.id), ['code-review'], 'SECURITY.md was committed after the code');
+  assert.deepEqual(list[0].files, ['src/a.js']);
+  assert.equal(list[0].args, '3 --files=src/a.js');
+  assert.equal(await run('3', 'regate'), 0);
+  assert.equal(lines.at(-1), `code-review: 1 input file(s) changed since ${reviewed.slice(0, 12)}`);
+  writeJsonAtomic(path.join(root, gatesRel('3')), { active: ['code-review'] });
+  assert.equal(await run('3', 'regate'), 1);
+  assert.match(lines.at(-1), /turbo-run gates restore 3/);
 });
 
 // --- Stage 6 L2: research and the security audit by the phase's signals (spec §5.2) ---------------------------------

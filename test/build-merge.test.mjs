@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { gitIn } from './helpers/slots.mjs';
 import { buildRepo } from './helpers/build.mjs';
 import { BuildLocked, MERGE_RETRY_MS, buildLockFile, createSliceWorktree, mergeSlice, mergeSubject, runMergeTests } from '../lib/build-queue.mjs';
@@ -170,6 +171,24 @@ test('the build lock orders merges', () => {
   assert.throws(() => mergeSlice(l.root, s, { lockWaitMs: 200 }), (e) => e instanceof BuildLocked && /build-p33/.test(e.message));
   assert.equal(head(l), before, 'the merge did not run');
   assert.ok(exists(file), 'the other owner\'s lock is left alone');
+});
+
+test('a lock a dead build left is taken over at once; a very old one even when its pid runs again', () => {
+  const dead = spawnSync(process.execPath, ['-e', ''], { windowsHide: true }).pid;
+  for (const [token, ageMs] of [[`${dead}-a-killed-build`, 60000], [`${process.pid}-a-reused-pid`, 31 * 60000]]) {
+    const l = lane();
+    const s = built(l, '33-02');
+    const file = buildLockFile(l.root, '33');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, token);
+    const at = new Date(Date.now() - ageMs);
+    fs.utimesSync(file, at, at);
+    const t0 = Date.now();
+    const r = mergeSlice(l.root, s, { lockWaitMs: 5000 });
+    assert.match(r.sha ?? '', /^[0-9a-f]{40}$/, `${token}: ${JSON.stringify(r)}`);
+    assert.ok(Date.now() - t0 < 5000, 'not waited out');
+    assert.equal(exists(file), false, 'released');
+  }
 });
 
 test('runMergeTests: the targeted tests of one merge, a red one, a retest', async () => {

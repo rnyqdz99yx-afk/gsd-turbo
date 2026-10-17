@@ -120,6 +120,56 @@ test('partial work is salvaged', () => {
   assert.ok(createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.git('rev-parse', 'HEAD') }).path);
 });
 
+// What a removal Windows stopped halfway leaves: git dropped the worktree's record and its .git file, the files stay.
+function halfRemoved(l, w) {
+  const admin = path.resolve(w.path, gitIn(w.path, 'rev-parse', '--git-dir'));
+  fs.rmSync(admin, { recursive: true, force: true });
+  fs.rmSync(path.join(w.path, '.git'), { force: true });
+}
+
+test('salvage runs no hook, and keeps a detached HEAD the builder committed on', () => {
+  const l = lane();
+  const w = inFlight(l, '33-02', (wt) => {
+    commitIn(wt, { 'src/33-02.js': 'export const half = 1;\n' }, 'feat(33-02): half');
+    gitIn(wt.path, 'checkout', '-q', '--detach');
+    commitIn(wt, { 'src/33-02.js': 'export const half = 2;\n' }, 'feat(33-02): detached');
+    fs.writeFileSync(path.join(wt.path, 'src', 'more.js'), 'export const more = 1;\n');
+  });
+  // the project's hooks refuse every commit and every commit message
+  for (const h of ['pre-commit', 'commit-msg']) fs.writeFileSync(path.join(l.root, '.git', 'hooks', h), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const r = reconcile(l);
+  const name = 'turbo-salvage/33-02-20261017T120000Z';
+  assert.deepEqual(acts(r), [['33-02', 'salvaged']]);
+  assert.deepEqual(l.git('log', '--format=%s', `main..${name}`).split('\n'), ['wip(33-02): uncommitted work salvaged by turbo', 'feat(33-02): detached', 'feat(33-02): half']);
+  assert.equal(l.git('show', `${name}:src/more.js`), 'export const more = 1;');
+  assert.equal(r.state.slices['33-02'].state, 'waiting');
+  assert.equal(branchExists(l.root, 'turbo-build/33-02'), false, 'the salvage branch holds all of it');
+  assert.equal(exists(w.path), false);
+});
+
+test('a folder a halfway removal left inside another repository: git never runs in it', () => {
+  const outer = buildRepo({ plans: [] });
+  outer.write('outer-dirty.txt', 'the owner\'s own uncommitted file\n');
+  const commits = outer.git('rev-list', '--count', 'HEAD');
+  const l = buildRepo({ plans: PLANS, config: { lanes: { dir: path.join(outer.root, 'slots') } } });
+  const runDir = path.join(l.root, '.planning', 'turbo', 'run');
+  const state = newBuildState({ phase: '33', graph: planGraph(l.root, '33'), head: l.git('rev-parse', 'HEAD'), now });
+  const ctx = { ...l, runDir, state };
+  const w = inFlight(ctx, '33-02', (wt) => commitIn(wt, { 'src/33-02.js': 'export const half = 1;\n' }, 'feat(33-02): half'));
+  assert.ok(w.path.startsWith(outer.root));
+  const tip = gitIn(w.path, 'rev-parse', 'HEAD');
+  halfRemoved(l, w);
+  fs.writeFileSync(path.join(w.path, 'src', 'left.js'), 'left behind\n');
+  const r = reconcile(ctx);
+  assert.deepEqual(acts(r), [['33-02', 'salvaged']]);
+  assert.equal(l.git('rev-parse', 'refs/heads/turbo-salvage/33-02-20261017T120000Z'), tip);
+  assert.equal(exists(w.path), false, 'what was left is deleted as a plain folder');
+  assert.equal(outer.git('rev-list', '--count', 'HEAD'), commits, 'no commit in the repository around it');
+  assert.equal(outer.git('status', '--porcelain', '--', 'outer-dirty.txt'), '?? outer-dirty.txt');
+  assert.equal(r.state.slices['33-02'].leftover, null);
+  assert.ok(createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.git('rev-parse', 'HEAD') }).path, 'the slice is built again');
+});
+
 test('nothing done: requeued, also for an orphan branch of a waiting slice', () => {
   const l = lane();
   const w = inFlight(l, '33-02');
@@ -158,10 +208,14 @@ test('a merge that left HEAD', () => {
       l.write(`${l.rel}/33-02-SUMMARY.md`, '# kept by hand\n');
       l.commit('docs(33-02): summary');
     }
+    const work = l.git('rev-parse', `${m.sha}^2`);
     const r = reconcile(l);
     assert.equal(r.state.slices['33-02'].state, summaryOnHead ? 'done-before' : 'waiting');
-    assert.deepEqual(acts(r), [['33-02', summaryOnHead ? 'done-before' : 'requeued']]);
+    assert.deepEqual(acts(r), [['33-02', 'salvaged'], ['33-02', summaryOnHead ? 'done-before' : 'requeued']]);
     assert.equal(r.state.slices['33-02'].merge, null);
+    // the slice's commits, on no ref after the reset, are kept
+    assert.equal(l.git('rev-parse', 'refs/heads/turbo-salvage/33-02-20261017T120000Z'), work);
+    assert.deepEqual(acts(reconcile(l)), [], 'kept once');
   }
 });
 

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { tmpDir } from './helpers/tmp.mjs';
 import { gitIn } from './helpers/slots.mjs';
 import { buildRepo } from './helpers/build.mjs';
@@ -97,6 +98,82 @@ test('a branch with commits not on HEAD is never deleted', () => {
   assert.equal(exists(w.path), false);
   assert.equal(branchExists(l.root, 'turbo-build/33-02'), true);
   assert.equal(r.why, 'branch turbo-build/33-02 has commits not on HEAD: kept');
+});
+
+test('what a halfway removal left is deleted as a plain folder, never through its links', () => {
+  const l = lane();
+  const w = createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.base });
+  const other = tmpDir('target');
+  fs.writeFileSync(path.join(other, 'keep.txt'), 'keep\n');
+  fs.symlinkSync(other, path.join(w.path, 'src-link'), LINK_TYPE);
+  // git gave the worktree up (its record and its .git file gone) and left the files
+  fs.rmSync(path.resolve(w.path, gitIn(w.path, 'rev-parse', '--git-dir')), { recursive: true, force: true });
+  fs.rmSync(path.join(w.path, '.git'), { force: true });
+  const r = removeSliceWorktree(l.root, { path: w.path, branch: w.branch });
+  assert.deepEqual(r, { removed: true, leftover: null, why: null });
+  assert.equal(exists(w.path), false);
+  assert.equal(fs.readFileSync(path.join(l.root, 'node_modules', 'dep', 'index.js'), 'utf8'), 'module.exports = 1;\n');
+  assert.equal(fs.readFileSync(path.join(other, 'keep.txt'), 'utf8'), 'keep\n');
+  assert.equal(branchExists(l.root, w.branch), false);
+  assert.ok(createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.base }).path);
+});
+
+test('a removal Windows really refuses: a leftover, then removed once nothing holds it', { skip: process.platform !== 'win32' && 'Windows only: an open folder cannot be deleted' }, async () => {
+  const l = lane();
+  const w = createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.base });
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { cwd: path.join(w.path, '.planning'), stdio: 'ignore', windowsHide: true });
+  await new Promise((resolve) => child.once('spawn', resolve));
+  try {
+    const r = removeSliceWorktree(l.root, { path: w.path, branch: w.branch }, { rm: (p) => fs.rmSync(p, { recursive: true, force: true }) });
+    assert.equal(r.removed, false);
+    assert.equal(r.leftover, w.path);
+    assert.ok(exists(w.path));
+    assert.equal(fs.readFileSync(path.join(l.root, 'node_modules', 'dep', 'index.js'), 'utf8'), 'module.exports = 1;\n');
+  } finally {
+    const gone = new Promise((resolve) => child.once('exit', resolve));
+    child.kill();
+    await gone;
+  }
+  assert.deepEqual(removeSliceWorktree(l.root, { path: w.path, branch: w.branch }), { removed: true, leftover: null, why: null });
+  assert.equal(exists(w.path), false);
+  assert.equal(branchExists(l.root, w.branch), false);
+  assert.ok(createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.base }).path);
+});
+
+test('createSliceWorktree: a marker naming a commit that is gone, a held lock, a failed add', () => {
+  const l = lane();
+  fs.writeFileSync(markerOf(l.root), JSON.stringify({ fullSha: 'a'.repeat(40), targetedSince: 0, command: 'node --test' }));
+  const w = createSliceWorktree(l.root, { phase: '33', id: '33-01', baseSha: l.base });
+  assert.equal(exists(markerOf(w.path)), false, 'no marker; the worktree is made');
+
+  // the first add makes the branch, then finds the index locked: the retry takes the branch as it is
+  const real = buildGit();
+  const sleeps = [];
+  let adds = 0;
+  const locking = (dir, args, o) => {
+    if (args[0] === 'worktree' && args[1] === 'add' && ++adds === 1) {
+      real(dir, ['branch', 'turbo-build/33-02', l.base]);
+      const e = new Error(`git worktree in ${dir} failed: remove the file manually to continue.`);
+      e.stderr = "fatal: Unable to create '.git/index.lock': File exists.\n\nremove the file manually to continue.\n";
+      throw e;
+    }
+    return real(dir, args, o);
+  };
+  const two = createSliceWorktree(l.root, { phase: '33', id: '33-02', baseSha: l.base }, { git: locking, sleep: (ms) => sleeps.push(ms) });
+  assert.deepEqual(sleeps, [2000]);
+  assert.equal(gitIn(two.path, 'symbolic-ref', '--short', 'HEAD'), 'turbo-build/33-02');
+
+  // an add that fails after making the branch leaves nothing behind
+  const failing = (dir, args, o) => {
+    if (args[0] === 'worktree' && args[1] === 'add') {
+      real(dir, ['branch', 'turbo-build/33-03', l.base]);
+      throw new Error(`git worktree in ${dir} failed: timed out after 120 s`);
+    }
+    return real(dir, args, o);
+  };
+  assert.throws(() => createSliceWorktree(l.root, { phase: '33', id: '33-03', baseSha: l.base }, { git: failing }), /timed out/);
+  assert.equal(branchExists(l.root, 'turbo-build/33-03'), false);
+  assert.equal(exists(sliceWorktreePath(l.root, '33-03')), false);
 });
 
 test('a removal Windows refuses leaves a leftover', () => {

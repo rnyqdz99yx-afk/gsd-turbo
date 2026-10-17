@@ -8,7 +8,7 @@ import { LEAN_KEYS, leanApply, leanChanges } from '../lib/lean.mjs';
 import { setManager } from './helpers/fake-gsd.mjs';
 import { jargonIn, plainWords } from '../lib/questions.mjs';
 import { analysisFile } from '../lib/annotate.mjs';
-import { ADOPT_REL, AdoptRefused, AdoptUsage, adoptPlan, adoptQuestions, formatOverview, formatPlan, parseAnswers, readReverified, reverifyResult } from '../lib/adopt.mjs';
+import { ADOPT_REL, AdoptRefused, AdoptUsage, adoptPlan, adoptQuestions, applyAdopt, formatOverview, formatPlan, parseAnswers, readReverified, reverifyResult } from '../lib/adopt.mjs';
 
 const GOOD = {
   phases: { 2: { areas: ['src/api/**'], gates: [], confidence: 'high' }, 3: { areas: ['web/**'], gates: ['owner-live'], confidence: 'high' }, 4: { areas: ['docs/**'], gates: [], confidence: 'high' } },
@@ -153,6 +153,29 @@ test('reverifyResult: a verifier that wrote nothing new moves nothing', () => {
   const r = reverifyResult(root, '1', { deps });
   assert.deepEqual([r.status, r.report, r.reason], ['stale', null, 'the verifier wrote no new report']);
   assert.deepEqual(readReverified(root)['1'].files, []);
+});
+
+test('with lean on, the context window line shows the value lean leaves in GSD\'s config and the lean line names it; apply writes exactly that (v0.5.1)', () => {
+  const { root, core } = adoptProject({ config: null });
+  const lean = { changes: () => leanChanges({ cfg: createGsdConfig({ root, core }) }), apply: () => leanApply({ root, core, commit: false }) };
+  const deps = adoptDeps(root, core, { lean });
+  const answers = { 'stale-closed': 'keep' };
+  const p = adoptPlan(root, { deps, answers });
+  const cw = p.changes.find((x) => x.kind === 'context-window');
+  assert.equal(cw.value, 400000);
+  assert.equal(cw.text, "GSD's context window: 400000 tokens (`.planning/config.json`), lean mode's value for sizing GSD's prompts; turbo keeps 1000000 for its pauses (`.planning/turbo/config.json`)");
+  assert.match(p.changes.find((x) => x.kind === 'lean').text, /, `context_window` 400000 in `\.planning\/config\.json`/);
+  const r = applyAdopt(root, { answers, plan: p.plan, deps });
+  assert.equal(r.refused, undefined, String(r.refused));
+  assert.equal(createGsdConfig({ root, core }).get('context_window'), '400000');
+  // lean off: turbo's window, as before
+  const off = adoptProject({ config: { lean: { enabled: false } } });
+  const q = adoptPlan(off.root, { deps: adoptDeps(off.root, off.core, { lean: { changes: () => leanChanges({ cfg: createGsdConfig({ root: off.root, core: off.core }) }), apply: () => ({}) } }), answers });
+  assert.deepEqual([q.changes.find((x) => x.kind === 'context-window').value, q.changes.find((x) => x.kind === 'context-window').text], [1000000, "GSD's context window: 1000000 tokens (`.planning/config.json`)"]);
+  // the Russian text
+  const ru = adoptProject({ config: { lang: 'ru' } });
+  const s = adoptPlan(ru.root, { deps: adoptDeps(ru.root, ru.core, { lean: { changes: () => leanChanges({ cfg: createGsdConfig({ root: ru.root, core: ru.core }) }), apply: () => ({}) } }), answers });
+  assert.equal(s.changes.find((x) => x.kind === 'context-window').text, 'окно контекста GSD: 400000 токенов (`.planning/config.json`) — значение облегчённого режима для размера промптов GSD; паузы turbo считает по 1000000 (`.planning/turbo/config.json`)');
 });
 
 test('a lean change is listed when lean is on and GSD\'s keys differ; none when lean is off, already lean, or deps have no lean', () => {

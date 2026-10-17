@@ -79,3 +79,40 @@ test('agent-tail drops terminal escapes and bidi controls from what it prints, a
   writeAgent(dir, SESSION, AGENT, [entry.assistant({ ts: at(1), text: 'ok ]52;c;Y2xpcA==done ‮evil[2J', sidechain: true })]);
   assert.equal(agentTail({ root, agentId: AGENT, env }).entries[0].text, 'ok done evil');
 });
+
+test('agent-tail finds an agent of a slot lane: every lane\'s transcript directory is searched (Stage 4 L1)', () => {
+  const { root, env } = setup();
+  const home = env.CLAUDE_CONFIG_DIR;
+  const slot = path.join(path.dirname(root), 'app.turbo', 'lane-1');
+  fs.mkdirSync(slot, { recursive: true });
+  const jobId = '1a2b3c4d';
+  const sid = `${jobId}-2222-4333-8444-555555555555`;
+  const dir = projectDirFor(home, slot);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${sid}.jsonl`), `${JSON.stringify(entry.user('go', at(0)))}\n`);
+  writeAgent(dir, sid, AGENT, [entry.agentUser(AGENT, 'Execute plan 01 of phase 3', at(0))]);
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanesMode: 'slots', lanes: { 3: { key: '3', job: 'phase', phase: '3', slot: 1, slotPath: slot, sessionId: jobId } } }));
+  assert.equal(agentTail({ root, agentId: AGENT, env }).agentId, AGENT);
+});
+
+test('agent-tail finds an agent of a slot lane whose session is not known yet: the slot is a project of its own (Stage 4 L4, Review Focus 2)', () => {
+  const { root, env } = setup();
+  const home = env.CLAUDE_CONFIG_DIR;
+  const slot = path.join(path.dirname(root), 'app.turbo', 'lane-2');
+  fs.mkdirSync(slot, { recursive: true });
+  const sdir = projectDirFor(home, slot);
+  writeAgent(sdir, SESSION, AGENT, [entry.agentUser(AGENT, 'Run the checks', at(1)), entry.assistant({ ts: at(2), text: 'all green', sidechain: true })]);
+  assert.equal(agentTail({ root, agentId: AGENT, env }), null, 'no lane names the slot yet');
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanes: { 4: { key: '4', job: 'phase', phase: '4', slot: 2, slotPath: slot, sessionId: null } } }));
+  const r = agentTail({ root, agentId: AGENT, env });
+  assert.ok(r && r.transcript.startsWith(sdir), r?.transcript);
+});
+
+test('review I4: a hand-edited slotPath that is not a path is skipped, never thrown on', () => {
+  const { root, env } = setup();
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanes: { 4: { key: '4', job: 'phase', phase: '4', slot: 2, slotPath: 5, sessionId: 'abcd1234' } } }));
+  assert.equal(agentTail({ root, agentId: AGENT, env }), null);
+});

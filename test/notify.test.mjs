@@ -58,7 +58,7 @@ test('laneHalted, laneFailed and phaseMissing end with the resume command in en 
 });
 
 test('every message exists in en and ru with the same placeholders', () => {
-  const keys = ['laneNeedsOwner', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'supervisorFailing'];
+  const keys = ['laneNeedsOwner', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'supervisorFailing', 'supervisorDown'];
   const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` }); // renders each {name} as itself
   const holes = (m) => [...`${m.title}\n${m.body}`.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
   for (const key of keys) {
@@ -232,8 +232,12 @@ test('laneStalled exists in en and ru with the same placeholders (S1)', () => {
   assert.notEqual(en.title, 'laneStalled');
   assert.notEqual(ru.title, en.title);
   assert.deepEqual(holes(ru), holes(en));
-  assert.equal(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Its session has written nothing for 16 min; attempts to wake it: 2. To look inside: claude attach 1a2b3c4d. To restart the phase: /turbo-autonomous resume 3');
-  assert.equal(msg('ru', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Её сессия ничего не пишет уже 16 мин; попыток разбудить: 2. Посмотреть: claude attach 1a2b3c4d. Перезапустить фазу: /turbo-autonomous resume 3');
+  assert.equal(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Its session has written nothing for 16 min; turbo woke it, attempts: 2, and no answer came. To look inside: claude attach 1a2b3c4d. To restart the phase: /turbo-autonomous resume 3');
+  assert.equal(msg('ru', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).body, 'Её сессия ничего не пишет уже 16 мин; turbo будил её, попыток: 2, ответа нет. Посмотреть: claude attach 1a2b3c4d. Перезапустить фазу: /turbo-autonomous resume 3');
+  // liveness: the owner hears what turbo did, never a bare guess that the phase hangs
+  assert.equal(msg('en', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).title, 'Phase 3 is silent — waking it did not help');
+  assert.equal(msg('ru', 'laneStalled', { phase: '3', minutes: 16, wakes: 2, id: '1a2b3c4d' }).title, 'Фаза 3 молчит — разбудить не вышло');
+  for (const m of [en, ru]) assert.doesNotMatch(`${m.title}\n${m.body}`, /may be stuck|возможно/);
 });
 
 test('questionsReady exists in en and ru with the same placeholders (S1)', () => {
@@ -290,7 +294,7 @@ test('a session id shows only inside the command that needs it', () => {
 
 test('the Russian notifications hold no English but commands, paths, names and the variables', () => {
   const keep = new Proxy({}, { get: (_, k) => `{${String(k)}}` });
-  const keys = ['laneNeedsOwner', 'laneStalled', 'questionsReady', 'laneDowngraded', 'ownerChecklist', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'workspaceUntrusted', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'rangeBlocked', 'supervisorFailing', 'pushDiverged', 'pushRefused', 'pushAllowed', 'pushFailed', 'ciRed', 'ciTimeout', 'ciUnavailable'];
+  const keys = ['laneNeedsOwner', 'laneStalled', 'questionsReady', 'laneDowngraded', 'ownerChecklist', 'laneBlocked', 'laneHalted', 'laneFailed', 'launchHalted', 'phaseMissing', 'workspaceUntrusted', 'noReadyPhase', 'phaseDone', 'milestoneDone', 'rangeDone', 'rangeBlocked', 'supervisorFailing', 'supervisorDown', 'pushDiverged', 'pushRefused', 'pushAllowed', 'pushFailed', 'ciRed', 'ciTimeout', 'ciUnavailable'];
   // commands the owner runs, as printed, and the names of tools and files
   const COMMANDS = [/\/turbo-autonomous [a-z]+(?: \{\w+\})?/g, /\/turbo-autonomous --only \{dep\}/g, /--(?:from|to|all)\b/g, /claude attach \{id\}/g, /\{turboRun\} doctor/g, /\{turboRun\} lane-status \{phase\} done/g, /turbo-phase restore, fanout, fix, final-gate и uat/g, /git push \{remote\} \{branch\}/g, /turbo-run push-allow \{phase\}(?: \{refusal\})?/g, /gh run list\{repo\} --commit \{commit\}/g, /\.planning\/turbo\/logs\/supervisor\.log/g, /ROADMAP\.md/g];
   const NAMES = new Set(['CI', 'GSD', 'Claude', 'Code', 'claude', 'turbo', 'turbo-phase', 'doctor', 'gh', 'Telegram']);
@@ -302,4 +306,54 @@ test('the Russian notifications hold no English but commands, paths, names and t
     const english = (text.match(/[A-Za-z][A-Za-z-]*/g) || []).filter((w) => !NAMES.has(w));
     assert.deepEqual(english, [], `${key}: ${m.title} / ${m.body}`);
   }
+});
+
+test('msg renders gateWait in en and ru (Stage 4 L1)', () => {
+  const v = { phase: '4', gate: 'prod-deploy', holder: '3', minutes: 9 };
+  assert.deepEqual(msg('en', 'gateWait', v), { title: 'Phase 4 waits for prod-deploy', body: 'Phase 3 holds the shared resource prod-deploy; phase 4 waited 9 min for it. Its lane tries once more, then asks you. To free it by hand: turbo-run unlock prod-deploy 3' });
+  assert.deepEqual(msg('ru', 'gateWait', v), { title: 'Фаза 4 ждёт prod-deploy', body: 'Общий ресурс prod-deploy занят фазой 3; фаза 4 ждала его 9 мин. Её полоса попробует ещё раз, затем спросит вас. Освободить вручную: turbo-run unlock prod-deploy 3' });
+});
+
+test('msg renders milestonePrepared in en and ru (Stage 4 L1, reconcile R10)', () => {
+  assert.equal(msg('en', 'milestonePrepared', {}).title, 'Milestone prepared');
+  assert.equal(msg('ru', 'milestonePrepared', {}).title, 'Майлстоун подготовлен');
+});
+
+test('integration (reconcile R12): every owner notification of the annotate pseudo-phase is titled Lane markup / Разметка полос, never phase annotate', () => {
+  const keys = ['questionsReady', 'laneNeedsOwner', 'laneStalled', 'laneBlocked'];
+  for (const key of keys) {
+    const vars = { phase: 'annotate', n: 1, list: 'Can phases 3 and 4 run together?', reason: 'the markup needs you', minutes: 30, wakes: 2, id: 'abc' };
+    const en = msg('en', key, vars).title;
+    const ru = msg('ru', key, vars).title;
+    assert.match(en, /^Lane markup\b/, `${key}: ${en}`);
+    assert.ok(ru.startsWith('Разметка полос'), `${key}: ${ru}`);
+    assert.doesNotMatch(`${en} ${ru}`, /annotate/i, key);
+  }
+  assert.equal(msg('en', 'questionsReady', { phase: 'annotate', n: 2, list: 'x' }).title, 'Lane markup: needs your answer (2)');
+  assert.equal(msg('ru', 'laneNeedsOwner', { phase: 'annotate', reason: 'x' }).title, 'Разметка полос ждёт вас');
+  // a real phase keeps its words
+  assert.equal(msg('en', 'questionsReady', { phase: '3', n: 1, list: 'x' }).title, 'Phase 3: needs your answer (1)');
+});
+
+test('supervisorDown in en and ru: a restart and a death without an exit line, the start command and the log', () => {
+  for (const reboot of ['1', '']) {
+    const en = msg('en', 'supervisorDown', { project: 'my-app', since: '12:20', reboot, start: '/turbo-autonomous' });
+    const ru = msg('ru', 'supervisorDown', { project: 'my-app', since: '12:20', reboot, start: '/turbo-plan-milestone' });
+    assert.match(en.body, reboot ? /since 12:20: the machine restarted\./ : /since 12:20 and left no exit line: its process ended or hung\./);
+    assert.match(ru.body, reboot ? /с 12:20: компьютер перезагрузился\./ : /с 12:20 и не оставил строки о выходе: его процесс завершился или завис\./);
+    assert.match(en.body, /To start it again: \/turbo-autonomous in my-app\. Log: \.planning\/turbo\/logs\/supervisor\.log$/);
+    assert.match(ru.body, /Запустить снова: \/turbo-plan-milestone в проекте my-app\. Лог: \.planning\/turbo\/logs\/supervisor\.log$/);
+    const english = ru.body.replace(/\/turbo-plan-milestone|my-app|\.planning\/turbo\/logs\/supervisor\.log/g, ' ').match(/[A-Za-z][A-Za-z-]*/g) || [];
+    assert.deepEqual(english, [], ru.body);
+  }
+});
+
+test('notify sends desktop and Telegram at once: a slow desktop notifier never holds Telegram back', async () => {
+  let fetched = false;
+  let desktopEndedFirst = null;
+  const exec = () => new Promise((resolve) => setTimeout(() => { desktopEndedFirst = !fetched; resolve(); }, 50));
+  const fetchImpl = async () => { fetched = true; return { ok: true }; };
+  const r = await notify({ notify: { desktop: true, telegram: true } }, { title: 't', body: 'b' }, { platform: 'linux', exec, fetchImpl, env: { TURBO_TELEGRAM_TOKEN: 'T', TURBO_TELEGRAM_CHAT: '42' } });
+  assert.deepEqual(r, { desktop: true, telegram: true });
+  assert.equal(desktopEndedFirst, false, 'Telegram was sent while the desktop notifier still ran');
 });

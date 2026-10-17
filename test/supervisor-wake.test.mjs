@@ -13,6 +13,7 @@ import { attendFile, clearAttend, writeAttend } from '../lib/attend.mjs';
 
 const WOKE = (id) => `backgrounded · ${id} · lane\nnote: woke session ${id} with its saved options (--name, --permission-mode, --settings, --append-system-prompt, --disallowedTools, --model)\n`;
 const COPY = (id) => `note: session is already running in the background, so this started a copy as ${id}\nbackgrounded · ${id} · lane\n`;
+const DOWN = (cmd, id) => new Error(`claude ${cmd} failed: couldn't confirm ${id} was stopped — the background service may be restarting. Try again in a moment.`);
 const fresh = () => ({ lane: null, finished: false, halted: false });
 
 // A full-mode supervisor for phase 2 with a fake claude that can stop, remove and resume sessions.
@@ -23,6 +24,8 @@ function harness() {
   const h = {
     root, phases: [{ number: '2', deps: [], complete: false, verification: null }], agents: [], launched: [], removed: [], stopped: [], resumed: [],
     notes: [], logs: [], resumeOut: [], activity: null, replies: [], failStop: false, failRm: false,
+    // the background service: down (stop, rm and resume fail with its message) until a kick starts it; stuck: kick fails
+    down: false, stuck: false, kicks: 0,
     advance(min) { clock += min * 60000; },
     now: () => new Date(clock),
   };
@@ -36,6 +39,7 @@ function harness() {
         list: () => h.agents.map((a) => ({ ...a })),
         stop: (id) => {
           h.stopped.push(id);
+          if (h.down) throw DOWN('stop', id);
           if (h.failStop) throw new Error('claude stop failed: timed out');
           const a = h.agents.find((x) => x.id === id);
           if (!a) throw new Error(`claude stop failed: no session ${id}`);
@@ -43,11 +47,19 @@ function harness() {
         },
         rm: (id) => {
           h.removed.push(id);
+          if (h.down) throw DOWN('rm', id);
           if (h.failRm) throw new Error('claude rm failed: timed out');
           if (!h.agents.some((a) => a.id === id)) throw new Error(`claude rm failed: no session ${id}`);
           h.agents = h.agents.filter((a) => a.id !== id);
         },
+        kick: (during) => {
+          h.kicks++;
+          if (h.stuck) throw new Error('the background service did not list the kick session c0ffee');
+          h.down = false;
+          return during ? during() : 'c0ffee';
+        },
         resume: (target, prompt, cwd) => {
+          if (h.down) throw DOWN('--resume', target);
           h.resumed.push({ target, prompt, cwd });
           const out = h.resumeOut.length ? h.resumeOut.shift() : null;
           if (out instanceof Error) throw out;
@@ -212,6 +224,71 @@ test('a lane that writes nothing for stall_minutes is woken with the interruptio
   h.replies.push(h.now().getTime());
   s = await tick(s, h.ctx);
   assert.equal(s.lane.stall, null, 'it answered and wrote again: a new spell');
+});
+
+// liveness: the probe's calls are the commands in flight in the lane's whole tree (lib/liveness.mjs)
+const inFlight = (startMs, timeoutMs) => [{ id: 'toolu_b', tool: 'Bash', startMs, timeoutMs }];
+
+test('liveness: a command in flight within its timeout is never stall-woken (a wake stops the session and the command); one past its timeout and the margin is woken at once, once', async () => {
+  const h = harness();
+  h.ctx.config.stall_minutes = 5;
+  let s = await tick(fresh(), h.ctx);
+  const start = h.now().getTime();
+  h.activity = { lastMs: start, active: 0, calls: inFlight(start, 600000) };
+  for (let i = 0; i < 12; i++) {
+    h.advance(1);
+    s = await tick(s, h.ctx);
+  }
+  assert.equal(h.resumed.length, 0, '12 minutes silent, past stall_minutes, but the 10-minute command and its margin still run');
+  assert.equal(s.lane.stall ?? null, null);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1, 'past its timeout and the margin with nothing written: woken');
+  assert.match(h.logs.join('\n'), /phase 2: a Bash command ran past its time limit and nothing was written for 13 min; waking session 1a2b3c4d/);
+  // the wake restarts the count: the same command is no overrun twice; stall_minutes after the wake counts again
+  h.advance(4);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 2);
+});
+
+test('liveness: a lane whose turn ended while a nested helper runs a long command waits for it: neither blocked nor woken', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'blocked';
+  const start = h.now().getTime();
+  // no direct helper wrote within stall_minutes (active 0); a nested one runs a one-hour command
+  h.activity = { lastMs: start, active: 0, calls: inFlight(start, 3600000) };
+  for (let i = 0; i < 8; i++) {
+    h.advance(5);
+    s = await tick(s, h.ctx);
+  }
+  assert.ok(!h.notes.some((x) => x.key === 'laneBlocked' || x.key === 'laneStalled'), JSON.stringify(h.notes));
+  assert.equal(h.resumed.length, 0);
+});
+
+test('liveness: a stall wake that reaches no session starts a new one, and the lane records the restart for the view', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  h.resumeOut = ['neither a wake nor a copy', 'neither a wake nor a copy'];
+  h.advance(16);
+  s = await tick(s, h.ctx);
+  assert.equal(h.launched.length, 2, 'a new session in place of the one that did not wake');
+  assert.deepEqual([s.lane.stall.count, s.lane.stall.relaunched], [1, true]);
+});
+
+test('liveness: a stall wake that can neither wake nor replace the session records that for the view, never a wake', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  resistingSession(h);
+  h.advance(16);
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.lane.stall.count, s.lane.stall.missed, s.lane.stall.relaunched], [1, true, undefined]);
+  assert.equal(h.launched.length, 1, 'no second session beside one that may still run');
 });
 
 test('a lane whose turn ended while its subagents work is waiting for them, not blocked: no laneBlocked while they run', async () => {
@@ -560,4 +637,135 @@ test('review 1 (MAJOR 1): a fresh start of a phase drops its lane questions not 
   await tick(fresh(), h.ctx);
   assert.deepEqual(readQuestions(h.root, '2'), []);
   assert.ok(h.logs.includes('phase 2: dropped its questions ask-1 (the restarted step asks again)'));
+});
+
+// Claude Code's background service idle-exits while a lane waits for the owner; claude stop and rm then fail with
+// "the background service may be restarting" until any claude --bg starts it, and the lane's job stays listed
+// (blocked, no pid).
+test('a lane the background service retired while it waited for the owner: its stop counts as done, the service is kicked up, and its own session is resumed without flags', async () => {
+  const h = harness();
+  let s = await stoppedLane(h);
+  h.down = true;
+  owner(h, '02-01-t2', 1);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.kicks, 1);
+  assert.deepEqual(h.resumed.map((r) => r.target), ['1a2b3c4d-2222-4333-8444-555555555555']);
+  assert.equal(h.launched.length, 1, 'no new session');
+  assert.equal(s.lane.sessionId, '1a2b3c4d');
+  assert.ok(h.logs.includes('wake phase 2: woke session 1a2b3c4d'), h.logs.join('\n'));
+  assert.ok(!h.logs.some((l) => /waiting for the owner/.test(l)));
+});
+
+// journal 2026-10-14 15:34Z: the wake failed «did not reach session … in 2 tries» while claude agents still listed the
+// lane (a stale record, here with a pid) and neither the service of this config directory nor any process of the
+// session existed. The stop counts as done, the same conversation is resumed inside a kick (as for a job listed
+// without a pid), and the log says why in one line.
+test('a lane listed alive while the background service is gone and no process carries it: its stop counts as done without a kick, its own session is resumed inside one', async () => {
+  const h = harness();
+  const probed = [];
+  h.ctx.deps.claude.serviceGone = (id, agent) => { probed.push([id, agent?.pid]); return true; };
+  let s = await stoppedLane(h);
+  h.agents[0].pid = 4242;
+  h.down = true;
+  owner(h, '02-01-t2', 1);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(probed, [['1a2b3c4d', 4242]]);
+  assert.deepEqual(h.stopped, ['1a2b3c4d'], 'stopped once: no kick for the stop');
+  assert.equal(h.kicks, 1, 'the resume is made inside a kick');
+  assert.deepEqual(h.resumed.map((r) => r.target), ['1a2b3c4d-2222-4333-8444-555555555555']);
+  assert.equal(h.launched.length, 1, 'no new session');
+  assert.ok(h.logs.includes("Claude Code's background service is not running and no process carries session 1a2b3c4d: counted as stopped"), h.logs.join('\n'));
+  assert.ok(h.logs.includes('wake phase 2: woke session 1a2b3c4d'), h.logs.join('\n'));
+  assert.ok(!h.logs.some((l) => /did not reach session|waiting for the owner/.test(l)));
+});
+
+test('a lane listed alive with a pid while the service is down and a process may carry it: the stop waits for the kick as before', async () => {
+  const h = harness();
+  h.ctx.deps.claude.serviceGone = () => false;
+  let s = await stoppedLane(h);
+  h.agents[0].pid = 4242;
+  h.down = true;
+  owner(h, '02-01-t2', 1);
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(h.stopped, ['1a2b3c4d', '1a2b3c4d'], 'stop, kick, stop again');
+  assert.equal(h.kicks, 1);
+  assert.equal(h.resumed.length, 1);
+  assert.ok(!h.logs.some((l) => /counted as stopped/.test(l)));
+});
+
+test('a service that stays down is no wake attempt: nothing relaunches, the owner is not told, one line is logged; once it is up the answers wake the lane', async () => {
+  const h = harness();
+  let s = await stoppedLane(h);
+  Object.assign(h, { down: true, stuck: true });
+  owner(h, '02-01-t2', 1);
+  const notes = h.notes.length;
+  for (let i = 0; i < 4; i++) {
+    h.advance(1);
+    s = await tick(s, h.ctx);
+  }
+  assert.equal(h.resumed.length, 0);
+  assert.equal(h.launched.length, 1, 'no relaunch');
+  assert.equal(h.notes.length, notes, JSON.stringify(h.notes.slice(notes)));
+  assert.equal(s.lane.woken?.count ?? 0, 0, 'not counted as a wake');
+  assert.equal(s.failingSince, undefined);
+  assert.equal(h.logs.filter((l) => /background service is down/.test(l)).length, 1, h.logs.join('\n'));
+  assert.ok(!h.logs.some((l) => /did not reach session|waiting for the owner/.test(l)));
+  h.stuck = false;
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.equal(h.resumed.length, 1);
+  assert.equal(s.lane.woken.count, 1);
+  assert.equal(s.lane.sessionId, '1a2b3c4d');
+});
+
+test('a stall wake while the service stays down is not counted; a running lane (pid) is stopped only after the kick', async () => {
+  const h = harness();
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].pid = 4242;
+  h.activity = { lastMs: h.now().getTime(), active: 0 };
+  Object.assign(h, { down: true, stuck: true });
+  for (let i = 0; i < 3; i++) {
+    h.advance(16);
+    s = await tick(s, h.ctx);
+  }
+  assert.equal(h.resumed.length, 0);
+  assert.equal(s.lane.stall ?? null, null, 'no stall wake counted');
+  assert.ok(!h.notes.some((n) => n.key === 'laneStalled'));
+  h.stuck = false;
+  s = await tick(s, h.ctx);
+  assert.equal(h.kicks, 4);
+  assert.deepEqual(h.stopped.slice(-2), ['1a2b3c4d', '1a2b3c4d'], 'stop, kick, stop again');
+  assert.equal(h.resumed.length, 1);
+  assert.equal(s.lane.stall.count, 1);
+});
+
+test('resume N --start while the service is down: the kick brings it up and the old session is removed and relaunched; a service that stays down fails no tick count and is logged once', async () => {
+  const h = harness();
+  let s = await stoppedLane(h);
+  s.lane.forceRelaunch = true;
+  h.down = true;
+  s = await tick(s, h.ctx);
+  assert.equal(h.kicks, 1);
+  assert.deepEqual(h.removed, ['1a2b3c4d', '1a2b3c4d']);
+  assert.equal(h.launched.length, 2);
+  assert.equal(s.lane.sessionId, '2a2b3c4d');
+  const g = harness();
+  let t = await stoppedLane(g);
+  t.lane.forceRelaunch = true;
+  Object.assign(g, { down: true, stuck: true });
+  for (let i = 0; i < 3; i++) {
+    g.advance(30);
+    t = await tick(t, g.ctx);
+  }
+  assert.equal(g.launched.length, 1);
+  assert.equal(t.lane.forceRelaunch, true, 'the resume is kept for the next tick');
+  assert.equal(t.failingSince, undefined);
+  assert.ok(!g.notes.some((n) => n.key === 'supervisorFailing'));
+  assert.equal(g.logs.filter((l) => /background service is down|tick error/.test(l)).length, 1, g.logs.join('\n'));
+  g.stuck = false;
+  t = await tick(t, g.ctx);
+  assert.equal(g.launched.length, 2);
 });

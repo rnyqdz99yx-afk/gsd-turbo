@@ -94,7 +94,7 @@ async function begin($, clock) {
 test('in a turbo project the band and the pane show the view, and an option button answers through turbo-run', async ($, on) => {
   const { calls, clock, inits } = stub(on)
   await begin($, clock)
-  expect(calls[0]).toEqual([NODE, BIN, 'view', '--project', '/work', '--json'])
+  expect(calls[0]).toEqual([NODE, BIN, 'view', '--project', '/work', '--json', '--watchdog'])
   // turbo-run runs in its install directory: a node shim (Volta, asdf, mise) never reads the project's pin
   expect(inits[0].cwd).toMatch(/[\\/]home[\\/]dev[\\/]\.claude[\\/]turbo$/)
   const band = await $.ui.mount(BAND)
@@ -248,6 +248,19 @@ test('session.start alone spawns nothing (it may come before the folder is trust
   await band.unmount()
   await clock.settle()
   expect(calls[0][2]).toBe('view')
+})
+
+// Gap 1: claude --resume after a crash: no supervisor runs, the lane is still recorded; classic SessionStart (raised
+// only in a trusted folder) reads the run and opens the pane by itself, with no band draw and no /turbo-view
+test('a session that resumes in a terminal reads the run and opens the pane by itself (classic SessionStart)', async ($, on) => {
+  const crashed = { ...VIEW, supervisor: { ...VIEW.supervisor, running: false, pid: null }, questions: [] }
+  const { calls, clock, opens } = stub(on, { views: [crashed] })
+  on('classic.SessionStart', () => ({}) as never)
+  await start($)
+  await $.classic.SessionStart({ source: 'resume' })
+  await clock.settle()
+  expect(calls[0]).toEqual([NODE, BIN, 'view', '--project', '/work', '--json', '--watchdog'])
+  expect(opens).toHaveLength(1)
 })
 
 test('/turbo-view starts the reads too', async ($, on) => {

@@ -37,13 +37,15 @@ export const entry = {
   }),
   // the queue bookkeeping line the harness writes when it enqueues the notification
   queued: (taskId, status, ts) => ({ type: 'queue-operation', operation: 'enqueue', timestamp: ts, sessionId: SESSION, content: notification(taskId, status) }),
-  // an assistant message; tool: { name, input } adds a tool_use block
-  assistant: ({ ts, text = '', tool = null, usage = null, sidechain = false }) => base('assistant', ts, {
+  // an assistant message; tool: { name, input, id } adds a tool_use block (its id toolu_01BBBB… unless given); id: the
+  // message id Claude Code writes on each entry of one message
+  assistant: ({ ts, text = '', tool = null, usage = null, sidechain = false, id = null }) => base('assistant', ts, {
     isSidechain: sidechain,
     message: {
       role: 'assistant',
       model: 'claude-test',
-      content: [...(text ? [{ type: 'text', text }] : []), ...(tool ? [{ type: 'tool_use', id: 'toolu_01BBBBBBBBBBBBBBBBBBBBBB', name: tool.name, input: tool.input }] : [])],
+      ...(id ? { id } : {}),
+      content: [...(text ? [{ type: 'text', text }] : []), ...(tool ? [{ type: 'tool_use', id: tool.id ?? 'toolu_01BBBBBBBBBBBBBBBBBBBBBB', name: tool.name, input: tool.input }] : [])],
       ...(usage ? { usage } : {}),
     },
   }),

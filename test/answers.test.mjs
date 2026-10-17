@@ -4,9 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
+import { ACTION_PLAN, DECISION_PLAN, SITTING_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
-import { askOwner, answersRel, classifyQuestions, readAnswers, readQuestions, refreshQuestions, stopQuestion } from '../lib/questions.mjs';
+import { askOwner, answersRel, classifyQuestions, readAnswers, readQuestions, refreshQuestions, stopQuestion, writeAnswers, writeQuestions } from '../lib/questions.mjs';
 import {
   AnswerRefused, QuestionChanged, TEXT_MAX, answerQuestion, applyStandingRule, deliveries, deliveryMessage, deployReady, describeAnswer, preAnswerText, secretRule,
 } from '../lib/answers.mjs';
@@ -25,7 +25,10 @@ test('the first answer wins: the record goes to the answers file and the questio
   const root = project();
   const r = ask(root, { id: '32-09-t2', option: 1, by: 'telegram' });
   assert.equal(r.status, 'recorded');
-  assert.deepEqual(r.record, { id: '32-09-t2', plan: '32-09', task: '2', option: 1, label: 'Clerk', answer: 'clerk', by: 'telegram', at: NOW.toISOString(), conditional: true, condition: 'the checkpoint offers the options the plan lists', defer: false });
+  // cpHash: the checkpoint as the plan wrote it when answered (a plan that changes it sets the answer aside)
+  const cpHash = readQuestions(root, '32').find((x) => x.id === '32-09-t2').cpHash;
+  assert.match(cpHash, /^[0-9a-f]{16}$/);
+  assert.deepEqual(r.record, { id: '32-09-t2', plan: '32-09', task: '2', option: 1, label: 'Clerk', answer: 'clerk', by: 'telegram', at: NOW.toISOString(), conditional: true, condition: 'the checkpoint offers the options the plan lists', defer: false, cpHash });
   assert.equal(r.commit, null);
   assert.deepEqual(readAnswers(root, '32'), [r.record]);
   const q = readQuestions(root, '32').find((x) => x.id === '32-09-t2');
@@ -232,4 +235,53 @@ test('deliveries: a lane question answered goes to the lane itself, naming the c
   askOwner(root, '32', { action: 'Plug the phone in.' }, { lang: 'en', now: NOW });
   ask(root, { id: 'ask-2', text: 'it is in, but locked', by: 'telegram' });
   assert.equal(deliveries(root, '32').find((x) => x.id === 'ask-2').message, `The owner's answer to the question you asked (ask-2), in the owner's own words: it is in, but locked. ${LANE_DATA}`);
+});
+
+// journal 2026-10-14: a live sitting (an orchestrator-conducted human-action) is never answered done
+function sittingRoot() {
+  const root = tmpDir('ans-sit');
+  writePhase(root, '33-live', { '33-11-PLAN.md': ACTION_PLAN, '33-16-PLAN.md': SITTING_PLAN });
+  refreshQuestions(root, '33', { lang: 'ru' });
+  return root;
+}
+
+test('turbo-run answer refuses done on a live sitting, by turbo\'s Done option (a v0.3.3 card) or own words, and records nothing; other words and a plain action\'s Done pass', () => {
+  const root = sittingRoot();
+  stopQuestion(root, '33', '33-16-t2', { agentId: 'a0123456789abcdef', lang: 'ru' });
+  const at = { root, phase: '33', id: '33-16-t2', by: 'pane', now: NOW, laneRunning: true };
+  for (const text of ['Сделано', 'done', 'Готово.']) {
+    refused(() => answerQuestion({ ...at, text }), /^question 33-16-t2 is a live sitting: the phase conducts this step together with you, so it is never answered done\. Run \/turbo-autonomous attend 33 in a new Claude Code window; nothing was recorded$/);
+  }
+  // the stop as v0.3.3 wrote it: no mark, a Done option (its signal the plan's "go"); the plan tells it a sitting
+  const list = readQuestions(root, '33');
+  const q = list.find((x) => x.id === '33-16-t2');
+  delete q.sitting;
+  q.options = [{ label: 'Сделано', description: 'Вы это сделали; фаза проверит результат и продолжит.', recommended: false, signal: 'go', defer: false }];
+  writeQuestions(root, '33', list);
+  refused(() => answerQuestion({ ...at, option: 1 }), /is a live sitting/);
+  assert.deepEqual(readAnswers(root, '33'), []);
+  assert.equal(answerQuestion({ ...at, text: 'Перенеси проверку на завтра' }).status, 'recorded', 'the owner\'s own other words stand');
+  stopQuestion(root, '33', '33-11-t2', { agentId: 'a0123456789abcdef' });
+  assert.equal(answerQuestion({ ...at, id: '33-11-t2', option: 1 }).record.label, 'Done', 'a plain action keeps its Done');
+});
+
+test('a done kept from before on a live sitting is never a pre-answer and never delivered', () => {
+  const root = sittingRoot();
+  const done = { id: '33-16-t2', plan: '33-16', task: '2', option: 1, label: 'Сделано', answer: 'done', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false, condition: null, defer: false };
+  writeAnswers(root, '33', [done]);
+  const list = readQuestions(root, '33');
+  const q = list.find((x) => x.id === '33-16-t2');
+  delete q.sitting; // written before the mark: the plan tells it
+  Object.assign(q, { state: 'answered', answer: { option: 1, label: 'Сделано', answer: 'done', by: 'pane', at: done.at, conditional: false } });
+  writeQuestions(root, '33', list);
+  assert.equal(preAnswerText(root, '33', '33-16'), '');
+  Object.assign(q, { stopped: true, agentId: 'a0123456789abcdef' });
+  writeQuestions(root, '33', list);
+  assert.deepEqual(deliveries(root, '33'), []);
+  // the same record on a plain action is a pre-answer as before
+  writeAnswers(root, '33', [{ ...done, id: '33-11-t2', plan: '33-11', label: 'Done' }]);
+  const plain = readQuestions(root, '33');
+  Object.assign(plain.find((x) => x.id === '33-11-t2'), { state: 'answered' });
+  writeQuestions(root, '33', plain);
+  assert.match(preAnswerText(root, '33', '33-11'), /At checkpoint task 2 \(checkpoint:human-action\) the owner's answer is: done\./);
 });

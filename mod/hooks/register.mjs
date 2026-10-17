@@ -20,9 +20,12 @@ let timer = null;
 let period = 0;
 let clockError = null; // why the clock last failed to start, logged once
 let live = false; // an interactive session started (a -p run never reads)
-// The first band draw or /turbo-view started the reads. session.start may come before the folder is trusted (the
-// docs do not say), so nothing is looked up or spawned until the session draws or runs the command.
+// The first band draw, /turbo-view or a session that started or resumed in a terminal started the reads.
+// session.start may come before the folder is trusted (the docs do not say), so it looks up and spawns nothing
+// itself: the classic SessionStart event (startup, resume, clear, compact) is what starts them at a session's start,
+// since Claude Code runs it only in a folder it trusts.
 let started = false;
+let trusted = false; // classic SessionStart ran
 let attached = true; // a surface is attached: only then the mod opens the pane and shows toasts
 let opened = false; // the pane was opened once in this module's life; the clock never reopens a closed pane
 // The mod's own open of the pane waits undrawn: Claude Code places a pane nobody asked for only from 144 columns (110
@@ -67,6 +70,20 @@ async function isAttached($) {
   } catch {
     return true;
   }
+}
+
+// Gap 1 (v0.4.0): a session that starts or resumes (claude --resume after a crash) in a turbo project reads the run
+// at once and opens the pane by itself (refresh, shouldAutoOpen) without waiting for a draw or /turbo-view. Only an
+// interactive session (live) in a trusted folder with a surface attached: a background session no terminal is
+// attached to, or one whose surfaces cannot be read, waits for its first band draw as before.
+async function startReads($) {
+  if (!live || !trusted || started) return;
+  try {
+    if (!(await $.session.surfaces()).length) return;
+  } catch {
+    return;
+  }
+  void refresh($, false);
 }
 
 // bin and node as a read or an answer needs them, looked up again when missing: a press after a failed read still
@@ -274,9 +291,22 @@ export function register(on) {
     } catch (err) {
       $.ui.log(`turbo-view: /turbo-view not registered: ${firstLine(err?.message ?? err)}`);
     }
-    // nothing more here: the first band draw or /turbo-view starts the reads
+    // a band drawn before this hook ran (live was still false: it started nothing) is drawn again, and that draw
+    // starts the reads; a classic SessionStart that came first starts them now
+    $.ui.invalidate('ui.render');
+    await startReads($);
     return next(e);
   });
+
+  // Gap 1: every session start and resume (also /clear and a compaction, which find the reads started) in a folder
+  // Claude Code trusts: the reads start, and the pane opens by itself when there is something to watch. Where an
+  // organization manages Claude Code this event skips installed plugins: the band's first draw starts the reads there.
+  // A failure here never holds the session's start (.catch).
+  on('classic.SessionStart', async ($, e, next) => {
+    trusted = true;
+    await startReads($);
+    return next(e);
+  }).catch(($, e, next) => next(e));
 
   on('command.run', { command: 'turbo-view' }, async ($) => {
     if (!root) await locate($);

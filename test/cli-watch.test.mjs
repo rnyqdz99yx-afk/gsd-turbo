@@ -65,3 +65,24 @@ test('turbo-run status --watch into a pipe that closes (| head) exits 0 without 
   assert.equal(await closed, 0, err);
   assert.equal(err, '');
 });
+
+test('turbo-run status --watch with three lanes: the verdict, the summary line, a line per lane (Stage 4)', async () => {
+  const root = tmpGitRepo();
+  const run = path.join(root, '.planning', 'turbo', 'run');
+  fs.mkdirSync(run, { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ view: { refresh_seconds: 1 } }));
+  const slot = (k) => path.join(path.dirname(root), `${path.basename(root)}.turbo`, `lane-${k}`);
+  const lane = (key, k, over = {}) => ({ key, job: 'phase', phase: key, slot: k, slotPath: slot(k), sessionId: null, launchedAt: new Date(Date.now() - 30 * 60000).toISOString(), restarts: 0, notified: {}, mode: 'safe', ...over });
+  fs.writeFileSync(path.join(run, 'supervisor.json'), JSON.stringify({ pid: 2147483644, updatedAt: new Date(Date.now() - 2 * 3600000).toISOString(), lanes: { 32: lane('32', 1), 33: lane('33', 2), 'prep-35': lane('prep-35', 3, { job: 'prep', phase: '35' }) } }));
+  const child = spawn(process.execPath, [CLI, 'status', '--watch'], { cwd: root, env: { ...process.env, CLAUDE_CONFIG_DIR: tmpDir('home') }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  let out = '';
+  await new Promise((resolve, reject) => {
+    const guard = setTimeout(() => { child.kill(); reject(new Error(`no frame in 15 s: ${JSON.stringify(out)}`)); }, 15000);
+    child.stdout.on('data', (d) => {
+      out += d;
+      if (/^updated /m.test(out)) { clearTimeout(guard); child.kill(); resolve(); }
+    });
+    child.on('error', reject);
+  });
+  assert.match(out, /^Run — supervisor not running\n3 lanes\nPhase 32 · lane 1 stopped at step: freshness check · \d+m\nPhase 33 · lane 2 stopped at step: freshness check · \d+m\nPhase 35 · lane 3 stopped at step: freshness check · \d+m$/m);
+});

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { DEFAULTS, loadConfig, initConfig, deepMerge, fullEntries, pushSettings } from '../lib/config.mjs';
+import { DEFAULTS, GATE_NAMES, LANE_MODES, loadConfig, initConfig, deepMerge, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings } from '../lib/config.mjs';
 import { findProjectRoot, turboDir, claudeHome } from '../lib/paths.mjs';
 import { writeJsonAtomic, readJson } from '../lib/fsx.mjs';
 
@@ -220,4 +220,62 @@ test('pushSettings: off by default; every key validated; a bad value is a one-li
   fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ push: { mode: 'after-phase' } }));
   assert.deepEqual(pushSettings(loadConfig(root).push), { ...DEFAULTS.push, mode: 'after-phase' });
+});
+
+test('lanes (Stage 4 L0): defaults, a valid hand-edited value, and every invalid one stops with the key named', () => {
+  assert.deepEqual(DEFAULTS.lanes, { mode: 'slots', dir: '', copy: ['.env', '*/.env', '.env.local', '*/.env.local'], install: '', trust_write: true, gates: [], write_guard: true });
+  assert.deepEqual(LANE_MODES, ['slots', 'checkout']);
+  assert.deepEqual(lanesSettings(), DEFAULTS.lanes);
+  assert.deepEqual(
+    lanesSettings({ mode: 'checkout', dir: ' ../slots ', copy: [' config/*.env ', '**/.npmrc'], install: ' pnpm install --offline ', trust_write: false, gates: ['packaged-build'], write_guard: false }),
+    { mode: 'checkout', dir: '../slots', copy: ['config/*.env', '**/.npmrc'], install: 'pnpm install --offline', trust_write: false, gates: ['packaged-build'], write_guard: false },
+  );
+  // a key of a later sub-project (L1's lanes.gates) passes through unchecked (I2)
+  assert.deepEqual(lanesSettings({ gates: { full: true } }).gates, { full: true });
+  const cases = [
+    [null, /lanes: must be an object/],
+    [{ mode: 'worktree' }, /lanes\.mode: must be one of slots, checkout/],
+    [{ dir: 3 }, /lanes\.dir: must be a path/],
+    [{ copy: '.env' }, /lanes\.copy: must be a list of path masks/],
+    [{ copy: [''] }, /lanes\.copy: must be a list of path masks/],
+    [{ copy: ['api\\.env'] }, /must use forward slashes/],
+    [{ copy: ['/etc/app.env'] }, /must be relative to the project root/],
+    [{ copy: ['C:/app.env'] }, /must be relative to the project root/],
+    [{ copy: ['../.env'] }, /must stay inside the project/],
+    [{ copy: ['.git/config'] }, /must not name \.git/],
+    [{ install: 1 }, /lanes\.install: must be a command string/],
+    [{ trust_write: 'no' }, /lanes\.trust_write: must be true or false/],
+    [{ write_guard: 'off' }, /lanes\.write_guard: must be true or false/],
+  ];
+  for (const [v, re] of cases) assert.throws(() => lanesSettings(v), re, JSON.stringify(v));
+  // a hand-edited config file reaches it through loadConfig; the rest keeps its default
+  const root = tmpDir('lanes');
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lanes: { mode: 'checkout' } }));
+  assert.deepEqual(lanesSettings(loadConfig(root).lanes), { ...DEFAULTS.lanes, mode: 'checkout' });
+});
+
+test('Stage 4 L1 keys: max_prep, merge_rounds and lanes.gates, their defaults and every invalid value', () => {
+  assert.equal(DEFAULTS.max_prep, null);
+  assert.equal(DEFAULTS.merge_rounds, 3);
+  assert.deepEqual(DEFAULTS.lanes.gates, []);
+  assert.deepEqual(GATE_NAMES, ['prod-deploy', 'owner-live', 'owner-signature', 'packaged-build']);
+  assert.deepEqual(laneGates(DEFAULTS), GATE_NAMES);
+  assert.deepEqual(laneGates({ lanes: { gates: [' db-migrate ', 'prod-deploy'] } }), [...GATE_NAMES, 'db-migrate']);
+  for (const gates of ['x', [''], ['Prod'], ['a b'], ['-x'], [3], ['x'.repeat(41)]]) {
+    assert.throws(() => laneGates({ lanes: { gates } }), /^Error: invalid turbo config lanes\.gates: must be a list of names/, JSON.stringify(gates));
+  }
+  assert.equal(mergeRounds(DEFAULTS), 3);
+  assert.equal(mergeRounds({ merge_rounds: ' 5 ' }), 5);
+  for (const v of [0, 21, 2.5, '-1', 'x', false]) assert.throws(() => mergeRounds({ merge_rounds: v }), /merge_rounds: must be a whole number from 1 to 20/, String(v));
+  assert.equal(maxPrep(DEFAULTS, 3), 3);
+  assert.equal(maxPrep({ max_prep: 0 }, 3), 0);
+  assert.equal(maxPrep({ max_prep: 2 }, 3), 2);
+  for (const v of [-1, 4, 1.5, '2']) assert.throws(() => maxPrep({ max_prep: v }, 3), /max_prep: must be null or a whole number from 0 to max_lanes \(3\)/, String(v));
+  // a hand-edited file reaches them through loadConfig; the rest keeps its default
+  const root = tmpDir('l1keys');
+  fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ max_prep: 1, lanes: { gates: ['db-migrate'] } }));
+  const c = loadConfig(root);
+  assert.deepEqual([maxPrep(c, 3), mergeRounds(c), laneGates(c).at(-1), c.lanes.mode], [1, 3, 'db-migrate', 'slots']);
 });

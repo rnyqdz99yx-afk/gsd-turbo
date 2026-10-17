@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { AGENT, AGENT2, DEFAULT_META, FORK, SESSION, entry, jsonl, notification, projectDirFor, setMtime, usage, writeAgent, writeJob, writeSession } from './helpers/transcripts.mjs';
-import { TAIL_MAX, actionOf, agentIndex, agentSnapshot, agentState, contextTokens, cwdInside, findAgentTranscript, findTranscript, harnessNotificationText, headEntry, jobState, laneAgents, laneTranscript, launchedAgentId, normalCwd, parseNotifications, planOf, projectDirs, projectKey, scanLaneTranscript, sessionTranscripts, tailEntries } from '../lib/transcripts.mjs';
+import { TAIL_MAX, actionOf, agentIndex, agentSnapshot, agentState, contextTokens, cwdInside, findAgentTranscript, findTranscript, harnessNotificationText, headEntry, jobState, laneAgents, laneTranscript, launchedAgentId, normalCwd, ownSessionId, parseNotifications, planOf, projectDirs, projectKey, scanLaneTranscript, sessionById, sessionTranscripts, tailEntries } from '../lib/transcripts.mjs';
 
 const T0 = '2026-01-01T10:00:00.000Z';
 
@@ -370,6 +370,49 @@ test('scanLaneTranscript reads a transcript larger than one chunk whose chunk bo
     assert.deepEqual(s.launched, [AGENT]);
     assert.deepEqual(s.notes[AGENT], { status: 'completed', at: '2026-01-01T10:40:00.000Z' });
   }
+});
+
+test('scanLaneTranscript with startMax indexes a long transcript from its last whole line within the window only, then what is appended (spec §8: the owner\'s session)', () => {
+  const { dir } = setup();
+  const pad = entry.user('p'.repeat(5000), T0);
+  const file = writeSession(dir, SESSION, [entry.launched('toolu_1', AGENT, T0), entry.note(AGENT, 'completed', T0), ...Array(400).fill(pad), entry.launched('toolu_2', AGENT2, T0)]);
+  const size = fs.statSync(file).size;
+  const s = scanLaneTranscript(file, null, { startMax: 64 * 1024 });
+  assert.deepEqual([s.launched, s.notes, s.scanned], [[AGENT2], {}, size], 'the early launch and note lie before the window');
+  assert.ok(s.read <= 64 * 1024, String(s.read));
+  fs.appendFileSync(file, jsonl([entry.note(AGENT2, 'completed', T0)]));
+  const next = scanLaneTranscript(file, s, { startMax: 64 * 1024 });
+  assert.deepEqual([next.launched, Object.keys(next.notes)], [[AGENT2], [AGENT2]]);
+  assert.ok(next.read < 2048, String(next.read));
+  // a window inside a line longer than one chunk: that line is dropped whole
+  const big = writeSession(dir, FORK, [entry.user('q'.repeat(3 * 1024 * 1024), T0), entry.launched('toolu_3', AGENT, T0)]);
+  assert.deepEqual(scanLaneTranscript(big, null, { startMax: 2 * 1024 * 1024 }).launched, [AGENT]);
+  assert.deepEqual(scanLaneTranscript(file, null).launched, [AGENT, AGENT2], 'no bound: the whole transcript');
+});
+
+test('laneAgents with sinceMs leaves out the agents whose newest write is older (the owner\'s session before the sitting)', () => {
+  const { root, dir } = setup();
+  const main = { file: writeSession(dir, SESSION, [entry.user('go', T0)]), sessionId: SESSION };
+  setMtime(writeAgent(dir, SESSION, AGENT, [entry.agentUser(AGENT, 'old', T0)]), new Date('2026-01-01T08:00:00Z'));
+  setMtime(writeAgent(dir, SESSION, AGENT2, [entry.agentUser(AGENT2, 'new', T0)]), new Date('2026-01-01T10:50:00Z'));
+  const now = new Date('2026-01-01T11:00:00Z');
+  const ids = (since) => laneAgents({ dirs: [dir], main, root, now, stallMs: 900000, sinceMs: since }).agents.map((a) => a.agentId).sort();
+  assert.deepEqual(ids(Date.parse('2026-01-01T10:30:00Z')), [AGENT2]);
+  assert.deepEqual(ids(undefined), [AGENT, AGENT2].sort());
+});
+
+test('sessionById finds a session\'s transcript by its exact id; ownSessionId names the calling session by CLAUDE_CODE_SESSION_ID only, never a guess', () => {
+  const { root, home, dir } = setup();
+  const now = Date.parse('2026-01-01T11:00:00Z');
+  setMtime(writeSession(dir, SESSION, [entry.user('owner', T0)]), new Date('2026-01-01T10:58:00Z'));
+  setMtime(writeSession(dir, FORK, [entry.user('lane', T0)]), new Date('2026-01-01T10:59:00Z'));
+  assert.deepEqual(sessionById({ home, root, sessionId: SESSION }), { file: path.join(dir, `${SESSION}.jsonl`), sessionId: SESSION });
+  assert.equal(sessionById({ home, root, sessionId: SESSION.slice(0, 8) }), null, 'an exact id only');
+  assert.equal(sessionById({ home, root, sessionId: '../x' }), null);
+  assert.equal(ownSessionId({ env: { CLAUDE_CODE_SESSION_ID: 'abc-123' } }), 'abc-123');
+  assert.equal(ownSessionId({ env: {} }), null, 'no guess from the newest transcript');
+  assert.equal(ownSessionId({ env: { CLAUDE_CODE_SESSION_ID: '../x' } }), null);
+  assert.ok(now > 0);
 });
 
 test('scanLaneTranscript reads only what was appended, keeps a line without its newline for later, and rereads a file that shrank', () => {

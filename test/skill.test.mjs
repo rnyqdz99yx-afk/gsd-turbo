@@ -20,6 +20,14 @@ test('turbo-autonomous start tells the owner once, in plain words, where to watc
   assert.equal(report.split('\n').filter((l) => l.includes('/turbo-view')).length, 1, 'said once');
 });
 
+test('turbo-autonomous start report passes on how to come back to this chat after a crash, from status\'s line, and never suggests a bare claude -c (Gap 1)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const report = s.slice(s.indexOf('7. **Report to the user, briefly:**'), s.indexOf('Do not run GSD phase commands'));
+  const back = report.split('\n').find((l) => l.includes('come back to this chat'));
+  assert.ok(back, 'one bullet says how to come back');
+  for (const needle of ['`back to this chat:`', '`вернуться в этот чат:`', '`claude -r`', '`claude --resume <id>`', 'Never suggest a bare `claude -c`', "a lane's conversation"]) assert.ok(back.includes(needle), needle);
+});
+
 test('turbo-autonomous skill honours CLAUDE_CONFIG_DIR and resumes with one command', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
   assert.ok(s.includes('node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs"'), 'CLAUDE_CONFIG_DIR path form');
@@ -61,7 +69,7 @@ test('turbo-autonomous skill never sleeps and covers "no lane yet" and "not runn
 test('turbo-autonomous skill answers the open questions (S1): AskUserQuestion in batches of 4, recommended first, turbo-run answer --by session --rev; at start and while a run goes', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
   assert.match(s, /^allowed-tools: \[Bash, Read, AskUserQuestion, Skill\]$/m);
-  assert.match(s, /^argument-hint: ".*\| answer"$/m);
+  assert.match(s, /^argument-hint: ".*\| answer \| away \| back"$/m);
   const needles = [
     '## If the arguments are `answer`', '## Answer the open questions', 'turbo-run.mjs" questions --open --json', 'up to 4 questions per call', ' (Recommended)', 'Not now',
     'turbo-run.mjs" answer <phase> <id> --option <k> --by session --rev <rev>', "--text '<the words>' --by session --rev <rev>",
@@ -76,7 +84,7 @@ test('turbo-autonomous skill answers the open questions (S1): AskUserQuestion in
 
 test('turbo-autonomous attend <phase> (S4): take over the lane, questions up front, GSD execute-phase one plan at a time in this checkout, hand back', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
-  assert.match(s, /^argument-hint: ".*\| resume <phase> \| attend <phase> \| answer"$/m);
+  assert.match(s, /^argument-hint: ".*\| resume <phase> \| attend <phase> \| answer \| away \| back"$/m);
   const at = s.indexOf('## If the arguments are `attend <phase>`');
   assert.ok(at > s.indexOf('## If the arguments are `answer`') && at < s.indexOf('## Otherwise'), 'its own section before the start flow');
   const a = s.slice(at, s.indexOf('## Otherwise'));
@@ -111,6 +119,15 @@ test('turbo-autonomous attend: GSD\'s gates follow the gates: line of turbo-run 
   assert.ok(!a.includes('as a lane does before it executes; the lane runs those gates in parallel after the hand-back'), 'no unconditional claim');
 });
 
+test('turbo-autonomous attend: a released stop with an interim commit is the checkpoint\'s continuation, not GSD\'s recovery menu; a task the plan gives the orchestrator runs in this session', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const a = s.slice(s.indexOf('## If the arguments are `attend <phase>`'), s.indexOf('## Otherwise'));
+  const six = a.slice(a.indexOf('6. **Execute.**'), a.indexOf('7. **Hand back.**'));
+  const gate = six.slice(six.indexOf('`safe_resume_gate`'));
+  for (const n of ['production commits exist and SUMMARY.md is missing', '`released stops:` or `already delivered:`', '`<plan id>-t<task>`', 'interim commit', 'recovery menu', 'at the task of its stop', 'completed tasks you take from the commits the gate listed', 'every other point of this list applies to it']) assert.ok(gate.includes(n), n);
+  for (const n of ['conducts itself', 'with the plan\'s scripts, never in an executor', 'take only the plan\'s other tasks']) assert.ok(six.includes(n), n);
+});
+
 test('turbo-autonomous start flow: an attended: line means no lane runs; the user hears how to hand the phase back (F5)', () => {
   const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
   const start = s.slice(s.indexOf('## Otherwise'), s.indexOf('## Answer the open questions'));
@@ -119,4 +136,35 @@ test('turbo-autonomous start flow: an attended: line means no lane runs; the use
   for (const part of [one, five]) {
     for (const n of ['`attended:`', '/turbo-autonomous attend <N>', 'turbo-run attend <N> --done']) assert.ok(part.includes(n), n);
   }
+});
+
+test('v0.4.0: /turbo-autonomous away asks everything answerable ahead, then turns away mode on; every other call shows the morning summary first', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const first = s.indexOf('## First: back from away mode?');
+  const away = s.indexOf('## If the arguments are `away`');
+  assert.ok(first > 0 && first < away && away < s.indexOf('## If the arguments are `status`'), 'before every other section');
+  const sec = s.slice(away, s.indexOf('## If the arguments are `status`'));
+  for (const n of ['turbo-run.mjs" away --json', '**Answer the open questions** from its point 2', 'turbo-run.mjs" away --set', 'owner.auto_answer_minutes']) assert.ok(sec.includes(n), n);
+  assert.ok(sec.indexOf('away --json') < sec.indexOf('Answer the open questions') && sec.indexOf('Answer the open questions') < sec.indexOf('away --set'), 'gather, ask, then leave');
+  assert.ok(s.slice(first, away).includes('turbo-run.mjs" back`'));
+  const phase = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  assert.ok(phase.includes('`owner-correction` messages'), 'the lane reads an undo of an automatic answer');
+  assert.ok(phase.includes('Add `--auto-ok` only when'), 'and marks only safe questions of its own');
+});
+
+test('turbo-autonomous attend: GSD\'s executor references are listed to read, not inlined; the missing continuation template is composed from the commits and the stop; dropped done answers are named (journal 2026-10-14)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const a = s.slice(s.indexOf('## If the arguments are `attend <phase>`'), s.indexOf('## Otherwise'));
+  const six = a.slice(a.indexOf('6. **Execute.**'), a.indexOf('7. **Hand back.**'));
+  const refs = six.slice(six.indexOf('reference files'));
+  for (const n of ['`execute-plan.md`', 'the summary template', '`checkpoints.md`', '`tdd.md`', '`worktree-path-safety.md`', '`executor-examples.md`', 'about 145 KB', '"Read these first"', 'instead (same effect, no huge output)', '`continuation-prompt.md`', 'GSD does not ship', "from the plan's commits so far and the stop"]) assert.ok(refs.includes(n), n);
+  const one = a.slice(a.indexOf('1. **Take over the lane.**'), a.indexOf('2. **GSD core.**'));
+  for (const n of ['`dropped done answers: …`', 'never answered done', 'the sitting runs here']) assert.ok(one.includes(n), n);
+});
+
+test('Answer the open questions: a live sitting (sitting: true) is never answered done; at its stop the session shows the way in instead of asking (journal 2026-10-14)', () => {
+  const s = fs.readFileSync('skills/turbo-autonomous/SKILL.md', 'utf8');
+  const answer = s.slice(s.indexOf('## Answer the open questions'));
+  const three = answer.slice(answer.indexOf('3. Ask them'), answer.indexOf('4. For each answer'));
+  for (const n of ['`sitting: true`', 'never answered done', '`turbo-run answer` refuses it', 'do not ask it: show its `question`', '`/turbo-autonomous attend <phase>` in a new Claude Code window']) assert.ok(three.includes(n), n);
 });

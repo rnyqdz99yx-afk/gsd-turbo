@@ -6,7 +6,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
-import { runPhaseCommand } from '../lib/cli-phase.mjs';
+import { laneRuns, runPhaseCommand } from '../lib/cli-phase.mjs';
 import { readAnswers } from '../lib/questions.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
@@ -101,6 +101,28 @@ test('the lane\'s side: --preanswers, --stop, --deliver, --delivered; --open lis
   assert.equal(r.text, '32-09-t2: delivered (same-agent)');
   assert.equal((await run(root, ['questions', '32', '--deliver'])).text, 'phase 32: nothing to deliver');
   assert.equal((await run(root, ['questions', '32', '--delivered', '32-09-t2', '--path', 'x'])).code, 1);
+});
+
+test('turbo-run questions --stop --unmet --question --context: a human action that failed its check after Done goes back to the owner with the lane\'s diagnosis', async () => {
+  const root = project();
+  withLane(root);
+  await run(root, ['questions', '32']);
+  await run(root, ['questions', '32', '--stop', '32-11-t2', '--agent', AG]);
+  await run(root, ['answer', '32', '32-11-t2', '--option', '1', '--by', 'session']);
+  await run(root, ['questions', '32', '--delivered', '32-11-t2', '--path', 'same-agent']);
+  const r = await run(root, ['questions', '32', '--stop', '32-11-t2', '--agent', AG, '--unmet', '--question', 'Run Stop-Service demo-sync in an administrator terminal', '--context', 'The sync service still runs after the window closed.']);
+  assert.equal(r.text, 'stopped: 32-11-t2 waits for the owner, its card in your words (diagnosis 1); stop for the owner with the reason: owner question 32-11-t2');
+  const q = JSON.parse((await run(root, ['questions', '32', '--json'])).text).find((x) => x.id === '32-11-t2');
+  assert.deepEqual([q.question, q.context, q.diagnosis, q.state], ['Action: Run Stop-Service demo-sync in an administrator terminal', 'The sync service still runs after the window closed.', 1, 'open']);
+  await run(root, ['answer', '32', '32-11-t2', '--option', '1', '--by', 'session']);
+  await run(root, ['questions', '32', '--delivered', '32-11-t2', '--path', 'same-agent']);
+  const again = await run(root, ['questions', '32', '--stop', '32-11-t2', '--agent', AG, '--unmet', '--question', 'The service starts again by itself: tell me how to handle it', '--context', 'Stopped twice, running again both times.']);
+  assert.equal(again.text, 'stopped: 32-11-t2 waits for the owner, its card in your words (diagnosis 2: the same failure again); stop for the owner with the reason: owner question 32-11-t2: <your diagnosis in one line>');
+  await run(root, ['answer', '32', '32-11-t2', '--option', '1', '--by', 'session']);
+  await run(root, ['questions', '32', '--delivered', '32-11-t2', '--path', 'same-agent']);
+  const refused = await run(root, ['questions', '32', '--stop', '32-11-t2', '--agent', AG, '--unmet', '--question', 'Remove ./cache/sync.lock, then answer Done']);
+  assert.equal(refused.code, 1);
+  assert.match(refused.text, /^ERR turbo-run questions: the question holds the (?:file name|path) .*a command the owner runs goes in backticks\)$/);
 });
 
 // Runs bin/turbo-run.mjs with the given arguments at a moment both racers wait for: turbo-run's modules are loaded
@@ -283,4 +305,49 @@ test('review 1: ask refuses --about-review with --action up front; a --option th
   const q = JSON.parse((await run(root, ['questions', '--open', '--json'])).text).find((x) => x.id === 'ask-1');
   assert.equal(q.options.length, 2);
   assert.equal(q.context, '--option');
+});
+
+test('laneRuns: only v0.3\'s lane commits in this checkout; slots lanes never do, so the owner\'s answer is committed by turbo-run answer (Stage 4 L1, L0 D14)', () => {
+  const root = project();
+  const file = path.join(root, '.planning', 'turbo', 'run', 'supervisor.json');
+  withLane(root);
+  assert.equal(laneRuns(root, { supervisorAlive: () => true }), true);
+  writeJsonAtomic(file, { lanesMode: 'slots', lanes: { 32: { key: '32', job: 'phase', phase: '32', slot: 1, slotPath: tmpDir('slot'), sessionId: '1a2b3c4d' } } });
+  assert.equal(laneRuns(root, { supervisorAlive: () => true }), false);
+});
+
+test('v0.4.0: turbo-run answer N <id> --undo takes back an automatic answer (reopened, or noted when delivered); refused for another answer and inside a lane; ask --auto-ok marks a lane question', async () => {
+  const root = project();
+  await run(root, ['questions', '32']);
+  const { answerQuestion } = await import('../lib/answers.mjs');
+  answerQuestion({ root, phase: '32', id: '32-09-t2', option: 1, by: 'auto', laneRunning: true });
+  answerQuestion({ root, phase: '32', id: '32-10-t3', option: 1, by: 'session', laneRunning: true });
+  withLane(root);
+  let r = await run(root, ['answer', '32', '32-09-t2', '--undo'], { env: { TURBO_LANE: '1' } });
+  assert.equal(r.code, 1);
+  assert.match(r.text, /^refused: a lane never answers/);
+  r = await run(root, ['answer', '32', '32-09-t2', '--undo']);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /^reopened 32-09-t2: the automatic answer \(Clerk\) is taken back; the question is open again/);
+  r = await run(root, ['answer', '32', '32-10-t3', '--undo']);
+  assert.equal(r.code, 1);
+  assert.match(r.text, /^refused: question 32-10-t3 has no automatic answer to undo/);
+  r = await run(root, ['answer', '32', '32-09-t2', '--undo', '--option', '1']);
+  assert.equal(r.code, 2, 'undo takes no answer');
+  r = await run(root, ['ask', '33', '--question', 'Keep the cache in memory?', '--option', 'Yes|Fast', '--option', 'No|Slow', '--recommended', '1', '--auto-ok', '--json']);
+  assert.equal(JSON.parse(r.text).question.autoOk, true);
+  r = await run(root, ['ask', '34', '--question', 'Keep the cache in memory?', '--option', 'Yes|Fast', '--option', 'No|Slow', '--recommended', '1', '--json']);
+  assert.equal(JSON.parse(r.text).question.autoOk, false);
+});
+
+test('turbo-run questions N lists each answer with its channel and time, so an attended sitting sees what it takes ahead', async () => {
+  const root = project();
+  withLane(root);
+  await run(root, ['questions', '32']);
+  await run(root, ['answer', '32', '32-09-t2', '--option', '1', '--by', 'pane'], { now: () => new Date('2026-01-01T08:22:11Z') });
+  const r = await run(root, ['questions', '32']);
+  assert.match(r.text, /^ {2}32-09-t2 · decision · answered \(Clerk, pane, 2026-01-01T08:22:11\.000Z\) · unclassified · /m);
+  assert.match(r.text, /^ {2}32-10-t3 · human-verify · open · /m);
+  await run(root, ['answer', '32', '32-10-t3', '--by', 'session', '--text', 'looks right\n  ship it'], { now: () => new Date('2026-01-01T09:00:00Z') });
+  assert.match((await run(root, ['questions', '32'])).text, /^ {2}32-10-t3 · human-verify · answered \(looks right ship it, session, 2026-01-01T09:00:00\.000Z\) · /m);
 });

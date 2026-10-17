@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { HEAD, UAT } from './fixtures/uat-sample.mjs';
-import { parseUat, applyUatResults, evidenceManifest, scanSecrets, recordUat } from '../lib/uat.mjs';
+import { parseUat, applyUatResults, evidenceManifest, ownerRequestFiles, scanSecrets, recordUat } from '../lib/uat.mjs';
+import { fakeSlot } from './helpers/slots.mjs';
 import { splitItem, itemText, uatPlan } from '../lib/uat-classify.mjs';
 
 // a manifest entry as recordUat hands it to applyUatResults
@@ -206,15 +207,15 @@ test('a class turbo-uat recorded is the floor of every later run: the plan offer
   assert.throws(() => applyUatResults(live, [RESULTS[3]], opts), /class C is below the class D turbo-uat recorded for this test/);
 });
 
-test('a pass needs evidence, and a harness is one of playwright-script, http, socket (M7)', () => {
+test('a pass needs evidence, and a harness is one of playwright-script, http, socket, static (M7, F1)', () => {
   const apply = (r) => () => applyUatResults(UAT, [r], { head: HEAD, phase: '3' });
   for (const evidence of [undefined, []]) {
     assert.throws(apply({ test: 1, result: 'pass', class: 'A', harness: 'http', evidence }), /test 1: a pass result needs at least one evidence file/);
   }
-  for (const harness of ['playwright-mcp', 'browser', 'HTTP', 7]) {
-    assert.throws(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }), /test 1: harness must be one of playwright-script, http, socket/);
+  for (const harness of ['playwright-mcp', 'browser', 'HTTP', 7, 'grep']) {
+    assert.throws(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }), /test 1: harness must be one of playwright-script, http, socket, static$/);
   }
-  for (const harness of ['playwright-script', 'http', 'socket', undefined]) assert.doesNotThrow(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }));
+  for (const harness of ['playwright-script', 'http', 'socket', 'static', undefined]) assert.doesNotThrow(apply({ test: 1, result: 'pass', class: 'A', harness, evidence: EV }));
   // only a pass proves something observed: an issue, a deferral or an owner row needs no evidence
   assert.doesNotThrow(apply({ test: 4, result: 'issue', class: 'A', reported: 'nothing happens', harness: 'http' }));
   assert.doesNotThrow(apply({ test: 2, result: 'owner', class: 'D' }));
@@ -296,4 +297,17 @@ test('recordUat writes a clean record and refuses one that would leak the one-ti
   assert.equal(r.counts.passed, 2);
   assert.match(fs.readFileSync(path.join(dir, '03-UAT.md'), 'utf8'), /t1\.png sha256:[0-9a-f]{64}/);
   assert.deepEqual(fs.readdirSync(dir), ['03-UAT.md'], 'the atomic write leaves no temp file');
+});
+
+test('in a slot, evidence and owner requests are read from the control root, where a slot clean never reaches (M3)', () => {
+  const { control, slot } = fakeSlot();
+  const run = path.join(control, '.planning', 'turbo', 'run');
+  fs.mkdirSync(path.join(run, 'evidence', 'p3'), { recursive: true });
+  fs.writeFileSync(path.join(run, 'evidence', 'p3', 't.txt'), 'abc');
+  const sha256 = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+  assert.deepEqual(evidenceManifest(slot, ['.planning/turbo/run/evidence/p3/t.txt']), [{ file: '.planning/turbo/run/evidence/p3/t.txt', sha256, bytes: 3 }]);
+  assert.deepEqual(evidenceManifest(slot, [path.join(run, 'evidence', 'p3', 't.txt')]), [{ file: '.planning/turbo/run/evidence/p3/t.txt', sha256, bytes: 3 }]);
+  fs.writeFileSync(path.join(run, 'p3-owner.md'), 'x');
+  assert.deepEqual(ownerRequestFiles(control), ['.planning/turbo/run/p3-owner.md']);
+  assert.deepEqual(ownerRequestFiles(slot), [path.join(run, 'p3-owner.md')]);
 });

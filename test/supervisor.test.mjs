@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { tick, runDaemon, resumableLane } from '../lib/supervisor.mjs';
+import { tick, runDaemon, resumableLane, placeOf, wakePrompt } from '../lib/supervisor.mjs';
+import { answerWakePrompt, stallWakePrompt } from '../lib/wake.mjs';
 import { DEFAULTS } from '../lib/config.mjs';
 import { writeLaneStatus, readLaneStatus } from '../lib/run-status.mjs';
 import { laneSessionName, parseAgents, projectHash } from '../lib/claude.mjs';
+import { clearAttend, writeAttend } from '../lib/attend.mjs';
 
 // lane temp directories live under turbo's own directory: a throwaway one for this file
 const HOME = tmpDir('home');
@@ -747,6 +749,91 @@ test('failed session notifies and halts', async () => {
   s = await tick(s, h.ctx);
   assert.equal(s.halted, true);
   assert.equal(h.notes.at(-1).key, 'laneFailed');
+  // the session failed, not the lane's own record: a start at logon may take this run up again (lib/autostart.mjs)
+  assert.equal(s.haltedFor, 'sessionFailed');
+});
+
+// Gap 2 (v0.4.0): a reboot or a crash took the supervisor and the lane's session down together. The supervisor that
+// starts next (takeover, set by turbo-run daemon) relaunches the lane as a continuation, as resume N --start does,
+// instead of halting on a session that failed or is gone.
+test('a starting supervisor relaunches the lane whose session failed while none ran: a continuation, no halt, no notification', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'failed';
+  h.advance(30);
+  s = await tick({ ...s, takeover: true }, h.ctx);
+  assert.equal(s.halted, false);
+  assert.equal(s.takeover, undefined, 'only the first tick of a supervisor');
+  assert.deepEqual([s.lane.sessionId, s.lane.restarts, s.lane.forceRelaunch], ['s2', 0, false]);
+  assert.match(h.launched[1].prompt, /^Resume phase 2\./);
+  assert.deepEqual(h.removed, ['s1']);
+  assert.deepEqual(h.notes, []);
+  assert.ok(h.logs.includes('phase 2: session s1 failed before this supervisor started (a reboot, a crash or a halt); relaunching it (continuation)'), h.logs.join('\n'));
+});
+
+test('a starting supervisor relaunches a lane whose session is gone with a fresh count of restarts, however many it had', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  s.lane.restarts = DEFAULTS.max_restarts_without_progress; // no progress since: the next counted relaunch would halt
+  h.agents = []; // claude agents no longer lists it after the reboot
+  h.advance(30);
+  s = await tick({ ...s, takeover: true }, h.ctx);
+  assert.equal(s.halted, false);
+  assert.deepEqual([s.lane.sessionId, s.lane.restarts], ['s2', 0]);
+  assert.ok(h.logs.some((l) => /^phase 2: session s1 is gone before this supervisor started/.test(l)), h.logs.join('\n'));
+  // a session claude lists as ended in another way (stopped, done) is taken up the same (review m7)
+  const ended = harness({ phases: [P('2')] });
+  s = await tick(fresh(), ended.ctx);
+  s.lane.restarts = DEFAULTS.max_restarts_without_progress;
+  ended.agents[0].state = 'stopped';
+  s = await tick({ ...s, takeover: true }, ended.ctx);
+  assert.deepEqual([s.halted, s.lane.sessionId, s.lane.restarts], [false, 's2', 0]);
+  assert.ok(ended.logs.some((l) => /^phase 2: session s1 ended \(stopped\) before this supervisor started/.test(l)), ended.logs.join('\n'));
+});
+
+test('a starting supervisor held by the owner\'s sitting keeps its takeover check for the step after the sitting (review m8)', async () => {
+  const h = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), h.ctx);
+  h.agents[0].state = 'failed';
+  writeAttend(h.root, '2');
+  s = await tick({ ...s, takeover: true }, h.ctx);
+  assert.equal(s.takeover, true);
+  clearAttend(h.root, '2');
+  s = await tick(s, h.ctx);
+  assert.deepEqual([s.takeover, s.halted, s.lane.sessionId], [undefined, false, 's2']);
+});
+
+test('a starting supervisor keeps the usual handling of a lane that recorded its own state, of a live session and of a completed phase', async () => {
+  // the lane asked the owner before the reboot: it waits for the answer, nothing is relaunched
+  const asked = harness({ phases: [P('2')] });
+  let s = await tick(fresh(), asked.ctx);
+  asked.advance(1);
+  writeLaneStatus(asked.root, '2', 'needs-owner', { reason: 'owner sign-off', at: asked.ctx.deps.now().toISOString() });
+  asked.agents[0].state = 'failed';
+  s = await tick({ ...s, takeover: true }, asked.ctx);
+  assert.deepEqual([asked.launched.length, s.halted, s.lane.sessionId], [1, false, 's1']);
+  assert.deepEqual(asked.notes.map((x) => x.key), ['laneNeedsOwner']);
+  // the lane recorded its own failure: that still stops the run
+  const failed = harness({ phases: [P('2')] });
+  s = await tick(fresh(), failed.ctx);
+  failed.advance(1);
+  writeLaneStatus(failed.root, '2', 'failed', { reason: 'tests broke', at: failed.ctx.deps.now().toISOString() });
+  failed.agents[0].state = 'failed';
+  s = await tick({ ...s, takeover: true }, failed.ctx);
+  assert.deepEqual([failed.launched.length, s.halted, s.haltedFor], [1, true, undefined]);
+  // a session that still works is adopted as it is
+  const live = harness({ phases: [P('2')] });
+  s = await tick(fresh(), live.ctx);
+  s = await tick({ ...s, takeover: true }, live.ctx);
+  assert.deepEqual([live.launched.length, s.lane.sessionId], [1, 's1']);
+  // safe mode: GSD completed the phase while the session was down: it is done, not relaunched
+  const done = harness({ phases: [P('2')] });
+  s = await tick(fresh(), done.ctx);
+  done.agents = [];
+  done.phases[0].complete = true;
+  s = await tick({ ...s, takeover: true }, done.ctx);
+  assert.deepEqual([done.launched.length, s.lane], [1, null]);
+  assert.deepEqual(done.notes.map((x) => x.key), ['phaseDone']);
 });
 
 // A lane that writes its record and ends its turn stays listed as state "blocked" (Claude Code 2.1.292).
@@ -810,6 +897,7 @@ test('blocked session with a fresh failed record notifies laneFailed and halts',
   assert.equal(s.halted, true);
   assert.deepEqual(h.notes.map((x) => x.key), ['laneFailed']);
   assert.equal(h.launched.length, 1);
+  assert.equal(s.haltedFor, undefined, 'the lane\'s own failure: never taken up again at logon');
 });
 
 test('blocked session with a stale needs-owner record waits as blocked; a working one with a fresh record runs', async () => {
@@ -963,4 +1051,37 @@ test('the lent heartbeat writes nothing once the daemon lost its lease, and answ
   let sleeps = 0;
   await runDaemon({ ctx: h.ctx, statePath, intervalMs: 1, sleep: async () => { if (++sleeps > 3) throw new Error('runaway daemon'); } });
   assert.deepEqual([answer, written], [false, false]);
+});
+
+test('placeOf: v0.3\'s lane runs in this checkout as phase <N>; a slot lane in its slot, with the control root for its session (Stage 4 L1)', () => {
+  const ctx = { root: path.resolve('/home/dev/app') };
+  const slot = path.resolve('/home/dev/app.turbo/lane-2');
+  assert.deepEqual(placeOf(ctx, { phase: '3' }), { key: '3', job: 'phase', phase: '3', cwd: ctx.root, controlRoot: null });
+  assert.deepEqual(placeOf(ctx, { key: '34', job: 'phase', phase: '34', slotPath: slot }), { key: '34', job: 'phase', phase: '34', cwd: slot, controlRoot: ctx.root });
+  assert.deepEqual(placeOf(ctx, { key: 'prep-4', job: 'prep', phase: '4', slotPath: slot }), { key: 'prep-4', job: 'prep', phase: '4', cwd: slot, controlRoot: ctx.root });
+  assert.deepEqual(placeOf(ctx, { key: 'annotate', job: 'annotate', phase: null, slotPath: slot }), { key: 'annotate', job: 'annotate', phase: null, cwd: slot, controlRoot: ctx.root });
+});
+
+test('wakePrompt: a phase lane gets v0.3\'s wake prompts; a job lane asks the job module, with the wake (Stage 4 L1)', () => {
+  const ctx = { root: path.resolve('/home/dev/app'), turboRun: 'node x', deps: { jobPrompts: ({ lane, resume, wake }) => ({ prompt: `${lane.key} ${resume} ${wake.kind}`, systemPrompt: 's' }) } };
+  assert.equal(wakePrompt(ctx, { phase: '3', mode: 'full' }, { kind: 'stall', minutes: 16 }), stallWakePrompt({ phase: '3', turboRun: 'node x', mode: 'full', minutes: 16 }));
+  assert.equal(wakePrompt(ctx, { phase: '3' }, { kind: 'stall', minutes: 16 }), stallWakePrompt({ phase: '3', turboRun: 'node x', mode: undefined, minutes: 16 }));
+  assert.equal(wakePrompt(ctx, { phase: '3', mode: 'full' }, { kind: 'answers', ids: ['03-01-t2'], lane: [] }), answerWakePrompt({ phase: '3', turboRun: 'node x', ids: ['03-01-t2'], lane: [], mode: 'full' }));
+  const prep = { key: 'prep-4', job: 'prep', phase: '4', slotPath: path.resolve('/home/dev/app.turbo/lane-1') };
+  assert.equal(wakePrompt(ctx, prep, { kind: 'stall', minutes: 16 }), 'prep-4 true stall');
+  assert.throws(() => wakePrompt({ ...ctx, deps: {} }, prep, { kind: 'stall', minutes: 1 }), /^Error: no prep\/annotate support \(lib\/prep\.mjs\) for lane prep-4$/);
+});
+
+test('every tick records the unfinished phases of the run in phase order (remaining): the view ends the last one\'s chain with the end of the run', async () => {
+  const h = harness({ phases: [P('1', [], true), P('2', ['1']), P('3', ['2'])] });
+  let s = await tick(fresh(), h.ctx);
+  assert.deepEqual(s.remaining, ['2', '3']);
+  h.phases = [P('1', [], true), P('2', ['1'], true), P('3', ['2'])];
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(s.remaining, ['2', '3'], 'the phase of the running lane, complete in the roadmap or not');
+  s = await tick({ ...s, lane: null, range: { from: '3', to: null } }, h.ctx);
+  assert.deepEqual(s.remaining, ['3']);
+  s = await tick({ ...fresh(), range: { from: '1', to: '2' } }, h.ctx);
+  assert.deepEqual(s.remaining, [], 'only the range counts');
 });

@@ -689,21 +689,33 @@ test('an Other prompt whose question a button of the same message answered is cl
   assert.equal(polls(bot).length, polled, 'no question open: no poll');
 });
 
-test('while a phase is attended the questions still go out, but no Telegram answer is taken: a press waits in Telegram until the hand-back (S4 N2)', async () => {
+test('while a phase is attended its questions are the sitting\'s: none goes out or is notified, a message already sent stays as it is, no answer is taken; all of it resumes at the hand-back; another phase goes on (S4 N2, journal 15:34Z)', async () => {
   const { root, ctx, bot, logs } = project();
+  const notes = [];
+  ctx.deps.notify = async (kind, data) => notes.push([kind, data.phase]);
   writeQuestions(root, '3', [Q('03-01-t2')]);
+  await ownerTick(ctx, NOW, { lane: { phase: '3' } });
+  assert.equal(bot.sent().length, 1, 'sent before the attend');
+  const polled = polls(bot).length;
   writeAttend(root, '3', { now: NOW });
+  // the sitting's questions: one asked ahead again at attend, and the one already in the chat
+  writeQuestions(root, '3', [Q('03-01-t2'), Q('03-01-t4', { task: '4', question: 'Pick the cache' })]);
+  writeQuestions(root, '4', [Q('04-01-t1', { phase: '4', plan: '04-01', task: '1', question: 'Pick the queue' })]);
   bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:2:00000002`, 41));
   await ownerTick(ctx, NOW, { lane: { phase: '3' } });
   await ownerTick(ctx, NOW, { lane: { phase: '3' } });
-  assert.equal(bot.sent().length, 1, 'the question still goes out');
-  assert.equal(polls(bot).length, 0, 'no update taken');
+  assert.deepEqual(bot.sent().map((c) => c.body.text.split('\n')[1]), ['Pick the store', 'Pick the queue'], 'only the other phase\'s question goes out');
+  assert.equal(bot.calls.filter((c) => c.method === 'editMessageText').length, 0, 'the attended phase\'s message is not closed');
+  assert.deepEqual(notes, [['questionsReady', '3'], ['questionsReady', '4']], 'the attended phase\'s new question is not notified');
+  assert.equal(polls(bot).length, polled, 'no update taken');
   assert.deepEqual(readAnswers(root, '3'), []);
   assert.equal(bot.updates.length, 1, 'the press waits in Telegram');
   assert.equal(logs.filter((l) => l.startsWith('telegram: answers wait while a phase is attended')).length, 1, logs.join('\n'));
   clearAttend(root, '3');
   await ownerTick(ctx, NOW, { lane: { phase: '3' } });
   assert.deepEqual(readAnswers(root, '3').map((r) => [r.id, r.option, r.by]), [['03-01-t2', 2, 'telegram']]);
+  assert.ok(bot.sent().some((c) => c.body.text.includes('Pick the cache')), 'the held question goes out after the hand-back');
+  assert.deepEqual(notes.at(-1), ['questionsReady', '3']);
 });
 
 // What the owner reads in each language: the turbo-view pane's words (mod/hooks/view-model.mjs)
@@ -765,3 +777,53 @@ for (const lang of ['en', 'ru']) {
     assert.doesNotMatch(said, /03-01-t\d|\d{4}-\d{2}-\d{2}T|standing-rule|, (session|pane|telegram),/);
   });
 }
+
+test('a question card names the lane its phase runs in (Stage 4 D10); without lanes the title stays as it was', async () => {
+  for (const [lang, title] of [['en', 'Phase 3 · lane 2 · plan 03-01, task 2'], ['ru', 'Фаза 3 · полоса 2 · план 03-01, задача 2']]) {
+    const { root, ctx, bot } = project();
+    ctx.config = ON({ lang });
+    fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanes: { 3: { key: '3', job: 'phase', phase: '3', slot: 2, slotPath: path.join(path.dirname(root), 'app.turbo', 'lane-2'), sessionId: null } } }));
+    writeQuestions(root, '3', [Q('03-01-t2')]);
+    await telegramTick(ctx, NOW);
+    assert.equal(bot.sent()[0].body.text.split('\n')[0], title);
+    assert.equal(readTelegramState(root).sent['3:03-01-t2'].title, title);
+  }
+  const { root, ctx, bot } = project();
+  fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lane: { phase: '3', sessionId: 'old111' } }));
+  writeQuestions(root, '3', [Q('03-01-t2')]);
+  await telegramTick(ctx, NOW);
+  assert.equal(bot.sent()[0].body.text.split('\n')[0], 'Phase 3 · plan 03-01, task 2', 'a v0.3 lane has no slot');
+});
+
+test('review I1, M1: the markup card is titled Lane markup / Разметка полос; a question asked in a prep lane names that lane', async () => {
+  for (const [lang, markup, prep] of [['en', 'Lane markup', 'Phase 3 · lane 4 · plan 03-01, task 2'], ['ru', 'Разметка полос', 'Фаза 3 · полоса 4 · план 03-01, задача 2']]) {
+    const { root, ctx, bot } = project();
+    ctx.config = ON({ lang });
+    fs.mkdirSync(path.join(root, '.planning', 'turbo', 'run'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lanes: { 'prep-3': { key: 'prep-3', job: 'prep', phase: '3', slot: 4, slotPath: path.join(path.dirname(root), 'app.turbo', 'lane-4'), sessionId: null } } }));
+    writeQuestions(root, '3', [Q('03-01-t2')]);
+    writeQuestions(root, 'annotate', [Q('relax-1', { phase: 'annotate', plan: null, task: null })]);
+    await telegramTick(ctx, NOW);
+    const titles = bot.sent().map((m) => m.body.text.split('\n')[0]).sort();
+    assert.deepEqual(titles, [markup, prep].sort());
+  }
+});
+
+test('a live sitting\'s stop goes out with no Done button, the way in as its text; done in own words is refused in the owner\'s words (journal 2026-10-14)', async () => {
+  const { root, ctx, bot } = project();
+  const q = Q('03-01-t2', { kind: 'human-action', sitting: true, stopped: true, question: 'A live sitting with you: run /turbo-autonomous attend 3 in a new Claude Code window, and the phase conducts this step there together with you.', context: 'The step: Live check of the tray app.', options: [], allowOther: true, class: 'owner-only' });
+  writeQuestions(root, '3', [q]);
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  const [msg] = bot.sent();
+  const buttons = msg.body.reply_markup.inline_keyboard.flat();
+  assert.deepEqual(buttons.map((b) => b.callback_data.split(':')[2]), ['o'], 'only the own-words button');
+  assert.match(msg.body.text, /run \/turbo-autonomous attend 3 in a new Claude Code window/);
+  bot.updates.push(press(`t3:${shortId('3', '03-01-t2')}:o:00000001`, 1));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  bot.updates.push(reply('done', 2, 102));
+  await telegramTick(ctx, NOW, { laneRunning: true });
+  assert.deepEqual(readAnswers(root, '3'), []);
+  assert.match(bot.sent().at(-1).body.text, /^Not recorded: this is a live sitting, never answered done: run \/turbo-autonomous attend 3 in a new Claude Code window/);
+});

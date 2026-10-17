@@ -28,18 +28,21 @@ const ruPlural = (n, one, few, many) => {
   const b = n % 100;
   return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many;
 };
+// Phase ids as words: `phase 34`, `phases 33, 34` (one and many name the word in the case the phrase needs).
+const ids = (l) => [].concat(l ?? []).map(String);
+const idList = (l, one, many) => (ids(l).length > 1 ? `${many} ${ids(l).join(', ')}` : `${one} ${ids(l)[0] ?? ''}`.trim());
 
 // The /turbo-phase steps (lib/phase-progress.mjs STEPS, and ci) and the subagent types, in words; anything else is
 // shown as written. lib/view.mjs keeps the same tables for turbo-run view and status --watch (test/view.test.mjs
 // holds the two equal).
 export const WORDS = {
   en: {
-    step: { freshness: 'freshness check', discuss: 'discussion', prologue: 'planning prep', plan: 'planning', 'gates-off': 'execution prep', execute: 'running plans', restore: 'restoring settings', fanout: 'quality checks', fix: 'fixes', 'final-gate': 'final check', uat: 'acceptance', close: 'wrap-up', ci: 'CI check' },
+    step: { freshness: 'freshness check', discuss: 'discussion', prologue: 'planning prep', plan: 'planning', 'gates-off': 'execution prep', execute: 'running plans', restore: 'restoring settings', fanout: 'quality checks', fix: 'fixes', 'final-gate': 'final check', uat: 'acceptance', close: 'wrap-up', integrate: 'merge into main', ci: 'CI check' },
     agent: { 'gsd-executor': 'Executor', 'gsd-verifier': 'Verifier', 'gsd-code-reviewer': 'Reviewer', 'gsd-code-fixer': 'Fixer', 'gsd-planner': 'Planner', 'gsd-plan-checker': 'Plan checker', 'gsd-phase-researcher': 'Researcher', 'gsd-security-auditor': 'Security auditor', 'gsd-nyquist-auditor': 'Test auditor', 'gsd-integration-checker': 'Integration checker', 'gsd-debugger': 'Debugger', 'turbo-uat': 'Acceptance tester', 'general-purpose': 'Helper', Explore: 'Scout' },
   },
   ru: {
-    step: { freshness: 'проверка актуальности', discuss: 'обсуждение', prologue: 'подготовка к планированию', plan: 'планирование', 'gates-off': 'подготовка к выполнению', execute: 'выполняются планы', restore: 'восстановление настроек', fanout: 'проверки качества', fix: 'исправления', 'final-gate': 'финальная проверка', uat: 'приёмка', close: 'завершение', ci: 'проверка CI' },
-    // all masculine, so «… молчит — возможно, завис» agrees with each
+    step: { freshness: 'проверка актуальности', discuss: 'обсуждение', prologue: 'подготовка к планированию', plan: 'планирование', 'gates-off': 'подготовка к выполнению', execute: 'выполняются планы', restore: 'восстановление настроек', fanout: 'проверки качества', fix: 'исправления', 'final-gate': 'финальная проверка', uat: 'приёмка', close: 'завершение', integrate: 'слияние с основной веткой', ci: 'проверка CI' },
+    // all masculine, so «… молчит» and «… закончил» agree with each
     agent: { 'gsd-executor': 'Исполнитель', 'gsd-verifier': 'Проверяющий', 'gsd-code-reviewer': 'Ревьюер', 'gsd-code-fixer': 'Исправляющий', 'gsd-planner': 'Планировщик', 'gsd-plan-checker': 'Контролёр плана', 'gsd-phase-researcher': 'Исследователь', 'gsd-security-auditor': 'Аудитор безопасности', 'gsd-nyquist-auditor': 'Аудитор тестов', 'gsd-integration-checker': 'Контролёр связей', 'gsd-debugger': 'Отладчик', 'turbo-uat': 'Приёмщик', 'general-purpose': 'Помощник', Explore: 'Разведчик' },
   },
 };
@@ -65,18 +68,31 @@ const VIEW_WORDS = {
       fine: 'all fine', answer: (n) => `needs your answer (${n})`, ciRed: (asked) => (asked ? 'CI red — needs your answer' : 'CI red — needs your decision'), ciFixing: (n, m) => `CI red — the phase fixes it itself (attempt ${n} of ${m}), nothing needed from you`,
       ciLast: "CI red — the phase's last attempt; if it fails, it will ask you", fullMode: 'waits for you: its final checks need full mode',
       needsOwner: (asked) => (asked ? 'stopped — waits for your answer' : 'stopped — waits for your decision'), failed: 'stopped by a failure',
-      quiet: (d) => `silent${d ? ` for ${d}` : ''} — may be stuck`, quietHelper: (who, d, more) => `running, but ⚠️ ${who} silent${d ? ` for ${d}` : ''}${more ? ` (and ${more} more)` : ''}`,
+      // a silent lane says what turbo did about it (lane.wake): it wakes the session, woke, restarted or could not wake it
+  // before, or gave up
+      quiet: (d) => `silent${d ? ` for ${d}` : ''} — turbo is waking the session`, quietAgain: (d, how) => `silent${d ? ` for ${d}` : ''} — ${how === 'restarted' ? 'restarted the session' : how === 'tried' ? 'could not wake the session' : 'woke the session'}, waking it again`,
+      quietTold: (d) => `silent${d ? ` for ${d}` : ''} — waking the session did not help: needs you`, quietHelper: (who, d, more) => `running, but ⚠️ ${who} silent${d ? ` for ${d}` : ''}${more ? ` (and ${more} more)` : ''}`,
       paused: 'paused: needs a fresh context', done: 'done', halted: 'supervisor stopped', failing: (at) => `supervisor failing${at ? ` since ${at}` : ''}`,
-      attended: (p) => `phase ${p} is in your session — new phases wait`, supStopped: 'supervisor not running', finished: 'all phases done', never: 'supervisor never started',
+      attended: (p) => `phase ${p} is running in your session`, supStopped: 'supervisor not running', finished: 'all phases done', never: 'supervisor never started',
+      // Stage 4: a lane the supervisor stopped alone; a lane whose turn ended and that is merged into main
+      laneHalted: 'a lane stopped — the other lanes go on', merging: 'done — being merged into the main branch',
+      // supervisor.json exists but holds no state (lib/sup-state.mjs): never «never started»
+      damaged: 'supervisor state damaged (likely a machine crash) — run turbo-run start, it rebuilds the lanes',
     },
     reason: 'Reason',
     life: (d) => `last activity ${d} ago`,
-    doing: { edit: (x) => `editing ${x}`, write: (x) => `writing ${x}`, read: (x) => `reading ${x}`, search: 'searching the code', files: 'looking for files', tests: 'running tests', commit: 'committing', command: (x) => `running a command: ${x}`, helper: 'started a helper', skill: 'using a skill', web: 'searching the web', todo: 'updating its to-do list', message: 'messaging a helper', browser: 'using the browser', working: 'working' },
+    doing: { edit: (x) => `editing ${x}`, write: (x) => `writing ${x}`, read: (x) => `reading ${x}`, search: 'searching the code', files: 'looking for files', tests: 'running tests', commit: 'committing', command: (x) => `running a command: ${x}`, helper: 'started a helper', skill: 'using a skill', web: 'searching the web', todo: 'updating its to-do list', message: 'messaging a helper', browser: 'using the browser', working: 'working', asks: 'waits for your answer in the session' },
     state: { completed: 'done', stopped: 'stopped', failed: 'failed' },
     idle: (d) => `silent${d ? ` for ${d}` : ''}`,
-    quietAgent: (who, d) => `⚠️ ${who} silent${d ? ` for ${d}` : ''} — may be stuck`,
+    quietAgent: (who, d) => `⚠️ ${who} silent${d ? ` for ${d}` : ''}`,
+    // a command in flight within its timeout: busy, never silent (lib/liveness.mjs)
+    busy: (d) => `a long command is running${d ? ` · ${d}` : ''}`,
     helpersDone: (n, more) => `${n} ${more ? 'more ' : ''}${n === 1 ? 'helper' : 'helpers'} finished`,
     askHead: (n) => `Needs your answer (${n}):`,
+    // v0.4.0: sleep mode and the answers turbo took itself (lib/auto-answer.mjs)
+    awayOn: 'Away mode — turbo takes the safe questions itself; when you are back: turbo-run back',
+    autoHead: (n) => `Accepted automatically while you were away (${n}):`,
+    undo: 'undo',
     holds: 'The phase waits for this answer',
     ahead: (running) => (running ? 'you can answer ahead — the phase is not waiting' : 'you can answer ahead'),
     recommended: 'recommended',
@@ -84,7 +100,8 @@ const VIEW_WORDS = {
     ago: (d) => `${d} ago`,
     justNow: 'just now',
     days: (n) => `${n}d`,
-    sup: { running: 'Supervisor running', stopped: 'Supervisor not running', finished: 'Supervisor finished', halted: 'Supervisor stopped', never: 'Supervisor never started' },
+    // attended: attend stopped the supervisor (checkout mode); attend N --done starts it again
+    sup: { running: 'Supervisor running', stopped: 'Supervisor not running', finished: 'Supervisor finished', halted: 'Supervisor stopped', never: 'Supervisor never started', attended: (p) => `Supervisor paused: phase ${p} is running in your session`, damaged: 'Supervisor state damaged' },
     phases: (from, to) => `phases ${from}–${to}`,
     duration: (h, m, s) => (h ? `${h}h ${m}m` : m ? `${m}m` : `${s}s`),
     // v0.3.3: what the phase does now, its steps, what comes next, when the owner is needed, the commits by kind
@@ -93,8 +110,15 @@ const VIEW_WORDS = {
       ciFix: (n, m) => `fixing the red CI — attempt ${n} of ${m}`, ciLast: 'fixing the red CI — the last attempt', ciWait: 'waiting for CI',
       executors: (n) => (n > 1 ? `writing code for ${n} plans at once` : 'writing code for a plan'), helpers: (n) => `${n} ${n === 1 ? 'helper' : 'helpers'} at work`,
       agent: { 'gsd-code-fixer': 'fixing what the review found', 'gsd-debugger': 'looking for the cause of a failure', 'gsd-code-reviewer': 'reviewing the code', 'gsd-security-auditor': 'checking security', 'gsd-nyquist-auditor': 'checking the tests cover the work', 'gsd-integration-checker': 'checking the parts fit together', 'gsd-verifier': 'checking the phase reached its goal', 'turbo-uat': 'acceptance: checking the items itself', 'gsd-planner': 'writing the plans', 'gsd-plan-checker': 'checking the plans', 'gsd-phase-researcher': 'researching how to build the phase' },
-      step: { freshness: 'checking the plans are still current', discuss: 'thinking the phase through', prologue: 'preparing the planning', plan: 'planning', 'gates-off': 'preparing to run the plans', execute: 'running the plans', restore: 'restoring settings', fanout: 'starting the quality checks', fix: 'fixing what the checks found', 'final-gate': 'running the final tests', uat: 'acceptance', close: 'wrapping up the phase' },
+      step: { freshness: 'checking the plans are still current', discuss: 'thinking the phase through', prologue: 'preparing the planning', plan: 'planning', 'gates-off': 'preparing to run the plans', execute: 'running the plans', restore: 'restoring settings', fanout: 'starting the quality checks', fix: 'fixing what the checks found', 'final-gate': 'running the final tests', uat: 'acceptance', close: 'wrapping up the phase', integrate: 'merging the phase into the main branch' },
+      gapPlan: 'writing plans to close the gaps the checks found',
     },
+    // a lane past its planning whose planner works again: it plans the closing of the gaps a check found
+    gapPlan: 'planning gap fixes',
+    // a phase the owner attends (turbo-run attend N): it runs in their own session, not in its lane
+    inSession: 'is running in your session',
+    // an attended phase's questions, left out of the view: where they are and how to go on (a sitting paused or cut off)
+    sittingAsks: (n, p) => `${n} ${n === 1 ? 'question' : 'questions'} of the phase in your session · go on: /turbo-autonomous attend ${p} · give the phase back: turbo-run attend ${p} --done`,
     stepsHead: 'Phase steps:',
     stepNow: (s) => `${s} — now`,
     stepStopped: (s) => `${s} — stopped here`,
@@ -105,12 +129,35 @@ const VIEW_WORDS = {
       none: 'Nothing needed from you now', held: 'Needed from you: answer the question above — the phase waits for it', ahead: (n) => `You can answer ${n === 1 ? 'the question' : `the ${n} questions`} above ahead`,
       decide: 'Needed from you: the phase waits for your decision — the reason is above', failed: 'Needed from you: the phase stopped by a failure and will not go on by itself', fullMode: 'Needed from you: its final checks need full mode',
       ciLast: 'If the last CI attempt fails, the phase will ask you',
+      halted: 'Needed from you: a stopped lane waits for you to resume it',
+      stalled: (id) => `Needed from you: the phase stays silent after turbo woke it — to look inside: claude attach ${id}`,
+      // an attended phase: its session asks the owner now, or its questions wait there
+      inSession: (asking, n) => (asking ? 'Your session waits for your answer' : `The phase's questions (${n}) wait for you in your session`),
     },
     kind: {
       feat: (n) => `${n} new ${n === 1 ? 'feature' : 'features'}`, fix: (n) => `${n} ${n === 1 ? 'fix' : 'fixes'}`, refactor: (n) => `${n} ${n === 1 ? 'code rework' : 'code reworks'}`,
       test: (n) => `${n} test ${n === 1 ? 'change' : 'changes'}`, docs: (n) => `${n} docs ${n === 1 ? 'change' : 'changes'}`, other: (n) => `${n} other ${n === 1 ? 'change' : 'changes'}`,
     },
     lastAgo: (ago) => `latest ${ago}`,
+    // Stage 4: several lanes (spec §8): a lane's slot, what a prep or annotate lane does, the summary line, why the next
+    // phase waits (supervisor.json next: its why, the phases it waits for, a shared resource by name)
+    lane: (k) => `lane ${k}`,
+    // reconcile R12: the annotate job's questions (pseudo-phase annotate)
+    markup: 'lane markup',
+    stoppedLane: 'stopped — the other lanes go on',
+    laneHead: (k) => `Lane ${k}`,
+    lanesCount: (n) => `${n} ${n === 1 ? 'lane' : 'lanes'}`,
+    questionsCount: (n) => `${n} ${n === 1 ? 'question' : 'questions'}`,
+    job: { prep: (s) => `getting ready ahead: ${s}`, annotate: 'working out which phases can run together' },
+    gate: { 'prod-deploy': 'the deploy', 'owner-live': 'your live check', 'owner-signature': 'your signature', 'packaged-build': 'the packaged build' },
+    waits: {
+      deps: (p, l) => `next: phase ${p} waits for ${idList(l, 'phase', 'phases')}`,
+      areas: (p, l) => `next: phase ${p} waits for ${idList(l, 'phase', 'phases')} — they change the same files`,
+      gates: (p, l, g) => (ids(l).length ? `next: phase ${p} waits for ${idList(l, 'phase', 'phases')} — both need ${g}` : `next: phase ${p} waits its turn for ${g}`),
+      slots: (p) => `next: phase ${p} waits for a free lane`,
+      annotation: (p) => `next: phase ${p} waits until turbo knows which phases can run together`,
+      merge: (p, l) => `next: phase ${p} waits for ${idList(l, 'phase', 'phases')} to be merged`,
+    },
   },
   ru: {
     ...WORDS.ru,
@@ -128,18 +175,25 @@ const VIEW_WORDS = {
       fine: 'всё в порядке', answer: (n) => `нужен ваш ответ (${n})`, ciRed: (asked) => (asked ? 'CI красный — нужен ваш ответ' : 'CI красный — нужно ваше решение'), ciFixing: (n, m) => `CI красный — фаза чинит сама (попытка ${n} из ${m}), от вас ничего не нужно`,
       ciLast: 'CI красный — последняя попытка фазы; если не выйдет, она спросит вас', fullMode: 'ждёт вас: для финальных проверок нужен полный режим',
       needsOwner: (asked) => (asked ? 'остановилась — ждёт вашего ответа' : 'остановилась — ждёт вашего решения'), failed: 'остановилась из-за сбоя',
-      quiet: (d) => `тишина${d ? ` ${d}` : ''} — возможно, зависла`, quietHelper: (who, d, more) => `идёт, но ⚠️ ${who} молчит${d ? ` ${d}` : ''}${more ? ` (и ещё ${more})` : ''}`,
+      quiet: (d) => `тишина${d ? ` ${d}` : ''} — turbo будит сессию`, quietAgain: (d, how) => `тишина${d ? ` ${d}` : ''} — ${how === 'restarted' ? 'перезапустил сессию' : how === 'tried' ? 'не смог разбудить сессию' : 'разбудил сессию'}, будит ещё раз`,
+      quietTold: (d) => `тишина${d ? ` ${d}` : ''} — разбудить сессию не вышло: нужны вы`, quietHelper: (who, d, more) => `идёт, но ⚠️ ${who} молчит${d ? ` ${d}` : ''}${more ? ` (и ещё ${more})` : ''}`,
       paused: 'на паузе: нужен новый контекст', done: 'готова', halted: 'супервизор остановился', failing: (at) => `супервизор сбоит${at ? ` с ${at}` : ''}`,
-      attended: (p) => `фаза ${p} у вас в сессии — новые фазы ждут`, supStopped: 'супервизор не работает', finished: 'все фазы готовы', never: 'супервизор не запускался',
+      attended: (p) => `фаза ${p} идёт у вас в этой сессии`, supStopped: 'супервизор не работает', finished: 'все фазы готовы', never: 'супервизор не запускался',
+      laneHalted: 'полоса остановилась — остальные идут дальше', merging: 'готова — вливается в основную ветку',
+      damaged: 'состояние супервизора повреждено (вероятно, сбой машины) — запустите turbo-run start, он восстановит полосы',
     },
     reason: 'Причина',
     life: (d) => `последнее действие ${d} назад`,
-    doing: { edit: (x) => `правит ${x}`, write: (x) => `создаёт ${x}`, read: (x) => `читает ${x}`, search: 'ищет в коде', files: 'ищет файлы', tests: 'запустил тесты', commit: 'делает коммит', command: (x) => `выполняет команду: ${x}`, helper: 'запустил помощника', skill: 'запустил навык', web: 'ищет в интернете', todo: 'обновляет список дел', message: 'пишет помощнику', browser: 'работает в браузере', working: 'работает' },
+    doing: { edit: (x) => `правит ${x}`, write: (x) => `создаёт ${x}`, read: (x) => `читает ${x}`, search: 'ищет в коде', files: 'ищет файлы', tests: 'запустил тесты', commit: 'делает коммит', command: (x) => `выполняет команду: ${x}`, helper: 'запустил помощника', skill: 'запустил навык', web: 'ищет в интернете', todo: 'обновляет список дел', message: 'пишет помощнику', browser: 'работает в браузере', working: 'работает', asks: 'ждёт вашего ответа в сессии' },
     state: { completed: 'готов', stopped: 'остановлен', failed: 'сбой' },
     idle: (d) => `тишина${d ? ` ${d}` : ''}`,
-    quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''} — возможно, завис`,
+    quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''}`,
+    busy: (d) => `идёт долгая команда${d ? ` · ${d}` : ''}`,
     helpersDone: (n, more) => `${more ? 'ещё ' : ''}${n} ${ruPlural(n, 'помощник закончил', 'помощника закончили', 'помощников закончили')}`,
     askHead: (n) => `Нужен ваш ответ (${n}):`,
+    awayOn: 'Режим «ушёл» — безопасные вопросы turbo решает сам; когда вернётесь: turbo-run back',
+    autoHead: (n) => `Принято автоматически, пока вас не было (${n}):`,
+    undo: 'отменить',
     holds: 'Фаза ждёт этот ответ',
     ahead: (running) => (running ? 'можно ответить заранее — фаза не стоит' : 'можно ответить заранее'),
     recommended: 'рекомендуется',
@@ -147,7 +201,7 @@ const VIEW_WORDS = {
     ago: (d) => `${d} назад`,
     justNow: 'только что',
     days: (n) => `${n} дн`,
-    sup: { running: 'Супервизор работает', stopped: 'Супервизор не работает', finished: 'Супервизор закончил', halted: 'Супервизор остановился', never: 'Супервизор не запускался' },
+    sup: { running: 'Супервизор работает', stopped: 'Супервизор не работает', finished: 'Супервизор закончил', halted: 'Супервизор остановился', never: 'Супервизор не запускался', attended: (p) => `Супервизор на паузе: фаза ${p} идёт у вас в сессии`, damaged: 'Состояние супервизора повреждено' },
     phases: (from, to) => `фазы ${from}–${to}`,
     duration: (h, m, s) => (h ? `${h} ч ${m} мин` : m ? `${m} мин` : `${s} с`),
     nowHead: 'Сейчас',
@@ -155,8 +209,12 @@ const VIEW_WORDS = {
       ciFix: (n, m) => `чинит красный CI — попытка ${n} из ${m}`, ciLast: 'чинит красный CI — последняя попытка', ciWait: 'ждёт результат CI',
       executors: (n) => (n > 1 ? `пишет код по ${n} планам сразу` : 'пишет код по плану'), helpers: (n) => `работают помощники: ${n}`,
       agent: { 'gsd-code-fixer': 'исправляет найденное ревью', 'gsd-debugger': 'ищет причину сбоя', 'gsd-code-reviewer': 'идёт ревью кода', 'gsd-security-auditor': 'проверяет безопасность', 'gsd-nyquist-auditor': 'проверяет, хватает ли тестов', 'gsd-integration-checker': 'проверяет, как части работают вместе', 'gsd-verifier': 'проверяет, достигнута ли цель фазы', 'turbo-uat': 'приёмка: проверяет пункты сама', 'gsd-planner': 'пишет планы', 'gsd-plan-checker': 'проверяет планы', 'gsd-phase-researcher': 'изучает, как сделать фазу' },
-      step: { freshness: 'проверяет, не устарели ли планы', discuss: 'обдумывает фазу', prologue: 'готовит планирование', plan: 'планирует', 'gates-off': 'готовится выполнять планы', execute: 'выполняет планы', restore: 'возвращает настройки', fanout: 'запускает проверки качества', fix: 'исправляет найденное проверками', 'final-gate': 'гоняет финальные тесты', uat: 'приёмка', close: 'завершает фазу' },
+      step: { freshness: 'проверяет, не устарели ли планы', discuss: 'обдумывает фазу', prologue: 'готовит планирование', plan: 'планирует', 'gates-off': 'готовится выполнять планы', execute: 'выполняет планы', restore: 'возвращает настройки', fanout: 'запускает проверки качества', fix: 'исправляет найденное проверками', 'final-gate': 'гоняет финальные тесты', uat: 'приёмка', close: 'завершает фазу', integrate: 'вливает фазу в основную ветку' },
+      gapPlan: 'пишет планы доработок по итогам проверки',
     },
+    gapPlan: 'планирование доработок',
+    inSession: 'идёт у вас в этой сессии',
+    sittingAsks: (n, p) => `${n} ${ruPlural(n, 'вопрос', 'вопроса', 'вопросов')} фазы — в вашей сессии · продолжить: /turbo-autonomous attend ${p} · вернуть фазу: turbo-run attend ${p} --done`,
     stepsHead: 'Шаги фазы:',
     stepNow: (s) => `${s} — сейчас`,
     stepStopped: (s) => `${s} — остановилась здесь`,
@@ -167,12 +225,32 @@ const VIEW_WORDS = {
       none: 'От вас сейчас ничего не нужно', held: 'Нужны вы: ответить на вопрос выше — фаза ждёт его', ahead: (n) => (n === 1 ? 'На вопрос выше можно ответить заранее' : `На вопросы выше (${n}) можно ответить заранее`),
       decide: 'Нужны вы: фаза ждёт вашего решения — причина выше', failed: 'Нужны вы: фаза остановилась из-за сбоя и сама не продолжит', fullMode: 'Нужны вы: финальным проверкам нужен полный режим',
       ciLast: 'Если последняя попытка починить CI не выйдет, фаза спросит вас',
+      halted: 'Нужны вы: остановленная полоса ждёт, что вы её возобновите',
+      stalled: (id) => `Нужны вы: фаза молчит и после пробуждений — посмотреть: claude attach ${id}`,
+      inSession: (asking, n) => (asking ? 'Ваша сессия ждёт вашего ответа' : `Вопросы фазы (${n}) ждут вас в вашей сессии`),
     },
     kind: {
       feat: (n) => `${n} ${ruPlural(n, 'новая возможность', 'новые возможности', 'новых возможностей')}`, fix: (n) => `${n} ${ruPlural(n, 'исправление', 'исправления', 'исправлений')}`, refactor: (n) => `${n} ${ruPlural(n, 'переделка кода', 'переделки кода', 'переделок кода')}`,
       test: (n) => `${n} ${ruPlural(n, 'правка тестов', 'правки тестов', 'правок тестов')}`, docs: (n) => `${n} ${ruPlural(n, 'правка документов', 'правки документов', 'правок документов')}`, other: (n) => `${n} ${ruPlural(n, 'служебное изменение', 'служебных изменения', 'служебных изменений')}`,
     },
     lastAgo: (ago) => `последнее ${ago}`,
+    lane: (k) => `полоса ${k}`,
+    markup: 'разметка полос',
+    stoppedLane: 'остановилась — остальные полосы идут дальше',
+    laneHead: (k) => `Полоса ${k}`,
+    lanesCount: (n) => `${n} ${ruPlural(n, 'полоса', 'полосы', 'полос')}`,
+    questionsCount: (n) => `${n} ${ruPlural(n, 'вопрос', 'вопроса', 'вопросов')}`,
+    job: { prep: (s) => `готовится заранее: ${s}`, annotate: 'разбирает, какие фазы могут идти вместе' },
+    // the case after «используют» and «очереди на»
+    gate: { 'prod-deploy': 'деплой', 'owner-live': 'вашу живую проверку', 'owner-signature': 'вашу подпись', 'packaged-build': 'сборку пакета' },
+    waits: {
+      deps: (p, l) => `следующая: фаза ${p} ждёт ${idList(l, 'фазу', 'фазы')}`,
+      areas: (p, l) => `следующая: фаза ${p} ждёт ${idList(l, 'фазу', 'фазы')} — они меняют одни и те же файлы`,
+      gates: (p, l, g) => (ids(l).length ? `следующая: фаза ${p} ждёт ${idList(l, 'фазу', 'фазы')} — обе используют ${g}` : `следующая: фаза ${p} ждёт своей очереди на ${g}`),
+      slots: (p) => `следующая: фаза ${p} ждёт свободную полосу`,
+      annotation: (p) => `следующая: фаза ${p} ждёт, пока turbo разберёт, какие фазы могут идти вместе`,
+      merge: (p, l) => `следующая: фаза ${p} ждёт слияния ${idList(l, 'фазы', 'фаз')}`,
+    },
   },
 };
 
@@ -191,6 +269,7 @@ export const TEXT = {
     pushFailed: 'push ✗',
     newQuestion: (p, q) => `New question (phase ${p}): “${q}”`,
     newQuestions: (n) => `${n} new questions`,
+    newMarkupQuestion: (q) => `New question (lane markup): “${q}”`,
     phaseDone: (p) => `Phase ${p} done`,
     ciRed: (p, fix, asked) => `CI red: phase ${p} — ${fix ? (fix.last ? 'last attempt; if it fails, it will ask you' : `fixing it itself (attempt ${fix.n} of ${fix.m})`) : asked ? 'needs your answer' : 'needs your decision'}`,
     laneNeedsOwner: (p, why) => `Phase ${p} stopped — needs your answer${why ? `: ${why}` : ''}`,
@@ -201,7 +280,7 @@ export const TEXT = {
     channel: { session: 'in a session', pane: 'in the pane', telegram: 'in Telegram', 'standing-rule': 'by a standing rule' },
     changed: 'The question changed — the pane now shows the new one; answer again',
     refused: (why) => `Not recorded: ${why}`,
-    refusal: { secret: 'the answer looks like it holds a secret — say it without', tooLong: (n) => `the answer is longer than ${n} characters`, empty: 'the answer is empty', gone: 'the question is closed', noOption: 'no such option', optionsOnly: 'this question takes one of its options only', lane: "a phase's own session cannot answer" },
+    refusal: { secret: 'the answer looks like it holds a secret — say it without', tooLong: (n) => `the answer is longer than ${n} characters`, empty: 'the answer is empty', gone: 'the question is closed', noOption: 'no such option', optionsOnly: 'this question takes one of its options only', sitting: (p) => `this is a live sitting, never answered done: run /turbo-autonomous attend ${p} in a new Claude Code window`, lane: "a phase's own session cannot answer" },
     usage: 'Answer not sent: turbo-run did not take the call (exit 2)',
     exited: (code) => `Answer not sent: turbo-run exited with ${code}`,
     notSent: (why) => `Answer not sent: ${why}`,
@@ -222,6 +301,7 @@ export const TEXT = {
     pushFailed: 'отправка ✗',
     newQuestion: (p, q) => `Новый вопрос (фаза ${p}): «${q}»`,
     newQuestions: (n) => `Новых вопросов: ${n}`,
+    newMarkupQuestion: (q) => `Новый вопрос (разметка полос): «${q}»`,
     phaseDone: (p) => `Фаза ${p} готова`,
     ciRed: (p, fix, asked) => `CI красный: фаза ${p} — ${fix ? (fix.last ? 'последняя попытка; если не выйдет, спросит вас' : `чинит сама (попытка ${fix.n} из ${fix.m})`) : asked ? 'нужен ваш ответ' : 'нужно ваше решение'}`,
     laneNeedsOwner: (p, why) => `Фаза ${p} остановилась — нужен ваш ответ${why ? `: ${why}` : ''}`,
@@ -232,7 +312,7 @@ export const TEXT = {
     channel: { session: 'в сессии', pane: 'в панели', telegram: 'в Telegram', 'standing-rule': 'по постоянному правилу' },
     changed: 'Вопрос изменился — панель показала новый, ответьте ещё раз',
     refused: (why) => `Не принято: ${why}`,
-    refusal: { secret: 'похоже, в ответе секрет — напишите без него', tooLong: (n) => `ответ длиннее ${n} символов`, empty: 'пустой ответ', gone: 'вопрос уже закрыт', noOption: 'такого варианта нет', optionsOnly: 'этот вопрос принимает только варианты из списка', lane: 'из сессии самой фазы отвечать нельзя' },
+    refusal: { secret: 'похоже, в ответе секрет — напишите без него', tooLong: (n) => `ответ длиннее ${n} символов`, empty: 'пустой ответ', gone: 'вопрос уже закрыт', noOption: 'такого варианта нет', optionsOnly: 'этот вопрос принимает только варианты из списка', sitting: (p) => `это живой сеанс, «сделано» здесь не ответ: запустите /turbo-autonomous attend ${p} в новом окне Claude Code`, lane: 'из сессии самой фазы отвечать нельзя' },
     usage: 'Ответ не отправлен: turbo-run не принял команду (код 2)',
     exited: (code) => `Ответ не отправлен: turbo-run завершился с кодом ${code}`,
     notSent: (why) => `Ответ не отправлен: ${why}`,
@@ -335,12 +415,51 @@ const agentWord = (t, type) => (type ? t.agent[type] ?? cut(type, 40) : t.agent[
 const planWords = (t, x) => (x?.plan ? t.plan(x.plan, x.task) : null);
 const plansWords = (t, lane) => (lane?.plans?.total > 0 ? t.plans(lane.plans.done, lane.plans.total) : null);
 
+// Stage 4 (L4): a lane's slot (1, 2, …; 0 or none: the main checkout), its head (`Phase 34 · lane 2`, an annotate lane
+// `Lane 2`), what it does in words (a prep lane `getting ready ahead: discussion`), a shared resource by name, why the
+// next phase waits (supervisor.json next, at most three phases named) and the run's summary line (`3 lanes · 1
+// question · next: phase 36 waits for phase 34`). A view from v0.3 has no job: a phase lane.
+const slotOf = (lane) => (Number.isInteger(lane?.slot) && lane.slot >= 1 ? lane.slot : null);
+const laneHeadText = (t, lane) => (lane.job === 'annotate' ? t.laneHead(slotOf(lane) ?? '–') : `${t.phase(cut(lane.phase, 20))}${slotOf(lane) ? ` · ${t.lane(slotOf(lane))}` : ''}`);
+// A phase lane past its plan step whose planner (or plan checker) works again plans the closing of the gaps a check
+// found (the turbo-phase skill's gap rounds: GSD's plan-phase --gaps), also while it is silent: its step alone would say
+// "running plans".
+const GAP_PLANNERS = new Set(['gsd-planner', 'gsd-plan-checker']);
+const gapPlanning = (lane) => (lane?.job ?? 'phase') === 'phase' && STEPS.indexOf(lane?.step) > STEPS.indexOf('plan')
+  && list(lane?.agents).some((a) => ACTIVE.has(a?.state) && GAP_PLANNERS.has(a.type));
+const stepText = (t, lane) => (lane.job === 'annotate' ? t.job.annotate : lane.job === 'prep' ? t.job.prep(stepWord(t, lane.step)) : gapPlanning(lane) ? t.gapPlan : stepWord(t, lane.step));
+// spec §8: a phase the owner attends (turbo-run attend N) runs in their own session. Its lane's record, transcript and
+// helpers are the stopped lane session's: the mark wins over them (no stop, no silence, no lane age).
+const attendedLane = (view, lane) => (lane?.job ?? 'phase') === 'phase' && lane?.phase != null && list(view?.attended).some((p) => String(p) === String(lane.phase));
+// The questions the view draws: an attended phase's are the sitting's, asked in the owner's own session, and come back
+// with attend N --done (turbo-run view leaves them out already; a view from an older turbo-run may still carry them).
+const shownQuestions = (view) => list(view?.questions).filter((q) => !list(view?.attended).some((p) => String(p) === String(q?.phase ?? '')));
+// A question the phase waits for: a stop of a phase that is not attended (an attended phase's own question is the
+// owner's to answer in the sitting, or ahead).
+const waitsFor = (view, q) => q?.stopped === true && !list(view?.attended).some((p) => String(p) === String(q.phase ?? ''));
+const gateWord = (t, g) => (Object.hasOwn(t.gate, String(g)) ? t.gate[String(g)] : cut(g, 30));
+const NAMES_FOR = new Set(['deps', 'areas', 'merge']);
+function waitsWords(t, next) {
+  if (!next || next.phase == null || !Object.hasOwn(t.waits, String(next.why))) return null;
+  const all = list(next.waitsFor);
+  const on = [...all.slice(0, 3).map((x) => cut(x, 20)), ...(all.length > 3 ? ['…'] : [])];
+  if (NAMES_FOR.has(next.why) && !on.length) return null;
+  if (next.why === 'gates' && (next.gate == null || next.gate === '')) return null;
+  return t.waits[next.why](cut(next.phase, 20), on, next.gate == null ? '' : gateWord(t, next.gate));
+}
+function summaryLine(t, view) {
+  const asked = shownQuestions(view).length;
+  return [t.lanesCount(list(view?.lanes).length), asked ? t.questionsCount(asked) : null, waitsWords(t, view?.next)].filter(Boolean).join(' · ');
+}
+export const runSummary = (view) => clean(summaryLine(textOf(view), view));
+
 const TEST_RUN = /\b(?:node\s+--test|npm\s+(?:run\s+)?test|npx\s+(?:jest|vitest|mocha)|jest|vitest|mocha|pytest|go\s+test|cargo\s+test|test-changed|plugin\s+test)\b/;
 const COMMIT = /\bgit\b.*\bcommit\b/;
 const EDITS = new Set(['Edit', 'MultiEdit', 'NotebookEdit']);
 
 // What a running subagent does, in words, from its last tool call ({ tool, detail }, S0's actionOf).
-function doingWords(t, action) {
+// strict: null for a tool it has no words for (an attended sitting's own call: its words or the generic one).
+function doingWords(t, action, { strict = false } = {}) {
   const d = t.doing;
   if (!action) return d.working;
   const tool = String(action.tool ?? '');
@@ -358,7 +477,18 @@ function doingWords(t, action) {
   if (tool === 'TodoWrite') return d.todo;
   if (tool === 'SendMessage') return d.message;
   if (/^mcp__.*(?:playwright|browser|chrome)/i.test(tool)) return d.browser;
-  return `${cut(tool, 40)} ${x}`.trim();
+  return strict ? null : `${cut(tool, 40)} ${x}`.trim();
+}
+
+// What the owner's sitting does by its own call in flight: it asks them (AskUserQuestion), a tool in words, else working.
+const sittingDoing = (t, action) => (String(action?.tool ?? '') === 'AskUserQuestion' ? t.doing.asks : doingWords(t, action, { strict: true }) ?? t.doing.working);
+// The sitting asks the owner now (its own AskUserQuestion in flight).
+const sittingAsking = (lane) => String(lane?.sitting?.action?.tool ?? '') === 'AskUserQuestion';
+// What attended lanes need from the owner, or null: their session asks them, or the phase's questions wait there.
+function sittingNeed(t, lanes) {
+  const asking = lanes.some(sittingAsking);
+  const n = lanes.reduce((sum, l) => sum + (Number.isInteger(l?.sitting?.questions) && l.sitting.questions > 0 ? l.sitting.questions : 0), 0);
+  return asking || n ? t.need.inSession(asking, n) : null;
 }
 
 // A red CI the running phase still fixes itself: { n, m } (attempt n of the m S2 allows: push.ci_fix_rounds,
@@ -377,24 +507,39 @@ const selfFixing = (view, lane) => (view?.supervisor?.running ? ciFixing(lane) :
 // A red CI the phase fixes itself, in words: the attempt, or at the bound the last one (the owner may be asked next).
 const ciWords = (t, fix) => (fix.last ? t.verdict.ciLast : t.verdict.ciFixing(fix.n, fix.m));
 
+// A silent lane in words, with what the supervisor did about it (lane.wake: it wakes the session now, woke, could not wake or
+// restarted it before and wakes it again, or gave up and told the owner): never a bare guess that it hangs.
+function quietWords(t, lane, at) {
+  const d = since(t, lane.lastAt, at);
+  if (lane.wake?.told) return t.verdict.quietTold(d);
+  return lane.wake?.count > 0 ? t.verdict.quietAgain(d, lane.wake.how) : t.verdict.quiet(d);
+}
+// A silent lane the supervisor gave up waking: it told the owner, who is needed now.
+const gaveUp = (view, lane) => Boolean(view?.supervisor?.running) && lane?.status === 'running' && Boolean(lane.quiet) && lane.wake?.told === true;
+
 // The one verdict of the run, the answer to "do I have to step in", first match: the supervisor stopped or failing,
 // a phase in the owner's own session, the supervisor not running, a failed or stopped phase, CI red that needs the
 // owner, questions waiting, CI red the phase fixes itself, a silent phase or helper, a phase done, a phase paused for
 // its context, then the supervisor's own state. Silence counts only while the supervisor runs: a run the owner stopped
 // is not stuck. { kind, tone (TONES), text }.
 function verdictOf(t, view) {
-  const lanes = list(view?.lanes);
+  // an attended phase's lane is the owner's session now: the verdict judges the other lanes
+  const lanes = list(view?.lanes).filter((l) => !attendedLane(view, l));
   const sup = view?.supervisor;
   const live = Boolean(sup?.running);
-  const asked = list(view?.questions).length;
+  const asked = shownQuestions(view).length;
   const has = (s) => lanes.some((l) => l.status === s);
   const v = (kind, tone, text = t.verdict[kind]) => ({ kind, tone, text });
+  // supervisor.json exists but holds no state (a crash cut its write short): nothing runs the lanes until the owner starts
+  if (sup?.damaged) return v('damaged', 'bad');
   if (sup?.halted) return v('halted', 'bad');
   if (live && sup.failingSince) return v('failing', 'bad', t.verdict.failing(clockText(Date.parse(sup.failingSince), view?.ui?.utcOffsetMinutes)));
+  // nothing runs but the owner's own session (checkout mode: attend stopped the supervisor): neutral, nothing is wrong
   const attended = list(view?.attended)[0];
-  if (attended != null) return v('attended', 'warn', t.verdict.attended(cut(attended, 20)));
+  if (attended != null && !lanes.length) return v('attended', 'plain', t.verdict.attended(cut(attended, 20)));
   if (sup && !live && !sup.finished) return v('supStopped', 'warn');
   if (has('failed')) return v('failed', 'bad');
+  if (lanes.some((l) => l.halted)) return v('laneHalted', 'bad');
   if (has('needs-owner')) return v('needsOwner', 'bad', t.verdict.needsOwner(asked));
   if (lanes.some((l) => l.held === 'fullMode')) return v('fullMode', 'bad');
   const red = lanes.find((l) => l.push?.ci === 'red');
@@ -404,11 +549,11 @@ function verdictOf(t, view) {
   if (fixing) return v('ciFixing', 'warn', ciWords(t, fixing));
   if (live) {
     const quiet = lanes.find((l) => l.quiet && l.status === 'running');
-    if (quiet) return v('quiet', 'warn', t.verdict.quiet(since(t, quiet.lastAt, view.at)));
+    if (quiet) return v('quiet', 'warn', quietWords(t, quiet, view.at));
     const silent = lanes.filter((l) => l.status === 'running').flatMap((l) => list(l.agents)).filter((a) => a.state === 'quiet').sort((a, b) => String(a.lastAt).localeCompare(String(b.lastAt)));
     if (silent.length) return v('quietHelper', 'warn', t.verdict.quietHelper(agentWord(t, silent[0].type), since(t, silent[0].lastAt, view.at), silent.length - 1));
   }
-  if (lanes.length && lanes.every((l) => l.status === 'done')) return v('done', 'ok');
+  if (lanes.length && lanes.every((l) => l.status === 'done')) return attended != null ? v('attended', 'plain', t.verdict.attended(cut(attended, 20))) : v('done', 'ok');
   if (has('paused-context')) return v('paused', 'warn');
   if (!sup) return lanes.length ? v('fine', 'ok') : v('never', 'dim');
   if (!live) return v('finished', 'ok');
@@ -417,11 +562,17 @@ function verdictOf(t, view) {
 
 export const verdict = (view) => verdictOf(textOf(view), view);
 
-function supWord(t, sup) {
+// The supervisor's line. One attend stopped (checkout mode: nothing runs but the owner's sitting) is paused, not down.
+function supWord(t, view) {
+  const sup = view?.supervisor;
   if (!sup) return t.sup.never;
+  if (sup.damaged) return t.sup.damaged;
   if (sup.running) return t.sup.running;
   if (sup.halted) return t.sup.halted;
-  return sup.finished ? t.sup.finished : t.sup.stopped;
+  if (sup.finished) return t.sup.finished;
+  const attended = list(view?.attended)[0];
+  const open = list(view?.lanes).filter((l) => l.job !== 'annotate' && l.status !== 'done');
+  return attended != null && open.every((l) => attendedLane(view, l)) ? t.sup.attended(cut(attended, 20)) : t.sup.stopped;
 }
 
 // The pane is a tree of plain nodes the hooks module turns into the surface's elements: { type: 'Box' | 'Text',
@@ -434,8 +585,13 @@ const toned = (tone, extra = {}) => ({ ...TONES[tone], ...extra });
 
 // What a lane that is not running says about itself (`Фаза 32 остановилась — ждёт вашего ответа`), or null while it
 // runs: { kind (the verdict's), tone, text }.
-const LANE_KINDS = { 'needs-owner': ['needsOwner', 'bad'], failed: ['failed', 'bad'], done: ['done', 'ok'], 'paused-context': ['paused', 'warn'] };
-function laneState(t, lane, asked) {
+// Stage 4: ready (a phase), prepped and annotated (a job): its turn ended and it is merged into main (calm)
+const LANE_KINDS = { 'needs-owner': ['needsOwner', 'bad'], failed: ['failed', 'bad'], done: ['done', 'ok'], 'paused-context': ['paused', 'warn'], ready: ['merging', 'ok'], prepped: ['merging', 'ok'], annotated: ['merging', 'ok'] };
+function laneState(t, view, lane, asked) {
+  // spec §8: the attend mark wins over whatever the stopped lane session left
+  if (attendedLane(view, lane)) return { kind: 'attended', tone: 'plain', text: t.inSession };
+  // Stage 4: a lane the supervisor stopped alone (L1's lane.halted); the other lanes go on
+  if (lane.halted) return { kind: 'laneHalted', tone: 'bad', text: t.stoppedLane };
   if (lane.held === 'fullMode') return { kind: 'fullMode', tone: 'bad', text: t.verdict.fullMode };
   const [kind, tone] = LANE_KINDS[lane.status] ?? [];
   return kind ? { kind, tone, text: kind === 'needsOwner' ? t.verdict.needsOwner(asked) : t.verdict[kind] } : null;
@@ -444,7 +600,7 @@ function laneState(t, lane, asked) {
 // How a lane line reads: 'state' (it stopped, finished or pauses: that first), 'held' (it would run, but the supervisor
 // does not: never «идёт»), else 'running'.
 function laneForm(view, lane) {
-  if (LANE_KINDS[lane.status] || lane.held === 'fullMode') return 'state';
+  if (attendedLane(view, lane) || LANE_KINDS[lane.status] || lane.held === 'fullMode' || lane.halted) return 'state';
   const sup = view?.supervisor;
   return sup && !sup.running ? 'held' : 'running';
 }
@@ -462,17 +618,38 @@ function laneTime(t, lane, form) {
 // Held by a supervisor that does not run: `Фаза 32 остановлена на шаге: выполнение планов · … · <verdict>`.
 function laneLine(t, view, lane, v, asked) {
   const form = laneForm(view, lane);
-  const dur = laneTime(t, lane, form);
-  const phase = t.phase(cut(lane.phase, 20));
+  // an attended lane's time is the stopped session's, not the owner's sitting
+  const dur = attendedLane(view, lane) ? null : laneTime(t, lane, form);
+  const head = laneHeadText(t, lane);
   const plans = plansWords(t, lane);
-  const state = form === 'state' ? laneState(t, lane, asked) : null;
+  const state = form === 'state' ? laneState(t, view, lane, asked) : null;
   const tail = v && v.kind !== state?.kind ? [' · ', text(toned(v.tone, { bold: true }), v.text)] : null;
   const dimmed = (parts) => (parts.filter(Boolean).length ? text(TONES.dim, ` · ${parts.filter(Boolean).join(' · ')}`) : null);
-  if (form === 'running') return text({ wrap: 'wrap' }, text({ bold: true }, phase), ` — ${stepWord(t, lane.step)}`, dimmed([plans, dur]), tail);
-  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${phase} ${t.stoppedAt(stepNoun(t, lane.step))}`), dimmed([plans, dur]), tail);
-  const where = [stepNoun(t, lane.step) && t.atStep(stepNoun(t, lane.step)), plans, dur && (lane.status === 'done' ? t.took(dur) : dur)];
-  return text({ wrap: 'wrap' }, text(toned(state.tone, { bold: true }), `${phase} ${state.text}`), dimmed(where), tail);
+  if (form === 'running') return text({ wrap: 'wrap' }, text({ bold: true }, head), ` — ${stepText(t, lane)}`, dimmed([plans, dur]), tail);
+  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${head} ${t.stoppedAt(stepNoun(t, lane.step))}`), dimmed([plans, dur]), tail);
+  // an attended lane's step is the stopped lane's: what the sitting does is said under the line (sittingRows)
+  const noun = attendedLane(view, lane) ? null : stepNoun(t, lane.step);
+  const where = [noun && t.atStep(noun), plans, dur && (lane.status === 'done' ? t.took(dur) : dur)];
+  return text({ wrap: 'wrap' }, text(toned(state.tone, { bold: true }), `${head} ${state.text}`), dimmed(where), tail);
 }
+
+// Stage 4 (D7): past two lanes a lane keeps its rows only while it is alert: stopped, failed, paused or held for full
+// mode, its CI red, a question of its phase open, or (while the supervisor runs) it or a helper of it silent.
+function laneAlert(view, lane) {
+  const attended = attendedLane(view, lane);
+  if (!attended && (lane.held === 'fullMode' || lane.halted || STOPPED.has(lane.status) || lane.status === 'paused-context')) return true;
+  if (lane.push?.ci === 'red') return true;
+  const own = lane.job === 'annotate' ? 'annotate' : lane.phase;
+  if (own != null && shownQuestions(view).some((q) => String(q?.phase ?? '') === String(own))) return true;
+  return !attended && Boolean(view?.supervisor?.running) && lane.status === 'running' && (Boolean(lane.quiet) || list(lane.agents).some((a) => a.state === 'quiet'));
+}
+
+// The slot of the phase lane a question's phase runs in, or null (the main checkout, a view from v0.3).
+// A question asked during its phase's prep (review M1) names the prep lane.
+const laneSlot = (view, phase) => {
+  const of = (job) => list(view?.lanes).find((l) => (l.job ?? 'phase') === job && String(l.phase) === String(phase) && slotOf(l));
+  return slotOf(of('phase') ?? of('prep'));
+};
 
 // A helper: what it does now, its plan and time dim; `columns` (the pane's width) cuts what it does, never the time.
 // While the supervisor does not run, nothing is called stuck: a silent helper says how long it is silent, dim.
@@ -481,6 +658,8 @@ function agentRow(t, a, at, live, columns) {
   const plan = planWords(t, a);
   if (a.state === 'quiet' && live) return text(toned('warn', { wrap: 'truncate-end' }), t.quietAgent(who, since(t, a.lastAt, at)), plan ? text(TONES.dim, ` · ${plan}`) : null);
   if (a.state === 'quiet') return text(toned('dim', { wrap: 'truncate-end' }), [who, plan, t.idle(since(t, a.lastAt, at))].filter(Boolean).join(' · '));
+  // a long command in flight (lib/liveness.mjs): calm, its time since it started
+  if (a.busy) return text(live ? { wrap: 'truncate-end' } : toned('dim', { wrap: 'truncate-end' }), who, plan ? text(TONES.dim, ` · ${plan}`) : null, ` · ${t.busy(since(t, a.busy.since, at))}`);
   const d = fmtDuration(t, a.elapsedMs);
   const dur = d === '-' ? '' : ` · ${d}`;
   const head = `${who}${plan ? ` · ${plan}` : ''} · `;
@@ -495,15 +674,36 @@ function lastSign(lane) {
   return times.length ? times.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b)) : null;
 }
 
-// The verdict line, then, indented: the sign of life (amber once the phase reads as silent), the reason it stopped,
-// the helpers at work, and the finished ones as one dim count.
+// The verdict line, then, indented: the sign of life (amber once the phase reads as silent; a long command in flight
+// instead, dim), the reason it stopped,
+// the helpers at work, and the finished ones as one dim count. Several lanes (Stage 4 D7): the verdict and the run's
+// summary line first, then a block per lane without the verdict; past two lanes a calm lane is its line alone.
 function runSection(t, view, v, columns) {
   const lanes = list(view.lanes);
+  const multi = lanes.length > 1;
   const live = Boolean(view.supervisor?.running);
-  const asked = list(view.questions).length;
-  const rows = lanes.length ? [] : [text({ wrap: 'wrap' }, text({ bold: true }, t.run), ' — ', text(toned(v.tone, { bold: true }), v.text))];
+  const asked = shownQuestions(view).length;
+  const rows = lanes.length && !multi ? [] : [text({ wrap: 'wrap' }, text({ bold: true }, t.run), ' — ', text(toned(v.tone, { bold: true }), v.text))];
+  if (multi) rows.push(text({ wrap: 'wrap' }, summaryLine(t, view)));
   lanes.forEach((lane, i) => {
-    rows.push(laneLine(t, view, lane, i === 0 ? v : null, asked));
+    const first = !multi && i === 0;
+    rows.push(laneLine(t, view, lane, first ? v : null, asked));
+    if (lanes.length > 2 && !laneAlert(view, lane)) return;
+    // an attended lane: the owner's session is the phase (spec §8). What it does now, its sign of life and its helpers
+    // at work come from that session (sittingRows), calm; the stopped lane's reason and silence are never shown; a red
+    // CI stays
+    if (attendedLane(view, lane)) {
+      const s = sittingRows(t, view, lane);
+      const under = [
+        s.now ? text({ wrap: 'wrap' }, text({ bold: true }, `${t.nowHead}: `), s.now) : null,
+        s.life ? text(toned('dim', { wrap: 'truncate-end' }), s.life) : null,
+        lane.push?.ci === 'red' ? text(toned('bad', { wrap: 'wrap' }), t.verdict.ciRed(asked)) : null,
+        ...s.helpers.map((a) => agentRow(t, a, view.at, true, columns)),
+        s.asks ? text(toned('dim', { wrap: 'wrap' }), s.asks) : null,
+      ].filter(Boolean);
+      if (under.length) rows.push(box({ flexDirection: 'column', paddingLeft: 2 }, under));
+      return;
+    }
     const agents = list(lane.agents);
     const working = agents.filter((a) => ACTIVE.has(a.state));
     const finished = agents.length - working.length;
@@ -512,10 +712,11 @@ function runSection(t, view, v, columns) {
     // a red CI the verdict does not speak of (an answer waits, the phase stopped) is said under it all the same
     // a red CI the phase fixes itself is said by Now (nowRow); one that needs the owner, here unless the verdict says it
     const fixing = selfFixing(view, lane);
-    const red = lane.push?.ci === 'red' && !fixing && !(i === 0 && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
+    const red = lane.push?.ci === 'red' && !fixing && !(first && (v.kind === 'ciRed' || v.kind === 'ciFixing'));
     const under = [
       nowRow(t, view, lane),
-      sign ? text(toned(live && lane.quiet ? 'warn' : 'dim', { wrap: 'truncate-end' }), t.life(since(t, sign, view.at) ?? '-')) : null,
+      // a long command in flight takes the place of the last activity, calm: the lane is busy, not silent
+      lane.busy ? text(toned('dim', { wrap: 'truncate-end' }), t.busy(since(t, lane.busy.since, view.at))) : sign ? text(toned(live && lane.quiet ? 'warn' : 'dim', { wrap: 'truncate-end' }), t.life(since(t, sign, view.at) ?? '-')) : null,
       red ? text(toned('bad', { wrap: 'wrap' }), t.verdict.ciRed(asked)) : null,
       why ? text(toned(STOPPED.has(lane.status) ? 'bad' : 'dim', { wrap: 'wrap' }), `${t.reason}: ${cut(why, 200)}`) : null,
       ...working.map((a) => agentRow(t, a, view.at, live, columns)),
@@ -534,8 +735,11 @@ function questionCard(t, view, q, field) {
   const id = String(q.id);
   // the revision drawn (S1: every question starts at rev 1); turbo-run answer gets it as --rev
   const question = { id, phase: String(q.phase ?? ''), rev: Number.isInteger(q.rev) && q.rev > 0 ? q.rev : 1 };
-  const where = planWords(t, { plan: q.plan == null ? null : cut(q.plan, 20), task: q.task == null ? null : cut(q.task, 10) }) ?? (question.phase ? t.phaseOnly(cut(question.phase, 20)) : null);
-  const holds = q.stopped === true;
+  const plain = planWords(t, { plan: q.plan == null ? null : cut(q.plan, 20), task: q.task == null ? null : cut(q.task, 10) }) ?? (question.phase === 'annotate' ? t.markup : question.phase ? t.phaseOnly(cut(question.phase, 20)) : null);
+  // Stage 4 (spec §8): the lane the question's phase runs in (`plan 34-02, task 3 · lane 2`)
+  const slot = laneSlot(view, question.phase);
+  const where = [plain, slot ? t.lane(slot) : null].filter(Boolean).join(' · ') || null;
+  const holds = waitsFor(view, q);
   const running = Boolean(view.supervisor?.running) && list(view.lanes).some((l) => String(l.phase) === question.phase && l.status === 'running');
   const options = list(q.options).map((o, i) => ({ n: i + 1, label: cut(typeof o === 'string' ? o : o?.label ?? '', LABEL_MAX), description: cut(o?.description ?? '', CONTEXT_MAX), recommended: o?.recommended === true }));
   const listed = options.some((o) => o.description || textWidth(o.label) > BUTTON_MAX);
@@ -563,13 +767,32 @@ function nowOf(t, view, lane) {
   if (fix) return { tone: 'warn', text: fix.last ? t.now.ciLast : t.now.ciFix(fix.n, fix.m) };
   const plain = (s) => ({ tone: 'plain', text: s });
   const working = list(lane.agents).filter((a) => a.state === 'running');
-  if (working.length) {
-    const type = NOW_ORDER.find((x) => working.some((a) => a.type === x));
-    if (type === 'gsd-executor') return plain(t.now.executors(working.filter((a) => a.type === type).length));
-    return plain(type ? t.now.agent[type] : t.now.helpers(working.length));
-  }
+  // an annotate lane says what it does in its line; with no helper at work there is nothing to add
+  if (lane.job === 'annotate' && !working.length) return null;
+  if (working.length) return plain(helpersNow(t, lane, working));
   if (lane.push?.ci === 'pending') return plain(t.now.ciWait);
   return plain(lane.step == null ? t.allDone : t.now.step[lane.step] ?? cut(lane.step, 40));
+}
+
+// What helpers at work do, in words: the most telling type first (NOW_ORDER), executors counted, any other as a count.
+function helpersNow(t, lane, working) {
+  const type = NOW_ORDER.find((x) => working.some((a) => a.type === x));
+  if (type === 'gsd-executor') return t.now.executors(working.filter((a) => a.type === type).length);
+  if (type === 'gsd-planner' && gapPlanning(lane)) return t.now.gapPlan;
+  return type ? t.now.agent[type] : t.now.helpers(working.length);
+}
+
+// spec §8: an attended phase as its sitting shows it (turbo-run view's lane.sitting: lastAt and agents are the owner's
+// session's): { now (its helpers at work in words, else its last action while it works, else null), life (its last
+// activity, never a silence: the owner may think or be away), helpers (at work) }. Nothing from a view without sitting
+// (an older turbo-run, or a session not known): the stopped lane's would mislead.
+function sittingRows(t, view, lane) {
+  if (!lane?.sitting || typeof lane.sitting !== 'object') return { now: null, life: null, helpers: [], asks: null };
+  const helpers = list(lane.agents).filter((a) => a.state === 'running');
+  const now = helpers.length ? helpersNow(t, lane, helpers) : lane.sitting.action ? sittingDoing(t, lane.sitting.action) : null;
+  const sign = lastSign(lane);
+  const n = Number.isInteger(lane.sitting.questions) ? lane.sitting.questions : 0;
+  return { now, life: sign ? t.life(since(t, sign, view.at) ?? '-') : null, helpers, asks: n > 0 ? t.sittingAsks(n, cut(lane.phase, 20)) : null };
 }
 
 export const currentAction = (view, lane) => nowOf(textOf(view), view, lane);
@@ -582,14 +805,15 @@ function nowRow(t, view, lane) {
 
 // The /turbo-phase steps in order: lib/phase-progress.mjs STEPS, carried here since the mod imports nothing
 // (test/view-model.test.mjs holds the two equal). gates-off and restore are turbo switching GSD's own gates around the
-// plans: listed only while the lane is at one.
-export const STEPS = Object.freeze(['freshness', 'discuss', 'prologue', 'plan', 'gates-off', 'execute', 'restore', 'fanout', 'fix', 'final-gate', 'uat', 'close']);
-const GATE_STEPS = new Set(['gates-off', 'restore']);
+// plans, integrate is a slot lane's merge into main (Stage 4 §7.1; it passes at once outside a slot): listed only while
+// the lane is at one.
+export const STEPS = Object.freeze(['freshness', 'discuss', 'prologue', 'plan', 'gates-off', 'execute', 'restore', 'fanout', 'fix', 'final-gate', 'uat', 'close', 'integrate']);
+const GATE_STEPS = new Set(['gates-off', 'restore', 'integrate']);
 
 // The lane's steps, each { step, state: 'done' | 'now' | 'ahead' }, from its step alone (completeStep keeps them in
 // order); a step turbo does not know is the only one; none for a phase done or no lane.
 export function phaseSteps(lane) {
-  if (!lane || lane.status === 'done') return [];
+  if (!lane || lane.status === 'done' || lane.job === 'annotate') return [];
   const at = lane.step == null ? STEPS.length : STEPS.indexOf(lane.step);
   if (at < 0) return [{ step: lane.step, state: 'now' }];
   return STEPS.map((step, i) => ({ step, state: i < at ? 'done' : i === at ? 'now' : 'ahead' })).filter((s) => s.state === 'now' || !GATE_STEPS.has(s.step));
@@ -601,39 +825,91 @@ export function phaseSteps(lane) {
 // phase done or no lane.
 // { chain, needs: [{ tone, text }] }.
 function nextOf(t, view, lane) {
-  if (!lane || lane.status === 'done') return null;
-  const ahead = phaseSteps(lane).filter((s) => s.state === 'ahead').map((s) => stepWord(t, s.step));
-  const last = view?.range?.to != null && String(view.range.to) === String(lane.phase);
-  const questions = list(view?.questions);
-  const held = questions.filter((q) => q?.stopped === true).length;
+  if (!lane || lane.status === 'done' || lane.job === 'annotate') return null;
+  // an attended lane's steps are the stopped lane's: no chain; what it needs is its sitting's
+  const attended = attendedLane(view, lane);
+  const ahead = attended ? [] : phaseSteps(lane).filter((s) => s.state === 'ahead').map((s) => stepWord(t, s.step));
+  const last = lastPhase(view, lane);
+  const questions = shownQuestions(view);
+  const held = questions.filter((q) => waitsFor(view, q)).length;
   const needs = [];
   const need = (tone, s) => needs.push({ tone, text: s });
+  // an attended lane's record is the stopped session's: the owner is with the phase in their own session
+  const own = !attendedLane(view, lane);
   if (held) need('bad', t.need.held);
-  else if (lane.status === 'needs-owner') need('bad', t.need.decide);
-  if (lane.status === 'failed') need('bad', t.need.failed);
-  if (lane.held === 'fullMode') need('bad', t.need.fullMode);
+  else if (own && lane.status === 'needs-owner') need('bad', t.need.decide);
+  if (own && lane.status === 'failed') need('bad', t.need.failed);
+  if (own && lane.held === 'fullMode') need('bad', t.need.fullMode);
+  if (own && lane.halted) need('bad', t.need.halted);
+  if (own && gaveUp(view, lane)) need('bad', t.need.stalled(cut(lane.sessionId ?? '', 64)));
   if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
   if (selfFixing(view, lane)?.last) need('warn', t.need.ciLast);
+  const sitting = attended ? sittingNeed(t, [lane]) : null;
+  if (sitting) need('plain', sitting);
   // the view knows no owner-only acceptance items ahead of time: no guess about them here (review r1)
   if (!needs.length) need('ok', t.need.none);
-  return { chain: [...ahead, last ? t.runEnd : t.nextPhase].join(' → '), needs };
+  return { chain: attended ? null : [...ahead, last ? t.runEnd : t.nextPhase].join(' → '), needs };
 }
 
 export const whatNext = (view, lane) => nextOf(textOf(view), view, lane);
 
+// The run ends after this phase: it is the range's last, or the only one of the run still open (supervisor.json
+// remaining: the unfinished phases in the run's scope and the lanes' phases, as the supervisor last read them; absent in
+// an older view, and empty, with no lane, says nothing).
+function lastPhase(view, lane) {
+  const id = String(lane.phase);
+  if (view?.range?.to != null && String(view.range.to) === id) return true;
+  return Array.isArray(view?.remaining) && view.remaining.length > 0 && view.remaining.every((p) => String(p) === id);
+}
+
+// Several lanes (Stage 4 D7): when the owner is needed, across every lane; each lane's line names its step, and the
+// summary line the next phase, so no chain of steps.
+function nextOfRun(t, view) {
+  const lanes = list(view?.lanes).filter((l) => !attendedLane(view, l));
+  const questions = shownQuestions(view);
+  const held = questions.filter((q) => waitsFor(view, q)).length;
+  const needs = [];
+  const need = (tone, s) => needs.push({ tone, text: s });
+  if (held) need('bad', t.need.held);
+  else if (lanes.some((l) => l.status === 'needs-owner')) need('bad', t.need.decide);
+  if (lanes.some((l) => l.status === 'failed')) need('bad', t.need.failed);
+  if (lanes.some((l) => l.held === 'fullMode')) need('bad', t.need.fullMode);
+  if (lanes.some((l) => l.halted)) need('bad', t.need.halted);
+  const stalled = lanes.find((l) => gaveUp(view, l));
+  if (stalled) need('bad', t.need.stalled(cut(stalled.sessionId ?? '', 64)));
+  if (questions.length > held) need('warn', t.need.ahead(questions.length - held));
+  if (lanes.some((l) => selfFixing(view, l)?.last)) need('warn', t.need.ciLast);
+  const sitting = sittingNeed(t, list(view?.lanes).filter((l) => attendedLane(view, l)));
+  if (sitting) need('plain', sitting);
+  if (!needs.length) need('ok', t.need.none);
+  return { chain: null, needs };
+}
+
 function nextSection(t, view, lane) {
-  const n = nextOf(t, view, lane);
+  const n = list(view.lanes).length > 1 || lane?.job === 'prep' ? nextOfRun(t, view) : nextOf(t, view, lane);
   if (!n) return null;
   return box({ flexDirection: 'column', marginTop: 1 }, text({ bold: true }, t.nextHead),
-    box({ flexDirection: 'column', paddingLeft: 2 }, text({ wrap: 'wrap' }, n.chain), n.needs.map((x) => text(toned(x.tone, { wrap: 'wrap' }), x.text))));
+    box({ flexDirection: 'column', paddingLeft: 2 }, n.chain ? text({ wrap: 'wrap' }, n.chain) : null, n.needs.map((x) => text(toned(x.tone, { wrap: 'wrap' }), x.text))));
+}
+
+// How the lane's step reads in its steps: null while it goes on (it runs, it is attended, or the supervisor merges it:
+// F4, unless its merge waits for an answer of the owner's), else where it stopped: 'bad' (a stop, a failure, full mode, a lane halted alone), 'warn' (paused, held).
+const MERGING = new Set(['ready', 'prepped', 'annotated']);
+function stepHalt(view, lane) {
+  if (laneForm(view, lane) === 'running' || attendedLane(view, lane)) return null;
+  const asks = shownQuestions(view).some((q) => String(q?.phase ?? '') === String(lane.phase));
+  if (MERGING.has(lane.status) && !lane.halted && lane.held !== 'fullMode' && view?.supervisor?.running && !asks) return null;
+  return STOPPED.has(lane.status) || lane.held === 'fullMode' || lane.halted ? 'bad' : 'warn';
 }
 
 // The phase's steps (D5): done ✓ dim, now ▶ bold (where a stopped phase stopped: ■, red; paused or held: amber), ahead
 // · dim.
 function stepsSection(t, view, lane) {
-  const steps = phaseSteps(lane);
+  // several lanes: each lane line says its step (Stage 4 D7)
+  // an attended lane's step is the stopped lane's: no steps (its sitting says what it does)
+  const steps = list(view.lanes).length > 1 || lane?.job === 'prep' || attendedLane(view, lane) ? [] : phaseSteps(lane);
   if (!steps.length) return null;
-  const halt = laneForm(view, lane) === 'running' ? null : STOPPED.has(lane.status) || lane.held === 'fullMode' ? 'bad' : 'warn';
+  const halt = stepHalt(view, lane);
   const row = (s) => {
     const word = stepWord(t, s.step);
     if (s.state === 'done') return text({}, text(TONES.ok, '✓'), text(TONES.dim, ` ${word}`));
@@ -670,6 +946,20 @@ function changesSection(t, view) {
   return c ? box({ marginTop: 1 }, text({ wrap: 'truncate-end' }, text({ bold: true }, t.changes), ` ${c.kinds}`, c.last ? text(TONES.dim, ` · ${c.last}`) : null)) : null;
 }
 
+// v0.4.0: away mode (turbo-run away --set) and the answers turbo took itself while the owner was away, each with the
+// command that takes it back (lib/view.mjs formatView prints the same lines).
+function awaySection(t, view) {
+  const auto = list(view.autoAnswered);
+  if (!view.away && !auto.length) return null;
+  return box({ flexDirection: 'column', marginTop: 1 },
+    view.away ? text(TONES.warn, t.awayOn) : null,
+    auto.length ? text(toned('warn', { bold: true }), t.autoHead(auto.length)) : null,
+    auto.length ? box({ flexDirection: 'column', paddingLeft: 2 }, auto.flatMap((a) => [
+      text({ wrap: 'wrap' }, `${cut(a?.question ?? '', QUESTION_MAX)} → ${cut(a?.option ?? '', LABEL_MAX)}`),
+      text(TONES.dim, `  ${t.undo}: ${cut(a?.undo ?? '', 200)}`),
+    ])) : null);
+}
+
 // The pane: the verdict and the run (what each phase does now under it), the questions waiting for the owner (the ones
 // the phase waits for first), what comes next and when the owner is needed, the phase's steps, the latest commits by
 // kind and the supervisor, in sections a blank line apart. error is why the last refresh failed; the last
@@ -680,13 +970,14 @@ export function render(view, { error = null, field = NO_FIELD, columns = null } 
   if (error) parts.push(text(toned('bad', { wrap: 'truncate-end' }), `⚠️ ${t.failed}: ${errorWords(view, cut(error, 200))}`));
   if (!view) return box({ flexDirection: 'column' }, parts.length ? parts : [text(TONES.dim, t.loading)]);
   parts.push(runSection(t, view, verdictOf(t, view), columns));
-  const questions = [...list(view.questions)].sort((a, b) => (b?.stopped === true) - (a?.stopped === true));
+  const questions = [...shownQuestions(view)].sort((a, b) => waitsFor(view, b) - waitsFor(view, a));
   if (questions.length) parts.push(box({ flexDirection: 'column', marginTop: 1 }, text(toned('warn', { bold: true }), t.askHead(questions.length)), questions.map((q) => questionCard(t, view, q, field))));
+  parts.push(awaySection(t, view));
   const lane = list(view.lanes)[0] ?? null;
   parts.push(nextSection(t, view, lane), stepsSection(t, view, lane), changesSection(t, view));
   if (view.supervisor) {
     const range = view.range ? t.phases(cut(view.range.from ?? '…', 20), cut(view.range.to ?? '…', 20)) : null;
-    parts.push(box({ marginTop: 1 }, text(toned('dim', { wrap: 'truncate-end' }), [supWord(t, view.supervisor), range].filter(Boolean).join(' · '))));
+    parts.push(box({ marginTop: 1 }, text(toned('dim', { wrap: 'truncate-end' }), [supWord(t, view), range].filter(Boolean).join(' · '))));
   }
   return box({ flexDirection: 'column' }, parts.filter(Boolean));
 }
@@ -719,20 +1010,24 @@ function pushMarks(t, push, ci = true) {
 // CI ✓`), or null when the project has no turbo run and no open question. bandStyle is its colour, the verdict's.
 export function bandLine(view, { error = null, paneWaiting = false } = {}) {
   if (error) return `turbo · ⚠️ ${errorWords(view, cut(error, 100))}`;
-  const questions = list(view?.questions);
+  const questions = shownQuestions(view);
   if (!view || (!view.supervisor && !questions.length)) return null;
   const t = textOf(view);
   const v = verdictOf(t, view);
   const lanes = list(view.lanes);
-  const states = lanes.map((l) => (laneForm(view, l) === 'state' ? laneState(t, l, questions.length) : null));
+  const states = lanes.map((l) => (laneForm(view, l) === 'state' ? laneState(t, view, l, questions.length) : null));
   const lanePart = (l, i) => {
-    const p = cut(l.phase, 20);
-    if (states[i]) return `${t.phaseOnly(p)} ${states[i].text}`;
-    if (laneForm(view, l) === 'held') return `${t.phaseOnly(p)} ${t.stoppedShort}`;
-    return `${t.bandPhase(p, stepWord(t, l.step))}${l.plans?.total > 0 ? ` ${l.plans.done}/${l.plans.total}` : ''}`;
+    const p = l.job === 'annotate' ? null : cut(l.phase, 20);
+    const who = p === null ? t.lane(slotOf(l) ?? '–') : t.phaseOnly(p);
+    if (states[i]) return `${who} ${states[i].text}`;
+    if (laneForm(view, l) === 'held') return `${who} ${t.stoppedShort}`;
+    if (p === null) return `${who}: ${t.job.annotate}`;
+    return `${t.bandPhase(p, stepText(t, l))}${l.plans?.total > 0 ? ` ${l.plans.done}/${l.plans.total}` : ''}`;
   };
-  const parts = ['turbo', ...lanes.map(lanePart)];
-  if (v.kind !== 'answer' && !states.some((s) => s?.kind === v.kind)) parts.push(v.text);
+  // Stage 4 (D8): past two lanes the band counts them, so it stays one line
+  const many = lanes.length > 2;
+  const parts = ['turbo', ...(many ? [t.lanesCount(lanes.length)] : lanes.map(lanePart))];
+  if (v.kind !== 'answer' && (many || !states.some((s) => s?.kind === v.kind))) parts.push(v.text);
   if (questions.length) parts.push(t.waiting(questions.length));
   // a red CI verdict says it in words already
   parts.push(...(lanes.map((l) => pushMarks(t, l.push, v.kind !== 'ciRed' && v.kind !== 'ciFixing')).find((m) => m.length) ?? []));
@@ -746,7 +1041,13 @@ export const bandStyle = (view, { error = null } = {}) => ({ ...TONES[error ? 'b
 // What the toasts remember of each lane between reads: { [phase]: { status, red } }, red the sha of the red CI run
 // already toasted. A lane that left the view stays, with status 'gone'.
 const redOf = (lane) => (lane.push?.ci === 'red' ? lane.push.sha ?? '' : null);
-const lanesSeen = (view) => Object.fromEntries(list(view?.lanes).map((l) => [String(l.phase), { status: l.status, red: redOf(l) }]));
+// Stage 4 (D9): only phase lanes raise toasts (a view from v0.3 has no job: a phase lane); prep and annotate lanes never
+// say a phase is done. slot: the lane's slot (null in the main checkout), for when it leaves.
+const phaseLanes = (view) => list(view?.lanes).filter((l) => (l.job ?? 'phase') === 'phase' && l.phase != null);
+const lanesSeen = (view) => Object.fromEntries(phaseLanes(view).map((l) => [String(l.phase), { status: l.status, red: redOf(l), slot: slotOf(l) }]));
+// A phase lane in a slot ends its turn with lane-status ready and stays while it is merged into main; it leaves done
+// only after that (L1's DONE_STATUSES.phase). One released while it ran (failed, abandoned) leaves without it.
+const DONE_BEFORE_LEAVING = new Set(['ready', 'done']);
 
 // Toasts for what changed between two views, against seen (the lanes as last seen, kept by the caller across reads;
 // prev's lanes when not given): a new question, a phase done, red CI (whether the phase fixes it itself), a lane that
@@ -759,27 +1060,29 @@ export function diffViews(prev, next, seen = lanesSeen(prev)) {
   if (!prev) return { toasts: [], seen: { ...seen, ...lanesSeen(next) } };
   const t = textOf(next);
   const out = [];
-  const asked = new Set(list(prev.questions).map((q) => q.id));
-  const fresh = list(next.questions).filter((q) => !asked.has(q.id));
-  if (fresh.length === 1) out.push(t.newQuestion(cut(fresh[0].phase ?? '', 20), cut(fresh[0].question || fresh[0].header || '', 80)));
+  const asked = new Set(shownQuestions(prev).map((q) => q.id));
+  const fresh = shownQuestions(next).filter((q) => !asked.has(q.id));
+  const asks = (q) => cut(q.question || q.header || '', 80);
+  if (fresh.length === 1) out.push(fresh[0].phase === 'annotate' ? t.newMarkupQuestion(asks(fresh[0])) : t.newQuestion(cut(fresh[0].phase ?? '', 20), asks(fresh[0])));
   else if (fresh.length > 1) out.push(t.newQuestions(fresh.length));
   const after = { ...seen };
-  const lanes = list(next.lanes);
+  const lanes = phaseLanes(next);
   const sup = next.supervisor;
   const cleared = Boolean(sup && !sup.halted && (sup.finished || (sup.pid != null && sup.pid === prev.supervisor?.pid)));
   for (const [phase, last] of Object.entries(seen)) {
     if (last.status === 'gone' || lanes.some((l) => String(l.phase) === phase)) continue;
-    if (cleared && last.status !== 'done') out.push(t.phaseDone(phase));
+    if (cleared && last.status !== 'done' && (!last.slot || DONE_BEFORE_LEAVING.has(last.status))) out.push(t.phaseDone(phase));
     after[phase] = { ...last, status: 'gone' };
   }
   for (const n of lanes) {
     const phase = String(n.phase);
     const last = seen[phase] ?? { status: null, red: null };
     if (n.status === 'done' && last.status !== 'done') out.push(t.phaseDone(phase));
-    if (STOPPED.has(n.status) && n.status !== last.status) out.push((n.status === 'failed' ? t.laneFailed : t.laneNeedsOwner)(phase, cut(laneReason(n.reason), 80)));
+    // an attended phase's lane record is its stopped session's: the owner is with the phase in their own session
+    if (STOPPED.has(n.status) && n.status !== last.status && !attendedLane(next, n)) out.push((n.status === 'failed' ? t.laneFailed : t.laneNeedsOwner)(phase, cut(laneReason(n.reason), 80)));
     const red = redOf(n);
-    if (red !== null && red !== last.red) out.push(t.ciRed(phase, sup?.running ? ciFixing(n) : null, list(next.questions).length));
-    after[phase] = { status: n.status, red };
+    if (red !== null && red !== last.red) out.push(t.ciRed(phase, sup?.running ? ciFixing(n) : null, shownQuestions(next).length));
+    after[phase] = { status: n.status, red, slot: slotOf(n) };
   }
   if (!prev.supervisor?.halted && sup?.halted) out.push(t.halted);
   return { toasts: out.map((s) => cut(s, 300)), seen: after };
@@ -817,6 +1120,8 @@ function refusalWords(t, why) {
   if (/^no question /.test(why)) return t.refusal.gone;
   if (/has no option/.test(why)) return t.refusal.noOption;
   if (/takes one of its options only/.test(why)) return t.refusal.optionsOnly;
+  const sitting = /is a live sitting\b.*\battend (\S+) in a new\b/.exec(why);
+  if (sitting) return t.refusal.sitting(sitting[1]);
   if (/lane never answers/.test(why)) return t.refusal.lane;
   return why;
 }
@@ -867,10 +1172,13 @@ export function refreshMs(view, foreground) {
   return foreground ? ms : Math.max(BACKGROUND_MS, ms);
 }
 
-// The mod opens the pane by itself only while there is something live to watch; Claude Code places such a pane
-// from 144 columns (110 once the person opened it), and /turbo-view or the owner's next prompt (register.mjs
-// askAgain) opens it at any width.
-export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || list(view?.questions).length);
+// The mod opens the pane by itself only while there is something live to watch: the supervisor runs, a question is
+// open, or a lane is open (a crash or a reboot leaves its lanes recorded with no supervisor: the pane says so), or the
+// supervisor's state is damaged (a crash cut its write short: the pane says what to do) in a run the owner did not stop. A run
+// the owner stopped (turbo-run stop) opens it only for a question. Claude Code places such a pane from 144 columns (110
+// once the person opened it), and /turbo-view or the owner's next prompt (register.mjs askAgain) opens it at any width.
+const laneOpen = (lane) => lane?.status !== 'done';
+export const shouldAutoOpen = (view) => Boolean(view?.supervisor?.running || (view?.supervisor?.damaged && !view.supervisor.stoppedByOwner) || shownQuestions(view).length || (!view?.supervisor?.stoppedByOwner && list(view?.lanes).some(laneOpen)));
 
 // The argv of S1's single answer arbiter (spec §5.3) for a press in the pane: option is the 1-based option number,
 // text a free answer, passed as one argument (no shell); --rev is always the revision the pane drew, so an answer to
@@ -883,8 +1191,9 @@ export function answerArgv({ node, turboRun, root, question, option = null, text
   return text !== null ? [...head, ...tail, '--text', String(text)] : [...head, '--option', String(option), ...tail];
 }
 
-// The argv of the view read: the project is named, never taken from the working directory.
-export const viewArgv = ({ node, turboRun, root }) => [node, turboRun, 'view', '--project', root, '--json'];
+// The argv of the view read: the project is named, never taken from the working directory. --watchdog: the read on
+// the clock also tells the owner once when the supervisor died without a word (lib/watchdog.mjs).
+export const viewArgv = ({ node, turboRun, root }) => [node, turboRun, 'view', '--project', root, '--json', '--watchdog'];
 
 // The directory turbo-run runs in: its install directory (<dir>/bin/turbo-run.mjs → <dir>), never the project, where
 // a node version manager (Volta, asdf, mise) would follow the project's pin. A network share keeps its //server/share
@@ -938,7 +1247,7 @@ export function afterAnswer(field, id, code) {
 
 // A draft lives as long as its question is open in the view.
 export function keepDraft(field, view) {
-  if (field.draftFor === null || list(view?.questions).some((q) => String(q.id) === field.draftFor)) return field;
+  if (field.draftFor === null || shownQuestions(view).some((q) => String(q.id) === field.draftFor)) return field;
   return { inputFor: field.inputFor === field.draftFor ? null : field.inputFor, draft: '', draftFor: null };
 }
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GAP_PLAN_RULE, RELEASE_RULE, laneSystemPrompt, laneUserPrompt } from '../lib/lane-prompt.mjs';
+import { GAP_PLAN_RULE, HUMAN_ACTION_RULE, RELEASE_RULE, TMP_RULE_LEAD, laneSystemPrompt, laneUserPrompt, lockRule, tmpRule } from '../lib/lane-prompt.mjs';
 
 test('system prompt carries rules, no double quotes or percent signs', () => {
   const s = laneSystemPrompt({ phase: '3', turboRun: 'node /h/.claude/turbo/bin/turbo-run.mjs', contextPct: 55, autonomy: 'standard' });
@@ -81,6 +81,23 @@ test('temporary files, stands and data copies go under the lane\'s temp director
   }
 });
 
+// smoke F2: GSD executors wrote TDD captures into the folder above the slots, next to the project. Subagents never see
+// the lane's system prompt, so the lane hands them the rule, as it does the release rule.
+test('the temporary-files rule confines writes to the checkout and the lane\'s temp directory, and goes to every subagent the lane dispatches', () => {
+  const dir = 'C:\\Users\\dev\\cfg\\turbo\\tmp\\0123456789abcdef\\p3';
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard', mode, tmpDir: dir });
+    const rule = s.split('\n').find((l) => l.startsWith('7. '));
+    assert.ok(rule.includes(`7. ${TMP_RULE_LEAD}`), mode);
+    assert.ok(rule.includes(tmpRule(dir)), 'rule 7 carries the rule the subagents get, unchanged');
+    for (const n of ['nothing of yours goes anywhere else outside the checkout you work in', 'not next to the checkout', 'not in a folder above it', 'not the home directory', 'in Git Bash on Windows /tmp is not that directory', 'TDD RED evidence record', '.planning/turbo/run/tdd/ in the checkout (git ignores that folder)', 'A file write the lane guard denies goes to the directory its message names: never get around it through the shell']) assert.ok(tmpRule(dir).includes(n), n);
+    assert.ok(tmpRule(dir).includes('C:/Users/dev/cfg/turbo/tmp/0123456789abcdef/p3'));
+    for (const n of ['at the end of every subagent prompt', 'executors', 'continuation agents', 'planners', 'pass it on']) assert.ok(rule.includes(n), n);
+    assert.ok(!/["%<>]/.test(tmpRule(dir)) && !tmpRule(dir).startsWith('-'), 'a plain argv value');
+  }
+  assert.ok(!laneSystemPrompt({ phase: '3', turboRun: 'x', contextPct: 55, autonomy: 'standard' }).includes(TMP_RULE_LEAD), 'no temp directory, no rule');
+});
+
 // spec 6.2: with autonomy standard, deploying is the owner's (class D); max deploys itself
 test('standard reserves deploying for the owner; max deploys with safeguards', () => {
   const OWNER_DEPLOY = 'deploying to any server or environment outside this machine';
@@ -155,6 +172,18 @@ test('S4 lane rules: releases and gap plans in both modes, before the push rule;
   for (const r of [RELEASE_RULE, GAP_PLAN_RULE]) assert.ok(!/["%<>]/.test(r), r);
 });
 
+test('a step for the owner that did not work: both modes get the rule to diagnose it themselves and ask with the shortest fix, never the same instructions; a plain argv value', () => {
+  for (const mode of ['safe', 'full']) {
+    const s = laneSystemPrompt({ phase: '3', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode });
+    const line = s.split('\n').find((l) => l.startsWith('Owner steps: '));
+    assert.ok(line && line.includes(HUMAN_ACTION_RULE), mode);
+    assert.equal(line.includes('A step that did not work'), mode === 'full', `${mode}: the skill paragraph is named in full mode only`);
+    assert.ok(!s.includes('"') && !s.includes('%') && !s.startsWith('-'), mode);
+  }
+  for (const n of ['answered Done', 'never send the same instructions again', 'read-only commands', 'why the previous attempt did not work', 'exact shortest fix', 'one command', 'elevated (administrator) shell', 'the same check fails the same way', 'stop for the owner with the diagnosis']) assert.ok(HUMAN_ACTION_RULE.includes(n), n);
+  assert.ok(!/["%<>]/.test(HUMAN_ACTION_RULE) && !HUMAN_ACTION_RULE.startsWith('-'));
+});
+
 test('v0.3.3: every stop for the owner is asked through turbo-run ask in plain words, in both modes; only a checkpoint stop of the skill keeps lane-status needs-owner; an answer to the lane\'s own question is data, delivered on the lane path', () => {
   for (const mode of ['safe', 'full']) {
     const s = laneSystemPrompt({ phase: '3', turboRun: 'node t', contextPct: 55, autonomy: 'standard', mode });
@@ -165,4 +194,14 @@ test('v0.3.3: every stop for the owner is asked through turbo-run ask in plain w
     assert.ok(!s.includes('"') && !s.includes('%'));
     assert.equal(s.includes('lane-status 3 needs-owner'), mode === 'full', 'the checkpoint exception is full mode\'s only');
   }
+});
+
+test('slot lanes get the lock rule for one-off actions on shared resources; checkout lanes do not (Stage 4 L1)', () => {
+  const rule = lockRule({ phase: '34', turboRun: 'node x' });
+  assert.match(rule, /run node x lock <gate> 34 with the Bash timeout at 600000 ms, do the action, then run node x unlock <gate> 34 at once, also when the action failed\./);
+  assert.match(rule, /Exit 3 means another phase holds it and the owner was told: run the lock once more; a second exit 3 stops you for the owner/);
+  assert.ok(!rule.includes('"') && !rule.includes('%') && !rule.startsWith('-'));
+  const base = { phase: '34', turboRun: 'node x', contextPct: 55, autonomy: 'standard', mode: 'full' };
+  assert.ok(laneSystemPrompt({ ...base, slots: true }).endsWith(rule));
+  assert.ok(!laneSystemPrompt(base).includes('lock <gate>'));
 });

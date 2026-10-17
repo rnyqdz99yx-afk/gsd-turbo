@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { comparePhase, nextPhase, relaunchDecision, isFinished, inRange, rangeBlocker, rangeLabel } from '../lib/scheduler.mjs';
+import { comparePhase, nextPhase, relaunchDecision, isFinished, inRange, rangeBlocker, rangeLabel, ANY_AREA, annotationOf, areasOverlap, criticalPath, maskPrefix, pickPhases } from '../lib/scheduler.mjs';
 
 const P = (number, deps = [], complete = false) => ({ number, deps, complete });
 // checked off in the ROADMAP and fully implemented, but GSD reports it unfinished (verification stale)
@@ -86,4 +86,111 @@ test('relaunchDecision: a missing or invalid count starts at 0; a missing or inv
   for (const maxRestarts of [undefined, NaN, 'x']) {
     assert.equal(relaunchDecision({ restarts: 0, progressed: false, maxRestarts }).action, 'halt', String(maxRestarts));
   }
+});
+
+test('maskPrefix: the static part of a mask by path segments, lower case, Windows separators and ./ removed', () => {
+  assert.deepEqual(maskPrefix('src/api/*.ts'), { segs: ['src', 'api'], partial: '' });
+  assert.deepEqual(maskPrefix('src/ap*'), { segs: ['src'], partial: 'ap' });
+  assert.deepEqual(maskPrefix('README.md'), { segs: ['readme.md'], partial: null });
+  assert.deepEqual(maskPrefix('docs/'), { segs: ['docs'], partial: '' });
+  assert.deepEqual(maskPrefix('**'), { segs: [], partial: '' });
+  assert.deepEqual(maskPrefix(' ./a//b/c?.js '), { segs: ['a', 'b'], partial: 'c' });
+  assert.deepEqual(maskPrefix('src\\Api\\[ab].ts'), { segs: ['src', 'api'], partial: '' });
+  assert.deepEqual(maskPrefix('!src/x'), { segs: [], partial: '' });
+  assert.deepEqual(maskPrefix(''), { segs: [], partial: '' });
+  assert.deepEqual(ANY_AREA, ['**']);
+});
+
+test('areasOverlap (spec §6.3): one static prefix is a prefix of the other by segments; false overlaps only cost parallelism (Review Focus 4)', () => {
+  const yes = [
+    [['src/**'], ['src/api/x.ts']],
+    [['src/api/'], ['src/api']],
+    [['src/a*'], ['src/ab/c.ts']],
+    [['src/a*'], ['src/ab*']],
+    [['src'], ['src/x/y.ts']],
+    [['**'], ['docs/a.md']],
+    [['src\\api\\*.ts'], ['./SRC/Api/user.ts']],
+    [['!src/x'], ['lib/y']],
+    [['src/*.ts'], ['src/deep/a.js']],
+    [['lib/{a,b}.js'], ['lib/c.js']],
+    [['a.md', 'src/**'], ['src/z']],
+    [['README.md'], ['readme.md']],
+  ];
+  const no = [
+    [['src/a*'], ['src/b/c.ts']],
+    [['src/api/**'], ['src/apix/**']],
+    [['src/a.ts'], ['src/b.ts']],
+    [['docs/**'], ['src/**']],
+    [[], ['**']],
+  ];
+  for (const [a, b] of yes) {
+    assert.equal(areasOverlap(a, b), true, `${a} / ${b}`);
+    assert.equal(areasOverlap(b, a), true, `${b} / ${a}`);
+  }
+  for (const [a, b] of no) {
+    assert.equal(areasOverlap(a, b), false, `${a} / ${b}`);
+    assert.equal(areasOverlap(b, a), false, `${b} / ${a}`);
+  }
+  assert.equal(areasOverlap(undefined, ['x']), true, 'no list is everything');
+});
+
+test('annotationOf: lanes.json areas and gates; a missing phase, low confidence or no file is ** with its gates', () => {
+  const file = { fresh: true, phases: { 3: { areas: ['src/a/**'], gates: ['prod-deploy'], confidence: 'high' }, 4: { areas: ['src/b/**'], gates: ['owner-live'], confidence: 'low' } } };
+  assert.deepEqual(annotationOf(file, '3'), { areas: ['src/a/**'], gates: ['prod-deploy'] });
+  assert.deepEqual(annotationOf(file, '4'), { areas: ['**'], gates: ['owner-live'] });
+  assert.deepEqual(annotationOf(file, '5'), { areas: ['**'], gates: [] });
+  assert.deepEqual(annotationOf(null, '3'), { areas: ['**'], gates: [] });
+  assert.deepEqual(annotationOf({ fresh: true, phases: { 3: { areas: 'src', gates: null } } }, '3'), { areas: ['**'], gates: [] });
+});
+
+test('criticalPath: the longest chain of unfinished phases waiting on each phase; finished phases do not count; a cycle ends', () => {
+  const P2 = (number, deps = [], complete = false) => ({ number, deps, complete });
+  const cp = criticalPath([P2('1'), P2('2', ['1']), P2('3', ['2']), P2('4'), P2('5', ['4']), P2('6', [], true), P2('7', ['6'])]);
+  assert.deepEqual(Object.fromEntries(cp), { 1: 3, 2: 2, 3: 1, 4: 2, 5: 1, 7: 1 });
+  assert.equal(criticalPath([P2('8', ['9']), P2('9', ['8'])]).size, 2);
+});
+
+const A = (areas, gates = [], confidence = 'high') => ({ areas: Array.isArray(areas) ? areas : [areas], gates, confidence });
+
+test('pickPhases: deps, areas, gates, held locks and slots; the critical path first (spec §5)', () => {
+  const phases = [P('1'), P('2'), P('3', ['1']), P('4'), P('5', ['9'])]; // 9 is not in the milestone: satisfied
+  const file = { fresh: true, phases: { 1: A('src/a/**'), 2: A('src/b/**', ['prod-deploy']), 3: A('src/c/**'), 4: A('src/a/x.ts'), 5: A('docs/**', ['prod-deploy']) } };
+  const annotation = (n) => annotationOf(file, n);
+  // 1 leads (3 waits on it), then 2; 4 overlaps 1 (src/a); 5 shares prod-deploy with 2
+  let r = pickPhases(phases, { annotation, slots: 3 });
+  assert.deepEqual(r.picked.map((p) => p.number), ['1', '2']);
+  assert.deepEqual(r.next, { phase: '4', why: 'areas', waitsFor: ['1'] });
+  r = pickPhases(phases, { annotation, slots: 3, running: [{ phase: '1', areas: ['src/a/**'], gates: [] }] });
+  assert.deepEqual(r.picked.map((p) => p.number), ['2']);
+  r = pickPhases(phases, { annotation, slots: 1 });
+  assert.deepEqual(r.picked.map((p) => p.number), ['1']);
+  assert.deepEqual(r.next, { phase: '2', why: 'slots', waitsFor: [] });
+  r = pickPhases(phases, { annotation, slots: 3, heldGates: [{ gate: 'prod-deploy', phase: '7' }] });
+  assert.deepEqual(r.picked.map((p) => p.number), ['1']);
+  assert.deepEqual(r.next, { phase: '2', why: 'gates', waitsFor: ['7'], gate: 'prod-deploy' });
+  r = pickPhases(phases, { annotation, slots: 3, exclude: ['2', '4'] });
+  assert.deepEqual(r.picked.map((p) => p.number), ['1', '5']);
+  assert.deepEqual(pickPhases([P('1'), P('2', ['1'])], { slots: 2, running: [{ phase: '1', areas: ['**'], gates: [] }] }), { picked: [], next: { phase: '2', why: 'deps', waitsFor: ['1'] } });
+  assert.deepEqual(pickPhases([P('1', [], true)], { slots: 2 }), { picked: [], next: null });
+  assert.deepEqual(pickPhases([P('1'), P('2')], { slots: 2, range: { from: '2', to: null }, annotation }).picked.map((p) => p.number), ['2']);
+});
+
+test('pickPhases: one phase lane without a fresh annotation; a phase missing from it overlaps every other (Review Focus 4)', () => {
+  const phases = [P('1'), P('2'), P('3')];
+  assert.deepEqual(pickPhases(phases, { slots: 3, oneLane: true }).picked.map((p) => p.number), ['1']);
+  assert.deepEqual(pickPhases(phases, { slots: 3, oneLane: true, running: [{ phase: '1', areas: ['src/**'], gates: [] }] }), { picked: [], next: { phase: '2', why: 'annotation', waitsFor: ['1'] } });
+  const file = { fresh: true, phases: { 1: A('a/**'), 2: A('b/**') } };
+  const r = pickPhases(phases, { slots: 3, annotation: (n) => annotationOf(file, n) });
+  assert.deepEqual(r.picked.map((p) => p.number), ['1', '2']);
+  assert.deepEqual(r.next, { phase: '3', why: 'areas', waitsFor: ['1'] });
+  // without an annotation function every phase is **
+  assert.deepEqual(pickPhases(phases, { slots: 3 }).picked.map((p) => p.number), ['1']);
+});
+
+test('review I5: extglob groups and .. segments never give a false no-overlap; an empty areas list is everything', () => {
+  assert.equal(areasOverlap(['src/@(api|web)/x.ts'], ['src/api/x.ts']), true);
+  assert.equal(areasOverlap(['src/!(x)'], ['src/y']), true);
+  assert.equal(areasOverlap(['src/+(a)/**'], ['src/a/b.ts']), true);
+  assert.equal(areasOverlap(['src/../lib/x.ts'], ['lib/x.ts']), true);
+  assert.deepEqual(annotationOf({ fresh: true, phases: { 3: { areas: [], gates: [], confidence: 'high' } } }, '3'), { areas: ['**'], gates: [] });
 });

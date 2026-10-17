@@ -46,7 +46,7 @@ const TEXT = {
 // it) and is done at 13. From the second round on
 // the questions say so (the round in the question, a context line), so a question answered before and back again is
 // never taken for a lost answer.
-export function demoView({ tick, lang = 'en', startedAt, now, answered = {} }) {
+export function demoView({ tick, lang = 'en', startedAt, now, answered = {}, lanes = 1 }) {
   const t = TEXT[lang === 'ru' ? 'ru' : 'en'];
   const s = ((tick - 1) % CYCLE) + 1;
   const round = Math.floor((tick - 1) / CYCLE) + 1;
@@ -60,7 +60,7 @@ export function demoView({ tick, lang = 'en', startedAt, now, answered = {} }) {
     { id: 'q1', phase: '32', plan: '32-09', task: '3', kind: 'decision', header: 'Deploy', question: ask(t.q1), context: context(t.ctx1), options: [{ label: t.yes, recommended: true }, { label: t.stop }], allowOther: true, state: 'open', rev: 1, stopped: status === 'needs-owner' },
     ...(s >= 4 ? [{ id: 'q2', phase: '32', plan: '32-10', task: '1', kind: 'human-verify', header: 'Check', question: ask(t.q2), context: context(''), options: [{ label: t.accept }, { label: t.show }], allowOther: true, state: 'open', rev: 1 }] : []),
   ].filter((q) => !answered[q.id]);
-  return {
+  const view = {
     v: 1,
     at: iso(now),
     supervisor: { running: true, pid: 4242, finished: false, halted: false, failingSince: null, updatedAt: iso(now) },
@@ -84,6 +84,26 @@ export function demoView({ tick, lang = 'en', startedAt, now, answered = {} }) {
     attended: [],
     // the zone of the machine the demo runs on, as turbo-run view carries the owner's
     ui: { lang: lang === 'ru' ? 'ru' : 'en', refreshSeconds: 3, utcOffsetMinutes: -new Date(now).getTimezoneOffset() },
+  };
+  return lanes === 3 ? threeLanes(view, { tick, startedAt, now }) : view;
+}
+
+// The same run with three lanes in slots (Stage 4): phase 32 in lane 1 as above, phase 33 in lane 2 at its quality
+// checks with a reviewer at work, and the prep of phase 35 in lane 3; phase 34 waits for phase 32 (the same files), as
+// the scheduler writes it to supervisor.json next. The two new lanes stay calm, so the pane shows them as one line
+// each and opens lane 1, where the question is.
+function threeLanes(view, { tick, startedAt, now }) {
+  const iso = (ms) => new Date(ms).toISOString();
+  const calm = (over) => ({ done: [], notes: {}, status: 'running', reason: '', mode: 'full', transcript: null, lastAt: iso(now - 20000), quiet: false, push: null, ci: { fixes: 0, rounds: 2 }, held: null, ...over });
+  const reviewer = { agentId: 'b1', type: 'gsd-code-reviewer', description: '', plan: null, task: null, model: 'opus', worktreeBranch: null, state: 'running', action: { tool: 'Grep', detail: 'export' }, startedAt: iso(startedAt - 3 * MIN), lastAt: iso(now - 20000), elapsedMs: now - startedAt + 3 * MIN, tokens: 30000 + tick * 500, sessionId: 'demo', transcript: 'demo' };
+  return {
+    ...view,
+    lanes: [
+      { ...view.lanes[0], key: '32', job: 'phase', slot: 1 },
+      calm({ key: '33', job: 'phase', slot: 2, phase: '33', step: 'fanout', sessionId: 'demo0002', launchedAt: iso(startedAt - 25 * MIN), elapsedMs: now - startedAt + 25 * MIN, agents: [reviewer], plans: { done: 2, total: 4 } }),
+      calm({ key: 'prep-35', job: 'prep', slot: 3, phase: '35', step: 'discuss', sessionId: 'demo0003', launchedAt: iso(startedAt - 4 * MIN), elapsedMs: now - startedAt + 4 * MIN, agents: [], plans: null }),
+    ],
+    next: { phase: '34', why: 'areas', waitsFor: ['32'], gate: null },
   };
 }
 
@@ -118,7 +138,7 @@ export function fakeTurboRun(argv, cwd, now = Date.now()) {
     // a new round of the script brings the answered questions back, so the owner can answer again
     if (state.tick > 1 && (state.tick - 1) % CYCLE === 0) state.answered = {};
     fs.writeFileSync(file, JSON.stringify(state));
-    return { code: 0, stdout: JSON.stringify(demoView({ tick: state.tick, lang: state.lang, startedAt: state.startedAt, now, answered: state.answered })), stderr: '' };
+    return { code: 0, stdout: JSON.stringify(demoView({ tick: state.tick, lang: state.lang, startedAt: state.startedAt, now, answered: state.answered, lanes: state.lanes ?? 1 })), stderr: '' };
   }
   // the replies of S1's arbiter (docs/plans/2026-10-11-stage-3-s1-owner-channel.md, Contracts), one line on stdout:
   // exit 0 answered, 3 already answered (checked before --rev), 4 changed since it was shown, 1 refused, 2 usage
@@ -127,7 +147,7 @@ export function fakeTurboRun(argv, cwd, now = Date.now()) {
     const option = flag(args, '--option');
     const text = flag(args, '--text');
     const by = flag(args, '--by') ?? 'session';
-    const q = demoView({ tick: state.tick, lang: state.lang, startedAt: state.startedAt, now }).questions.find((x) => x.id === id);
+    const q = demoView({ tick: state.tick, lang: state.lang, startedAt: state.startedAt, now, lanes: state.lanes ?? 1 }).questions.find((x) => x.id === id);
     if (!q) return { code: 1, stdout: `refused: no question ${id}\n`, stderr: '' };
     const prior = state.answered[id];
     if (prior) return { code: 3, stdout: `already answered: ${prior.answer}, ${prior.by}, ${prior.at}\n`, stderr: '' };
@@ -146,30 +166,30 @@ export function fakeTurboRun(argv, cwd, now = Date.now()) {
 
 // The demo directory: project/.planning/turbo/ with the scripted run's state, and turbo-view/, a copy of the mod
 // without its tests (Claude Code writes type files into a mod loaded with --plugin-dir; they land there).
-export function setupDemo({ dir, lang = 'en', repoDir = REPO, now = Date.now() }) {
+export function setupDemo({ dir, lang = 'en', lanes = 1, repoDir = REPO, now = Date.now() }) {
   const project = path.join(dir, 'project');
   fs.mkdirSync(path.join(project, '.planning', 'turbo'), { recursive: true });
   fs.writeFileSync(path.join(project, '.planning', 'turbo', 'config.json'), `${JSON.stringify({ lang, view: { refresh_seconds: 3 } }, null, 2)}\n`);
-  fs.writeFileSync(path.join(project, '.planning', 'turbo', STATE), JSON.stringify({ tick: 0, lang, startedAt: now, answered: {} }));
+  fs.writeFileSync(path.join(project, '.planning', 'turbo', STATE), JSON.stringify({ tick: 0, lang, lanes: lanes === 3 ? 3 : 1, startedAt: now, answered: {} }));
   const mod = path.join(dir, 'turbo-view');
   fs.cpSync(path.join(repoDir, 'mod'), mod, { recursive: true, filter: (src) => !/\.test\.[cm]?[jt]sx?$/.test(src) });
   return { project, mod };
 }
 
 // What the owner runs and checks; the expected pane, band and toast texts come from the mod's own view model.
-export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
+export function instructions({ dir, project, mod, lang = 'en', lanes = 1, self = SELF }) {
   const win = (p) => p.replace(/\//g, '\\');
-  const first = demoView({ tick: 1, lang, startedAt: 0, now: 0 });
+  const first = demoView({ tick: 1, lang, startedAt: 0, now: 0, lanes });
   const pane = paneLines(render(first)).map((l) => (l ? `       ${l}` : ''));
   const buttons = pane.find((l) => l.includes('[')).trim().replace(/^│\s*/, '');
   const other = `[${wordsFor(first).other}]`;
   const labels = first.questions[0].options.map((o) => o.label);
   // the toasts of the first 13 reads, as the mod raises them (nothing is answered in this run of the script)
-  const reads = Array.from({ length: 13 }, (_, i) => demoView({ tick: i + 1, lang, startedAt: 0, now: (i + 1) * 3000 }));
+  const reads = Array.from({ length: 13 }, (_, i) => demoView({ tick: i + 1, lang, startedAt: 0, now: (i + 1) * 3000, lanes }));
   const toasts = reads.flatMap((v, i) => toastsFor(reads[i - 1] ?? null, v).map((x) => `     read ${i + 1}: "${x}"`));
-  const again = demoView({ tick: CYCLE + 1, lang, startedAt: 0, now: 0 }).questions[0].question;
+  const again = demoView({ tick: CYCLE + 1, lang, startedAt: 0, now: 0, lanes }).questions[0].question;
   return [
-    `turbo-view visual check — demo in ${dir}`,
+    `turbo-view visual check — demo in ${dir}${lanes === 3 ? ' (3 lanes)' : ''}`,
     '',
     'Open it in Claude Code (2.1.290 or newer), in a terminal at least 144 columns wide (point 8 checks a narrower one):',
     // TURBO_VIEW_BIN is set for that one claude only: a later claude in the same window must run the real turbo-run
@@ -183,6 +203,7 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
     '     recommended option ★ in the accent colour, Other… on its own row; then what comes next and when you are',
     '     needed (green when nothing is), the phase steps (done dim with a green ✓, the current one bold, the rest dim),',
     '     the latest changes counted by kind with the age of the last, and the supervisor, dim:',
+    ...(lanes === 3 ? ['     With three lanes the verdict comes first, then one line for the run (lanes, questions, the next phase and', '     why it waits), then a block per lane: lane 1, where the question is, open; lanes 2 and 3, calm, one line each:'] : []),
     ...pane,
     `  2. The band above the prompt reads "${bandLine(first)}", in amber.`,
     '  3. Over the next 40 s, these toasts; from read 7 an amber line says CI is red and the phase fixes it itself; at',
@@ -204,7 +225,7 @@ export function instructions({ dir, project, mod, lang = 'en', self = SELF }) {
     '  7. Close the pane (Ctrl+X then X): it does not come back by itself; /turbo-view opens it again.',
     '  8. In a new session in a terminal narrower than 144 columns the pane does not open by itself: the band ends with',
     `     "${wordsFor(first).paneHint}". Type any message: the pane opens with it (/turbo-view opens it too).`,
-    `For the ${lang === 'ru' ? 'English' : 'Russian'} texts run this script again with --lang ${lang === 'ru' ? 'en' : 'ru'}. When done, exit Claude Code and delete the demo folder.`,
+    `For the ${lang === 'ru' ? 'English' : 'Russian'} texts run this script again with --lang ${lang === 'ru' ? 'en' : 'ru'}${lanes === 3 ? '' : '; for three lanes at once, with --lanes 3'}. When done, exit Claude Code and delete the demo folder.`,
   ].join('\n');
 }
 
@@ -238,7 +259,8 @@ if (isMain()) {
     process.exitCode = r.code;
   } else {
     const lang = flag(args, '--lang') === 'ru' ? 'ru' : 'en';
+    const lanes = flag(args, '--lanes') === '3' ? 3 : 1;
     const dir = flag(args, '--dir') ? path.resolve(flag(args, '--dir')) : fs.mkdtempSync(path.join(os.tmpdir(), 'turbo-view-demo-'));
-    process.stdout.write(`${instructions({ dir, lang, ...setupDemo({ dir, lang }) })}\n`);
+    process.stdout.write(`${instructions({ dir, lang, lanes, ...setupDemo({ dir, lang, lanes }) })}\n`);
   }
 }

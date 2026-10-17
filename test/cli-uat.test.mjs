@@ -6,6 +6,8 @@ import { execFileSync } from 'node:child_process';
 import { tmpGitRepo } from './helpers/tmp.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 import { parseUat } from '../lib/uat.mjs';
+import { readQuestions } from '../lib/questions.mjs';
+import { answerQuestion } from '../lib/answers.mjs';
 import { UAT } from './fixtures/uat-sample.mjs';
 
 function project(uat = UAT) {
@@ -180,7 +182,8 @@ test('turbo-run status lists owner requests in every view', () => {
   fs.mkdirSync(run, { recursive: true });
   fs.writeFileSync(path.join(run, 'p3-owner.md'), 'x');
   fs.writeFileSync(path.join(run, 'p3-owner.notified'), '{}');
-  const status = (...a) => execFileSync(process.execPath, [path.resolve('bin/turbo-run.mjs'), 'status', '--project', p.root, ...a], { encoding: 'utf8' });
+  // outside any Claude Code session: status ends with the owner request, no line back to a chat
+  const status = (...a) => execFileSync(process.execPath, [path.resolve('bin/turbo-run.mjs'), 'status', '--project', p.root, ...a], { encoding: 'utf8', env: { ...process.env, CLAUDE_CODE_SESSION_ID: '' } });
   const want = ['.planning/turbo/run/p3-owner.md'];
   // never started: a phase run by hand still shows its request
   assert.match(status(), /never started\)\nowner request: \.planning\/turbo\/run\/p3-owner\.md\n$/);
@@ -264,4 +267,163 @@ test('uat settle: a blob committed with CRLF is left as it is', async () => {
   assert.equal(await p.run('settle', '3'), 0);
   assert.equal(p.lines.at(-1), 'nothing to settle (.planning/phases/03-demo/03-UAT.md)');
   assert.equal(fs.readFileSync(uatFile, 'utf8'), UAT.replace(/\n/g, '\r\n'));
+});
+
+// F1: a UAT stop for the owner's signature is a sign-off card: its Accept signs exactly the rows it was asked for, and
+// only the owner's own Accept does (never turbo's automatic answer, never another option or another question).
+test('F1: ask --sign asks for the rows that wait for a signature; uat sign signs them on the owner\'s Accept only', async () => {
+  const p = project();
+  const ev = await standEvidence(p);
+  fs.writeFileSync(path.join(p.root, 'r.json'), JSON.stringify([
+    { test: 1, result: 'pass', class: 'A', harness: 'static', evidence: ev },
+    { test: 2, result: 'owner', class: 'D' },
+    { test: 3, result: 'deferred', class: 'C', reason: 'needs a physical phone' },
+    { test: 4, result: 'pass', class: 'A', harness: 'http', evidence: ev },
+  ]));
+  assert.equal(await p.run('record', '3', '--results', path.join(p.root, 'r.json')), 0);
+  assert.equal(await p.run('owner-request', '3', '--json'), 0);
+  assert.deepEqual(JSON.parse(p.lines.at(-1)).sign, [2]);
+  const cmd = async (name, ...a) => {
+    const lines = [];
+    const code = await runPhaseCommand(name, a, { root: p.root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`), deps: { env: {}, supervisorAlive: () => false, commit: () => ({ committed: true }) } });
+    return { code, text: lines.join('\n') };
+  };
+  const Q = ['--question', 'The release needs your signature: do you accept it as it is?', '--context', 'The automatic checks passed; only your signature is left.'];
+  // refusals ask nothing
+  let r = await cmd('ask', '3', '--sign', '2,5', ...Q);
+  assert.equal(r.code, 1);
+  assert.match(r.text, /test 5 does not wait for a signature/);
+  for (const extra of [['--option', 'a|b', '--option', 'c|d', '--recommended', '1'], ['--auto-ok'], ['--about-review']]) assert.equal((await cmd('ask', '3', '--sign', '2', ...Q, ...extra)).code, 2, extra.join(' '));
+  assert.equal((await cmd('ask', '3', '--sign', '2', '--action', 'Sign it.')).code, 2);
+  assert.equal((await cmd('ask', '3', '--sign', 'x', ...Q)).code, 2);
+  assert.equal((await cmd('ask', '3', '--sign', '2')).code, 2);
+  assert.deepEqual(readQuestions(p.root, '3'), []);
+  r = await cmd('ask', '3', '--sign', '2', ...Q, '--json');
+  assert.equal(r.code, 0, r.text);
+  const q = JSON.parse(r.text).question;
+  assert.deepEqual([q.id, q.kind, q.sign, q.autoOk, q.options.map((o) => [o.label, o.recommended])], ['ask-1', 'decision', [2], false, [['Accept', false], ['Not now', false]]]);
+  // review 1: the card names the rows its Accept signs, in turbo's words, and the signature is bound to them
+  assert.equal(q.context, 'The automatic checks passed; only your signature is left. To sign: 2. Owner signs the release. the release is signed');
+  assert.deepEqual(q.signText, ['Owner signs the release. the release is signed']);
+  const sign = async (id) => [await p.run('sign', '3', '--answer', id), p.lines.at(-1)];
+  let [code, line] = await sign('ask-1');
+  assert.equal(code, 1);
+  assert.match(line, /ask-1 has no answer yet/);
+  // Not now signs nothing
+  assert.equal((await cmd('answer', '3', 'ask-1', '--option', '2', '--by', 'pane')).code, 0);
+  [code, line] = await sign('ask-1');
+  assert.equal(code, 1);
+  assert.match(line, /the owner chose «Not now», not «Accept»: nothing signed/);
+  // turbo's automatic answer never signs
+  assert.equal((await cmd('ask', '3', '--sign', '2', ...Q)).code, 0);
+  answerQuestion({ root: p.root, phase: '3', id: 'ask-2', option: 1, by: 'auto', commit: () => ({ committed: true }) });
+  [code, line] = await sign('ask-2');
+  assert.equal(code, 1);
+  assert.match(line, /ask-2 was answered by auto, not by the owner/);
+  // nor does a standing rule
+  assert.equal((await cmd('ask', '3', '--sign', '2', ...Q)).code, 0);
+  answerQuestion({ root: p.root, phase: '3', id: 'ask-3', option: 1, by: 'standing-rule', commit: () => ({ committed: true }) });
+  [code, line] = await sign('ask-3');
+  assert.equal(code, 1);
+  assert.match(line, /ask-3 was answered by standing-rule, not by the owner/);
+  // an Accept on another kind of question signs nothing
+  assert.equal((await cmd('ask', '3', '--question', 'Go on with the next step?', '--option', 'Accept|Go on', '--option', 'Stop|Stop here', '--recommended', '1')).code, 0);
+  assert.equal((await cmd('answer', '3', 'ask-4', '--option', '1', '--by', 'session')).code, 0);
+  [code, line] = await sign('ask-4');
+  assert.equal(code, 1);
+  assert.match(line, /ask-4 is no sign-off card/);
+  const uatFile = path.join(p.dir, '03-UAT.md');
+  const before = fs.readFileSync(uatFile, 'utf8');
+  assert.equal(parseUat(before).tests[1].result, 'pending', 'nothing signed so far');
+  // the owner's Accept signs test 2, and only test 2
+  assert.equal((await cmd('ask', '3', '--sign', '2', ...Q)).code, 0);
+  assert.equal((await cmd('answer', '3', 'ask-5', '--option', '1', '--by', 'telegram')).code, 0);
+  // the row changed after the owner was asked: nothing is signed until it is as they saw it
+  fs.writeFileSync(uatFile, before.replace('expected: the release is signed', 'expected: the contract is signed'));
+  [code, line] = await sign('ask-5');
+  assert.equal(code, 1);
+  assert.match(line, /test 2 changed since the owner was asked/);
+  fs.writeFileSync(uatFile, before);
+  // the lane takes the answer (deliver), signs, then marks it delivered
+  assert.match((await cmd('questions', '3', '--deliver')).text, /^ask-5 · your own question/m);
+  [code, line] = await sign('ask-5');
+  assert.equal(code, 0, line);
+  assert.equal(line, 'signed 1 row(s) in .planning/phases/03-demo/03-UAT.md: 2 (owner answer ask-5)');
+  const tests = parseUat(fs.readFileSync(uatFile, 'utf8')).tests;
+  assert.deepEqual([tests[1].result, tests[1].fields.source, tests[1].fields.class], ['pass', 'owner', 'D']);
+  assert.match(tests[1].fields.signed, /^owner answer ask-5 \(telegram, \d{4}-\d\d-\d\dT[\d:.]+Z\)$/);
+  assert.deepEqual([tests[0].fields.source, tests[0].fields.harness], ['turbo-uat', 'static']);
+  assert.equal(await p.run('owner-request', '3', '--json'), 0);
+  assert.equal(JSON.parse(p.lines.at(-1)).needsOwner, false);
+  [code, line] = await sign('ask-5');
+  assert.deepEqual([code, line], [0, 'nothing to sign in .planning/phases/03-demo/03-UAT.md: 2 already closed']);
+  assert.equal((await cmd('questions', '3', '--delivered', 'ask-5', '--path', 'lane')).code, 0);
+  // a delivered lane question is gone at the next refresh: it signs nothing any more
+  assert.equal((await cmd('questions', '3')).code, 0);
+  [code, line] = await sign('ask-5');
+  assert.equal(code, 1);
+  assert.match(line, /no question ask-5 in phase 3/);
+  assert.equal(await p.run('sign', '3'), 2);
+  assert.equal(await p.run('sign', '3', '--answer', 'x'), 2);
+});
+
+// review 1 (F1): a uat step that runs again after the owner signed has nothing left to record: an empty record
+// writes nothing, so it never stales the report with a new updated: line
+test('uat record of an empty results array leaves the UAT file as it is', async () => {
+  const p = project();
+  const uatFile = path.join(p.dir, '03-UAT.md');
+  const before = fs.readFileSync(uatFile, 'utf8');
+  fs.writeFileSync(path.join(p.root, 'r.json'), '[]');
+  assert.equal(await p.run('record', '3', '--results', path.join(p.root, 'r.json')), 0);
+  assert.match(p.lines.at(-1), /^recorded 0 result\(s\) in \.planning\/phases\/03-demo\/03-UAT\.md: /);
+  assert.equal(fs.readFileSync(uatFile, 'utf8'), before);
+});
+
+// F1 (controller): a lane can clear TURBO_LANE, so the owner's sign-off also checks the calling session against the
+// lane sessions turbo recorded (supervisor.json): the lane's job id, a transcript named after it, and the session ids its
+// job state names. Empty TURBO_LANE still means "not a lane" for everything else.
+test('F1: a sign-off card refuses an answer from a recorded lane session even with TURBO_LANE empty; the owner\'s own session answers it', async () => {
+  const p = project();
+  fs.writeFileSync(path.join(p.root, 'r.json'), JSON.stringify([{ test: 2, result: 'owner', class: 'D' }]));
+  assert.equal(await p.run('record', '3', '--results', path.join(p.root, 'r.json')), 0);
+  // the claude home the lane's background job writes its state to
+  const home = path.join(p.root, 'claude-home');
+  const JOB = 'c0ffee12';
+  const RESUMED = '9b1d2e3f-0000-4000-8000-000000000001';
+  fs.mkdirSync(path.join(home, 'jobs', JOB), { recursive: true });
+  fs.writeFileSync(path.join(home, 'jobs', JOB, 'state.json'), JSON.stringify({ sessionId: RESUMED }));
+  fs.mkdirSync(path.join(p.root, '.planning', 'turbo', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'run', 'supervisor.json'), JSON.stringify({ lane: { phase: '3', sessionId: JOB } }));
+  const cmd = async (env, name, ...a) => {
+    const lines = [];
+    const code = await runPhaseCommand(name, a, { root: p.root, out: (l) => lines.push(l), err: (l) => lines.push(`ERR ${l}`), deps: { env: { CLAUDE_CONFIG_DIR: home, TURBO_LANE: '', ...env }, supervisorAlive: () => false, commit: () => ({ committed: true }) } });
+    return { code, text: lines.join('\n') };
+  };
+  const Q = ['--question', 'The release needs your signature: do you accept it as it is?'];
+  assert.equal((await cmd({}, 'ask', '3', '--sign', '2', ...Q)).code, 0);
+  // the lane's own session, by the transcript named after its job, by the session its job state names, by its job dir
+  for (const env of [
+    { CLAUDE_CODE_SESSION_ID: `${JOB}-1111-4111-8111-111111111111` },
+    { CLAUDE_CODE_SESSION_ID: RESUMED },
+    { CLAUDE_JOB_DIR: path.join(home, 'jobs', JOB) },
+  ]) {
+    const r = await cmd(env, 'answer', '3', 'ask-1', '--option', '1', '--by', 'session');
+    assert.equal(r.code, 1, JSON.stringify(env));
+    assert.match(r.text, /^refused: this is the session of the lane of phase 3: a sign-off card is the owner's to answer/);
+  }
+  assert.equal(readQuestions(p.root, '3').find((q) => q.id === 'ask-1').state, 'open', 'nothing recorded');
+  // the owner's own session answers it, and the answer keeps that session
+  const OWNER = '5e55a0e0-2222-4222-8222-222222222222';
+  const r = await cmd({ CLAUDE_CODE_SESSION_ID: OWNER }, 'answer', '3', 'ask-1', '--option', '1', '--by', 'session');
+  assert.equal(r.code, 0, r.text);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(p.root, '.planning', 'turbo', 'answers', 'p3.json'), 'utf8')).at(-1).session, OWNER);
+  // uat sign checks the recorded answer again: an Accept recorded from a lane session signs nothing
+  assert.equal((await cmd({}, 'ask', '3', '--sign', '2', ...Q)).code, 0);
+  answerQuestion({ root: p.root, phase: '3', id: 'ask-2', option: 1, by: 'session', session: RESUMED, commit: () => ({ committed: true }) });
+  let s = await cmd({}, 'uat', 'sign', '3', '--answer', 'ask-2');
+  assert.equal(s.code, 1);
+  assert.match(s.text, /ask-2 was answered from the session of the lane of phase 3, not by the owner: nothing signed/);
+  s = await cmd({}, 'uat', 'sign', '3', '--answer', 'ask-1');
+  assert.equal(s.code, 0, s.text);
+  assert.match(s.text, /^signed 1 row\(s\) in .*: 2 \(owner answer ask-1\)$/);
 });

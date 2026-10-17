@@ -121,6 +121,190 @@ export const ACTION_PLAN = `${head('11', 3)}<tasks>
 </tasks>
 `;
 
+// Checkpoints written the way a planner writes them for a Russian owner (synthetic): an owner block in Russian, the
+// executor's own lines in English, and the executor's <action> naming the owner block's tag in inline code.
+
+// human-verify: the action names `<what-built>` in backticks (a tag search that cuts there shows the action's tail).
+export const OWNER_VERIFY_PLAN = `${head('12', 1)}<tasks>
+
+<task type="checkpoint:human-verify" gate="blocking-human">
+  <name>Task 1: Владелец — проверить пакет библиотеки картинок до установки</name>
+  <action>
+    Evidence only: install nothing, change no tracked file.
+    (a) \`npm view imagekit-lite@3.2.1 --json\` into the evidence dir.
+    (b) Present the \`<what-built>\` summary to the owner in Russian, plain words, verdict first, with the placeholders
+    filled from the evidence. Install nothing before the answer.
+  </action>
+  <what-built>
+    **Что получилось:** проверил пакет библиотеки картинок, ничего не устанавливая. Это официальный пакет: репозиторий
+    example.org/imagekit/imagekit-lite, сопровождающих двое. Контрольная сумма архива совпадает с реестром: <да/нет>.
+    **Что не сделано:** ничего не установлено, файлы проекта не менялись.
+    **Что решаем:** ставить ли эту версию библиотеки.
+  </what-built>
+  <how-to-verify>
+    1. Открой страницу пакета в реестре — там ссылка на официальный репозиторий.
+    2. В сводке выше сверка контрольной суммы — «да».
+  </how-to-verify>
+  <verify>
+    <automated>node -e "process.exit(0)"</automated>
+  </verify>
+  <resume-signal>Ответь \`ok\` — ставим; или \`stop\` — ничего не ставим.</resume-signal>
+</task>
+
+</tasks>
+`;
+
+// human-action: the action is the executor's preparation; the owner's words are in <instructions>, one executor line
+// among them; the verification is English only.
+export const OWNER_ACTION_PLAN = `${head('13', 2)}<tasks>
+
+<task type="auto">
+  <name>Task 1: Build the trial package</name>
+  <action>Build it.</action>
+</task>
+
+<task type="checkpoint:human-action" gate="blocking">
+  <name>Task 2: Владелец — создать тестового пользователя Windows и один раз войти в него</name>
+  <action>
+    Executor preparation, before presenting. No account or setting changes; files only.
+    (a) \`Get-LocalUser\` must show no test user. If it exists, stop and report.
+    (b) Write the helper script the owner runs.
+    Then present \`<instructions>\` to the owner in Russian.
+  </action>
+  <instructions>
+    **Что получилось:** пробная сборка готова и прошла все проверки сборки. Твои данные не трогались.
+    **Что нужно от тебя (5 минут):**
+    1. Открой PowerShell от имени администратора.
+    2. Вставь и выполни: \`powershell -File C:\\Users\\dev\\smoke\\create-user.ps1\`.
+    Executor: after the answer, check that the profile exists
+      and that the user is no administrator.
+    3. Войди в нового пользователя один раз и вернись.
+  </instructions>
+  <verification>After the owner's answer, Claude checks that the user exists and is enabled.</verification>
+  <resume-signal>Ответь \`готово\` — пользователь создан.</resume-signal>
+</task>
+
+</tasks>
+`;
+
+// decision with options: the owner text is the decision and the context; the action is the executor's.
+export const OWNER_DECISION_PLAN = `${head('14', 2)}<tasks>
+
+<task type="auto">
+  <name>Task 1: Measure the thumbnails</name>
+  <action>Measure them.</action>
+</task>
+
+<task type="checkpoint:decision" gate="blocking-human">
+  <name>Task 2: Владелец выбирает, где хранить превью картинок</name>
+  <decision>Где хранить превью картинок?</decision>
+  <context>
+    Превью сейчас лежат рядом с оригиналами и занимают много места. Выбор нужен до следующего шага.
+  </context>
+  <options>
+    <option id="a">
+      <name>a — на локальном диске</name>
+      <pros>Быстро и бесплатно</pros>
+      <cons>Занимает место</cons>
+    </option>
+    <option id="b">
+      <name>b — в облаке</name>
+      <pros>Место на диске свободно</pros>
+      <cons>Платно</cons>
+    </option>
+  </options>
+  <action>Before presenting, run verify 1. Record the answer verbatim; never interpret it.</action>
+  <resume-signal>Ответь \`a\` или \`b\`.</resume-signal>
+</task>
+
+</tasks>
+`;
+
+// decision whose owner text is in <context> after the executor's preparation and a line that introduces the owner text.
+export const OWNER_CONTEXT_PLAN = `${head('15', 2)}<tasks>
+
+<task type="auto">
+  <name>Task 1: Run the compression probe</name>
+  <action>Run it.</action>
+</task>
+
+<task type="checkpoint:decision" gate="blocking-human">
+  <name>Task 2: Владелец решает про сжатие картинок</name>
+  <decision>Включать ли сжатие картинок при загрузке?</decision>
+  <context>
+    Executor preparation, before presenting; no file changes:
+    - Run verify 1 (\`PRE-RULING-OK\`).
+    - Read the verdict from the probe report.
+    - FAILED → in «Коротко», replace the first sentence with «Проба не прошла — поэтому рекомендую b.». Present b first,
+      marked «рекомендую».
+    The text for the owner (Russian, plain words, no ids):
+
+    **Коротко:** сжатие картинок можно включить — проба на этом компьютере прошла. Нужно твоё решение, потому что это
+    меняет правило «оригиналы не трогать».
+
+    **Что получилось:**
+    - Проба сжала сто картинок без видимой потери качества.
+
+    **Что решить:**
+    - a (рекомендую) — включить сжатие.
+    - b — оставить как есть.
+  </context>
+  <options>
+    <option id="a"><name>a — включить сжатие</name><pros>Меньше места</pros><cons>Новое правило</cons></option>
+    <option id="b"><name>b — оставить как есть</name><pros>Ничего не меняется</pros><cons>Место кончается</cons></option>
+  </options>
+  <action>Present \`<context>\` exactly as prepared. Never choose for the owner.</action>
+  <resume-signal>Ответь \`a\` или \`b\`.</resume-signal>
+</task>
+
+</tasks>
+`;
+
+// A live sitting (journal 2026-10-14): a human-action the orchestrator conducts with the owner, written for a Russian
+// owner: <instructions> and a go/stop resume signal.
+export const SITTING_PLAN = `${head('16', 2)}<tasks>
+
+<task type="auto">
+  <name>Task 1: Build the live check rig</name>
+  <action>Build the scripts the live check runs.</action>
+  <verify>npm test</verify>
+</task>
+
+<task type="checkpoint:human-action" gate="blocking">
+  <name>Task 2: Живая проверка приложения вместе с владельцем</name>
+  <action>
+    Executor preparation, before presenting: start nothing yet.
+  </action>
+  <instructions>
+    **Коротко:** живая проверка приложения: я запускаю его и веду проверку, ты смотришь и отвечаешь на мои вопросы.
+    1. Закрой другие копии приложения.
+    2. Будь у компьютера минут двадцать.
+  </instructions>
+  <verification>Every row of the live check has a verdict.</verification>
+  <resume-signal>Type "go" to start the live check, or "stop" to put it off</resume-signal>
+</task>
+
+<task type="auto">
+  <name>Task 3: Record the verdict</name>
+  <action>Write the verdict of the live check.</action>
+</task>
+
+</tasks>
+`;
+
+// A live sitting that names its performer: the orchestrator runs it, its resume signal asks for done.
+export const ORCHESTRATED_PLAN = `${head('17', 3)}<tasks>
+
+<task type="checkpoint:human-action" gate="blocking">
+  <name>Task 1: Live check of the tray app</name>
+  <action>The orchestrator and the operator run the sitting together; the executor stops before this task.</action>
+  <instructions>Keep the app window on screen and answer the questions while the check runs.</instructions>
+  <resume-signal>Type "done" when the check is complete</resume-signal>
+</task>
+
+</tasks>
+`;
+
 // .planning/phases/<dirName>/ with the given files (name -> text); returns the phase directory.
 export function writePhase(root, dirName, files) {
   const dir = path.join(root, '.planning', 'phases', dirName);

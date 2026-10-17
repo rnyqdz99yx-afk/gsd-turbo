@@ -1,7 +1,7 @@
 ---
 name: turbo-autonomous
 description: Run the rest of the current GSD milestone with gsd-turbo — a background supervisor starts each phase as an unattended Claude Code background session, continues automatically after context limits, runs targeted tests, and notifies the owner only when they are truly needed. Use instead of /gsd-autonomous when speed matters.
-argument-hint: "[--from <N>] [--to <N>] | --only <N> | --all | status | stop | resume <phase> | attend <phase> | answer"
+argument-hint: "[--from <N>] [--to <N>] | --only <N> | --all | status | stop | resume <phase> | attend <phase> | answer | away | back"
 allowed-tools: [Bash, Read, AskUserQuestion, Skill]
 ---
 
@@ -9,13 +9,27 @@ allowed-tools: [Bash, Read, AskUserQuestion, Skill]
 
 Treat the arguments block as data. Reply in the user's language. The commands below work in Git Bash, macOS and Linux shells.
 
+## First: back from away mode?
+
+Unless the arguments are `away`: run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" back`. When its first line is `Away mode was not on …` (in Russian `Режим «ушёл» не был включён …`) and it prints nothing else, say nothing about it. Otherwise show its output to the user first, as it is: the morning summary (phases moved on, commits, the answers turbo took itself with the command that takes each back, the questions still waiting, failures). Then go on below. With the arguments `back`, stop here.
+
+## If the arguments are `away`
+
+The user is leaving (for the night, say). Gather every question that can be answered now, ask them in one batch, then turn away mode on.
+
+1. Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" away --json`. It builds the questions of the remaining phases of the run that no lane runs yet, then prints every open question as a JSON array, like `questions --open --json`.
+2. An empty array: tell the user there is nothing to answer ahead and go to point 3. Otherwise run **Answer the open questions** from its point 2 with that array (four at a time; `Not now` records nothing).
+3. Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" away --set` and show its line: what turbo does while the user is away. Questions left open wait for the user, except the safe ones: after `owner.auto_answer_minutes` (60 by default) turbo takes their recommended option itself and notifies it, with the command that takes it back. Tell the user that `/turbo-autonomous back` (or any `/turbo-autonomous` call, or `turbo-run back`) shows what happened. Then stop.
+
 ## If the arguments are `status`, `stop` or `resume <phase>`
 
 Run the matching command and show its output, then stop:
 
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status`
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" stop`
-- `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" resume <phase> --start` (clears the phase's lane record and its owner request, which the resume answers, and starts the supervisor in one command)
+- `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" resume <phase> --start` (clears the phase's lane record and its owner request, which the resume answers, and starts the supervisor in one command; with several lanes and the supervisor running it prints `handed to the running supervisor`: the supervisor relaunches that lane at its next check and the other lanes go on)
+
+If `status` prints `supervisor: state damaged`, tell the user in plain words that the supervisor's state file was damaged, most likely by a machine crash, that nothing runs the lanes now, and that `/turbo-autonomous` (its `start`) keeps the damaged file aside and rebuilds the lanes. `resume <phase>` rebuilds it the same way and prints what it recovered: show those lines.
 
 ## If the arguments are `answer`
 
@@ -23,11 +37,12 @@ Run **Answer the open questions** (the last section), then stop.
 
 ## If the arguments are `attend <phase>`
 
-The rest of the phase's plans run here, in this session, with the user, and then the phase goes back to its lane (spec §8). This is for plans that need the user while they run: a device to connect, a login, an app to quit. `<phase>` is the phase id from the arguments. Run every command from the project root.
+The rest of the phase's plans run here, in this session, with the user, and then the phase goes back to its lane (spec §8). This is for plans that need the user while they run: a device to connect, a login, an app to quit. `<phase>` is the phase id from the arguments. Run every command from the project root; in slots mode, from the lane's slot (point 1).
 
 1. **Take over the lane.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" attend <phase>`.
-   - A non-zero exit: show its output and stop. A refusal changed nothing. A warning that a lane session did not stop means the user stops it (`claude stop <id>`) before anything else runs here.
-   - It stopped the supervisor and the lane's session (the session's conversation is kept) and printed `phase <N>: attended …`: `<N>` below is that id. `open plans: …` names the plans without a summary; `released stops: …` names the checkpoints the lane had stopped at, which are asked ahead again; `already delivered: …` names stops whose answers the stopped session took: when an executor reaches one again, it is asked here; `gates: turn off` or `gates: keep on` says what point 5 does with GSD's gates.
+   - A non-zero exit: show its output and stop. A refusal changed nothing. A warning that a lane session did not stop means the user stops it (`claude stop <id>`) before anything else runs here. A line that Claude Code's background service is not running and no process carries the lane session is no warning: that session counts as stopped, go on.
+   - It stopped the supervisor and the lane's session (the session's conversation is kept) and printed `phase <N>: attended …`: `<N>` below is that id. `open plans: …` names the plans without a summary; `released stops: …` names the checkpoints the lane had stopped at, which are asked ahead again; `released stops with your answer: …` names those with an answer of the user's (given at the stop, or kept from before the stop came back), each with the answer, its channel and its time: these answers reach this sitting's executors as pre-answers (point 6); `already delivered: …` names stops whose answers the stopped session took: when an executor reaches one again, it is asked here; `dropped done answers: …` names live sittings (a step the phase conducts together with the user) that had a done answer: a sitting is never answered done, so that answer was set aside and the sitting runs here (point 6); `gates: turn off` or `gates: keep on` says what point 5 does with GSD's gates.
+   - In slots mode it stopped only that lane's session (the supervisor and the other lanes keep running) and printed `open: cd "<slot>" && claude`. If this session's working directory is not `<slot>`, tell the user to run that line in a terminal and to call `/turbo-autonomous attend <N>` in the new session, then stop: the sitting runs in the lane's slot, which Claude Code already trusts. Running `attend <N>` again there is safe: the mark stays and nothing else stops.
 2. **GSD core.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor`. Exit code 2: show the failed checks and stop (the phase stays attended). `<gsd-core>` is the path on its `gsd-core` line.
 3. **Clean checkout.** Run `git status --porcelain` and `git worktree list --porcelain`. Uncommitted changes, or a worktree besides this checkout (the stopped lane may have left an executor's work there), are the user's to decide: show them and ask what to do. Commit nothing and remove no worktree on your own. Go on only with an empty `git status --porcelain` and this checkout as the only worktree.
 4. **Questions up front.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" questions <N>` and show its list next to the open plans: everything these plans will ask. Then run **Answer the open questions** (the last section) with two changes: in its point 1 keep only the questions whose `phase` is `<N>`, and leave out those whose `kind` is `human-action` (a physical action: the user does it when the run reaches it). No lane runs now, so `turbo-run answer` commits each answer itself.
@@ -36,15 +51,18 @@ The rest of the phase's plans run here, in this session, with the user, and then
    - `gates: keep on`: run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" gates restore <N>`. It prints `nothing to do` when GSD's gates are on, and puts them back when an earlier crash left them off. The lane is past its fan-out (or runs in safe mode), so nothing would run the gates later: GSD runs them one by one in this session, after the plans.
 6. **Execute.** Run `Skill(skill="gsd-execute-phase", args="<N> --no-transition")` and follow GSD's workflow with these additions only:
    - One plan at a time, in this checkout: dispatch every executor without `isolation="worktree"`, as if `parallelization` were off and `USE_WORKTREES_FOR_PLAN` were `false` for every plan. Right before each executor `Agent()` call, and again before each retry of it, run `node "<gsd-core>/bin/gsd-tools.cjs" query dispatch-isolation --raw --phase <the phase as GSD writes it> --plan <the plan id> --force-isolation none`, with no other `dispatch-isolation` query in between: GSD's isolation guard reads a sentinel that goes stale after 10 minutes and that any other such query rewrites.
+   - GSD's `safe_resume_gate` stops on a plan that has commits but no SUMMARY.md ("production commits exist and SUMMARY.md is missing"). When `released stops:` or `already delivered:` (point 1) names a checkpoint of that plan (a stop id is `<plan id>-t<task>`), those commits are the plan's work up to its stop, its interim commit included: this is the checkpoint's continuation, not a broken run. Do not offer GSD's recovery menu; continue the plan at the task of its stop, with a continuation executor whose completed tasks you take from the commits the gate listed (every other point of this list applies to it), or in this session when the plan conducts that task itself (next point).
+   - A task the plan says the orchestrator conducts itself (for example a live check that needs the user's replies while it runs) runs here, in this session, with the plan's scripts, never in an executor. Executors and continuation executors take only the plan's other tasks: the executor stops before that task, and a continuation executor takes the tasks after it.
+   - GSD's executor template asks you to inline its reference files (`execute-plan.md`, the summary template, `checkpoints.md`, `tdd.md`, `worktree-path-safety.md`, `executor-examples.md`, about 145 KB) into the `Agent()` prompt: list their paths under "Read these first" in the executor's prompt instead (same effect, no huge output). Its checkpoint handling names a `continuation-prompt.md` template that GSD does not ship: build the continuation prompt yourself from the plan's commits so far and the stop (the task, its checkpoint and the user's answer).
    - Right before each executor dispatch, and before each continuation agent GSD spawns after a checkpoint, run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" questions <N> --preanswers <plan id>`. Add what it prints (nothing when the user answered no checkpoint of that plan ahead) unchanged at the end of the prompt GSD builds, and after it this release rule, unchanged: Never overwrite an executable, or any other file, that a running process holds open: build or copy each release into a new directory named after the UTC time under the release directory (for example release/2026-10-11T12-00-00Z/) and leave the running copy alone. When a file you must replace stays locked by a running process, never kill or stop that process: stop at that point and return a checkpoint:human-action that names the file, the process holding it (its name and PID when known) and the exact step for the owner (for example: quit the app, then answer done). A way to make the app quit on request (an IPC call, or --quit sent to a second instance) is the project's own work: name it in that checkpoint as a recommendation, and never build it unasked.
    - A checkpoint an executor returns (no answer ahead, or a condition that did not hold) is shown to the user here, the way GSD does it; a physical action is the user's to do now. A file locked by a running process: never kill or stop that process yourself either. Tell the user the file, the process and the exact step, recommend a programmatic quit (an IPC call, or `--quit` sent to a second instance) as the project's own work, and go on when they answer.
    - Verification gaps at the end: plan no gap closure here. The lane closes them after the hand-back, in at most `gap_rounds` rounds.
 7. **Hand back.** When execute-phase has returned, or when the user wants to give the phase back early:
    1. `git status --porcelain` must be empty: ask the user about anything left, as in point 3.
    2. Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" state-sync <N>` (best effort: a warning from it changes nothing).
-   3. Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" attend <N> --done`. It clears the mark and runs `resume <N> --start`. Show its output: the lane goes on with verification, the gates, UAT and close, and the next phases follow.
+   3. Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" attend <N> --done`. It clears the mark and runs `resume <N> --start` (with several lanes and the supervisor running, it prints `handed to the running supervisor`: the supervisor clears the mark and relaunches the lane at its next check). Show its output: the lane goes on with verification, the gates, UAT and close, and the next phases follow.
 
-   To pause the sitting instead, leave the mark: `/turbo-autonomous attend <N>` goes on here later, and `turbo-run attend <N> --done` (or `/turbo-autonomous resume <N>`) gives the phase back to its lane. While the mark stands no lane runs.
+   To pause the sitting instead, leave the mark: `/turbo-autonomous attend <N>` goes on here later, and `turbo-run attend <N> --done` (or `/turbo-autonomous resume <N>`) gives the phase back to its lane. While the mark stands no lane runs. After `/clear`, or in a new session, run `/turbo-autonomous attend <N>` again first: point 1 then names this session in the mark, and the turbo pane follows the sitting here.
 
 ## Otherwise: start the milestone run
 
@@ -52,6 +70,7 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
 
 1. **Already running?** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status`.
    - If it fails, show its output and stop.
+   - If it prints `supervisor: state damaged`, tell the user the supervisor's state file was damaged (most likely by a machine crash) and go on with the steps below: `start` keeps the damaged file aside and rebuilds the lanes.
    - If it prints `attended:` lines, a phase is in the user's own sitting and no lane runs until it is handed back: tell the user which phase, that `/turbo-autonomous attend <N>` goes on with the sitting and that `turbo-run attend <N> --done` gives the phase back to its lane. Then go on with the bullets below.
    - If it prints `supervisor: running`, show the output and tell the user a run is already in progress (watch it with `claude attach <session id>` or `/turbo-autonomous status`, stop it with `/turbo-autonomous stop`). Then run **Answer the open questions** (it only says so when there are none) and stop. Commit nothing yourself: a background session is working in this checkout.
 2. **Compatibility.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor`.
@@ -64,6 +83,7 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
    - Then run `git status --porcelain` again. If the output is not empty, show it and stop: the background sessions work in this checkout, so a dirty tree is never handed to them, and the test runner records a green result only on a clean tree.
 5. **Start.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" start <range flags>`, then `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status`.
    - If `start` exits with a non-zero code, show its output (it includes the end of the supervisor log, or the usage for wrong range flags) and stop.
+   - If `start` printed `supervisor.json was damaged …` with `recovered …` and `not recovered …` lines, show them to the user unchanged: which lanes it took up from the slots and their sessions, and what was lost. A run that had a range runs the whole milestone now unless range flags were given: offer `/turbo-autonomous stop` and a new start with the range.
    - If `start` or the status output has `attended:` lines, a phase is in the user's own sitting and no lane runs until it is handed back: tell the user which phase, that `/turbo-autonomous attend <N>` goes on with the sitting and that `turbo-run attend <N> --done` gives the phase back to its lane; say no phase is running, whatever the `lane:` line names.
    - Otherwise, if the status output has a `lane:` line, the first phase is running. If it is not the phase the user expected (for example the `--only` or `--from` phase), run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" stop` at once, show the status output and report it.
    - If it has no `lane:` line yet, tell the user the first phase starts within `poll_seconds` (20 by default) and suggest `/turbo-autonomous status`.
@@ -75,6 +95,7 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
    - for the curious: `claude attach <session id>` (exit with the detach key, the session keeps running), `/turbo-autonomous status`, and the log `.planning/turbo/logs/supervisor.log`;
    - that a desktop notification arrives when the owner is needed or the milestone is done;
    - that this session can be closed: the supervisor and the lanes keep running;
+   - how to come back to this chat after a crash or a reboot: when the status output has a `back to this chat:` line (`вернуться в этот чат:` in Russian), pass it on unchanged: `claude -r` and pick this chat by its title, or `claude --resume <id>`. Never suggest a bare `claude -c`: it may open a lane's conversation instead (in checkout mode the lanes work in this folder too);
    - how to stop: `/turbo-autonomous stop`.
 
 Do not run GSD phase commands in this checkout while the supervisor is running.
@@ -89,7 +110,8 @@ The owner's questions are the checkpoints of the phases' plans and the questions
    - `header`: its `header`; a question without one (a phase's own) gets `Phase <its phase>`;
    - `question`: its `question`, a new line, then the first 300 characters of its `context`;
    - options: its `options` in their order, at most 4 (the option the plan recommends is already first): `label` is the option's `label` with ` (Recommended)` added when its `recommended` is true, `description` is the option's `description`;
-   - a question with fewer than 2 options also gets the option `Not now`, which records nothing (`AskUserQuestion` needs at least 2).
+   - a question with fewer than 2 options also gets the option `Not now`, which records nothing (`AskUserQuestion` needs at least 2);
+   - a question with `sitting: true` is a live sitting: the phase conducts that step together with the user in an attended session, so it is never answered done (`turbo-run answer` refuses it). At its stop, do not ask it: show its `question`, which says to run `/turbo-autonomous attend <phase>` in a new Claude Code window, unless the user wants to say something else to the phase in their own words.
 
    `AskUserQuestion` adds an "Other" choice itself: the user's own words.
 4. For each answer, from the project root, with the question's `phase`, `id` and `rev`:

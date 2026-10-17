@@ -8,7 +8,7 @@
 [![Version](https://img.shields.io/github/v/tag/rnyqdz99yx-afk/gsd-turbo?label=version)](https://github.com/rnyqdz99yx-afk/gsd-turbo/tags)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Claude Code ≥ 2.1.290](https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.290-d97757)
-![GSD 1.16.x](https://img.shields.io/badge/GSD-1.16.x-6e40c9)
+![GSD 1.16–1.17](https://img.shields.io/badge/GSD-1.16%E2%80%931.17-6e40c9)
 
 English · [Русский](README.ru.md)
 
@@ -49,7 +49,7 @@ It never modifies GSD itself: it talks to GSD only through `gsd-tools` and GSD's
 
 ## Quick start
 
-You need Node.js ≥ 20, git, Claude Code ≥ 2.1.290 and GSD core 1.16.x (`npx @opengsd/gsd-core@1.16`).
+You need Node.js ≥ 20, git, Claude Code ≥ 2.1.290 and GSD core 1.16.x or 1.17.x (`npx @opengsd/gsd-core@1.17`).
 
 ```bash
 # 1. Install (copies files into ~/.claude; --dry-run shows what it would do)
@@ -71,6 +71,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 | `/turbo-autonomous` | start the rest of the milestone (`--only N`, `--from N --to M`, `--all`) |
 | `/turbo-autonomous status` | what runs now and what waits for you |
 | `/turbo-autonomous answer` | answer the open questions |
+| `/turbo-autonomous away` | answer ahead everything that can be, then leave; `back` shows what happened |
 | `/turbo-autonomous attend N` | run the rest of phase N here with you (for plans that need a device, a login…) |
 | `/turbo-autonomous stop` | stop the supervisor and its sessions |
 
@@ -78,8 +79,8 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 
 - **Permissions.** Background sessions run with `--permission-mode bypassPermissions` so nobody has to approve tool calls. Your Claude Code hooks still apply. For a stricter first run, set `lane_permission_mode` in `.planning/turbo/config.json` ([config](docs/reference.md#config)).
 - **Usage.** Phases run on your model in the background with parallel helpers and automated UAT. Expect to hit your plan's limits faster than with plain GSD.
-- **GSD version.** Tested with GSD core 1.16.x. With another version `turbo-run doctor` drops to a safe mode, or refuses to start if GSD changed incompatibly.
-- **What stays yours.** Signatures, your accounts on third-party sites, physical devices, 2FA, money. The run does everything else first, then stops and asks.
+- **GSD version.** Tested with GSD core 1.16.x and 1.17.x. With another version `turbo-run doctor` drops to a safe mode, or refuses to start if GSD changed incompatibly.
+- **What stays yours.** Signatures, your accounts on third-party sites, physical devices, 2FA, money. The run does everything else first, then stops and asks. A safe question you leave open for an hour (a plan's recommended choice, a check its automated evidence decides) is taken by turbo itself and notified, with an undo command ([which ones](docs/reference.md#owner-questions)).
 - **Safety rails.** No force-push, no rewriting published history, no data deletion without a dry run, no overwriting a running executable. Details in [Safety](docs/reference.md#safety).
 - **Uninstall** with `node install.mjs --uninstall` ([what to check first](docs/reference.md#uninstall)).
 
@@ -88,6 +89,11 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 - **Telegram** — get the questions and answer them with buttons away from the computer ([setup](docs/reference.md#telegram-optional)).
 - **Push and CI** — the supervisor pushes and watches GitHub Actions; a red run goes back to the phase to fix ([setup](docs/reference.md#push-and-ci-optional)).
 - **Targeted tests** — set up by `turbo-run init` when a full test command is known ([how it decides](docs/reference.md#what-happens)).
+- **Autostart after a reboot** — `turbo-run autostart on` brings this project's supervisor back at logon when a run was going; `off` removes it ([what it sets up](docs/reference.md#after-a-crash-or-a-reboot)).
+
+## Troubleshooting
+
+**After a crash or a reboot.** Come back to your chat with `claude -r` (pick it by its title) or `claude --resume <id>`: `/turbo-autonomous status` prints that line with the id. A bare `claude -c` opens the latest conversation in the folder, which in checkout mode may be a lane's own. The turbo pane comes back by itself. Unless autostart is on, start the supervisor again with `/turbo-autonomous`: lanes whose sessions died with the machine go on where they stopped ([details](docs/reference.md#after-a-crash-or-a-reboot)). A supervisor that dies without a word while you are away is told to you once, on the desktop and in Telegram, by the turbo pane in your session or by a running lane. If the crash left the supervisor's state file damaged, the pane and `/turbo-autonomous status` say so, and `/turbo-autonomous` keeps the file aside and rebuilds the lanes from the slots and their sessions, saying what it recovered and what not.
 
 ## Documentation
 
@@ -97,8 +103,8 @@ The [full reference](docs/reference.md) covers every command, the config, owner 
 
 1. ✅ **Core** — supervisor, automatic continuation, targeted tests, safe mode.
 2. ✅ **Faster phases** — `/turbo-phase` with a parallel prologue, gates in parallel, `turbo-uat`.
-3. ✅ **The owner in the loop** — question cards answered ahead (session, pane, Telegram), push and CI, the live view, live sittings. *(v0.3.x, current)*
-4. **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging.
+3. ✅ **The owner in the loop** — question cards answered ahead (session, pane, Telegram), push and CI, the live view, live sittings.
+4. ✅ **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging. *(v0.4.x, current)*
 5. **Adoption** — `/turbo-adopt`: plug turbo into a milestone that is already in progress — where it stands, what was skipped, all questions up front, a plan for the rest.
 6. **Execution graph** — each plan starts as soon as its dependencies are done instead of waiting for whole waves.
 

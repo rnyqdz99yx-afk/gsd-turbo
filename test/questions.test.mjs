@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
-import { ACTION_PLAN, DECISION_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
+import { ACTION_PLAN, DECISION_PLAN, ORCHESTRATED_PLAN, OWNER_ACTION_PLAN, OWNER_CONTEXT_PLAN, OWNER_DECISION_PLAN, OWNER_VERIFY_PLAN, SITTING_PLAN, VERIFY_PLAN, writePhase } from './helpers/plans.mjs';
 import { parseCheckpoints } from '../lib/checkpoints.mjs';
 import { maskSecrets } from '../lib/secrets.mjs';
 import { completeStep, readProgress } from '../lib/phase-progress.mjs';
@@ -11,7 +11,7 @@ import { answerQuestion } from '../lib/answers.mjs';
 import {
   CLASSES, answersRel, buildQuestion, classifyQuestions, deliveryState, dynamicQuestion, liveAnswer, lockFile, markDelivered,
   questionId, questionsFile, readAnswers, readQuestions, refreshQuestions, stopQuestion, withPhaseLock, writeAnswers, writeQuestions,
-  askOwner, dropLaneQuestions, jargonIn, laneQuestion,
+  askOwner, dropLaneQuestions, jargonIn, laneQuestion, doneAnswer, sittingQuestion,
 } from '../lib/questions.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
 
@@ -68,7 +68,7 @@ test('Russian labels with lang ru; long texts cut after masking; secrets masked;
   const ru = buildQuestion(cpOf(VERIFY_PLAN), { phase: '32', plan: '32-10', lang: 'ru' });
   assert.deepEqual(ru.options.map((o) => o.label), ['Принять, если проверки прошли', 'Остановиться и показать мне']);
   assert.match(ru.question, /^Проверка: /);
-  assert.equal(ru.condition, 'все автоматические проверки из how-to-verify прошли, и доказательства приложены');
+  assert.equal(ru.condition, 'все автоматические проверки из плана прошли, и доказательства приложены');
   const token = `ghp_${'a1B2'.repeat(9)}`;
   const q = buildQuestion({ ...cpOf(DECISION_PLAN), context: `${'x'.repeat(700)} ${token}`, decision: `Use ${token} now` }, { phase: '32', plan: '32.1-05' });
   assert.equal([...q.context].length, 600);
@@ -126,6 +126,20 @@ test('a refresh keeps the class, the agent and the stop; state and answer come f
   fs.writeFileSync(path.join(dir, '32-10-SUMMARY.md'), '# done\n');
   assert.deepEqual(refreshQuestions(root, '32').map((q) => q.id), ['32-09-t2', '32-11-t2']);
   assert.equal(readAnswers(root, '32').length, 1, 'answers stay');
+});
+
+test('chunked planning: each committed plan brings its questions at the next refresh, the outline none; earlier answers and classes stay; a plan\'s questions classify alone', () => {
+  const root = tmpDir('chunked');
+  const dir = writePhase(root, '32-auth', { '32-PLAN-OUTLINE.md': '| Plan ID | Objective | Wave |\n| 32-09 | auth | 1 |\n| 32-10 | page | 2 |\n\n## OUTLINE COMPLETE\n' });
+  assert.deepEqual(refreshQuestions(root, '32'), [], 'the outline is no plan');
+  fs.writeFileSync(path.join(dir, '32-09-PLAN.md'), DECISION_PLAN);
+  assert.deepEqual(refreshQuestions(root, '32').map((q) => [q.id, q.classified]), [['32-09-t2', false]]);
+  classifyQuestions(root, '32', '32-09-t2=decision');
+  owner(root, '32-09-t2', { option: 1 });
+  fs.writeFileSync(path.join(dir, '32-10-PLAN.md'), VERIFY_PLAN);
+  const list = refreshQuestions(root, '32');
+  assert.deepEqual(list.map((q) => [q.id, q.state, q.classified]), [['32-09-t2', 'answered', true], ['32-10-t3', 'open', false]]);
+  assert.deepEqual(classifyQuestions(root, '32', '32-10-t3=verify').map((q) => [q.id, q.class]), [['32-09-t2', 'decision'], ['32-10-t3', 'verify']]);
 });
 
 test('liveAnswer skips superseded records; a preference reads as deferred', () => {
@@ -206,6 +220,88 @@ test('a deferred checkpoint opens at the stop; a checkpoint that is no plan task
   assert.deepEqual([d.status, d.question.source, d.question.question], ['stopped', 'stop', 'Action: Log in to the deploy CLI']);
   assert.ok(refreshQuestions(root, '32').some((q) => q.id === '32-09-t7'), 'kept while its plan is open');
   assert.throws(() => stopQuestion(root, '32', '32-09-t2', { agentId: '../x' }), /--agent/);
+});
+
+test('a human action whose check failed after the owner\'s Done: the lane\'s diagnosis and fix replace the plan\'s instructions on the card, a refresh keeps them, diagnosis counts the repeats', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  stopQuestion(root, '32', '32-11-t2', { agentId: AG });
+  const done = () => {
+    owner(root, '32-11-t2', { option: 1 });
+    markDelivered(root, '32', '32-11-t2', 'same-agent');
+  };
+  done();
+  const fix = 'Run Stop-Service demo-sync in an administrator terminal, then answer Done';
+  const why = 'The window is closed, but the sync service still runs in the background: closing the window does not stop it.';
+  const r = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: fix, context: why });
+  assert.deepEqual([r.status, r.question.state, r.question.question, r.question.context, r.question.diagnosis], ['stopped', 'open', `Action: ${fix}`, why, 1]);
+  assert.deepEqual(r.question.options.map((o) => o.signal), ['done']);
+  const kept = refreshQuestions(root, '32').find((q) => q.id === '32-11-t2');
+  assert.deepEqual([kept.question, kept.context, kept.diagnosis], [`Action: ${fix}`, why, 1], 'a refresh keeps the lane\'s words while the stop stands');
+  done();
+  // the same failure after the lane's fix: the card says so and offers to check again (or own words), never Done
+  const again = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'The service starts again by itself each time: tell me how you want it handled', context: 'Stopped twice, running again a minute later both times.' });
+  assert.deepEqual([again.question.diagnosis, again.question.question], [2, 'Action: The service starts again by itself each time: tell me how you want it handled']);
+  assert.deepEqual(again.question.options.map((o) => [o.label, o.signal]), [['Check again', 'done']]);
+  assert.equal(again.question.allowOther, true);
+  assert.deepEqual(refreshQuestions(root, '32').find((q) => q.id === '32-11-t2').options.map((o) => o.label), ['Check again'], 'a refresh keeps that option');
+  done();
+  // a stop without new words keeps the lane's last diagnosis, never the instructions that did not work
+  const plain = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true });
+  assert.deepEqual([plain.question.question, plain.question.diagnosis, plain.question.options[0].label], [again.question.question, 2, 'Check again']);
+  // the lane never rewords a decision or a verification: their cards keep the plan's text and options
+  const d = stopQuestion(root, '32', '32-09-t2', { agentId: AG, question: 'Pick one' });
+  assert.equal(d.question.question, 'Select the authentication provider');
+  assert.equal(d.question.diagnosis, 0);
+  // a checkpoint that is no plan task takes the new words the same way
+  stopQuestion(root, '32', '32-09-t7', { agentId: AG, kind: 'human-action', question: 'Log in to the deploy CLI' });
+  owner(root, '32-09-t7', { option: 1 });
+  markDelivered(root, '32', '32-09-t7', 'same-agent');
+  const gate = stopQuestion(root, '32', '32-09-t7', { agentId: AG, unmet: true, question: 'Run deploy-cli login --device, then answer Done', context: 'The saved login expired an hour ago.' });
+  assert.deepEqual([gate.question.question, gate.question.context, gate.question.diagnosis, gate.question.source], ['Action: Run deploy-cli login --device, then answer Done', 'The saved login expired an hour ago.', 1, 'stop']);
+});
+
+test('the lane\'s diagnosis is owner text: plain words in the owner\'s language, a command in backticks as it is; refused before anything is written; a wish to be asked later is no failed attempt', () => {
+  const { root } = project();
+  refreshQuestions(root, '32');
+  // "I will do it when the phase asks", then the first stop: the owner has tried nothing yet, the plan's words stand
+  owner(root, '32-11-t2', { option: 1 });
+  const first = stopQuestion(root, '32', '32-11-t2', { agentId: AG, question: 'Run it now' });
+  assert.deepEqual([first.question.question, first.question.diagnosis], ['Action: Complete the email verification for the mail service account', 0]);
+  owner(root, '32-11-t2', { option: 1 });
+  markDelivered(root, '32', '32-11-t2', 'same-agent');
+  const before = JSON.stringify(readAnswers(root, '32'));
+  assert.throws(() => stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'Delete config/demo.yml and answer Done', context: 'x' }), /the question holds the file name demo\.yml/);
+  assert.equal(JSON.stringify(readAnswers(root, '32')), before, 'the owner\'s answer is not set aside by a refused stop');
+  assert.equal(readQuestions(root, '32').find((q) => q.id === '32-11-t2').state, 'delivered');
+  const ok = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'Run `del config\\demo.yml` in the project folder, then answer Done', context: 'The old file is still there.' });
+  assert.equal(ok.question.diagnosis, 1);
+  // a Russian owner reads Russian words around the command
+  const ru = project();
+  refreshQuestions(ru.root, '32');
+  stopQuestion(ru.root, '32', '32-11-t2', { agentId: AG });
+  owner(ru.root, '32-11-t2', { option: 1 });
+  markDelivered(ru.root, '32', '32-11-t2', 'same-agent');
+  assert.throws(() => stopQuestion(ru.root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'Run `logout` again', context: '', lang: 'ru' }), /no Russian word/);
+  assert.equal(stopQuestion(ru.root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'Выполните `logout` в терминале администратора', context: 'Сеанс остался отключённым, а не закрытым.', lang: 'ru' }).question.diagnosis, 1);
+});
+
+test('an answer given ahead holds for the checkpoint it answered: a plan that changes that checkpoint asks it anew; an unchanged one keeps the answer', () => {
+  const { root, dir } = project();
+  refreshQuestions(root, '32');
+  owner(root, '32-09-t2', { option: 1 });
+  owner(root, '32-10-t3', { option: 1 });
+  const rev = readQuestions(root, '32').find((q) => q.id === '32-09-t2').rev;
+  // a checker's revision rewrites the decision; the verification stays as it was
+  fs.writeFileSync(path.join(dir, '32-09-PLAN.md'), DECISION_PLAN.replace('Select the authentication provider', 'Select the session store'));
+  const at = new Date('2026-01-02T08:00:00Z');
+  const list = refreshQuestions(root, '32', { now: at });
+  const d = list.find((q) => q.id === '32-09-t2');
+  assert.deepEqual([d.state, d.question, d.rev, d.askedAt], ['open', 'Select the session store', rev + 1, at.toISOString()]);
+  assert.equal(list.find((q) => q.id === '32-10-t3').state, 'answered');
+  const recs = readAnswers(root, '32');
+  assert.deepEqual(recs.filter((r) => r.superseded).map((r) => [r.id, r.supersededBy]), [['32-09-t2', 'plan-change']]);
+  assert.equal(refreshQuestions(root, '32').find((q) => q.id === '32-09-t2').rev, rev + 1, 'once');
 });
 
 test('markDelivered records the path on the question and as a note of the step in progress', () => {
@@ -428,4 +524,217 @@ test('review 2: «and/or», «on/off», «yes/no», «read/write», CI/CD, dates
   for (const [t, re] of [['файл lib/foo.mjs', /lib\/foo\.mjs|foo\.mjs/], ['файл src/a/b.ts', /src\/a\/b\.ts|b\.ts/], ['запустите ./x', /path \.\/x/], ['в ../tools/run', /path \.\.\/tools\/run/], ['папка src/a/b', /path src\/a\/b/], ['папка lib/my_util', /path lib\/my_util/]]) {
     assert.throws(() => laneQuestion({ ...base, question: `Проверить ${t}?` }), re, t);
   }
+});
+
+// Owner cards from plans written for a Russian owner (synthetic fixtures): the owner's words only, never the
+// executor's lines, a tag, a fence or bold markers.
+const PLAN_IDS = ['32-12', '32-13', '32-14', '32-15'];
+const card = (text, plan, more = {}) => buildQuestion(cpOf(text), { phase: '32', plan, lang: 'ru', planIds: PLAN_IDS, ...more });
+function assertOwnerText(q) {
+  for (const t of [q.question, q.context]) {
+    assert.doesNotMatch(t, /<\/?[a-z][\w-]*>|\*\*|`{3}|\bExecutor\b|before presenting|\bpresent\b|\bverify 1\b/i, t);
+  }
+}
+
+test('owner card, human-verify: the verdict\'s first sentence is the question; the rest of the owner block and the steps are the context', () => {
+  const q = card(OWNER_VERIFY_PLAN, '32-12');
+  assert.equal(q.question, 'Проверка: проверил пакет библиотеки картинок, ничего не устанавливая.');
+  assert.equal(q.context, 'Что получилось: Контрольная сумма архива совпадает с реестром: <да/нет>. Что не сделано: ничего не установлено, файлы проекта не менялись. Что решаем: ставить ли эту версию библиотеки. 1. Открой страницу пакета в реестре — там ссылка на официальный репозиторий. 2. В сводке выше сверка контрольной суммы — «да».');
+  assertOwnerText(q);
+  assert.deepEqual([q.id, q.rev, q.options.map((o) => o.signal)], ['32-12-t1', 1, ['approved', null]]);
+});
+
+test('owner card, human-action: the task name is the question, never the executor\'s action; executor lines and English-only lines are left out', () => {
+  const q = card(OWNER_ACTION_PLAN, '32-13');
+  assert.equal(q.question, 'Действие: Владелец — создать тестового пользователя Windows и один раз войти в него');
+  assert.equal(q.context, 'Что получилось: пробная сборка готова и прошла все проверки сборки. Твои данные не трогались. Что нужно от тебя (5 минут): 1. Открой PowerShell от имени администратора. 2. Вставь и выполни: `powershell -File C:\\Users\\dev\\smoke\\create-user.ps1`. 3. Войди в нового пользователя один раз и вернись.');
+  assertOwnerText(q);
+  assert.ok(!/Get-LocalUser|Claude checks|administrator\b/.test(q.question + q.context));
+  // a «Коротко» line in the owner block is the question
+  const short = card(OWNER_ACTION_PLAN.replace('    **Что получилось:** пробная', '    **Коротко:** нужен отдельный пользователь для проверки.\n    **Что получилось:** пробная'), '32-13');
+  assert.equal(short.question, 'Действие: нужен отдельный пользователь для проверки.');
+  assert.match(short.context, /^Что получилось: пробная сборка/);
+});
+
+test('owner card, decision with options: the decision is the question, the context as written, the options as before; the action never shows', () => {
+  const q = card(OWNER_DECISION_PLAN, '32-14');
+  assert.equal(q.question, 'Где хранить превью картинок?');
+  assert.equal(q.context, 'Превью сейчас лежат рядом с оригиналами и занимают много места. Выбор нужен до следующего шага.');
+  assert.deepEqual(q.options.map((o) => [o.label, o.signal]), [['a — на локальном диске', 'a'], ['b — в облаке', 'b']]);
+  assertOwnerText(q);
+  const named = card(OWNER_DECISION_PLAN.replace(/ *<decision>.*<\/decision>\n/, ''), '32-14');
+  assert.equal(named.question, 'Владелец выбирает, где хранить превью картинок', 'no <decision>: the task name');
+});
+
+test('owner card, decision whose owner text is in <context> after the executor\'s preparation: only the text after the owner line', () => {
+  const q = card(OWNER_CONTEXT_PLAN, '32-15');
+  assert.equal(q.question, 'Включать ли сжатие картинок при загрузке?');
+  assert.equal(q.context, 'Коротко: сжатие картинок можно включить — проба на этом компьютере прошла. Нужно твоё решение, потому что это меняет правило «оригиналы не трогать». Что получилось: Проба сжала сто картинок без видимой потери качества. Что решить: a (рекомендую) — включить сжатие. b — оставить как есть.');
+  assertOwnerText(q);
+  // no owner line: the executor's lines and the lines indented under them are left out all the same
+  const noIntro = card(OWNER_CONTEXT_PLAN.replace(/ *The text for the owner .*\n/, ''), '32-15');
+  assert.match(noIntro.context, /^Коротко: сжатие картинок можно включить/);
+  assertOwnerText(noIntro);
+  const noDecision = card(OWNER_CONTEXT_PLAN.replace(/ *<decision>.*<\/decision>\n/, ''), '32-15');
+  assert.equal(noDecision.question, 'сжатие картинок можно включить — проба на этом компьютере прошла.');
+});
+
+test('owner card: text that fails the plain-words check falls back to the task name, then to a generic sentence in the card\'s language', () => {
+  const plan = VERIFY_PLAN.replace('<task type="checkpoint:human-verify" gate="blocking">', '<task type="checkpoint:human-verify" gate="blocking">\n  <name>Task 3: Проверить вывод gallery.mjs</name>')
+    .replace(/<what-built>.*<\/what-built>/, '<what-built>Обновлён gallery.mjs по плану 32-10.</what-built>');
+  const ru = buildQuestion(cpOf(plan), { phase: '32', plan: '32-10', lang: 'ru', planIds: ['32-10'] });
+  assert.equal(ru.question, 'Проверка: План 10, задача 3 ждёт вашего решения: подробности в плане');
+  assert.equal(ru.context, '', 'English steps are no Russian owner text');
+  const en = buildQuestion(cpOf(plan), { phase: '32', plan: '32-10', lang: 'en', planIds: ['32-10'] });
+  assert.equal(en.question, 'Verify: Plan 10, task 3 is waiting for your decision: see the plan for details');
+  assert.match(en.context, /^Visit http:\/\/localhost:3000\/dashboard and check: 1\. Sidebar left 2\. No horizontal scroll$/);
+  const named = buildQuestion(cpOf(plan.replace('Проверить вывод gallery.mjs', 'Проверить вывод галереи')), { phase: '32', plan: '32-10', lang: 'ru', planIds: ['32-10'] });
+  assert.equal(named.question, 'Проверка: Проверить вывод галереи');
+});
+
+test('owner cards, review 1: the owner\'s commands, an executor line on the tag\'s line, a mid-field owner line, Russian executor lines', () => {
+  const F = '`'.repeat(3);
+  // a fenced command in how-to-verify stays, and so do the steps after it
+  const fenced = card(OWNER_VERIFY_PLAN.replace(/<how-to-verify>[\s\S]*?<\/how-to-verify>/, `<how-to-verify>\n    1. Запусти:\n    ${F}bash\n    npm start\n    ${F}\n    2. Открой страницу галереи.\n  </how-to-verify>`), '32-12');
+  assert.match(fenced.context, /1\. Запусти: `npm start` 2\. Открой страницу галереи\.$/);
+  // an executor line on the tag's own line drops only itself
+  const onTag = card(OWNER_ACTION_PLAN.replace('<instructions>\n', '<instructions>Executor: fill the placeholders first.\n'), '32-13');
+  assert.match(onTag.context, /^Что получилось: пробная сборка готова/);
+  // a line for the owner in the middle of the owner's own text cuts nothing
+  const mid = card(OWNER_DECISION_PLAN.replace('    Превью сейчас', '    Превью сейчас нужны быстро.\n    Варианты для владельца:\n    Превью сейчас'), '32-14');
+  assert.match(mid.context, /^Превью сейчас нужны быстро\. Варианты для владельца: Превью сейчас лежат/);
+  // an executor line in Russian is the executor's
+  const ru = card(OWNER_DECISION_PLAN.replace('    Превью сейчас', '    Исполнитель: перед показом запусти проверку.\n    Превью сейчас'), '32-14');
+  assert.match(ru.context, /^Превью сейчас лежат/);
+});
+
+test('owner cards, review 1: no markup in a decision or a name; the lane\'s own words at a stop; the plan number within a zero-padded phase', () => {
+  const marked = card(OWNER_DECISION_PLAN.replace('<decision>Где хранить превью картинок?</decision>', '<decision>**Где** хранить превью &lt;what-built&gt;картинок?</decision>'), '32-14');
+  assert.equal(marked.question, 'Где хранить превью картинок?');
+  const two = dynamicQuestion({ phase: '32', id: '32-09-t4', kind: 'human-action', question: 'Войди в аккаунт почты. Потом нажми готово.', lang: 'ru' });
+  assert.equal(two.question, 'Действие: Войди в аккаунт почты. Потом нажми готово.');
+  const padded = buildQuestion(cpOf(VERIFY_PLAN.replace(/<what-built>.*<\/what-built>/, '<what-built>Обновлён gallery.mjs.</what-built>')), { phase: '2.1', plan: '02.1-03', lang: 'ru' });
+  assert.equal(padded.question, 'Проверка: План 3, задача 3 ждёт вашего решения: подробности в плане');
+  // a secret after a label the plain-words check drops is masked all the same
+  const token = `ghp_${'a1B2'.repeat(9)}`;
+  const secret = card(OWNER_DECISION_PLAN.replace('    Превью сейчас', `    **Token:** ${token}\n\n    Превью сейчас`), '32-14');
+  assert.ok(!JSON.stringify(secret).includes(token));
+});
+
+test('owner cards: a re-extraction with new text keeps the id, the rev and the answer already given', () => {
+  const root = tmpDir('cards');
+  writePhase(root, '32-auth', { '32-15-PLAN.md': OWNER_CONTEXT_PLAN, '32-12-PLAN.md': OWNER_VERIFY_PLAN });
+  refreshQuestions(root, '32', { lang: 'ru' });
+  // the questions file as an older turbo wrote it: the plumbing text, the same options
+  const old = readQuestions(root, '32').map((q) => ({ ...q, question: `${q.question} </action> <what-built>`, context: 'Executor preparation, before presenting; no file changes:' }));
+  writeQuestions(root, '32', old);
+  owner(root, '32-15-t2', { option: 1 });
+  const list = refreshQuestions(root, '32', { lang: 'ru' });
+  const d = list.find((q) => q.id === '32-15-t2');
+  assert.deepEqual([d.rev, d.state, d.answer.label], [1, 'answered', 'a — включить сжатие']);
+  assert.match(d.context, /^Коротко: /);
+  assert.deepEqual(list.map((q) => [q.id, q.rev]), [['32-12-t1', 1], ['32-15-t2', 1]]);
+});
+
+test('a live sitting\'s card never offers Done: ahead the wish to join it when the phase asks; at the stop the way in (attend N in a new window), the step as context, own words kept (journal 2026-10-14)', () => {
+  const cp = cpOf(SITTING_PLAN);
+  const ahead = buildQuestion(cp, { phase: '33', plan: '33-16', lang: 'ru' });
+  assert.equal(ahead.question, 'Живой сеанс: живая проверка приложения: я запускаю его и веду проверку, ты смотришь и отвечаешь на мои вопросы.');
+  assert.deepEqual(ahead.options.map((o) => [o.label, o.signal, o.defer]), [['Проведу сеанс, когда фаза попросит', null, true]]);
+  assert.match(ahead.options[0].description, /запустите \/turbo-autonomous attend 33 в новом окне Claude Code/);
+  assert.deepEqual([ahead.allowOther, ahead.sitting, ahead.class, ahead.kind], [false, true, 'owner-only', 'human-action']);
+  const stop = buildQuestion(cp, { phase: '33', plan: '33-16', lang: 'ru', stopped: true });
+  assert.equal(stop.question, 'Нужен живой сеанс с вами: запустите /turbo-autonomous attend 33 в новом окне Claude Code — там фаза проведёт этот шаг вместе с вами. Кнопки «Сделано» здесь нет: шаг проходит только в таком сеансе.');
+  assert.match(stop.context, /^Шаг: живая проверка приложения: я запускаю его и веду проверку, ты смотришь и отвечаешь на мои вопросы\. 1\. Закрой другие копии приложения\./);
+  assert.deepEqual([stop.options, stop.allowOther, stop.sitting], [[], true, true]);
+  const en = buildQuestion(cpOf(ORCHESTRATED_PLAN), { phase: '33', plan: '33-17', stopped: true });
+  assert.match(en.question, /^A live sitting with you: run \/turbo-autonomous attend 33 in a new Claude Code window/);
+  assert.equal(en.context, 'The step: Live check of the tray app. Keep the app window on screen and answer the questions while the check runs.');
+  assert.deepEqual(en.options, []);
+  // the lane's own words at the stop (a diagnosis) change the step, never the way in
+  const own = buildQuestion(cp, { phase: '33', plan: '33-16', lang: 'ru', stopped: true, own: 'Приложение не запустилось', again: true });
+  assert.deepEqual([own.options, own.context.startsWith('Шаг: Приложение не запустилось.')], [[], true]);
+  // a plain action keeps its cards, with no sitting mark
+  const plain = buildQuestion(cpOf(ACTION_PLAN), { phase: '32', plan: '32-11', stopped: true });
+  assert.deepEqual([plain.options.map((o) => o.label), 'sitting' in plain], [['Done'], false]);
+});
+
+test('doneAnswer: turbo\'s Done and Check again in either language and own words that start with the owner\'s word for done; a preference or other words are none', () => {
+  for (const r of [{ label: 'Сделано', answer: 'go' }, { label: 'Done', answer: 'done' }, { label: 'Check again', answer: 'x' }, { label: null, answer: 'Сделано.' }, { label: null, answer: ' done! ' }, { answer: 'готово' }, { label: null, answer: 'done, but the tray hangs' }, { answer: 'Сделал всё, продолжай' }]) assert.equal(doneAnswer(r), true, JSON.stringify(r));
+  for (const r of [null, { label: 'Проведу сеанс, когда фаза попросит', answer: null, defer: true }, { label: 'Done', answer: 'done', defer: true }, { label: null, answer: 'go' }, { answer: 'doneness check later' }, { answer: 'Готовность завтра' }, { answer: 'not done yet' }]) assert.equal(doneAnswer(r), false, JSON.stringify(r));
+});
+
+// A phase 33 with the sitting plan 16 and the plain action plan 11.
+function sittingProject() {
+  const root = tmpDir('q-sit');
+  writePhase(root, '33-live', { '33-11-PLAN.md': ACTION_PLAN, '33-16-PLAN.md': SITTING_PLAN });
+  return root;
+}
+
+test('refresh and stop build the sitting card from the plan; a question written before the mark is told a sitting by its plan', () => {
+  const root = sittingProject();
+  const list = refreshQuestions(root, '33', { lang: 'ru' });
+  const sit = list.find((q) => q.id === '33-16-t2');
+  assert.deepEqual([sit.sitting, sit.options.map((o) => o.defer)], [true, [true]]);
+  assert.equal('sitting' in list.find((q) => q.id === '33-11-t2'), false);
+  const r = stopQuestion(root, '33', '33-16-t2', { agentId: AG, lang: 'ru' });
+  assert.deepEqual([r.status, r.question.options, r.question.sitting, r.question.allowOther], ['stopped', [], true, true]);
+  // the lane's words on a sitting are no diagnosis: the card stays the way in
+  const again = stopQuestion(root, '33', '33-16-t2', { agentId: AG, unmet: true, question: 'Запусти приложение снова', lang: 'ru' });
+  assert.deepEqual([again.question.diagnosis, again.question.options], [0, []]);
+  const planned = () => ({ items: parseCheckpoints(SITTING_PLAN).map((cp) => ({ plan: '33-16', cp })) });
+  const { sitting: _s, ...old } = sit;
+  assert.equal(sittingQuestion(old, planned), true, 'v0.3.3: no mark, the plan tells it');
+  assert.equal(sittingQuestion({ ...old, id: '33-16-t9' }, planned), false, 'no such checkpoint');
+  assert.equal(sittingQuestion({ ...old, source: 'lane' }, planned), false);
+  assert.equal(sittingQuestion(list.find((q) => q.id === '33-11-t2'), () => ({ items: parseCheckpoints(ACTION_PLAN).map((cp) => ({ plan: '33-11', cp })) })), false, 'a plain action');
+  assert.equal(sittingQuestion({ ...old, kind: 'decision' }, () => assert.fail('a decision needs no plan read')), false);
+});
+
+test('a done recorded on a sitting before it was told apart (v0.3.3 card) is never delivered: the stop waits again and the record is set aside as sitting', () => {
+  const root = sittingProject();
+  refreshQuestions(root, '33');
+  stopQuestion(root, '33', '33-16-t2', { agentId: AG });
+  // the stopped question as v0.3.3 wrote it: no mark, the Done option
+  const list = readQuestions(root, '33');
+  const q = list.find((x) => x.id === '33-16-t2');
+  delete q.sitting;
+  Object.assign(q, { options: [{ label: 'Done', description: '', recommended: false, signal: 'go', defer: false }], state: 'answered', answer: { option: 1, label: 'Done', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false } });
+  writeQuestions(root, '33', list);
+  writeAnswers(root, '33', [{ id: '33-16-t2', plan: '33-16', task: '2', option: 1, label: 'Done', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false, condition: null, defer: false }]);
+  const r = stopQuestion(root, '33', '33-16-t2', { agentId: AG, now: new Date('2026-01-01T15:20:00Z') });
+  assert.deepEqual([r.status, r.question.state, r.question.sitting, r.question.options], ['stopped', 'open', true, []]);
+  assert.deepEqual([readAnswers(root, '33')[0].superseded, readAnswers(root, '33')[0].supersededBy], ['2026-01-01T15:20:00.000Z', 'sitting']);
+  // a marked stop that still holds such a done waits: deliveryState never makes it ready
+  const marked = readQuestions(root, '33');
+  Object.assign(marked.find((x) => x.id === '33-16-t2'), { state: 'answered', answer: { option: null, label: null, answer: 'сделано', by: 'session', at: 'x', conditional: false } });
+  writeQuestions(root, '33', marked);
+  assert.deepEqual([deliveryState(root, '33').waiting.map((x) => x.id), deliveryState(root, '33').ready], [['33-16-t2'], []]);
+});
+
+test('review 1: a done on an unmarked sitting stop (answered on v0.3.3, the supervisor restarted on v0.4 without attend) waits, is never ready, and the next refresh opens it with the way in', () => {
+  const root = sittingProject();
+  refreshQuestions(root, '33');
+  stopQuestion(root, '33', '33-16-t2', { agentId: AG });
+  const list = readQuestions(root, '33');
+  const q = list.find((x) => x.id === '33-16-t2');
+  delete q.sitting;
+  const answer = { option: 1, label: 'Сделано', answer: 'go', by: 'pane', at: '2026-01-01T15:19:48.000Z', conditional: false };
+  Object.assign(q, { options: [{ label: 'Сделано', description: '', recommended: false, signal: 'go', defer: false }], state: 'answered', answer, rev: 2 });
+  writeQuestions(root, '33', list);
+  writeAnswers(root, '33', [{ id: '33-16-t2', plan: '33-16', task: '2', ...answer, condition: null, defer: false }]);
+  // before any refresh: no wake for it (never ready), it waits for the owner
+  assert.deepEqual([deliveryState(root, '33').waiting.map((x) => x.id), deliveryState(root, '33').ready], [['33-16-t2'], []]);
+  const fresh = refreshQuestions(root, '33', { now: new Date('2026-01-01T16:00:00Z') }).find((x) => x.id === '33-16-t2');
+  assert.deepEqual([fresh.state, fresh.answer, fresh.sitting, fresh.stopped, fresh.options, fresh.rev, fresh.askedAt], ['open', null, true, true, [], 3, '2026-01-01T16:00:00.000Z']);
+  assert.match(fresh.question, /run \/turbo-autonomous attend 33 in a new Claude Code window/);
+  assert.deepEqual([readAnswers(root, '33')[0].superseded, readAnswers(root, '33')[0].supersededBy], ['2026-01-01T16:00:00.000Z', 'sitting']);
+  assert.deepEqual(deliveryState(root, '33').waiting.map((x) => x.id), ['33-16-t2'], 'the card is open again');
+  // a delivered one stays as it is: the lane already took it
+  const taken = readQuestions(root, '33');
+  Object.assign(taken.find((x) => x.id === '33-16-t2'), { state: 'delivered' });
+  writeQuestions(root, '33', taken);
+  writeAnswers(root, '33', [{ id: '33-16-t2', plan: '33-16', task: '2', ...answer, condition: null, defer: false }]);
+  assert.equal(refreshQuestions(root, '33').find((x) => x.id === '33-16-t2').state, 'delivered');
+  assert.equal(readAnswers(root, '33')[0].superseded, undefined);
 });

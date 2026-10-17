@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { STEPS } from '../lib/phase-progress.mjs';
-import { ASK_RULE, GAP_PLAN_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
+import { ASK_RULE, GAP_PLAN_RULE, HUMAN_ACTION_RULE, RELEASE_RULE } from '../lib/lane-prompt.mjs';
 
 test('turbo-phase skill: frontmatter, every step in order, the commands it drives', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
@@ -59,7 +59,12 @@ test('turbo-phase skill: STATE.md\'s position is synced after every stop and aft
   const point = loop.split('\n').find((l) => l.startsWith('2. '));
   assert.ok(point.indexOf('gsd-pause-work') < point.indexOf('turbo-run state-sync N') && point.indexOf('turbo-run state-sync N') < point.indexOf('paused-context'), point);
   assert.ok(section(s, 'execute').includes('turbo-run state-sync N'), 'execute ends with a sync');
-  assert.ok(!/gsd-tools (query )?state[.\s](begin-phase|planned-phase)/.test(s), 'turbo never calls begin-phase or planned-phase');
+  assert.ok(!/gsd-tools (query )?state[.\s]begin-phase/.test(s), 'turbo never calls begin-phase');
+  // planned-phase only where GSD's plan-phase would have run it (review M3): the plan step's checker pass, before execution
+  const planned = [...s.matchAll(/gsd-tools (?:query )?state[.\s]planned-phase/g)].map((m) => m.index);
+  const p1 = s.indexOf('\n1. ', s.indexOf('\n### plan\n'));
+  assert.deepEqual(planned.length, 1);
+  assert.ok(planned[0] > p1 && planned[0] < s.indexOf('\n2. ', p1), 'only in step plan point 1');
 });
 
 test('turbo-phase skill: inside execute the context stop finishes the plan or wave and leaves the step undone; state-sync is best effort', () => {
@@ -264,6 +269,54 @@ test('turbo-phase skill (v0.3.3): every stop for the owner is asked with turbo-r
   assert.ok(!/stop for the owner\*\* \("[^"]*\bWR-\d/.test(s), 'no finding codes in stop reasons');
 });
 
+test('turbo-phase skill: a human action that did not work goes back to the owner with the lane\'s own diagnosis and shortest fix, never the same instructions; the second identical failure stops with the diagnosis', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const owner = s.slice(s.indexOf('### Owner questions'), s.indexOf('### Stale report'));
+  const at = owner.slice(owner.indexOf('**At a checkpoint.**'), owner.indexOf('**Delivery.**'));
+  assert.ok(at.includes('**A step that did not work**'), 'At a checkpoint sends a failed human action there');
+  const lane = owner.slice(owner.indexOf('**Lane questions.**'), owner.indexOf('**Owner-chosen fixes.**'));
+  assert.match(lane, /Done \(owner-only work\) → check the result and run the step again; a check that still fails: \*\*A step that did not work\*\*/);
+  const p = owner.slice(owner.indexOf('**A step that did not work.**'), owner.indexOf('**Delivery.**'));
+  assert.ok(p.length > 200, 'its own paragraph, before Delivery');
+  assert.ok(p.includes(HUMAN_ACTION_RULE), 'the rule verbatim, as the lanes get it');
+  for (const n of [
+    'read-only', 'turbo-run questions N --json', '`diagnosis`',
+    "turbo-run questions N --stop <plan id>-t<task number> --agent <agent id> --unmet --question '<", "--context '<",
+    "turbo-run ask N --action '<", 'elevated', 'one command', 'never the plan\'s instructions again', 'Single quotes keep the shell off',
+    'refused twice', 'the card keeps its last words', 'the second identical failure', 'never Done for the same step',
+    // a delivery not marked yet is marked before the stop opens the question again; Delivery then has nothing to mark
+    'mark it first, `turbo-run questions N --delivered <id> --path',
+    'owner question <plan id>-t<task number>: <',
+  ]) assert.ok(p.includes(n), n);
+  // a diagnosis never changes what it looks at
+  assert.match(p, /[Nn]ever change/);
+  const delivery = owner.slice(owner.indexOf('**Delivery.**'), owner.indexOf('**After an interruption.**'));
+  assert.equal(delivery.split('(nothing to do when **A step that did not work** marked it already)').length, 3, 'both delivery paths');
+});
+
+test('turbo-phase skill: during chunked planning each committed plan\'s questions are listed and classified at once, so the owner can answer ahead; the end of the step lists them once more', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const plan = section(s, 'plan');
+  const point = plan.split('\n').find((l) => l.startsWith('2. '));
+  const at = point.indexOf('after each plan\'s commit');
+  assert.ok(at > point.indexOf('Skill(skill="gsd-plan-phase", args="N --chunked")'), point);
+  assert.ok(point.includes('`docs(<padded phase>): plan <plan id> (chunked)`'), 'the commit GSD makes per plan');
+  for (const n of ['`turbo-run questions N`', '`unclassified`', '`turbo-run questions N --class', 'answer ahead', 'before the next plan']) assert.ok(point.slice(at).includes(n), n);
+  assert.ok(plan.split('\n').some((l) => l.startsWith('5. **List and classify**')), 'the whole list once more after the checker\'s revisions');
+  const owner = s.slice(s.indexOf('### Owner questions'), s.indexOf('### Stale report'));
+  assert.match(owner, /\*\*List and classify\*\* \(step \*\*plan\*\*: after each plan's commit and once more at its end;/);
+});
+
+test('turbo-phase skill: the merged Nyquist worktree goes through turbo-run worktrees prune, dry run first, never forced; a conflict keeps the unmerged work', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const point = section(s, 'fanout').split('\n').find((l) => l.startsWith('6. '));
+  const dry = point.indexOf('`turbo-run worktrees prune <path> --dry-run`');
+  const real = point.indexOf('`turbo-run worktrees prune <path>`');
+  assert.ok(dry > point.indexOf('git merge --no-ff <branch>') && real > dry, 'merge, dry run, then the removal');
+  for (const n of ['locks', 'this session', '`kept <path>: <why>`', '`partly removed <path> …`', '`not an agent worktree of this project: …`', 'name the line in the note', 'never force', 'never delete it by hand', 'git merge --abort', 'leave the worktree and its branch']) assert.ok(point.includes(n), n);
+  assert.ok(!point.includes('git worktree remove') && !point.includes('git branch -d'), 'no hand removal the harness lock refuses');
+});
+
 test('turbo-phase skill (review 1, MAJOR 2): no "go on" past the hard gates — final-gate, uat, close, open threats, failed verification; close refuses in code too', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
   const early = s.slice(s.indexOf('### Stopping early'), s.indexOf('### Push and CI'));
@@ -275,4 +328,90 @@ test('turbo-phase skill (review 1, MAJOR 2): no "go on" past the hard gates — 
 test('turbo-phase skill (review 1, MAJOR 3): two refusals of turbo-run ask end the rewriting: the stop goes out with a plain reason', () => {
   const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
   assert.match(s, /refused twice → `turbo-run lane-status N needs-owner --reason "<the question in plain words>"`/);
+});
+
+test('turbo-phase skill: step integrate (Stage 4 §7.1) — the lane takes in main in its slot, reports ready, never marks the step itself', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const sec = section(s, 'integrate');
+  for (const n of [
+    'turbo-run integrate N', 'exit 4', 'TURBO_FULL=1 turbo-run test-changed', 'turbo-run phase-step N --attempt integrate', 'full test rounds allowed',
+    'gsd-tools verification status <phase dir>', '**Stale report**', 'turbo-run lane-status N ready --base', 'without marking this step done',
+    'reintegrate', 'ci-red', 'turbo-run integrate N --hold', 'turbo-run ask N',
+  ]) assert.ok(sec.includes(n), n);
+  assert.ok(section(s, 'close').includes('next integrate'), 'close hands over to integrate in a slot');
+  assert.ok(s.includes('push in slots'), 'CI red and close know the slot line');
+  assert.ok(s.includes('`reintegrate` messages'), 'the inbox paragraph');
+});
+
+// F1: Done on an action card cannot sign UAT rows, so the stop for a signature is a sign-off card whose Accept signs them
+test('turbo-phase skill: a UAT stop for the owner\'s signature is a sign-off card (ask --sign), and only the owner\'s Accept signs the rows (F1)', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const p4 = section(s, 'uat').split('\n').find((l) => l.startsWith('4. '));
+  for (const n of ['`sign`', 'turbo-run ask N --sign', 'never `--action`', 'Accept', 'Not now']) assert.ok(p4.includes(n), n);
+  assert.ok(p4.indexOf('turbo-run ask N --sign') < p4.indexOf('/gsd-verify-work N'), 'the card first, verify-work as the owner\'s other way');
+  const early = s.slice(s.indexOf('### Stopping early'), s.indexOf('### Push and CI'));
+  assert.match(early, /UAT rows that wait for the owner's signature[^\n]*`turbo-run ask N --sign/);
+  const lane = s.slice(s.indexOf('**Lane questions.**'), s.indexOf('**Owner-chosen fixes.**'));
+  for (const n of ['turbo-run uat sign N --answer <id>', 'gsd-tools commit', 'Not now', 'never sign rows any other way']) assert.ok(lane.includes(n), n);
+  assert.ok(lane.indexOf('turbo-run uat sign N --answer <id>') < lane.lastIndexOf('--path lane'), 'signed before it is marked delivered');
+  // review 1: a sign-off card that signs nothing stops the way every stop does (answers committed, gates and STATE.md
+  // restored), without a new card; a step run again after the signature does not dispatch turbo-uat for nothing
+  assert.match(lane, /points 0 and 1 of \*\*Stopping early\*\*, then `turbo-run lane-status N needs-owner --reason [^`]+` \(no new card\), then its point 3/);
+  // controller: the env marker is the lane's to keep, never to clear
+  assert.ok(s.includes('never set, clear or override `TURBO_LANE`'));
+  const p2 = section(s, 'uat').split('\n').find((l) => l.startsWith('2. '));
+  assert.ok(p2.indexOf('`turbo-run uat plan N`') > 0 && p2.indexOf('`turbo-run uat plan N`') < p2.indexOf('Agent(subagent_type="turbo-uat"'), p2);
+  assert.ok(p2.includes('no `items`'), p2);
+  assert.ok(section(s, 'uat').split('\n').find((l) => l.startsWith('1. ')).includes("the owner's answers"));
+});
+
+test('turbo-phase skill: the plan step is done only with the whole plan set, so a lane interrupted inside chunked planning resumes it', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const plan = section(s, 'plan').split('\n');
+  const p1 = plan.find((l) => l.startsWith('1. '));
+  const p3 = plan.find((l) => l.startsWith('3. '));
+  for (const n of ['`has_plans` true', '`turbo-run phase-step N --check plan`', '`plan set complete`', '`plan set incomplete: …`', 'point 2']) assert.ok(p1.includes(n), n);
+  for (const n of ['`has_plans` still false', '**fail**', '`plan set incomplete: …`']) assert.ok(p3.includes(n), n);
+  // review: a plan GSD wrote but an interruption kept from its commit is committed before the step counts as done
+  for (const n of ['`git status --porcelain -- <phase dir>`', 'committed first', '`gsd-tools commit']) assert.ok(p1.includes(n), n);
+  assert.ok(!/`has_plans` true → done/.test(p1), 'has_plans alone no longer marks the step done');
+});
+
+test('turbo-phase skill: the lane hands its temporary-files rule (rule 7) to every subagent, unchanged; a run by hand keeps subagents inside the checkout and the temp directory', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const conv = s.slice(s.indexOf('\n## Conventions\n'), s.indexOf('\n## The step loop\n')).split('\n');
+  const line = conv.find((l) => l.startsWith('- Temporary files'));
+  assert.ok(line, 'a Conventions bullet');
+  for (const n of ['rule 7', 'unchanged', 'every subagent prompt', 'executors', 'continuation agents', 'planners', 'turbo-uat', 'by hand', 'nothing else goes outside the checkout', '`.planning/turbo/run/tdd/`']) assert.ok(line.includes(n), n);
+});
+
+test('turbo-phase skill: the watchdog\'s line makes the lane go on and never start the supervisor itself', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const p = s.slice(s.indexOf('`warn: the supervisor is not running …`'));
+  assert.ok(s.indexOf('`warn: the supervisor is not running …`') > s.indexOf('\nInbox: before each step'), 'next to the inbox');
+  assert.match(p, /^`warn: the supervisor is not running …` \(from `turbo-run inbox`, `ask` or `lane-status`\): .*Go on with the point you are in\. Never start, stop or restart the supervisor yourself \(`turbo-run start` and `resume` refuse in a lane\)/);
+});
+
+test('turbo-phase skill: the plan step is done only with turbo\'s own record of the plan check; a lane cut before GSD\'s plan-checker runs the checker pass, never planning again', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const plan = section(s, 'plan').split('\n');
+  const p1 = plan.find((l) => l.startsWith('1. '));
+  const p3 = plan.find((l) => l.startsWith('3. '));
+  const p6 = plan.find((l) => l.startsWith('6. '));
+  for (const n of ['`plan set unchecked: …`', 'the checker pass only, never planning again', '`gsd-plan-checker`', '`<gsd-core>/workflows/plan-phase.md`', '`gsd-planner` revision', 'one revision round at most', 'then points 4, 5 and 6']) assert.ok(p1.includes(n), n);
+  // review I1/M3: GSD's own record of the planning (its steps 13b-13d) follows the checker pass
+  for (const n of ['`gsd-tools query state.planned-phase --phase N', '`gsd-tools query roadmap.annotate-dependencies N`', '`commit_docs`', '"docs(<padded phase>): create phase plan"', '.planning/STATE.md .planning/ROADMAP.md']) assert.ok(p1.includes(n), n);
+  assert.ok(p1.indexOf('`gsd-plan-checker`') < p1.indexOf('state.planned-phase') && p1.indexOf('create phase plan"') < p1.indexOf('then points 4, 5 and 6'), 'checker, then GSD\'s record, then points 4-6');
+  assert.ok(p3.includes('until point 6 has recorded the plan check'), p3);
+  assert.ok(p6, 'point 6');
+  for (const n of ['`turbo-run phase-step N --plan-checked --note', 'Auto-Advance Check', "point 1's checker pass", 'create phase plan` commit', '`plan_checker`, else `workflow.plan_check`', 'SUMMARY']) assert.ok(p6.includes(n), n);
+  // freshness's own checker round over a whole plan set counts too
+  const fresh = section(s, 'freshness');
+  assert.ok(fresh.includes('`turbo-run phase-step N --plan-checked --note "freshness re-check"`'), 'freshness records its checker round');
+});
+
+test('turbo-phase skill: the lane\'s write guard is named, and a denial is never worked around through Bash', () => {
+  const s = fs.readFileSync('skills/turbo-phase/SKILL.md', 'utf8');
+  const line = s.split('\n').find((l) => l.startsWith('- Temporary files'));
+  for (const n of ['write guard', 'Write, Edit, MultiEdit and NotebookEdit', "the lane's temporary directory", "the control root's `.planning/turbo`", 'never get around a denial through Bash']) assert.ok(line.includes(n), n);
 });

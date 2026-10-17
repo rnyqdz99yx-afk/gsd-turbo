@@ -134,11 +134,10 @@ test('a pause or a stop while the tests are red ends with merges still queued', 
   const slices = { '05-01': { files: files('a', { value: 1, expect: 2 }) }, '05-02': { files: files('b'), delayMs: 3000 } };
   // attend while red and 05-02 still builds: 05-02 finishes, waits for its merge, and the build pauses (no fixer)
   const a = await loopRig(t, { plans, slices });
-  every(t, () => {
-    if (!a.ctx.state.red) return false;
-    writeAttend(a.root, '5');
-    return true;
-  });
+  // the attend mark right after 05-01's merge, before its tests turn the branch red (no race with the fixer)
+  a.ctx.deps.checkpoint = (n) => {
+    if (n === 'merged:05-01') writeAttend(a.root, '5');
+  };
   assert.equal(await runStep(a.ctx, 'build'), 'paused');
   assert.equal(a.ctx.state.slices['05-02'].state, 'running');
   assert.equal(a.a.acts().filter((x) => x.role === 'fixer').length, 0);

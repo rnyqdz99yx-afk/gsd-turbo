@@ -85,7 +85,8 @@ test('claudeShim puts a claude on PATH that runs the fake', () => {
   try {
     const r = resolveBin();
     assert.equal(r.unsupported, undefined);
-    if (process.platform === 'win32') assert.deepEqual([r.cmd, r.prefix], [process.execPath, [path.join(dir, 'fake-claude.cjs')]]);
+    // where prints long paths; a temp directory may come as an 8.3 short one (RUNNER~1): compared by their real paths
+    if (process.platform === 'win32') assert.deepEqual([r.cmd, r.prefix.map((p) => fs.realpathSync.native(p))], [process.execPath, [fs.realpathSync.native(path.join(dir, 'fake-claude.cjs'))]]);
     else assert.equal(r.cmd, path.join(bin, 'claude'));
   } finally {
     process.env[key] = saved;

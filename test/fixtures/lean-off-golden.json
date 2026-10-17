@@ -1,0 +1,67 @@
+{
+  "turboPhase": "2f626ef60ce8c224e8a5e762f6cb24ac79b80f2a57085fcd240652f6c566fb78",
+  "turboPrep": "d432c634d19169d8a8feb9d6924f496b113543f411a7c15070360fcaf7a476c1",
+  "lanePrompts": {
+    "safe": "96b43c1db4be5bcb0ae04fff4f5ba57c807a8ab8a16c72c4dec3326f42ea80df",
+    "full": "e2e02a24e075f697c15fd26bc6a4ee89b5dd2cdaf6cff68d1d83a6011b4dbf40",
+    "max": "39f1bfeba5540a3da697dab3cc12f757ca5d0c5272975ff6a3222194d53afff5"
+  },
+  "prologue": [
+    {
+      "id": "research",
+      "skill": "gsd-plan-phase",
+      "args": "--research-phase 3"
+    },
+    {
+      "id": "ui",
+      "skill": "gsd-ui-phase",
+      "args": "3 --auto"
+    },
+    {
+      "id": "ai",
+      "skill": "gsd-ai-integration-phase",
+      "args": "3 --auto"
+    },
+    {
+      "id": "intel",
+      "gsdTools": [
+        "intel",
+        "api-surface"
+      ]
+    }
+  ],
+  "fanout": [
+    {
+      "id": "security",
+      "skill": "gsd-secure-phase",
+      "args": "3",
+      "isolation": "none",
+      "produces": "SECURITY.md",
+      "blocking": true
+    },
+    {
+      "id": "ui",
+      "skill": "gsd-ui-review",
+      "args": "3",
+      "isolation": "none",
+      "produces": "UI-REVIEW.md",
+      "blocking": false
+    },
+    {
+      "id": "code-review",
+      "skill": "gsd-code-review",
+      "args": "3",
+      "isolation": "none",
+      "produces": "REVIEW.md",
+      "blocking": false
+    },
+    {
+      "id": "nyquist",
+      "skill": "gsd-validate-phase",
+      "args": "3",
+      "isolation": "worktree",
+      "produces": "VALIDATION.md",
+      "blocking": true
+    }
+  ]
+}

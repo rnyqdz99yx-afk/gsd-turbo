@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmpDir } from './helpers/tmp.mjs';
-import { AI_GOAL_RE, prologueJobs, fanoutJobs, gateOutcome } from '../lib/phase-jobs.mjs';
+import { execFileSync } from 'node:child_process';
+import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
+import { AI_GOAL_RE, prologueJobs, fanoutJobs, gateOutcome, regateJobs } from '../lib/phase-jobs.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 import { writeJsonAtomic } from '../lib/fsx.mjs';
 import { gatesRel } from '../lib/gates.mjs';
@@ -186,6 +187,7 @@ test('jobs CLI reads hooks, gate state and frontmatter through injected GSD quer
   const root = tmpDir('jobs');
   const dir = path.join(root, '.planning', 'phases', '03-alpha');
   fs.mkdirSync(dir, { recursive: true });
+  writeJsonAtomic(path.join(root, '.planning', 'turbo', 'config.json'), { lean: { enabled: false } });
   fs.writeFileSync(path.join(dir, '03-REVIEW.md'), '');
   const gsd = {
     hooks: () => HOOKS,
@@ -213,4 +215,126 @@ test('jobs CLI reads hooks, gate state and frontmatter through injected GSD quer
   assert.equal(await run('3', 'fanout', '--json'), 0);
   assert.deepEqual(JSON.parse(lines.at(-1)).map((j) => j.id), ['security']);
   assert.equal(await run('3', 'bogus'), 2);
+});
+
+// --- Stage 6 L2: re-gate, the gates whose inputs changed (spec §5.3) --------------------------------------------------
+
+test('regateJobs: a gate re-runs only when its inputs changed since its report, or without a committed report; the code review gets --files and the diff paragraph', () => {
+  const S = 'a'.repeat(40);
+  const jobs = fanoutJobs({ phase: '3', active: ['ui', 'code-review', 'nyquist'], artifacts: { uiSpec: '03-UI-SPEC.md' }, lean: { security: { yes: true, why: 'plans touch auth' } } });
+  const phaseRel = '.planning/phases/03-x';
+  const none = { since: S, code: [], planning: [] };
+  const regate = (changes) => regateJobs({ phase: '3', phaseRel, jobs, changes, exists: (p) => p !== 'src/gone.js' });
+  const all = regate({ 'code-review': { since: S, code: ['src/a.js', 'src/gone.js'], planning: [] }, security: none, ui: none, nyquist: { since: null, code: [], planning: [] } });
+  const by = Object.fromEntries(all.map((j) => [j.id, j]));
+  assert.deepEqual(all.map((j) => j.id), ['code-review', 'nyquist']);
+  assert.equal(by['code-review'].args, '3 --files=src/a.js');
+  assert.deepEqual(by['code-review'].files, ['src/a.js']);
+  assert.ok(by['code-review'].paragraph.includes(`git diff ${S}`), by['code-review'].paragraph);
+  assert.equal(by.nyquist.args, '3', 'no committed report: the gate re-runs as it is');
+  const plan = regate({ 'code-review': none, security: { since: S, code: [], planning: [`${phaseRel}/03-01-PLAN.md`] }, ui: { since: S, code: [], planning: [`${phaseRel}/03-01-PLAN.md`] }, nyquist: none });
+  assert.deepEqual(plan.map((j) => j.id), ['security'], 'a plan change re-runs the security audit, never the UI review');
+  assert.equal(plan[0].args, '3');
+  assert.equal(plan[0].direct, true, 'the direct audit stays direct');
+  const code = regate({ 'code-review': none, security: { since: S, code: ['src/a.js'], planning: [] }, ui: { since: S, code: [], planning: [`${phaseRel}/03-UI-SPEC.md`] }, nyquist: { since: S, code: [], planning: ['.planning/phases/04-y/04-01-PLAN.md'] } });
+  assert.deepEqual(code.map((j) => j.id), ['security', 'ui'], 'code for security, its UI-SPEC for the UI review, another phase\'s plan for nobody');
+  assert.deepEqual(regate({ 'code-review': { since: S, code: ['src/gone.js'], planning: [] }, security: none, ui: none, nyquist: none }), [], 'nothing left to review');
+});
+
+test('jobs regate CLI: report commits from git; refuses while the gates are off', async () => {
+  const root = tmpGitRepo();
+  const g = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const write = (f, s) => { fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true }); fs.writeFileSync(path.join(root, f), s); };
+  const commit = (m) => { g('add', '-A'); g('commit', '-q', '-m', m); return g('rev-parse', 'HEAD'); };
+  write('.gitignore', '.planning/turbo/run/\n');
+  write('src/a.js', 'a\n');
+  write('.planning/phases/03-alpha/03-REVIEW.md', '---\nstatus: clean\n---\n');
+  const reviewed = commit('review');
+  write('src/a.js', 'a2\n');
+  commit('fix');
+  write('.planning/phases/03-alpha/03-SECURITY.md', '---\nthreats_open: 0\n---\n');
+  commit('security');
+  const gsd = { hooks: () => [], frontend: () => false, goal: () => '', frontmatter: stubFrontmatter() };
+  const lines = [];
+  const run = (...a) => runPhaseCommand('jobs', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd } });
+  writeJsonAtomic(activeFile(root), { phase: '3', active: ['security', 'code-review'] });
+  assert.equal(await run('3', 'regate', '--json'), 0);
+  const list = JSON.parse(lines.at(-1));
+  assert.deepEqual(list.map((j) => j.id), ['code-review'], 'SECURITY.md was committed after the code');
+  assert.deepEqual(list[0].files, ['src/a.js']);
+  assert.equal(list[0].args, '3 --files=src/a.js');
+  assert.equal(await run('3', 'regate'), 0);
+  assert.equal(lines.at(-1), `code-review: 1 input file(s) changed since ${reviewed.slice(0, 12)}`);
+  writeJsonAtomic(path.join(root, gatesRel('3')), { active: ['code-review'] });
+  assert.equal(await run('3', 'regate'), 1);
+  assert.match(lines.at(-1), /turbo-run gates restore 3/);
+});
+
+// --- Stage 6 L2: research and the security audit by the phase's signals (spec §5.2) ---------------------------------
+
+test('prologueJobs (lean): research only when the verdict says yes; lean null is stage-5', () => {
+  const ids = (lean) => prologueJobs({ phase: '3', hooks: HOOKS, artifacts: EMPTY, frontend: false, goal: 'Billing report', lean }).map((j) => j.id);
+  assert.deepEqual(ids({ research: { yes: false, why: 'x' } }), ['intel']);
+  assert.deepEqual(ids({ research: { yes: true, why: 'x' } }), ['research', 'intel']);
+  assert.deepEqual(ids(null), ['research', 'intel']);
+});
+
+test('fanoutJobs (lean): a direct security audit when the signals call for it and GSD\'s gate is off; GSD\'s own security gate stays', () => {
+  const yes = { security: { yes: true, why: 'plans touch auth' } };
+  const jobs = fanoutJobs({ phase: '3', active: ['code-review'], artifacts: {}, lean: yes });
+  assert.deepEqual(jobs[0], { id: 'security', skill: 'gsd-secure-phase', args: '3', isolation: 'none', produces: 'SECURITY.md', blocking: true, direct: true, why: 'plans touch auth' });
+  assert.deepEqual(jobs.map((j) => j.id), ['security', 'code-review']);
+  assert.deepEqual(fanoutJobs({ phase: '3', active: ['code-review'], artifacts: {}, lean: { security: { yes: false, why: 'x' } } }).map((j) => j.id), ['code-review']);
+  const gsd = fanoutJobs({ phase: '3', active: ['security', 'code-review'], artifacts: {}, lean: yes });
+  assert.deepEqual(gsd[0], fanoutJobs({ phase: '3', active: ['security'], artifacts: {} })[0], 'GSD\'s gate on: the stage-5 job, no direct');
+  assert.ok(!Object.hasOwn(gsd[0], 'direct'));
+});
+
+test('jobs CLI (lean): research verdict, prologue and fan-out follow the signals; outcome blocks on the direct audit\'s missing SECURITY.md', async () => {
+  const root = tmpDir('jobs-lean');
+  const dir = path.join(root, '.planning', 'phases', '03-alpha');
+  fs.mkdirSync(dir, { recursive: true });
+  const gsd = { hooks: () => HOOKS, frontend: () => false, goal: () => 'Plain backend work', frontmatter: stubFrontmatter() };
+  const signals = { research: () => ({ yes: false, why: 'no external API, upgrade or security sign' }), security: () => ({ yes: true, why: 'plans touch auth' }) };
+  const lines = [];
+  const run = (...a) => runPhaseCommand('jobs', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd, signals } });
+  assert.equal(await run('3', 'research'), 0);
+  assert.equal(lines.at(-1), 'research: no (no external API, upgrade or security sign)');
+  assert.equal(await run('3', 'research', '--json'), 0);
+  assert.deepEqual(JSON.parse(lines.at(-1)), { yes: false, why: 'no external API, upgrade or security sign' });
+  assert.equal(await run('3', 'prologue', '--json'), 0);
+  assert.deepEqual(JSON.parse(lines.at(-1)).map((j) => j.id), ['intel']);
+  fs.writeFileSync(path.join(dir, '03-RESEARCH.md'), '# research\n');
+  assert.equal(await run('3', 'research'), 0);
+  assert.equal(lines.at(-1), 'research: yes (RESEARCH.md exists)');
+  writeJsonAtomic(activeFile(root), { phase: '3', active: ['code-review'] });
+  assert.equal(await run('3', 'fanout', '--json'), 0);
+  assert.deepEqual(JSON.parse(lines.at(-1)).map((j) => j.id), ['security', 'code-review']);
+  assert.equal(await run('3', 'fanout'), 0);
+  assert.equal(lines.at(-1).split('\n')[0], 'security: direct audit by secure-phase.md (plans touch auth)');
+  assert.equal(await run('3', 'outcome', '--json'), 0);
+  const o = JSON.parse(lines.at(-1));
+  assert.deepEqual([o.blockingMissing, o.next], [['security'], 'retry']);
+  writeJsonAtomic(path.join(root, '.planning', 'turbo', 'config.json'), { lean: { enabled: false } });
+  assert.equal(await run('3', 'research'), 0);
+  assert.equal(lines.at(-1), 'research: yes (lean off: GSD decides)');
+  assert.equal(await run('3', 'fanout', '--json'), 0);
+  assert.deepEqual(JSON.parse(lines.at(-1)).map((j) => j.id), ['code-review'], 'lean off: the fan-out is stage-5');
+});
+
+test('jobs CLI (lean): signals that cannot be read run research and the audit', async () => {
+  const root = tmpDir('jobs-lean-throw');
+  fs.mkdirSync(path.join(root, '.planning', 'phases', '03-alpha'), { recursive: true });
+  const gsd = { hooks: () => HOOKS, frontend: () => false, goal: () => '', frontmatter: stubFrontmatter() };
+  const boom = () => { throw new Error('ROADMAP.md unreadable'); };
+  const lines = [];
+  const run = (...a) => runPhaseCommand('jobs', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd, signals: { research: boom, security: boom } } });
+  assert.equal(await run('3', 'research'), 0);
+  assert.equal(lines.at(-1), "research: yes (the phase's signals could not be read: ROADMAP.md unreadable)");
+  writeJsonAtomic(activeFile(root), { phase: '3', active: ['code-review'] });
+  assert.equal(await run('3', 'fanout', '--json'), 0);
+  assert.deepEqual(JSON.parse(lines.at(-1)).map((j) => [j.id, j.direct ?? false]), [['security', true], ['code-review', false]]);
+  const vague = (...a) => runPhaseCommand('jobs', a, { root, out: (l) => lines.push(l), err: (l) => lines.push(l), deps: { gsd, signals: { research: () => ({}), security: () => null } } });
+  assert.equal(await vague('3', 'research', '--json'), 0);
+  assert.equal(JSON.parse(lines.at(-1)).yes, true, 'a verdict without yes: false runs the step');
 });

@@ -13,7 +13,8 @@ import { SESSION, usage } from './transcripts.mjs';
 //   when tickSubagent, no stdout, then the result), grandchild: 'ignore' | 'inherit' (a node child with that stdout,
 //   its pid in <dir>/grandchild.pid; detached off Windows, as Claude Code starts its shell-tool commands),
 //   transcriptKey (the project directory's name instead of projectKey(cwd)), transcriptLateMs (the transcript's first
-//   line written that long after init instead of before it).
+//   line written that long after init instead of before it), act (Stage 6 B4: the absolute path of a CommonJS module,
+//   called with { argv, stdin, cwd, env, resume } after stdin is read; its { sessionId, result, isError, exitCode } win).
 export const FAKE_MESSAGES = [
   ['msg_1', { input_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 1 }],
   ['msg_1', { input_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 5 }],
@@ -34,7 +35,19 @@ process.stdin.on('end', () => {
   const envOf = (k) => (process.env[k] === undefined ? null : process.env[k]);
   fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify({ argv, stdin, env: { CLAUDECODE: envOf('CLAUDECODE'), CLAUDE_CODE_SESSION_ID: envOf('CLAUDE_CODE_SESSION_ID'), CLAUDE_CONFIG_DIR: envOf('CLAUDE_CONFIG_DIR') } }) + '\\n');
   const ri = argv.indexOf('--resume');
-  const id = ri >= 0 && !B.resumeNewId ? argv[ri + 1] : B.sessionId;
+  // act (Stage 6 B4): a CommonJS module run before any output; its answer may name a new session and replace the
+  // result, isError and exitCode; a throw ends the run with its message on stderr, exit 1, no result event
+  let o = {};
+  if (B.act) {
+    try {
+      o = require(B.act)({ argv, stdin, cwd: process.cwd(), env: process.env, resume: ri >= 0 ? argv[ri + 1] : null }) || {};
+    } catch (e) {
+      process.stderr.write(String((e && e.message) || e) + '\\n');
+      process.exit(1);
+    }
+  }
+  for (const k of ['result', 'isError', 'exitCode']) if (o[k] !== undefined) B[k] = o[k];
+  const id = ri >= 0 && !B.resumeNewId ? argv[ri + 1] : o.sessionId || B.sessionId;
   const tdir = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', B.transcriptKey || process.cwd().replace(/[^A-Za-z0-9]/g, '-'));
   const tfile = path.join(tdir, id + '.jsonl');
   const firstLine = () => {
@@ -73,7 +86,7 @@ process.stdin.on('end', () => {
 });
 `;
 
-const DEFAULTS = { sessionId: SESSION, result: 'done', isError: false, exitCode: 0, resultUsage: usage(20, 200, 2000), messages: FAKE_MESSAGES, noResult: false, hang: false, chatter: false, transcriptTicks: 0, tickMs: 100, tickSubagent: false, grandchild: null, resumeNewId: false, transcriptKey: null, transcriptLateMs: 0 };
+const DEFAULTS = { sessionId: SESSION, result: 'done', isError: false, exitCode: 0, resultUsage: usage(20, 200, 2000), messages: FAKE_MESSAGES, noResult: false, hang: false, chatter: false, transcriptTicks: 0, tickMs: 100, tickSubagent: false, grandchild: null, resumeNewId: false, transcriptKey: null, transcriptLateMs: 0, act: null };
 
 export function fakeClaude(dir, behavior = {}) {
   const script = path.join(dir, 'fake-claude.cjs');

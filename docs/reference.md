@@ -408,7 +408,7 @@ Options:
 
 ## Build path (`turbo-run build`)
 
-With `build.enabled: true` the supervisor runs an eligible phase by code instead of a `/turbo-phase` lane session: `turbo-run build <N>` (detached, its output in `.planning/turbo/logs/build-p<N>.log`) takes the phase through eleven steps, and a model works only in short headless sessions ([Headless sessions](#headless-sessions)), each with one role and the files it needs. The phase's files stay GSD's (CONTEXT, PLAN, SUMMARY, REVIEW, VERIFICATION, SECURITY, UAT; ROADMAP, STATE and REQUIREMENTS only through `gsd-tools`), so `/gsd-progress`, `/gsd-resume-work` and the lean path read the same phase.
+By default (`build.enabled: true`, since v0.6.0) the supervisor runs an eligible phase by code instead of a `/turbo-phase` lane session: `turbo-run build <N>` (detached, its output in `.planning/turbo/logs/build-p<N>.log`) takes the phase through eleven steps, and a model works only in short headless sessions ([Headless sessions](#headless-sessions)), each with one role and the files it needs. The phase's files stay GSD's (CONTEXT, PLAN, SUMMARY, REVIEW, VERIFICATION, SECURITY, UAT; ROADMAP, STATE and REQUIREMENTS only through `gsd-tools`), so `/gsd-progress`, `/gsd-resume-work` and the lean path read the same phase. `build.enabled: false` in `.planning/turbo/config.json` keeps every phase on the lean path. A project set up with v0.5.x has `build.enabled: false` written in that file (`turbo-run init` wrote the defaults of then and keeps the file): set it to `true` there to take the build path.
 
 **Which phases.** The supervisor asks before each launch; the phase runs its lane session instead, with the reason in `supervisor.log` (`phase <N>: build path refused (<reason>); it runs /turbo-phase`, once per phase and reason; nothing is logged for `build.enabled is false`), when:
 - `build.enabled is false`;
@@ -623,7 +623,7 @@ node <gsd-turbo checkout>/bin/turbo-run.mjs cost 33 --project <path to the proje
 | `lean.state_budget_kb` | `16` | The size STATE.md is kept within in lean mode, in KB (4–1024); only history sections are trimmed. |
 | `prep.lookahead` | `1` | How many of the next unfinished phases are prepared ahead (1–10; see [Prep and lane markup](#prep-and-lane-markup)). |
 | `lanes.effort` | `"high"` | `--effort` of every lane session: `low`, `medium`, `high`, `xhigh` or `max`. |
-| `build.enabled` | `false` | The build path of eligible phases (v0.6): `turbo-run build N` instead of a lane session ([Build path](#build-path-turbo-run-build)). |
+| `build.enabled` | `true` | The build path of eligible phases (v0.6): `turbo-run build N` instead of a lane session ([Build path](#build-path-turbo-run-build)); `false` keeps every phase on the lean path. A project set up with v0.5.x has `false` written in its config. |
 | `build.max_builders` | `4` | Builder sessions of one phase at once (1–12); the build path (v0.6). |
 | `build.max_sessions` | `6` | Headless sessions on this machine at once (1–20); the build path (v0.6). |
 | `build.effort` | `{ "slicer": "high", "builder": "high", "fixer": "high", "researcher": "medium", "reviewer": "high", "verifier": "medium" }` | Effort by role (each `low`…`max`; a partial object keeps the other roles' defaults); the build path (v0.6). |

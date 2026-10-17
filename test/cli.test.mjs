@@ -157,7 +157,8 @@ function fakeProject({
   fs.mkdirSync(path.join(core, 'bin'), { recursive: true });
   fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
   // Stage 4 L1: v0.3's tests run one lane in this checkout; a test that wants slots says lanes.mode itself
-  if (config) fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify(config.lanes ? config : { ...config, lanes: { mode: 'checkout' } }));
+  // v0.6: the build path is on by default; these tests run lane sessions, so build.enabled is false unless a test says it
+  if (config) fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ build: { enabled: false }, ...(config.lanes ? config : { ...config, lanes: { mode: 'checkout' } }) }));
   fs.writeFileSync(path.join(core, 'VERSION'), '1.16.0');
   fs.writeFileSync(path.join(core, 'bin', 'gsd-tools.cjs'), `(${fakeGsd})();\n`);
   fs.writeFileSync(path.join(core, 'bin', 'behavior.json'), JSON.stringify({ configGet, contextWindow, phases }));

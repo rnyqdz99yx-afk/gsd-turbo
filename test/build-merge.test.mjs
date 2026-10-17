@@ -221,7 +221,9 @@ test('runMergeTests: the targeted tests of one merge, a red one, a retest', asyn
   assert.notEqual(x.code, 0);
   const lines = fs.readFileSync(x.log, 'utf8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   // the first failing test, not the runner's last line (B5 demo: an error object's closing brace)
-  assert.equal(x.line, lines.find((s) => /^✖ /.test(s) && !/^✖ failing tests:?$/.test(s)) ?? lines.at(-1));
+  // (node's spec reporter on a terminal, TAP elsewhere, as on CI)
+  assert.equal(x.line, lines.find((s) => (/^✖ /.test(s) && !/^✖ failing tests:?$/.test(s)) || /^not ok\b/.test(s)) ?? lines.at(-1));
+  assert.match(x.line, /^(?:✖ |not ok\b)/);
   assert.ok(lines.some((s) => s.includes(`merge ${m.sha.slice(0, 7)}: targeted`)));
 });
 

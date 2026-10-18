@@ -118,7 +118,8 @@ test('status shows a build lane\'s step and slices', () => {
   const r = run(p.root, ['status'], noSessionsClaude());
   const lines = r.out.split(/\r?\n/);
   assert.ok(lines.includes(`lane: phase 5 · build pid 4242 · restarts 0 · since ${at}`), r.out);
-  assert.ok(lines.includes('  Slices: 1 of 4 merged · 1 building'), r.out);
+  // v0.6.1: the build step line (step, slices merged / building / waiting)
+  assert.ok(lines.includes('  Build: building slices · slices 1 of 4 merged · 1 building · 2 waiting'), r.out);
 });
 
 test('build --resume --json prints the outcome', () => {

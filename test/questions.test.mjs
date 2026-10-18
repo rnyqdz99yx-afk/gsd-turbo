@@ -456,6 +456,14 @@ test('owner text with turbo\'s or GSD\'s ids is refused; a Russian owner gets no
   assert.throws(() => laneQuestion({ phase: '32', id: 'ask-1', action: 'plug the phone in', lang: 'ru' }), /the question has no Russian word/, 'the action itself, not turbo\'s prefix');
   assert.doesNotThrow(() => laneQuestion({ ...base, options: [{ label: 'OK — 42', description: 'Сразу' }, RU_OPTS[1]] }), 'an option with a Russian description');
   assert.doesNotThrow(() => laneQuestion({ ...base, lang: 'en', question: 'The fixes are in; what next?', options: [{ label: 'Fix first', description: 'x' }, { label: 'Live check', description: 'y' }] }));
+  // v0.6.1 (live demo, lang en): a card mostly in Russian goes back to its author; a Russian label quoted in an English
+  // sentence is fine
+  const en = { ...base, lang: 'en', options: [{ label: 'English', description: 'Hello, Ann' }, { label: 'Russian', description: 'Privet, Ann' }] };
+  assert.throws(() => laneQuestion({ ...en, question: 'На каком языке функция format должна выдавать приветствие?' }), /the question is not in English: config\.lang is en, so write it in English/);
+  assert.throws(() => laneQuestion({ ...en, question: 'Which language?', context: 'Обе формы подходят' }), /the context is not in English/);
+  assert.throws(() => laneQuestion({ ...en, question: 'Which language?', options: [{ label: 'Английский', description: 'Hello' }, en.options[1]] }), /option 1 is not in English/);
+  assert.throws(() => laneQuestion({ phase: '32', id: 'ask-1', action: 'Подключите телефон', lang: 'en' }), /the question is not in English/);
+  assert.doesNotThrow(() => laneQuestion({ ...en, question: 'The button «Развернуть» stays visible: should the card hide it?' }));
 });
 
 test('an owner-only action is a card with turbo\'s two options in the owner\'s language: done, or later', () => {
@@ -519,7 +527,7 @@ test('review 2: «and/or», «on/off», «yes/no», «read/write», CI/CD, dates
   const base = { phase: '32', id: 'ask-1', question: RU_Q, options: RU_OPTS, recommended: 1, lang: 'ru' };
   for (const t of ['и and/or', 'режим on/off', 'ответ yes/no', 'права read/write', 'CI/CD', '13/10/2026', 'страница https://example.com/login', 'адрес http://localhost:3000/a/b.js']) {
     assert.equal(jargonIn(t), null, t);
-    assert.doesNotThrow(() => laneQuestion({ phase: '32', id: 'ask-1', action: `Войдите: ${t}`, lang: 'en' }), t);
+    assert.doesNotThrow(() => laneQuestion({ phase: '32', id: 'ask-1', action: `Войдите: ${t}`, lang: 'ru' }), t);
   }
   for (const [t, re] of [['файл lib/foo.mjs', /lib\/foo\.mjs|foo\.mjs/], ['файл src/a/b.ts', /src\/a\/b\.ts|b\.ts/], ['запустите ./x', /path \.\/x/], ['в ../tools/run', /path \.\.\/tools\/run/], ['папка src/a/b', /path src\/a\/b/], ['папка lib/my_util', /path lib\/my_util/]]) {
     assert.throws(() => laneQuestion({ ...base, question: `Проверить ${t}?` }), re, t);

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { gitIn } from './helpers/slots.mjs';
 import { buildRepo } from './helpers/build.mjs';
-import { BuildLocked, MERGE_RETRY_MS, buildLockFile, createSliceWorktree, mergeSlice, mergeSubject, redLine, runMergeTests } from '../lib/build-queue.mjs';
+import { BuildLocked, MERGE_RETRY_MS, buildLockFile, createSliceWorktree, failingTests, mergeSlice, mergeSubject, redLine, runMergeTests, wholeRed } from '../lib/build-queue.mjs';
 
 const PLANS = ['33-01', '33-02', '33-03', '33-04'].map((id) => ({ id, files: [`src/${id}.js`] }));
 const TEST_OF = (name) => `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { ${name} } from '../src/${name}.js';\ntest('${name}', () => assert.equal(${name}, 1));\n`;
@@ -239,4 +239,41 @@ test('redLine: the first failing test of node --test, vitest or pytest; else the
   assert.equal(redLine('not ok 2 - b\n# fail 1\n'), 'not ok 2 - b');
   assert.equal(redLine('[turbo-test] red\nexit 1\n'), 'exit 1');
   assert.equal(redLine(''), '');
+});
+
+// v0.6.1: the same failure reads the same in two runs (the phase base's and a merge's)
+test('failingTests: node --test, TAP, vitest, jest and pytest failures as ids without durations', () => {
+  const node = ['[turbo-test] merge 1234567: targeted: 2 related test file(s)', '✖ old is red (1.1676ms)', '✔ fine (0.12ms)', '✖ failing tests:', '', 'test at test/old.test.js:3:1', '✖ old is red (2.5ms)'].join('\n');
+  assert.deepEqual(failingTests(node), ['old is red', 'test/old.test.js > old is red']);
+  assert.deepEqual(failingTests('not ok 3 - tap name\nnot ok 4 - later # TODO not yet\n    not ok 1 - nested one\nok 5 - fine'), ['nested one', 'tap name']);
+  const vitest = [' ❯ src/a.test.tsx (3 tests | 1 failed) 7665ms', '     × opens the card 151ms', ' FAIL  src/a.test.tsx > Card > opens the card', ' Test Files  1 failed | 2 passed (3)'].join('\n');
+  assert.deepEqual(failingTests(vitest), ['opens the card', 'src/a.test.tsx > Card > opens the card']);
+  assert.deepEqual(failingTests('● Suite › it works\nFAILED tests/test_x.py::test_y - AssertionError: 1 != 2\nERROR tests/test_z.py'), ['Suite › it works', 'tests/test_x.py::test_y', 'tests/test_z.py']);
+  assert.deepEqual(failingTests('Error: Cannot find module x\n    at y'), [], 'a crash names no test');
+});
+
+// v0.6.1 (review): two tests of one name in two files are two tests; a run red otherwise than by its tests is red whole
+test('failingTests: the file a summary or a TAP location names makes a second id; pytest only for test nodes', () => {
+  const spec = (file) => ['✖ parser (2ms)', '  ✖ works (1ms)', '✖ failing tests:', '', `test at ${file}:4:3`, '✖ works (1ms)', '  Error: x'].join('\n');
+  const a = failingTests(spec('test\\a.test.js'));
+  const b = failingTests(spec('test/b.test.js'));
+  assert.deepEqual(a, ['parser', 'test/a.test.js > works', 'works']);
+  assert.ok(b.includes('test/b.test.js > works') && !a.includes('test/b.test.js > works'), 'the same name in another file is another test');
+  const tap = ['not ok 1 - works', '  ---', "  location: 'C:\\\\proj\\\\test\\\\a.test.js:4:3'", '  ...'].join('\n');
+  assert.deepEqual(failingTests(tap, { roots: ['C:\\proj'] }), process.platform === 'win32' ? ['test/a.test.js > works', 'works'] : ['C:/proj/test/a.test.js > works', 'works']);
+  assert.deepEqual(failingTests("not ok 2 - y\n  location: '/w/base-p5/test/y.test.js:1:1'", { roots: ['/w/base-p5'] }), process.platform === 'win32' ? ['/w/base-p5/test/y.test.js > y', 'y'] : ['test/y.test.js > y', 'y']);
+  assert.deepEqual(failingTests('ERROR 2026-10-18 12:00 the app logged\nERROR tests/test_z.py\nERROR tests/test_q.py::test_a - boom'), ['tests/test_q.py::test_a', 'tests/test_z.py']);
+});
+
+test('wholeRed: an exit code other than 1, no test named, or a red entry that names none', () => {
+  const named = '✖ works (1ms)';
+  assert.equal(wholeRed('', 0), null);
+  assert.equal(wholeRed(named, 1), null);
+  assert.equal(wholeRed(named, 124), 'the run ended with exit code 124');
+  assert.equal(wholeRed('Error: Cannot find module', 1), 'the output names no failing test');
+  const two = (frontendTail, backendCode = 1) => ['[turbo-test] frontend: targeted: 2 related test file(s)', '[turbo-test] backend: full: no full green run yet', ' FAIL  src/a.test.ts > a', frontendTail, `[turbo-test] frontend: failed (exit code 1)`, 'SyntaxError: bad config', `[turbo-test] backend: failed (exit code ${backendCode})`].join('\n');
+  assert.equal(wholeRed(two(''), 1), 'backend failed without naming a test');
+  assert.equal(wholeRed(two('', 2), 1), 'backend: exit code 2');
+  assert.equal(wholeRed(['[turbo-test] frontend: failed (its directory frontend is missing)'].join('\n') + `\n${named}`, 1), 'frontend: its directory is missing');
+  assert.equal(wholeRed([' FAIL  src/a.test.ts > a', '[turbo-test] frontend: failed (exit code 1)', '✖ b (1ms)', '[turbo-test] backend: failed (exit code 1)'].join('\n'), 1), null);
 });

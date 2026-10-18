@@ -163,3 +163,19 @@ test('haltQuestion: plain words in the owner\'s language', () => {
     for (const kind of HALT_KINDS) assert.doesNotThrow(() => laneQuestion({ ...haltQuestion(kind, { phase: '5', lang }), phase: '5', id: 'ask-1', lang }), `${kind} ${lang}`);
   }
 });
+
+// v0.6.1 (review): a card a session writes twice in the other language goes as it is, never fails the build
+test('a card refused twice for the language alone is asked as it is, with a warning', async (t) => {
+  const ru = 'Нужно.\n## OWNER QUESTION\nQuestion: Какое приветствие выбрать боту?\nContext: Подходят оба.\nOptions:\n1. Официальное — Здравствуйте, Анна (recommended)\n2. Простое — Привет, Анна';
+  const { root, f, ctx } = await opened(t, { results: [ru, ru] });
+  const r = await stepSession(ctx, { step: 'discuss', role: 'discuss', effortKey: 'lane', prompt: DISCUSS, cwd: root, key: '5-discuss' });
+  assert.equal(await ownerAsk(ctx, r, { step: 'discuss' }), 'asked');
+  assert.match(f.calls()[1].stdin, /^Your OWNER QUESTION could not be asked: the question is not in English: config\.lang is en/);
+  assert.deepEqual(readQuestions(root, '5').map((q) => [q.id, q.question]), [['ask-1', 'Какое приветствие выбрать боту?']]);
+  assert.match(fs.readFileSync(path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log'), 'utf8'), /warn: an owner question is not in the owner's language \(the question is not in English/);
+});
+
+test('haltQuestion scope: try again, keep the fix, stop', () => {
+  assert.deepEqual(haltQuestion('scope', { phase: '5', lang: 'en' }).options.map((o) => [o.label, o.description]), [['Try again', 'the build runs this step once more'], ['Go on', 'keep that fix as it is and test again'], ['Stop here', 'the phase waits; `turbo-run resume 5` starts it again']]);
+  assert.deepEqual(haltQuestion('scope', { phase: '5', lang: 'ru' }).options.map((o) => o.label), ['Ещё раз', 'Дальше', 'Остановить']);
+});

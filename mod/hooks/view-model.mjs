@@ -92,11 +92,15 @@ const VIEW_WORDS = {
     quietAgent: (who, d) => `⚠️ ${who} silent${d ? ` for ${d}` : ''}`,
     // a command in flight within its timeout: busy, never silent (lib/liveness.mjs)
     busy: (d) => `a long command is running${d ? ` · ${d}` : ''}`,
-    // Stage 6 B4: a build phase's slices (buildRows)
-    slicesHead: (m, n) => `Slices: ${m} of ${n} merged`,
+    // Stage 6 B4: a build phase's slices (buildRows); v0.6.1: one build line with the step and the fix round
+    buildHead: (step) => `Build: ${step}`,
+    slicesHead: (m, n) => `slices ${m} of ${n} merged`,
     slicesBuilding: (k) => `${k} building`,
+    slicesWaiting: (k) => `${k} waiting`,
     slicesYours: (k) => `${k} ${k === 1 ? 'waits' : 'wait'} for you`,
     slicesRed: 'tests red, fixing',
+    gapRound: (k) => `gap round ${k}`,
+    fixRound: (k) => `fix round ${k}`,
     helpersDone: (n, more) => `${n} ${more ? 'more ' : ''}${n === 1 ? 'helper' : 'helpers'} finished`,
     askHead: (n) => `Needs your answer (${n}):`,
     // v0.4.0: sleep mode and the answers turbo took itself (lib/auto-answer.mjs)
@@ -199,10 +203,14 @@ const VIEW_WORDS = {
     idle: (d) => `тишина${d ? ` ${d}` : ''}`,
     quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''}`,
     busy: (d) => `идёт долгая команда${d ? ` · ${d}` : ''}`,
-    slicesHead: (m, n) => `Куски: слито ${m} из ${n}`,
+    buildHead: (step) => `Сборка: ${step}`,
+    slicesHead: (m, n) => `куски: слито ${m} из ${n}`,
     slicesBuilding: (k) => `собираются ${k}`,
+    slicesWaiting: (k) => `в очереди ${k}`,
     slicesYours: (k) => `ждут вас ${k}`,
     slicesRed: 'тесты красные, чиню',
+    gapRound: (k) => `круг доработки ${k}`,
+    fixRound: (k) => `круг исправлений ${k}`,
     helpersDone: (n, more) => `${more ? 'ещё ' : ''}${n} ${ruPlural(n, 'помощник закончил', 'помощника закончили', 'помощников закончили')}`,
     askHead: (n) => `Нужен ваш ответ (${n}):`,
     awayOn: 'Режим «ушёл» — безопасные вопросы turbo решает сам; когда вернётесь: turbo-run back',
@@ -704,11 +712,21 @@ export function buildRows(build, lang) {
   const slices = list(build.slices);
   const building = slices.filter((s) => s?.state === 'dispatched' || s?.state === 'running').length;
   const yours = slices.filter((s) => s?.state === 'owner').length;
-  const rows = [];
+  const count = (v) => (Number.isInteger(v) && v > 0 ? v : 0);
+  // v0.6.1: one build line: the step, the slices merged / building / waiting, the gap round, the current fix round
+  const rows = [[
+    t.buildHead(buildWord(t, build.step)),
+    build.total > 0 ? t.slicesHead(build.merged, build.total) : null,
+    building ? t.slicesBuilding(building) : null,
+    count(build.waiting) ? t.slicesWaiting(build.waiting) : null,
+    yours ? t.slicesYours(yours) : null,
+    build.red ? t.slicesRed : null,
+    count(build.round) ? t.gapRound(build.round) : null,
+    count(build.fixRound) ? t.fixRound(build.fixRound) : null,
+  ].filter(Boolean).join(' · ')];
   // the step's own session (review, verify, …): what it does now and for how long
   const s0 = build.session;
   if (s0 && typeof s0 === 'object') rows.push([`${t.nowHead}: ${doingWords(t, s0.action ?? null)}`, Number.isFinite(s0.elapsedMs) ? fmtDuration(t, s0.elapsedMs) : null].filter(Boolean).join(' · '));
-  if (build.total > 0) rows.push([t.slicesHead(build.merged, build.total), building ? t.slicesBuilding(building) : null, yours ? t.slicesYours(yours) : null, build.red ? t.slicesRed : null].filter(Boolean).join(' · '));
   for (const s of slices) {
     if (!SLICE_ROWS.has(s?.state)) continue;
     const time = Number.isFinite(s.elapsedMs) ? fmtDuration(t, s.elapsedMs) : null;

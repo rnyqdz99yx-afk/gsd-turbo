@@ -252,6 +252,8 @@ test('turbo-run answer refuses done on a live sitting, by turbo\'s Done option (
   for (const text of ['Сделано', 'done', 'Готово.']) {
     refused(() => answerQuestion({ ...at, text }), /^question 33-16-t2 is a live sitting: the phase conducts this step together with you, so it is never answered done\. Run \/turbo-autonomous attend 33 in a new Claude Code window; nothing was recorded$/);
   }
+  // v0.6.1 live re-check R1: an option number on the stopped sitting (it has none) names the way in, not "1 to 0"
+  refused(() => answerQuestion({ ...at, option: 1 }), /^question 33-16-t2 has no options: it is a live sitting, conducted together with you\. Run \/turbo-autonomous attend 33 in a new Claude Code window; nothing was recorded$/);
   // the stop as v0.3.3 wrote it: no mark, a Done option (its signal the plan's "go"); the plan tells it a sitting
   const list = readQuestions(root, '33');
   const q = list.find((x) => x.id === '33-16-t2');

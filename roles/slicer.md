@@ -18,6 +18,9 @@ Requirements (each id goes into the requirements of at least one slice):
 
 {{gapRound}}
 
+## Decide, do not ask
+Like GSD's discussion in auto mode, decide every choice a sensible builder can make (names, formats, the language of a message, defaults, limits, edge cases, a library the project already uses): take the recommended option and write it into the objective of the plan it shapes as `Decision (slicer): <choice> — <why>`. Ask the owner only for what is theirs alone: money, accounts or credentials, a live or physical step, an irreversible product direction that the requirements and CONTEXT leave open. A question CONTEXT gives to a builder stays the builder's: put it in that slice's tasks.
+
 ## Slices
 - A slice is work one builder finishes alone within an hour: its own files, at most 5 tasks, its plan at most 8 KB. Two slices never change the same file unless one depends on the other: split the work by file so slices run in parallel, and use depends_on only for a real need (it uses what the other creates).
 - Behaviour comes with its test in the same slice. List every file the slice creates, changes or deletes, tests included, as exact paths: no globs, no directories, nothing GSD or turbo keeps (the top of .planning/, its turbo/, this phase's directory).

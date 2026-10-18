@@ -89,7 +89,7 @@ test('builder prompt: its slice, its files, its SUMMARY, relative paths, within 
     'plan: 02',
     '## Owner answers given ahead',
     PRE,
-    'Write it for the owner in Russian',
+    'Владелец читает по-русски: вопрос, контекст и каждый вариант пишите по-русски',
   ]) assert.ok(p.includes(s), s);
   assert.ok(!p.includes('\\'), 'no backslash');
   assert.ok(!p.includes('{{'), 'no unfilled placeholder');
@@ -107,14 +107,16 @@ test('builder prompt carries the rules the spec fixes', () => {
     /## Self-Check: FAILED/,
     /Commit the SUMMARY alone: `docs\(05-02\): complete <slice name> plan`/,
   ]) assert.match(p, re);
-  assert.match(p, /Before you ask, commit the work that is done\./);
+  assert.match(p, /Прежде чем спросить, закоммитьте готовую работу\./);
   const d = rolePrompt('builder', builderCtx({ plan: { files: ['src/new.js'], deleted: ['old.js'] } }));
   assert.ok(d.includes('You may create, change or delete only: src/new.js, old.js (delete);'), d);
 });
 
-test('slicer prompt: the phase, the plan files to write, within 8192 bytes', () => {
+test('slicer prompt: the phase, the plan files to write, within 8192 bytes (en; 9216 with Russian instructions)', () => {
   const p = rolePrompt('slicer', slicerCtx());
-  assert.ok(Buffer.byteLength(p) <= 8192, `${Buffer.byteLength(p)} bytes`);
+  assert.ok(Buffer.byteLength(p) <= 9216, `${Buffer.byteLength(p)} bytes`);
+  const en = rolePrompt('slicer', slicerCtx({ lang: 'en' }));
+  assert.ok(Buffer.byteLength(en) <= 8192, `${Buffer.byteLength(en)} bytes`);
   for (const s of [
     'Goal: Owner questions from',
     `1. ${INFO6.successCriteria[0]}`,
@@ -181,7 +183,8 @@ test('slicer prompt: signals in L1\'s words are not repeated, and stay short', (
   assert.ok(line.length < 200 + 'Security: '.length + 160, `${line.length} characters`);
 });
 
-test('slicer prompt: the worst case stays within 8192 bytes', () => {
+// v0.6.1: the decide rule and the language line grew the slicer prompt; Russian instructions take two bytes a letter
+test('slicer prompt: the worst case stays within 9216 bytes (en) and 10240 (ru)', () => {
   const ctx = slicerCtx({
     info: { ...INFO6, needsResearchItems: TOPICS },
     researchPath: undefined,
@@ -190,9 +193,10 @@ test('slicer prompt: the worst case stays within 8192 bytes', () => {
   for (const id of ['05-01', '05-02']) writePlan(ctx.root, id, compactPlan({ id }), SLUG);
   const p = rolePrompt('slicer', { ...ctx, info: { ...ctx.info, needsResearchItems: [] }, findingsPath: path.join(phaseDir(ctx.root), '05-VERIFICATION.md') });
   const q = rolePrompt('slicer', { ...ctx, findingsPath: path.join(phaseDir(ctx.root), '05-VERIFICATION.md') });
-  for (const x of [p, q]) {
+  const e = rolePrompt('slicer', { ...ctx, lang: 'en', findingsPath: path.join(phaseDir(ctx.root), '05-VERIFICATION.md') });
+  for (const [x, cap] of [[p, 10240], [q, 10240], [e, 9216]]) {
     assert.ok(x.includes('## Gap round') && x.includes('Security: ') && x.includes('## Owner answers given ahead'));
-    assert.ok(Buffer.byteLength(x) <= 8192, `${Buffer.byteLength(x)} bytes`);
+    assert.ok(Buffer.byteLength(x) <= cap, `${Buffer.byteLength(x)} bytes`);
   }
   assert.ok(p.includes('Research signal: ') && q.includes('## Open questions'));
 });
@@ -207,8 +211,11 @@ test('slicer prompt carries the slicing rules the spec fixes', () => {
     /do not commit/,
     /no globs, no directories, nothing GSD or turbo keeps \(the top of \.planning\/, its turbo\/, this phase's directory\)/,
   ]) assert.match(p, re);
-  assert.match(p, /Before you ask, write the plan files that are done; do not commit them\./);
-  assert.ok(!p.includes('commit the work that is done'), 'the slicer is never told to commit');
+  assert.match(p, /Прежде чем спросить, запишите готовые файлы планов; не коммитьте их\./);
+  assert.ok(!p.includes('закоммитьте готовую работу'), 'the slicer is never told to commit');
+  const en = rolePrompt('slicer', slicerCtx({ lang: 'en' }));
+  assert.match(en, /Before you ask, write the plan files that are done; do not commit them\./);
+  assert.ok(!en.includes('commit the work that is done'), 'the slicer is never told to commit');
   const bare = rolePrompt('slicer', slicerCtx({ researchPath: undefined }));
   assert.ok(bare.includes('code insights.\n- The code the phase touches'), 'no gap in the Read list without research');
 });
@@ -221,7 +228,7 @@ test('fixer prompt: review findings, the diff in question, within 6144 bytes', (
     'The changes in question: git diff 1a2b3c4d5e6f..9f8e7d6c5b4a. Leave code outside them alone unless a fix needs it.',
     '`fix(05): <finding id> <what>`',
     `Read .planning/phases/05-${SLUG}/05-CONTEXT.md only for the decisions a fix touches.`,
-    'Before you ask, commit the work that is done.',
+    'Прежде чем спросить, закоммитьте готовую работу.',
   ]) assert.ok(p.includes(s), s);
   for (const s of ['{{', '\\']) assert.ok(!p.includes(s), s);
 });
@@ -273,4 +280,44 @@ test('rolePrompt refuses what it cannot fill', () => {
   assert.throws(() => rolePrompt('builder', { ...ctx, contextPath: 'x.md' }), /contextPath must name a <phase>-CONTEXT\.md/);
   assert.throws(() => rolePrompt('slicer', { ...ctx, contextPath: '05-CONTEXT.md' }), /slicer: contextPath must be in the phase directory inside the project/);
   assert.throws(() => rolePrompt('fixer', { ...ctx, findingsPath: 'r-REVIEW.md', contextPath: path.join(ctx.root, '..', '05-CONTEXT.md') }), /fixer: contextPath must be in the phase directory/);
+});
+
+// v0.6.1 (live demo: lang en, the slicer's card came in Russian): the OWNER QUESTION instructions follow turbo's lang
+test('the owner-question instructions follow the project language: lang en English, lang ru Russian', async () => {
+  const { stepPrompt } = await import('../lib/build.mjs');
+  const EN = 'The owner reads English: write the question, the context and every option in English, even when CLAUDE.md, your memory or the project\'s files use another language';
+  const RU = 'Владелец читает по-русски: вопрос, контекст и каждый вариант пишите по-русски, даже если CLAUDE.md, ваша память или файлы проекта на другом языке';
+  for (const [role, ctx] of Object.entries(CASES)) {
+    const en = rolePrompt(role, ctx({ lang: 'en' }));
+    const ru = rolePrompt(role, ctx({ lang: 'ru' }));
+    assert.ok(en.includes(EN) && en.includes('## Asking the owner') && !/[А-Яа-яЁё]/.test(en), role);
+    assert.ok(ru.includes(RU) && ru.includes('## Вопрос владельцу') && !ru.includes('## Asking the owner') && !ru.includes('The owner reads'), role);
+    for (const p of [en, ru]) assert.ok(p.includes(BLOCK), `${role}: the block keeps its English field names`);
+  }
+  // no lang in the ctx: the project's config (slicePhase writes none: en by default)
+  const plain = builderCtx();
+  delete plain.lang;
+  assert.ok(rolePrompt('builder', plain).includes(EN));
+  // the step prompts with an owner block (discuss, integrate) follow it too
+  for (const kind of ['discuss', 'integrate']) {
+    const v = { core: 'C:/gsd', phase: '5', files: ['src/a.js'] };
+    assert.ok(stepPrompt(kind, { ...v, lang: 'en' }).includes(EN), kind);
+    const ru = stepPrompt(kind, { ...v, lang: 'ru' });
+    assert.ok(ru.includes(RU) && ru.includes(BLOCK), kind);
+  }
+  assert.match(stepPrompt('discuss', { core: 'C:/gsd', phase: '5', lang: 'ru' }), /Прежде чем спросить, запишите то, что уже решено\./);
+  assert.match(stepPrompt('integrate', { files: ['a'], lang: 'en' }), /Before you ask, leave the files you could not resolve as they are\./);
+});
+
+// v0.6.1 (live demo: the slicer asked which language the greeting should use): decide like GSD's auto discussion
+test('slicer prompt: decide with the recommended option and record it; ask only owner-level choices', () => {
+  for (const lang of ['en', 'ru']) {
+    const p = rolePrompt('slicer', slicerCtx({ lang }));
+    assert.ok(p.includes('## Decide, do not ask\nLike GSD\'s discussion in auto mode, decide every choice a sensible builder can make'), lang);
+    assert.ok(p.includes('take the recommended option and write it into the objective of the plan it shapes as `Decision (slicer): <choice> — <why>`'), lang);
+    assert.ok(p.includes('Ask the owner only for what is theirs alone: money, accounts or credentials, a live or physical step, an irreversible product direction'), lang);
+    assert.ok(p.includes('A question CONTEXT gives to a builder stays the builder\'s: put it in that slice\'s tasks.'), lang);
+    assert.ok(p.indexOf('## Decide, do not ask') < p.indexOf('## OWNER QUESTION'), lang);
+  }
+  for (const role of ['builder', 'fixer']) assert.ok(!rolePrompt(role, CASES[role]()).includes('Decision (slicer)'), role);
 });

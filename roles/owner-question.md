@@ -8,4 +8,4 @@ Options:
 1. <label> — <description> (recommended)
 2. <label> — <description>
 
-Two to four options, the recommended one first. Write it for the owner in {{lang}}: plain words, what you found and what you need, no ids, file names, hashes or jargon; each description says what you will do if it is chosen. The answer comes back in this same session: continue from where you stopped.
+Two to four options, the recommended one first. The owner reads {{lang}}: write the question, the context and every option in {{lang}}, even when CLAUDE.md, your memory or the project's files use another language; keep the field names and (recommended) as they are. Plain words: what you found and what you need, no ids, file names, hashes or jargon; each description says what you will do if it is chosen. The answer comes back in this same session: continue from where you stopped.

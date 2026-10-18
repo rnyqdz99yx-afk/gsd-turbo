@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { gitIn } from './helpers/slots.mjs';
 import { buildRepo } from './helpers/build.mjs';
-import { BuildLocked, MERGE_RETRY_MS, buildLockFile, createSliceWorktree, mergeSlice, mergeSubject, redLine, runMergeTests } from '../lib/build-queue.mjs';
+import { BuildLocked, MERGE_RETRY_MS, buildLockFile, createSliceWorktree, failingTests, mergeSlice, mergeSubject, redLine, runMergeTests } from '../lib/build-queue.mjs';
 
 const PLANS = ['33-01', '33-02', '33-03', '33-04'].map((id) => ({ id, files: [`src/${id}.js`] }));
 const TEST_OF = (name) => `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { ${name} } from '../src/${name}.js';\ntest('${name}', () => assert.equal(${name}, 1));\n`;
@@ -239,4 +239,15 @@ test('redLine: the first failing test of node --test, vitest or pytest; else the
   assert.equal(redLine('not ok 2 - b\n# fail 1\n'), 'not ok 2 - b');
   assert.equal(redLine('[turbo-test] red\nexit 1\n'), 'exit 1');
   assert.equal(redLine(''), '');
+});
+
+// v0.6.1: the same failure reads the same in two runs (the phase base's and a merge's)
+test('failingTests: node --test, TAP, vitest, jest and pytest failures as ids without durations', () => {
+  const node = ['[turbo-test] merge 1234567: targeted: 2 related test file(s)', '✖ old is red (1.1676ms)', '✔ fine (0.12ms)', '✖ failing tests:', '', 'test at test/old.test.js:3:1', '✖ old is red (2.5ms)'].join('\n');
+  assert.deepEqual(failingTests(node), ['old is red']);
+  assert.deepEqual(failingTests('not ok 3 - tap name\nnot ok 4 - later # TODO not yet\n    not ok 1 - nested one\nok 5 - fine'), ['nested one', 'tap name']);
+  const vitest = [' ❯ src/a.test.tsx (3 tests | 1 failed) 7665ms', '     × opens the card 151ms', ' FAIL  src/a.test.tsx > Card > opens the card', ' Test Files  1 failed | 2 passed (3)'].join('\n');
+  assert.deepEqual(failingTests(vitest), ['opens the card', 'src/a.test.tsx > Card > opens the card']);
+  assert.deepEqual(failingTests('● Suite › it works\nFAILED tests/test_x.py::test_y - AssertionError: 1 != 2\nERROR tests/test_z.py'), ['Suite › it works', 'tests/test_x.py::test_y', 'tests/test_z.py']);
+  assert.deepEqual(failingTests('Error: Cannot find module x\n    at y'), [], 'a crash names no test');
 });

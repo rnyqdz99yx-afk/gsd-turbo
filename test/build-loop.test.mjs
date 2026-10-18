@@ -286,3 +286,73 @@ test('attend and stop pause the queue: running slices finish and merge, nothing 
   assert.equal(await runStep(old.ctx, 'build'), 'done');
   assert.equal(old.ctx.state.hold, null);
 });
+
+// v0.6.1 (A/B on a real phase: a test red on the base made an unrelated merge red, and the fixer edited another
+// slice's files): a merge is red only by the tests it turned red; the fixer works within the slice that turned them red
+const OLD_RED = { 'test/old.test.js': "const test = require('node:test');\nconst assert = require('node:assert');\ntest('old is red', () => assert.equal(1, 2));\n" };
+const redBase = (r) => {
+  for (const [f, text] of Object.entries(OLD_RED)) r.write(f, text);
+  r.commit('test: a test that is red before the phase');
+};
+
+test('a test red at the phase base makes no merge red: no fixer, every slice merged green', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }) };
+  const r = await loopRig(t, { plans, slices: { '05-01': { files: files('a') }, '05-02': { files: files('b') } }, before: redBase });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.equal(r.a.acts().filter((x) => x.role === 'fixer').length, 0);
+  assert.deepEqual(Object.values(r.ctx.state.slices).map((s) => [s.state, s.tests]), [['merged', 'green'], ['merged', 'green']]);
+  const base = r.ctx.state.baseRed;
+  assert.deepEqual([base.sha, base.known, base.tests], [r.ctx.state.base, true, ['old is red']]);
+  const log = fs.readFileSync(path.join(r.root, '.planning', 'turbo', 'logs', 'supervisor.log'), 'utf8');
+  assert.match(log, /tests after 05-0[12]: only tests red at the phase base already failed \(old is red\); the merge counts green/);
+  assert.equal((log.match(/the tests at the phase base [0-9a-f]{7} run once/g) ?? []).length, 1, 'the base runs once a phase');
+  // the base's worktree is gone
+  assert.ok(!r.git('worktree', 'list').includes('base-p5'));
+});
+
+test('with a red base, the fixer of a red merge gets only the tests it turned red and its slice\'s files', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }) };
+  const r = await loopRig(t, {
+    plans,
+    config: { build: { max_builders: 1 } },
+    slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) }, '05-02': { files: files('b') } },
+    script: { fixes: [{ files: { 'src/a.js': 'module.exports = () => 2;\n' }, message: 'fix(05): the red test', result: 'fixed' }] },
+    before: redBase,
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  const fixer = r.f.calls().filter((c) => c.stdin.startsWith('You are the fixer'));
+  assert.equal(fixer.length, 1);
+  assert.ok(fixer[0].stdin.includes('The merge of slice 05-01 turned these tests red: "a". Other failures in the output were red before this phase: leave them alone.'), fixer[0].stdin);
+  assert.ok(fixer[0].stdin.includes('Change only the files of slice 05-01: src/a.js, test/a.test.js. Code checks your commits against that list'), fixer[0].stdin);
+  assert.ok(!fixer[0].stdin.includes('"old is red"'));
+  assert.equal(r.ctx.state.red, null, 'the retest is green but for the base\'s red test');
+  assert.deepEqual(Object.values(r.ctx.state.slices).map((s) => s.state), ['merged', 'merged']);
+});
+
+test('a fixer that changes another slice\'s file is refused: its commits set aside, the owner asked', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }) };
+  const r = await loopRig(t, {
+    plans,
+    config: { build: { max_builders: 1 } },
+    slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) }, '05-02': { files: files('b') } },
+    script: { fixes: [{ files: { 'src/a.js': 'module.exports = () => 2;\n', 'src/b.js': 'module.exports = () => 9;\n' }, message: 'fix(05): the red test', result: 'fixed' }] },
+  });
+  let fixBase = null;
+  every(t, () => {
+    fixBase ??= r.ctx.state.red?.fixBase ?? null;
+    const q = openCard(r.root);
+    if (!q) return false;
+    assert.match(q.question, /fixing the tests one part of the work turned red needed changes outside that part/);
+    answer(r.root, q.id, 2);
+    return true;
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'stopped');
+  const red = r.ctx.state.red;
+  assert.deepEqual(red.scope, ['src/b.js']);
+  assert.equal(r.git('rev-parse', 'HEAD'), fixBase, 'the fixer\'s commit is off the phase branch');
+  assert.match(red.setAside[0], /^turbo-salvage\/fix-05-01-\d{8}T\d{6}Z$/);
+  assert.equal(r.git('log', '-1', '--format=%s', red.setAside[0]), 'fix(05): the red test');
+  assert.equal(fs.existsSync(path.join(r.root, 'src', 'b.js')), false);
+  assert.equal(readLaneStatus(r.root, '5').reason, 'phase 5 build stopped at step build: fixing the tests one part of the work turned red needed changes outside that part');
+  assert.equal(r.ctx.state.slices['05-02'].state, 'waiting', 'nothing new started while red');
+});

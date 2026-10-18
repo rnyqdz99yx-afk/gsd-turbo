@@ -302,9 +302,9 @@ test('a test red at the phase base makes no merge red: no fixer, every slice mer
   assert.equal(r.a.acts().filter((x) => x.role === 'fixer').length, 0);
   assert.deepEqual(Object.values(r.ctx.state.slices).map((s) => [s.state, s.tests]), [['merged', 'green'], ['merged', 'green']]);
   const base = r.ctx.state.baseRed;
-  assert.deepEqual([base.sha, base.known, base.tests], [r.ctx.state.base, true, ['old is red']]);
+  assert.deepEqual([base.sha, base.known, base.tests], [r.ctx.state.base, true, ['old is red', 'test/old.test.js > old is red']]);
   const log = fs.readFileSync(path.join(r.root, '.planning', 'turbo', 'logs', 'supervisor.log'), 'utf8');
-  assert.match(log, /tests after 05-0[12]: only tests red at the phase base already failed \(old is red\); the merge counts green/);
+  assert.match(log, /tests after 05-0[12]: only tests red at the phase base already failed \(old is red; test\/old\.test\.js > old is red\); the merge counts green/);
   assert.equal((log.match(/the tests at the phase base [0-9a-f]{7} run once/g) ?? []).length, 1, 'the base runs once a phase');
   // the base's worktree is gone
   assert.ok(!r.git('worktree', 'list').includes('base-p5'));
@@ -322,7 +322,7 @@ test('with a red base, the fixer of a red merge gets only the tests it turned re
   assert.equal(await runStep(r.ctx, 'build'), 'done');
   const fixer = r.f.calls().filter((c) => c.stdin.startsWith('You are the fixer'));
   assert.equal(fixer.length, 1);
-  assert.ok(fixer[0].stdin.includes('The merge of slice 05-01 turned these tests red: "a". Other failures in the output were red before this phase: leave them alone.'), fixer[0].stdin);
+  assert.ok(fixer[0].stdin.includes('The merge of slice 05-01 turned these tests red: "a", "test/a.test.js > a". Other failures in the output were red before this phase: leave them alone.'), fixer[0].stdin);
   assert.ok(fixer[0].stdin.includes('Change only the files of slice 05-01: src/a.js, test/a.test.js. Code checks your commits against that list'), fixer[0].stdin);
   assert.ok(!fixer[0].stdin.includes('"old is red"'));
   assert.equal(r.ctx.state.red, null, 'the retest is green but for the base\'s red test');
@@ -343,7 +343,7 @@ test('a fixer that changes another slice\'s file is refused: its commits set asi
     const q = openCard(r.root);
     if (!q) return false;
     assert.match(q.question, /fixing the tests one part of the work turned red needed changes outside that part/);
-    answer(r.root, q.id, 2);
+    answer(r.root, q.id, 3); // Stop here (2 keeps the fix)
     return true;
   });
   assert.equal(await runStep(r.ctx, 'build'), 'stopped');
@@ -355,4 +355,46 @@ test('a fixer that changes another slice\'s file is refused: its commits set asi
   assert.equal(fs.existsSync(path.join(r.root, 'src', 'b.js')), false);
   assert.equal(readLaneStatus(r.root, '5').reason, 'phase 5 build stopped at step build: fixing the tests one part of the work turned red needed changes outside that part');
   assert.equal(r.ctx.state.slices['05-02'].state, 'waiting', 'nothing new started while red');
+});
+
+test('the owner keeps a fix that went outside the slice: its commits come back and the retest decides', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }) };
+  const r = await loopRig(t, {
+    plans,
+    config: { build: { max_builders: 1 } },
+    slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) }, '05-02': { files: files('b') } },
+    script: { fixes: [{ files: { 'src/a.js': 'module.exports = () => 2;\n', 'src/shared.js': 'module.exports = 1;\n' }, message: 'fix(05): the red test', result: 'fixed' }] },
+  });
+  every(t, () => {
+    const q = openCard(r.root);
+    if (!q) return false;
+    answer(r.root, q.id, 2); // Go on: keep that fix
+    return true;
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.equal(r.ctx.state.red, null);
+  assert.ok(r.git('log', '--format=%s').split('\n').includes('fix(05): the red test'), 'the kept fix is on the phase branch');
+  assert.equal(read(r, 'src/shared.js'), 'module.exports = 1;\n');
+  assert.equal(r.a.acts().filter((x) => x.role === 'fixer').length, 1, 'no second fixer');
+  assert.deepEqual(Object.values(r.ctx.state.slices).map((s) => s.state), ['merged', 'merged']);
+});
+
+// v0.6.1 (review): a slice a restart's reconcile merged while the fixer's window was open is no fixer's commit, and its
+// merge keeps the fixer's commits on the branch (no reset)
+test('fixerWindow: the first-parent commits that are no merge; a merge on the line is told', async (t) => {
+  const { fixerWindow } = await import('../lib/build.mjs');
+  const r = await loopRig(t, { plans: { '05-01': plan('05-01', 'a') } });
+  const from = r.git('rev-parse', 'HEAD');
+  r.git('checkout', '-q', '-b', 'side');
+  r.write('src/slice.js', 'module.exports = 1;\n');
+  r.commit('feat(05-02): a slice commit');
+  r.git('checkout', '-q', '-');
+  r.write('src/fix.js', 'module.exports = 2;\n');
+  r.write('.planning/STATE.md', '# state\n');
+  r.commit('fix(05): the fixer');
+  r.git('merge', '-q', '--no-ff', '-m', 'chore(phase-5): merge slice 05-02', 'side');
+  const w = fixerWindow(r.root, from);
+  assert.deepEqual(w.files, ['src/fix.js']);
+  assert.equal(w.shas.length, 1);
+  assert.equal(w.merges.length, 1);
 });

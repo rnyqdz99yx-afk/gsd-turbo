@@ -119,6 +119,7 @@ test('red after the fix stops for the owner', async (t) => {
   assert.equal(await runStep(r.ctx, 'build'), 'stopped');
   const st = readLaneStatus(r.root, '5');
   assert.deepEqual([st.status, st.reason], ['failed', 'phase 5 build stopped at step build: the tests stay red after one fix']);
+  assert.equal(r.ctx.state.red.tries, 1, 'the fix round the status line shows');
   // the next run (turbo-run resume 5) tries the step afresh: one more fixer, then a new card
   r.a.set({ fixes: [{ files: {}, result: 'nothing to change' }] });
   every(t, () => {
@@ -130,6 +131,7 @@ test('red after the fix stops for the owner', async (t) => {
   assert.equal(await runStep(r.ctx, 'build'), 'stopped');
   assert.deepEqual(readQuestions(r.root, '5').map((q) => q.id).sort(), ['ask-1', 'ask-2']);
   assert.equal(r.a.acts().filter((x) => x.role === 'fixer').length, 2);
+  assert.equal(r.ctx.state.red.tries, 2);
 });
 
 test('a pause or a stop while the tests are red ends with merges still queued', async (t) => {

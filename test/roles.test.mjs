@@ -309,3 +309,15 @@ test('the owner-question instructions follow the project language: lang en Engli
   assert.match(stepPrompt('integrate', { files: ['a'], lang: 'en' }), /Before you ask, leave the files you could not resolve as they are\./);
 });
 
+// v0.6.1 (live demo: the slicer asked which language the greeting should use): decide like GSD's auto discussion
+test('slicer prompt: decide with the recommended option and record it; ask only owner-level choices', () => {
+  for (const lang of ['en', 'ru']) {
+    const p = rolePrompt('slicer', slicerCtx({ lang }));
+    assert.ok(p.includes('## Decide, do not ask\nLike GSD\'s discussion in auto mode, decide every choice a sensible builder can make'), lang);
+    assert.ok(p.includes('take the recommended option and write it into the objective of the plan it shapes as `Decision (slicer): <choice> — <why>`'), lang);
+    assert.ok(p.includes('Ask the owner only for what is theirs alone: money, accounts or credentials, a live or physical step, an irreversible product direction'), lang);
+    assert.ok(p.includes('A question CONTEXT gives to a builder stays the builder\'s: put it in that slice\'s tasks.'), lang);
+    assert.ok(p.indexOf('## Decide, do not ask') < p.indexOf('## OWNER QUESTION'), lang);
+  }
+  for (const role of ['builder', 'fixer']) assert.ok(!rolePrompt(role, CASES[role]()).includes('Decision (slicer)'), role);
+});

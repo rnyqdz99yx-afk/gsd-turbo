@@ -110,6 +110,12 @@ test('context-window: the lean split is ok with the lean line; equal values stay
   assert.equal(off.warn, true);
   assert.match(off.detail, /^GSD's context_window is 400000, turbo's is 1000000/);
   assert.ok(!off.detail.includes('lean'), off.detail);
+  // lean on with lean.keep naming context_window: the project's own value stands, as with lean off
+  fs.writeFileSync(path.join(e.root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lean: { keep: ['context_window'] } }));
+  assert.deepEqual(check(run('1000000')), { name: 'context-window', ok: true, detail: '1000000' });
+  const kept = check(run('400000'));
+  assert.equal(kept.warn, true);
+  assert.ok(!kept.detail.includes('lean'), kept.detail);
 });
 
 test('gsd-effort: not checked without GSD agents; a warning naming the values when they differ from lean; ok when they match; the mode stays full', () => {

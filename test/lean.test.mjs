@@ -7,7 +7,8 @@ import { tmpGitRepo } from './helpers/tmp.mjs';
 import { fakeGsdCore } from './helpers/fake-gsd.mjs';
 import { effortHome } from './helpers/effort-gsd.mjs';
 import { ABSENT, createGsdConfig, sameConfig } from '../lib/gates.mjs';
-import { LEAN_KEYS, LEAN_PREV_REL, LeanRefused, effortApply, effortOffHint, executeBegun, leanApply, leanBoundary, leanChanges, leanCurrent, leanLines, leanOff } from '../lib/lean.mjs';
+import { LEAN_KEYS, LEAN_PREV_REL, LeanRefused, effortApply, effortOffHint, executeBegun, leanApply, leanBoundary, leanChanges, leanCurrent, leanLines, leanOff, leanStatus } from '../lib/lean.mjs';
+import { LEAN_KEY_NAMES } from '../lib/config.mjs';
 import { completeStep } from '../lib/phase-progress.mjs';
 import { mergeLockFile } from '../lib/merge-lock.mjs';
 
@@ -72,6 +73,38 @@ test('lean apply writes the ten GSD keys through config-set, keeps the previous 
   assert.ok(lines.includes('lean: workflow.pattern_mapper absent → false'), lines.join('\n'));
   assert.ok(lines.includes('lean: previous values in .planning/turbo/lean-prev.json'), lines.join('\n'));
   assert.ok(lines.some((l) => /^lean: committed [0-9a-f]{7,} chore\(turbo\): lean mode GSD settings$/.test(l)), lines.join('\n'));
+});
+
+test('LEAN_KEY_NAMES (the config\'s lean.keep check) names the LEAN_KEYS, in order', () => {
+  assert.deepEqual(LEAN_KEY_NAMES, LEAN_KEYS.map(([k]) => k));
+});
+
+test('lean.keep: apply leaves the kept keys as the project has them; current and status follow it; adding a key later stops lean touching it', () => {
+  const keep = ['context_window', 'workflow.auto_advance'];
+  const { root, core } = leanProject({ turbo: { lean: { keep } } });
+  const r = leanApply({ root, core });
+  const cfg = json(root, '.planning/config.json');
+  assert.equal(r.changed.length, 8);
+  assert.ok(r.changed.every((c) => !keep.includes(c.key)), JSON.stringify(r.changed));
+  assert.equal(cfg.context_window, 1000000);
+  assert.equal(cfg.workflow.auto_advance, true);
+  assert.equal(cfg.workflow.nyquist_validation, false);
+  assert.deepEqual(Object.keys(json(root, LEAN_PREV_REL).keys).sort(), LEAN_KEYS.map(([k]) => k).filter((k) => !keep.includes(k)).sort());
+  assert.equal(leanCurrent(root), true, 'the kept keys do not count against current');
+  assert.deepEqual(leanChanges({ cfg: createGsdConfig({ root, core }), keep }), []);
+  const items = leanStatus({ root, env: {}, home: root }).items.filter((i) => i.section === '5.1');
+  assert.deepEqual(items.find((i) => i.name === 'context_window (GSD)'), { section: '5.1', name: 'context_window (GSD)', value: '1000000', want: null, state: 'kept: lean.keep' });
+  assert.deepEqual(items.find((i) => i.name === 'workflow.auto_advance'), { section: '5.1', name: 'workflow.auto_advance', value: 'true', want: null, state: 'kept: lean.keep' });
+  assert.equal(items.find((i) => i.name === 'workflow.nyquist_validation').state, 'ok');
+  // without lean.keep the next apply sets them; a key named afterwards stays as the owner sets it
+  write(root, '.planning/turbo/config.json', JSON.stringify({ lean: { keep: [] } }));
+  assert.equal(leanCurrent(root), false);
+  assert.deepEqual(leanApply({ root, core }).changed.map((c) => c.key), ['workflow.auto_advance', 'context_window']);
+  write(root, '.planning/turbo/config.json', JSON.stringify({ lean: { keep: ['context_window'] } }));
+  createGsdConfig({ root, core }).set('context_window', '1000000');
+  assert.equal(leanCurrent(root), true);
+  assert.deepEqual(leanApply({ root, core }).changed, []);
+  assert.equal(json(root, '.planning/config.json').context_window, 1000000);
 });
 
 test('lean apply is idempotent: a second run changes nothing, commits nothing, keeps lean-prev byte for byte', () => {

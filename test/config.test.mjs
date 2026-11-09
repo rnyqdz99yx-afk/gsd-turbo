@@ -308,7 +308,7 @@ test('Stage 6 L1 keys: lean, prep, lanes.effort and build: defaults, digit strin
   assert.deepEqual(EFFORTS, ['low', 'medium', 'high', 'xhigh', 'max']);
   assert.deepEqual(BUILD_ROLES, ['slicer', 'builder', 'fixer', 'researcher', 'reviewer', 'verifier']);
   const build = { enabled: true, maxBuilders: 4, maxSessions: 6, effort: { slicer: 'high', builder: 'high', fixer: 'high', researcher: 'medium', reviewer: 'high', verifier: 'medium' }, stallMin: 15, timeoutMin: 120, adoptPlans: false };
-  assert.deepEqual(leanSettings(DEFAULTS), { enabled: true, stateBudgetKb: 16 });
+  assert.deepEqual(leanSettings(DEFAULTS), { enabled: true, stateBudgetKb: 16, keep: [] });
   assert.deepEqual(prepSettings(DEFAULTS), { lookahead: 1 });
   assert.equal(laneEffort(DEFAULTS), 'high');
   assert.deepEqual(buildSettings(DEFAULTS), build);
@@ -322,7 +322,9 @@ test('Stage 6 L1 keys: lean, prep, lanes.effort and build: defaults, digit strin
   fs.mkdirSync(path.join(root, '.planning', 'turbo'), { recursive: true });
   fs.writeFileSync(path.join(root, '.planning', 'turbo', 'config.json'), JSON.stringify({ lean: { state_budget_kb: '32' }, prep: { lookahead: 3 }, lanes: { effort: 'medium' }, build: { effort: { builder: 'xhigh' } } }));
   const c = loadConfig(root);
-  assert.deepEqual(leanSettings(c), { enabled: true, stateBudgetKb: 32 });
+  assert.deepEqual(leanSettings(c), { enabled: true, stateBudgetKb: 32, keep: [] });
+  // lean.keep: lean keys only, each once
+  assert.deepEqual(leanSettings({ lean: { keep: ['context_window', 'workflow.pattern_mapper', 'context_window'] } }).keep, ['context_window', 'workflow.pattern_mapper']);
   assert.deepEqual(prepSettings(c), { lookahead: 3 });
   assert.equal(laneEffort(c), 'medium');
   assert.deepEqual(buildSettings(c).effort, { ...build.effort, builder: 'xhigh' });
@@ -352,6 +354,8 @@ test('Stage 6 L1 keys: lean, prep, lanes.effort and build: defaults, digit strin
     [{ build: { timeout_min: 721 } }, 'build.timeout_min', /from 5 to 720/],
     [{ build: { stall_min: 60, timeout_min: 60 } }, 'build.stall_min', /must be less than build\.timeout_min/],
     [{ build: { adopt_plans: 'no' } }, 'build.adopt_plans', /must be true or false/],
+    [{ lean: { keep: 'context_window' } }, 'lean.keep', /must be a list of lean keys \(workflow\.nyquist_validation, .*context_window\)$/],
+    [{ lean: { keep: ['workflow.research'] } }, 'lean.keep', /names "workflow\.research", which is not a lean key/],
   ];
   const getter = { lean: leanSettings, prep: prepSettings, lanes: laneEffort, build: buildSettings };
   for (const [cfg, key, re] of bad) {

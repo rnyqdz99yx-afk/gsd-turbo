@@ -208,7 +208,7 @@ test('state-sync --no-commit writes STATE.md through GSD\'s state commands and l
 // writes survives the begin-phase call every execute-phase run starts with, and undoes planned-phase's flip.
 const core = gsdCoreDir(null);
 const realGsd = core && versionInRange(readVersion(core) || '');
-const SKIP = { skip: !realGsd && 'GSD 1.16 is not installed' };
+const SKIP = { skip: !realGsd && 'GSD 1.16–1.20 is not installed' };
 const stateOf = (root) => fs.readFileSync(path.join(root, '.planning', 'STATE.md'), 'utf8');
 function committedFixture(opts) {
   const root = fixture(opts);
@@ -250,7 +250,9 @@ test('state-sync with the installed GSD 1.16 leaves archive lines outside Curren
 test('state-sync with the installed GSD 1.16: begin-phase keeps the synced plan; planned-phase\'s flip is undone', SKIP, async () => {
   const { root, tool, position } = committedFixture();
   tool('state', 'begin-phase', '--phase', '05', '--name', 'Demo Feature', '--plans', '4');
-  assert.equal(position()[1], 'Plan: 1 of 4', 'what a first begin-phase leaves mid-phase');
+  // GSD before 1.18 resets a mid-phase begin-phase to plan 1; 1.18 (#4945) starts at the first plan without a summary
+  const firstPlan = versionInRange(readVersion(core) || '', '>=1.18.0') ? 'Plan: 3 of 4' : 'Plan: 1 of 4';
+  assert.equal(position()[1], firstPlan, 'what a first begin-phase leaves mid-phase');
   let r = await sync(root, {});
   assert.equal(r.code, 0, r.lines.join('\n'));
   assert.deepEqual(position().slice(0, 3), ['Phase: 05 (Demo Feature) — EXECUTING', 'Plan: 3 of 4', 'Status: Executing Phase 05']);

@@ -468,15 +468,17 @@ test('daemon replaces a dead lock, runs to the end, then clears its pid and lock
 });
 
 test('daemon.lock alone decides the lease: a foreign lock or {pid: null} ends it, a foreign supervisor.json or read errors do not', async (t) => {
-  const mk = () => fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  const mk = () => fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5, lean: { enabled: false } } });
   const [a, b, c, d, e] = [mk(), mk(), mk(), mk(), mk()];
   const other = sleeper(t).pid; // the daemon that took over after this one looked dead
   const supFile = (p) => path.join(runDirOf(p.root), 'supervisor.json');
   // Each change is written as soon as that daemon's own first tick is seen, a whole poll before its
   // lease check: waiting for all daemons first let a fast one tick again and overwrite the change.
+  // lean off and a 20 s wait (Windows CI flake): lean's ten gsd-tools spawns in the first tick of five daemons at once
+  // took more than 10 s under a loaded runner; the lease is what these tests check.
   const setUp = async (p, change) => {
     const ch = spawnCli(t, ['daemon'], p);
-    const s = await waitFor(() => { const v = readSup(p.root); return v?.pid === ch.pid && v.lane ? v : null; }, 10000);
+    const s = await waitFor(() => { const v = readSup(p.root); return v?.pid === ch.pid && v.lane ? v : null; }, 20000);
     assert.ok(s, logOf(p.root));
     const at = new Date().toISOString();
     change(s, at);
@@ -507,9 +509,9 @@ test('daemon.lock alone decides the lease: a foreign lock or {pid: null} ends it
 });
 
 test('stop with a stale heartbeat clears the lock too; a daemon that only looked dead ends its lease and leaves no pid', async (t) => {
-  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5, lean: { enabled: false } } });
   const ch = spawnCli(t, ['daemon'], p);
-  const s = await waitFor(() => { const v = readSup(p.root); return v?.pid === ch.pid && v.lane ? v : null; }, 10000);
+  const s = await waitFor(() => { const v = readSup(p.root); return v?.pid === ch.pid && v.lane ? v : null; }, 20000);
   assert.ok(s, logOf(p.root));
   writeSup(p.root, { ...s, updatedAt: ago(30) }); // looks hibernated, right after its tick
   const r = await runAsync(['stop'], p.root, p.env);
@@ -522,9 +524,9 @@ test('stop with a stale heartbeat clears the lock too; a daemon that only looked
 });
 
 test('stop revokes the lock lease of a daemon that an unreadable supervisor.json no longer names', async (t) => {
-  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5 } });
+  const p = fakeProject({ phases: [{ number: '4', name: 'four', phase_complete: false }], config: { notify: { desktop: false, telegram: false }, poll_seconds: 5, lean: { enabled: false } } });
   const ch = spawnCli(t, ['daemon'], p);
-  const s = await waitFor(() => { const v = readSup(p.root); return v?.pid === ch.pid && v.lane ? v : null; }, 10000);
+  const s = await waitFor(() => { const v = readSup(p.root); return v?.pid === ch.pid && v.lane ? v : null; }, 20000);
   assert.ok(s, logOf(p.root));
   fs.writeFileSync(path.join(runDirOf(p.root), 'supervisor.json'), '{ not json'); // right after its tick
   const r = await runAsync(['stop'], p.root, p.env);

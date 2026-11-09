@@ -165,6 +165,18 @@ test('ancestorPids names the processes this one runs under', async () => {
   }
 });
 
+test('ancestorPids on Windows: a recorded parent created after its child took a dead parent\'s pid and ends the chain', () => {
+  // 100 (this, created at 50) runs under 90 (40), whose parent 80 died; 80 now belongs to a child of 100 (created at 60)
+  const table = ['100 90 50', '90 80 40', '80 100 60', '4 0 1', '7 4'].join('\r\n');
+  const win = (cmd) => { assert.equal(cmd, 'powershell.exe'); return table; };
+  assert.deepEqual(ancestorPids(100, { platform: 'win32', exec: win }), [90]);
+  // an older parent is kept; a row without a creation time is not checked
+  assert.deepEqual(ancestorPids(100, { platform: 'win32', exec: () => ['100 90 50', '90 80 40', '80 70 30', '70 0 20'].join('\n') }), [90, 80, 70]);
+  assert.deepEqual(ancestorPids(100, { platform: 'win32', exec: () => ['100 90 50', '90 80', '80 70 99'].join('\n') }), [90, 80, 70]);
+  // ps has two columns: unchanged
+  assert.deepEqual(ancestorPids(100, { platform: 'linux', exec: () => ['100 90', '90 80', '80 1'].join('\n') }), [90, 80]);
+});
+
 test('turbo-run worktrees prune --dry-run from the project folder; a wrong form is a usage error', () => {
   const { root, add } = project();
   fs.mkdirSync(path.join(root, '.planning'));

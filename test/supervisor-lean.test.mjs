@@ -99,11 +99,17 @@ test('slots mode: leanBoundary runs before the slot is prepared; no call without
   assert.equal(plain.launched.length, 1);
 });
 
-test('slots mode: prep and annotate jobs get no lean boundary (only a phase starts one)', async () => {
+test('slots mode: a prep job gets the lean boundary of its phase before its slot is prepared; an annotate job none', async () => {
   const h = lanesHarness({ phases: [LP('1', [], true)], jobs: () => [{ kind: 'prep', phase: '2' }, { kind: 'annotate', phase: null }] });
-  const calls = [];
-  h.ctx.deps.leanBoundary = (phase) => calls.push(phase);
+  const order = [];
+  const prepare = h.ctx.deps.slots.prepare;
+  h.ctx.deps.slots.prepare = (slot, job) => {
+    order.push(`prepare ${job.kind}`);
+    return prepare(slot, job);
+  };
+  h.ctx.deps.leanBoundary = (phase) => order.push(`lean ${phase}`);
   await tick(freshLanes(), h.ctx);
   assert.deepEqual(h.prepared.map(([, kind]) => kind).sort(), ['annotate', 'prep']);
-  assert.deepEqual(calls, []);
+  assert.deepEqual(order.filter((x) => x.startsWith('lean')), ['lean 2']);
+  assert.ok(order.indexOf('lean 2') < order.indexOf('prepare prep'), order.join(', '));
 });

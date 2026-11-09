@@ -12,7 +12,7 @@ import { readVersion, versionInRange } from '../lib/gsd.mjs';
 // the live run is the controller's manual step.
 const SCRIPT = fileURLToPath(new URL('../scripts/build-demo.mjs', import.meta.url));
 const core = gsdCoreDir(null);
-const SKIP = { skip: !(core && versionInRange(readVersion(core) || '')) && 'GSD 1.16/1.17 is not installed', timeout: 120000 };
+const SKIP = { skip: !(core && versionInRange(readVersion(core) || '')) && 'GSD 1.16–1.20 is not installed', timeout: 120000 };
 const tool = (dir, ...args) => {
   const r = spawnSync(process.execPath, [path.join(core, 'bin', 'gsd-tools.cjs'), ...args, '--cwd', dir], { encoding: 'utf8', windowsHide: true });
   return JSON.parse(r.stdout.slice(r.stdout.search(/[{[]/)));

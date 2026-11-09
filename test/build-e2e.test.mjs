@@ -51,7 +51,7 @@ test('the build path runs a phase end to end (fake claude, fake GSD)', { timeout
   assert.deepEqual(readQuestions(r.root, '5').map((q) => [q.id, q.state]), [['ask-1', 'delivered']]);
 });
 
-test('the same phase with the installed GSD', { skip: !REAL_OK && 'GSD 1.16/1.17 is not installed', timeout: 300000 }, async (t) => {
+test('the same phase with the installed GSD', { skip: !REAL_OK && 'GSD 1.16–1.20 is not installed', timeout: 300000 }, async (t) => {
   const script = await phaseScript({ ask: false, red: false });
   script.summaries = Object.fromEntries([['05-01', 'DEMO-01'], ['05-02', 'DEMO-02'], ['05-03', 'DEMO-01'], ['05-04', 'DEMO-01']].map(([id, req]) => [id, summaryText({ phaseSlug: '05-demo', plan: id, reqs: [req] })]));
   script.verifications[0].text = '---\nphase: 05-demo\nverified: 2026-10-17T00:00:00Z\nstatus: passed\nscore: 2/2 must-haves verified\n---\n\n# Phase 5: Verification\n';

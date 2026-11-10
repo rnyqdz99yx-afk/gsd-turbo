@@ -301,6 +301,7 @@ export const TEXT = {
     laneFailed: (p, why) => `Phase ${p} stopped by a failure${why ? `: ${why}` : ''}`,
     halted: 'The supervisor stopped',
     answered: (what, at, note) => `Answer recorded: “${what}”${at ? ` · ${at}` : ''}${note ? ` · not committed to git: ${note}` : ''}`,
+    parkedToast: (phase) => `Phase ${phase} parked: the phases waiting for it may start; its question stays open`,
     already: (what, how, at) => `Already answered${how || at ? ` (${[how, at].filter(Boolean).join(', ')})` : ''}${what ? `: “${what}”` : ''}`,
     channel: { session: 'in a session', pane: 'in the pane', telegram: 'in Telegram', 'standing-rule': 'by a standing rule' },
     changed: 'The question changed — the pane now shows the new one; answer again',
@@ -333,6 +334,7 @@ export const TEXT = {
     laneFailed: (p, why) => `Фаза ${p} остановилась из-за сбоя${why ? `: ${why}` : ''}`,
     halted: 'Супервизор остановился',
     answered: (what, at, note) => `Ответ принят: «${what}»${at ? ` · ${at}` : ''}${note ? ` · не сохранён в git: ${note}` : ''}`,
+    parkedToast: (phase) => `Фаза ${phase} отложена: фазы, которые её ждут, могут начинать; её вопрос остаётся открытым`,
     already: (what, how, at) => `Уже отвечено${how || at ? ` (${[how, at].filter(Boolean).join(', ')})` : ''}${what ? `: «${what}»` : ''}`,
     channel: { session: 'в сессии', pane: 'в панели', telegram: 'в Telegram', 'standing-rule': 'по постоянному правилу' },
     changed: 'Вопрос изменился — панель показала новый, ответьте ещё раз',
@@ -1210,6 +1212,8 @@ export function answerToast(view, { code, stdout = '', stderr = '', sent = '', n
   const offset = view?.ui?.utcOffsetMinutes;
   const joined = (s) => clean(s).trim().replace(/\s*\n\s*/g, ' ');
   const line = joined(stdout) || joined(stderr);
+  const parked = /^parked phase (\S+?)(?: \(already\))?:/.exec(line);
+  if (code === 0 && parked) return cut(t.parkedToast(parked[1]), 300);
   if (code === 0) return cut(t.answered(cut(sent, 60), clockText(nowMs, offset), cut(NOT_COMMITTED.exec(line)?.[1] ?? '', 80)), 300);
   if (code === 3) {
     const m = ALREADY.exec(line);

@@ -60,7 +60,7 @@ test('a human-action question: ahead only "I will do it when the phase asks", wi
   assert.deepEqual(ahead.options.map((o) => [o.label, o.signal, o.defer]), [['I will do it when the phase asks', null, true]]);
   assert.deepEqual([ahead.allowOther, ahead.condition, ahead.class, ahead.gate], [false, null, 'owner-only', 'blocking-human']);
   const stop = buildQuestion(cpOf(ACTION_PLAN), { phase: '32', plan: '32-11', stopped: true });
-  assert.deepEqual(stop.options.map((o) => [o.label, o.signal]), [['Done', 'done']]);
+  assert.deepEqual(stop.options.map((o) => [o.label, o.signal]), [['Done', 'done'], ['Park it — let the other phases go on', null]]);
   assert.equal(stop.allowOther, true);
 });
 
@@ -82,7 +82,7 @@ test('a checkpoint the lane names at a stop: plan and task from its id, the opti
   const q = dynamicQuestion({ phase: '32', id: '32-09-t4', kind: 'human-action', question: 'Log in to the CLI of the mail service' });
   assert.deepEqual([q.plan, q.task, q.kind, q.stopped, q.source, q.gate, q.allowOther], ['32-09', '4', 'human-action', true, 'stop', 'blocking-human', true]);
   assert.equal(q.question, 'Action: Log in to the CLI of the mail service');
-  assert.deepEqual(q.options.map((o) => o.signal), ['done']);
+  assert.deepEqual(q.options.map((o) => o.signal), ['done', null]);
   const v = dynamicQuestion({ phase: '32', id: '32-09-t5', kind: 'human-verify', question: 'Check the package before install' });
   assert.deepEqual([v.question, v.options.map((o) => o.signal)], ['Verify: Check the package before install', ['approved']]);
   assert.throws(() => dynamicQuestion({ phase: '32', id: 'nope', kind: 'human-action', question: 'x' }), /<plan>-t<task>/);
@@ -214,7 +214,7 @@ test('a deferred checkpoint opens at the stop; a checkpoint that is no plan task
   owner(root, '32-11-t2', { option: 1 });
   const r = stopQuestion(root, '32', '32-11-t2', { agentId: AG });
   assert.equal(r.status, 'stopped');
-  assert.deepEqual(r.question.options.map((o) => o.signal), ['done']);
+  assert.deepEqual(r.question.options.map((o) => o.signal), ['done', null]);
   assert.throws(() => stopQuestion(root, '32', '32-09-t7', { agentId: AG }), /--kind human-verify\|human-action and --question/);
   const d = stopQuestion(root, '32', '32-09-t7', { agentId: AG, kind: 'human-action', question: 'Log in to the deploy CLI' });
   assert.deepEqual([d.status, d.question.source, d.question.question], ['stopped', 'stop', 'Action: Log in to the deploy CLI']);
@@ -235,16 +235,16 @@ test('a human action whose check failed after the owner\'s Done: the lane\'s dia
   const why = 'The window is closed, but the sync service still runs in the background: closing the window does not stop it.';
   const r = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: fix, context: why });
   assert.deepEqual([r.status, r.question.state, r.question.question, r.question.context, r.question.diagnosis], ['stopped', 'open', `Action: ${fix}`, why, 1]);
-  assert.deepEqual(r.question.options.map((o) => o.signal), ['done']);
+  assert.deepEqual(r.question.options.map((o) => o.signal), ['done', null]);
   const kept = refreshQuestions(root, '32').find((q) => q.id === '32-11-t2');
   assert.deepEqual([kept.question, kept.context, kept.diagnosis], [`Action: ${fix}`, why, 1], 'a refresh keeps the lane\'s words while the stop stands');
   done();
   // the same failure after the lane's fix: the card says so and offers to check again (or own words), never Done
   const again = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true, question: 'The service starts again by itself each time: tell me how you want it handled', context: 'Stopped twice, running again a minute later both times.' });
   assert.deepEqual([again.question.diagnosis, again.question.question], [2, 'Action: The service starts again by itself each time: tell me how you want it handled']);
-  assert.deepEqual(again.question.options.map((o) => [o.label, o.signal]), [['Check again', 'done']]);
+  assert.deepEqual(again.question.options.map((o) => [o.label, o.signal]), [['Check again', 'done'], ['Park it — let the other phases go on', null]]);
   assert.equal(again.question.allowOther, true);
-  assert.deepEqual(refreshQuestions(root, '32').find((q) => q.id === '32-11-t2').options.map((o) => o.label), ['Check again'], 'a refresh keeps that option');
+  assert.deepEqual(refreshQuestions(root, '32').find((q) => q.id === '32-11-t2').options.map((o) => o.label), ['Check again', 'Park it — let the other phases go on'], 'a refresh keeps that option');
   done();
   // a stop without new words keeps the lane's last diagnosis, never the instructions that did not work
   const plain = stopQuestion(root, '32', '32-11-t2', { agentId: AG, unmet: true });
@@ -664,7 +664,7 @@ test('a live sitting\'s card never offers Done: ahead the wish to join it when t
   assert.deepEqual([own.options, own.context.startsWith('Шаг: Приложение не запустилось.')], [[], true]);
   // a plain action keeps its cards, with no sitting mark
   const plain = buildQuestion(cpOf(ACTION_PLAN), { phase: '32', plan: '32-11', stopped: true });
-  assert.deepEqual([plain.options.map((o) => o.label), 'sitting' in plain], [['Done'], false]);
+  assert.deepEqual([plain.options.map((o) => o.label), 'sitting' in plain], [['Done', 'Park it — let the other phases go on'], false]);
 });
 
 test('doneAnswer: turbo\'s Done and Check again in either language and own words that start with the owner\'s word for done; a preference or other words are none', () => {
@@ -786,6 +786,7 @@ test('owner action card: a step naming a file the owner opens stays; the plan\'s
     ['Сделано', 'Готово — ключи созданы, флешка и бумага убраны'],
     ['Перенести церемонию на другой день', 'Перенести церемонию на другой день'],
     ['Что-то пошло не так — нужна помощь', 'Что-то пошло не так — нужна помощь'],
+    ['Отложить — пусть другие фазы идут', null],
   ]);
   assert.equal(stop.options[0].description, 'Готово — ключи созданы, флешка и бумага убраны');
   assert.ok(doneAnswer({ label: stop.options[0].label, answer: stop.options[0].signal }));

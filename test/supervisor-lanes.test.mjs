@@ -311,3 +311,24 @@ test('review: a resume the tick cannot take yet holds its lane and stays; one ta
   assert.ok(h.logs.includes('phase 3: resumed by the owner (turbo-run resume 3)'), h.logs.join('\n'));
   assert.equal(s.lanes['3'], undefined);
 });
+
+// live run 2026-11-11: the owner parked a phase that waited for offline sittings; the phase after it starts at the next
+// tick, even without a markup, and reads in its inbox that it runs without the parked phase.
+test('a parked phase holds no phase after it: the next one starts beside its lane and gets a note in its inbox', async () => {
+  const { parkPhase } = await import('../lib/park.mjs');
+  const { readInbox } = await import('../lib/inbox.mjs');
+  const h = lanesHarness({ phases: [P('1'), P('2', ['1'])] });
+  let s = await tick(freshLanes(), h.ctx);
+  assert.deepEqual(Object.keys(s.lanes), ['1']);
+  assert.deepEqual(s.next, { phase: '2', why: 'deps', waitsFor: ['1'] });
+  writeLaneStatus(h.root, '1', 'needs-owner', { reason: 'owner question 1-05-t2', at: h.at() });
+  parkPhase(h.root, '1', { by: 'pane', now: new Date(h.at()) });
+  h.advance(1);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(Object.keys(s.lanes), ['1', '2'], 'no markup, yet the parked lane holds no one back');
+  assert.equal(s.lanes['1'].sessionId, 's1', 'the parked lane keeps waiting for its question');
+  const notes = readInbox(h.root, '2').filter((m) => m.kind === 'note');
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].text, /^Phase 1 is parked by the owner/);
+  assert.ok(h.logs.some((l) => l === 'phase 2: started without parked phase 1; told in its inbox'), h.logs.join('\n'));
+});

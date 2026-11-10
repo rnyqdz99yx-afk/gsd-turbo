@@ -746,3 +746,81 @@ test('review 1: a done on an unmarked sitting stop (answered on v0.3.3, the supe
   assert.equal(refreshQuestions(root, '33').find((x) => x.id === '33-16-t2').state, 'delivered');
   assert.equal(readAnswers(root, '33')[0].superseded, undefined);
 });
+
+// live run 2026-11-11 (34-05 T2): the card dropped step 2, the only one that named the runbook to open (a repo path
+// counted as jargon), and offered only Done although the plan listed three answers, «Перенести…» among them.
+const CEREMONY_PLAN = `<tasks>
+
+<task type="checkpoint:human-action" gate="blocking-human">
+  <name>Task 2: Owner key ceremony (dated sitting, offline)</name>
+  <action>The owner holds the key ceremony from docs/runbooks/update-key-ceremony.md on their workstation with the network off.</action>
+  <instructions>
+    Итог: всё готово к созданию ключей обновлений — нужен только ваш вечер без интернета, примерно 30–40 минут.
+
+    Что сделать:
+    1. Обновите проект (\`git pull\`), пока интернет есть.
+    2. Откройте файл \`docs/runbooks/update-key-ceremony.md\` и идите по нему по шагам: выключить интернет, создать основной
+       ключ на флешке, проверить бумажную копию.
+    3. Флешку и бумагу уберите в разные места, включите интернет.
+    4. Выберите ответ ниже.
+  </instructions>
+  <verification>After the resume: the public file has two lines.</verification>
+  <resume-signal>
+    Варианты (рекомендуемый первым):
+    - «Готово — ключи созданы, флешка и бумага убраны»
+    - «Перенести церемонию на другой день»
+    - «Что-то пошло не так — нужна помощь»
+  </resume-signal>
+</task>
+
+</tasks>
+`;
+
+test('owner action card: a step naming a file the owner opens stays; the plan\'s listed answers become the options at the stop', () => {
+  const cp = cpOf(CEREMONY_PLAN);
+  const stop = buildQuestion(cp, { phase: '34', plan: '34-05', lang: 'ru', stopped: true });
+  assert.match(stop.context, /2\. Откройте файл `docs\/runbooks\/update-key-ceremony\.md` и идите по нему по шагам/);
+  assert.match(stop.context, /1\. Обновите проект .* 2\. Откройте .* 3\. Флешку/);
+  assert.equal(stop.question, 'Действие: Итог: всё готово к созданию ключей обновлений — нужен только ваш вечер без интернета, примерно 30–40 минут.');
+  assert.deepEqual(stop.options.map((o) => [o.label, o.signal]), [
+    ['Сделано', 'Готово — ключи созданы, флешка и бумага убраны'],
+    ['Перенести церемонию на другой день', 'Перенести церемонию на другой день'],
+    ['Что-то пошло не так — нужна помощь', 'Что-то пошло не так — нужна помощь'],
+  ]);
+  assert.equal(stop.options[0].description, 'Готово — ключи созданы, флешка и бумага убраны');
+  assert.ok(doneAnswer({ label: stop.options[0].label, answer: stop.options[0].signal }));
+  assert.ok(!doneAnswer({ label: stop.options[1].label, answer: stop.options[1].signal }));
+  assert.equal(stop.allowOther, true);
+  // ahead: still only "when the phase asks" (a human action stays a stop)
+  const ahead = buildQuestion(cp, { phase: '34', plan: '34-05', lang: 'ru' });
+  assert.deepEqual(ahead.options.map((o) => o.defer), [true]);
+  // a jargon id in the step still goes; the question never holds a path
+  const noisy = buildQuestion(cpOf(CEREMONY_PLAN.replace('2. Откройте файл', '2. По плану 34-05 откройте файл')), { phase: '34', plan: '34-05', lang: 'ru', stopped: true, planIds: ['34-05'] });
+  assert.doesNotMatch(noisy.context, /34-05/);
+});
+
+// live run 2026-11-11: in a lane slot the card said «git pull» and named the runbook, which existed only on the lane's
+// branch until the phase merged; the owner's main folder did not have it.
+test('a card naming a file that is only in the lane slot says where to open it until the phase merges', async () => {
+  const { slotContext } = await import('../lib/questions.mjs');
+  const control = tmpDir('control');
+  const slot = tmpDir('slot');
+  fs.mkdirSync(path.join(control, '.planning', 'turbo'), { recursive: true });
+  fs.mkdirSync(path.join(slot, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(slot, '.git', 'turbo-lane.json'), JSON.stringify({ control }));
+  fs.mkdirSync(path.join(slot, 'docs', 'runbooks'), { recursive: true });
+  fs.writeFileSync(path.join(slot, 'docs', 'runbooks', 'update-key-ceremony.md'), '# x\n');
+  const env = { TURBO_CONTROL_ROOT: control };
+  const q = buildQuestion(cpOf(CEREMONY_PLAN), { phase: '34', plan: '34-05', lang: 'ru', stopped: true });
+  const inSlot = slotContext(slot, q, { lang: 'ru', env });
+  assert.ok(inSlot.context.startsWith(`Файлы этой фазы попадут в основную папку проекта только после слияния фазы; пока открывайте их в папке полосы: ${slot}.`), inSlot.context);
+  assert.ok([...inSlot.context].length <= 600);
+  // the file is in the main folder too (the phase merged), or the card is built in the main folder: no note
+  fs.mkdirSync(path.join(control, 'docs', 'runbooks'), { recursive: true });
+  fs.writeFileSync(path.join(control, 'docs', 'runbooks', 'update-key-ceremony.md'), '# x\n');
+  assert.equal(slotContext(slot, q, { lang: 'ru', env }).context, q.context);
+  assert.equal(slotContext(control, q, { lang: 'ru', env }).context, q.context);
+  // a decision names no file to open: untouched
+  const d = { ...q, kind: 'decision' };
+  assert.equal(slotContext(slot, d, { lang: 'ru', env }), d);
+});

@@ -19,11 +19,16 @@ const P = { phase: '3', hooks: [step('research'), step('ui'), step('ai-integrati
 const F = { phase: '3', active: ['security', 'ui', 'code-review', 'nyquist'], artifacts: { uiSpec: '03-UI-SPEC.md' } };
 
 // Deliberate changes of the lean-off text since stage 5, per skill [now, stage-5's]: each is put back before the hash,
-// so the fixture stays stage-5's and every other line stays pinned. v0.5.1: the fan-out commit names the gates that ran.
+// so the fixture stays stage-5's and every other line stays pinned. v0.5.1: the fan-out commit names the gates that ran;
+// v0.7.0: the inbox's note messages.
 const SINCE_STAGE5 = {
   'turbo-phase': [[
     '`gsd-tools commit "docs(phase-N): gate fan-out (<gates>)" --files <each of the phase\'s SECURITY.md, UI-REVIEW.md and REVIEW.md that exists>`, where `<gates>` names only the read-only gates point 3 ran, in this order: `security`, `UI review`, `code review`, comma-separated (only the code review ran: `docs(phase-N): gate fan-out (code review)`).',
     '`gsd-tools commit "docs(phase-N): gate fan-out (security, UI review, code review)" --files <each of the phase\'s SECURITY.md, UI-REVIEW.md and REVIEW.md that exists>`.',
+  ], [
+    // v0.7.0: note messages in the inbox (turbo-run note, a parked phase, the main branch moved)
+    " `note` messages → information for this phase, from the owner (`turbo-run note`) or from turbo (a phase this one depends on is parked: it started without that phase's work). Take each into account in every later step, and put it in the prompt of every subagent you dispatch after it (planner, checker, executors, fixer) under a heading \"Notes for this phase\"; the plan and the owner's answers still decide. A note that says the main branch already holds a fix or a change: run step **integrate** before acting on anything it touches.",
+    '',
   ]],
 };
 const skill = (name) => {

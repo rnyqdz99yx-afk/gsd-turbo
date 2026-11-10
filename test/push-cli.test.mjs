@@ -233,3 +233,15 @@ test('bin routes push-allow', () => {
   assert.equal(r.status, 1, r.stderr);
   assert.equal(r.stdout.trim(), 'push-allow 3: the last push of phase 3 was not refused; nothing to allow');
 });
+
+// live run 2026-11-10: the owner passed a line fingerprint (16 hex) instead of the refusal id and saw only the usage
+// line; now any other value is a mismatch that lists the lines and names the command with the right id.
+test('push-allow with a value that is no refusal id (a line fingerprint) lists the lines and names the right command', async () => {
+  const root = tmpDir('allow');
+  refusedRecord(root);
+  const fp = await allowRun(root, ['3', '703efb85532cc520']);
+  assert.equal(fp.code, 1);
+  assert.equal(fp.lines[0], 'push-allow 3: 703efb85532cc520 is not the last refusal of phase 3; nothing allowed');
+  assert.equal(fp.lines.at(-1), 'after checking them, allow these lines: turbo-run push-allow 3 abcd1234');
+  assert.equal(fs.existsSync(allowFile(root)), false);
+});

@@ -73,6 +73,8 @@ const VIEW_WORDS = {
       fine: 'all fine', answer: (n) => `needs your answer (${n})`, ciRed: (asked) => (asked ? 'CI red — needs your answer' : 'CI red — needs your decision'), ciFixing: (n, m) => `CI red — the phase fixes it itself (attempt ${n} of ${m}), nothing needed from you`,
       ciLast: "CI red — the phase's last attempt; if it fails, it will ask you", fullMode: 'waits for you: its final checks need full mode',
       needsOwner: (asked) => (asked ? 'stopped — waits for your answer' : 'stopped — waits for your decision'), failed: 'stopped by a failure',
+      // a lane waits for the owner while another lane runs: the run has not stopped
+      ownerOthersRun: (asked, phases) => ((p) => `going on — ${p.length > 1 ? `phases ${p.join(', ')} wait` : `phase ${p[0] ?? ''} waits`} for your ${asked ? 'answer' : 'decision'}`)([].concat(phases ?? [])),
       // a silent lane says what turbo did about it (lane.wake): it wakes the session, woke, restarted or could not wake it
   // before, or gave up
       quiet: (d) => `silent${d ? ` for ${d}` : ''} — turbo is waking the session`, quietAgain: (d, how) => `silent${d ? ` for ${d}` : ''} — ${how === 'restarted' ? 'restarted the session' : how === 'tried' ? 'could not wake the session' : 'woke the session'}, waking it again`,
@@ -189,6 +191,7 @@ const VIEW_WORDS = {
       fine: 'всё в порядке', answer: (n) => `нужен ваш ответ (${n})`, ciRed: (asked) => (asked ? 'CI красный — нужен ваш ответ' : 'CI красный — нужно ваше решение'), ciFixing: (n, m) => `CI красный — фаза чинит сама (попытка ${n} из ${m}), от вас ничего не нужно`,
       ciLast: 'CI красный — последняя попытка фазы; если не выйдет, она спросит вас', fullMode: 'ждёт вас: для финальных проверок нужен полный режим',
       needsOwner: (asked) => (asked ? 'остановилась — ждёт вашего ответа' : 'остановилась — ждёт вашего решения'), failed: 'остановилась из-за сбоя',
+      ownerOthersRun: (asked, phases) => ((p) => `идёт — ${p.length > 1 ? `фазы ${p.join(', ')} ждут` : `фаза ${p[0] ?? ''} ждёт`} вашего ${asked ? 'ответа' : 'решения'}`)([].concat(phases ?? [])),
       quiet: (d) => `тишина${d ? ` ${d}` : ''} — turbo будит сессию`, quietAgain: (d, how) => `тишина${d ? ` ${d}` : ''} — ${how === 'restarted' ? 'перезапустил сессию' : how === 'tried' ? 'не смог разбудить сессию' : 'разбудил сессию'}, будит ещё раз`,
       quietTold: (d) => `тишина${d ? ` ${d}` : ''} — разбудить сессию не вышло: нужны вы`, quietHelper: (who, d, more) => `идёт, но ⚠️ ${who} молчит${d ? ` ${d}` : ''}${more ? ` (и ещё ${more})` : ''}`,
       paused: 'на паузе: нужен новый контекст', done: 'готова', halted: 'супервизор остановился', failing: (at) => `супервизор сбоит${at ? ` с ${at}` : ''}`,
@@ -298,6 +301,7 @@ export const TEXT = {
     laneFailed: (p, why) => `Phase ${p} stopped by a failure${why ? `: ${why}` : ''}`,
     halted: 'The supervisor stopped',
     answered: (what, at, note) => `Answer recorded: “${what}”${at ? ` · ${at}` : ''}${note ? ` · not committed to git: ${note}` : ''}`,
+    parkedToast: (phase) => `Phase ${phase} parked: the phases waiting for it may start; its question stays open`,
     already: (what, how, at) => `Already answered${how || at ? ` (${[how, at].filter(Boolean).join(', ')})` : ''}${what ? `: “${what}”` : ''}`,
     channel: { session: 'in a session', pane: 'in the pane', telegram: 'in Telegram', 'standing-rule': 'by a standing rule' },
     changed: 'The question changed — the pane now shows the new one; answer again',
@@ -330,6 +334,7 @@ export const TEXT = {
     laneFailed: (p, why) => `Фаза ${p} остановилась из-за сбоя${why ? `: ${why}` : ''}`,
     halted: 'Супервизор остановился',
     answered: (what, at, note) => `Ответ принят: «${what}»${at ? ` · ${at}` : ''}${note ? ` · не сохранён в git: ${note}` : ''}`,
+    parkedToast: (phase) => `Фаза ${phase} отложена: фазы, которые её ждут, могут начинать; её вопрос остаётся открытым`,
     already: (what, how, at) => `Уже отвечено${how || at ? ` (${[how, at].filter(Boolean).join(', ')})` : ''}${what ? `: «${what}»` : ''}`,
     channel: { session: 'в сессии', pane: 'в панели', telegram: 'в Telegram', 'standing-rule': 'по постоянному правилу' },
     changed: 'Вопрос изменился — панель показала новый, ответьте ещё раз',
@@ -429,7 +434,8 @@ export function clockText(ms, utcOffsetMinutes = null) {
 // A lane's reason without the `owner question <id>` /turbo-phase puts first when it stops for a question (an id is
 // `<plan>-t<task>`): the verdict and the questions say that already, and the id is turbo's own. What follows it stays;
 // '' when nothing does.
-export const laneReason = (reason) => clean(reason).replace(/^owner questions?\s+(?:[\w.-]+-t\d+|ask-\d+)\b\s*:?\s*/i, '').trim();
+// A reason may join several parts with «; » (a lane that stopped for two questions): each part loses its owner-question id.
+export const laneReason = (reason) => clean(reason).split(/\s*;\s*/).map((p) => p.replace(/^owner questions?\s+(?:[\w.-]+-t\d+|ask-\d+)\b\s*:?\s*/i, '').trim()).filter(Boolean).join('; ');
 
 const stepWord = (t, step) => (step == null ? t.allDone : t.step[step] ?? cut(step, 40));
 const stepNoun = (t, step) => (step == null ? null : t.stepAt[step] ?? stepWord(t, step));
@@ -565,7 +571,12 @@ function verdictOf(t, view) {
   if (sup && !live && !sup.finished) return v('supStopped', 'warn');
   if (has('failed')) return v('failed', 'bad');
   if (lanes.some((l) => l.halted)) return v('laneHalted', 'bad');
-  if (has('needs-owner')) return v('needsOwner', 'bad', t.verdict.needsOwner(asked));
+  if (has('needs-owner')) {
+    // another lane still runs: the run goes on, and the waiting phases are named (amber, not red)
+    const waiting = lanes.filter((l) => l.status === 'needs-owner').map((l) => l.phase).filter((p) => p != null);
+    if (live && waiting.length && lanes.some((l) => l.status === 'running')) return v('ownerOthersRun', 'warn', t.verdict.ownerOthersRun(asked, waiting));
+    return v('needsOwner', 'bad', t.verdict.needsOwner(asked));
+  }
   if (lanes.some((l) => l.held === 'fullMode')) return v('fullMode', 'bad');
   const red = lanes.find((l) => l.push?.ci === 'red');
   const fixing = red ? ciFixing(red) : null;
@@ -1201,6 +1212,8 @@ export function answerToast(view, { code, stdout = '', stderr = '', sent = '', n
   const offset = view?.ui?.utcOffsetMinutes;
   const joined = (s) => clean(s).trim().replace(/\s*\n\s*/g, ' ');
   const line = joined(stdout) || joined(stderr);
+  const parked = /^parked phase (\S+?)(?: \(already\))?:/.exec(line);
+  if (code === 0 && parked) return cut(t.parkedToast(parked[1]), 300);
   if (code === 0) return cut(t.answered(cut(sent, 60), clockText(nowMs, offset), cut(NOT_COMMITTED.exec(line)?.[1] ?? '', 80)), 300);
   if (code === 3) {
     const m = ALREADY.exec(line);

@@ -102,3 +102,18 @@ test('credential assignment: quoted literals, entropy-bearing and plain-word val
   ];
   for (const line of hits) assert.equal(CRED.test(line), true, line);
 });
+
+// live run 2026-11-10: the push of phase 33 was refused for a generated test value (a quoted prefix + Date.now()) — a quoted prefix joined to code at run time holds no stored secret.
+test('credential assignment: a quoted prefix concatenated with code is not a finding; literals joined to literals stay findings', () => {
+  const [S, T, P] = ['sec' + 'ret', 'tok' + 'en', 'pass' + 'word'];
+  const generated = [
+    `const ${S} = 'pkcs8-' + Date.now().toString(36);`,
+    `const ${T} = "session-" + crypto.randomUUID();`,
+    `${P}: 'prefix-' + (opts.suffix || '')`,
+    `${S} = 'abcdef'+makeId()`,
+  ];
+  for (const line of generated) assert.equal(CRED.test(line), false, line);
+  const v = 'hunter2'.repeat(2);
+  const stored = [`const secret = '${v}' + '${v}';`, `password = "${v}" +"x1y2z3"`, `token: '${v}'`, `secret = '${v}' // + later`];
+  for (const line of stored) assert.equal(CRED.test(line), true, line);
+});

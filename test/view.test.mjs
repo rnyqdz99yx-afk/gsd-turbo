@@ -857,3 +857,14 @@ test('the view carries the run\'s unfinished phases as the supervisor last read 
   assert.equal(buildView({ root, sup, running: true, env, now: NOW, commits: () => [] }).remaining, null);
   assert.equal(formatView({ ...v, range: null, remaining: ['32'] }).includes('→ end of the run'), true);
 });
+
+test('status --watch: one lane waits for the owner while another runs — the run goes on (amber), the reason line drops every owner-question id', () => {
+  const waiting = { status: 'needs-owner', reason: 'owner question 32-09-t3; owner question 32-10-t1' };
+  const two = (over = {}) => { const v = textLanes(over); return { ...v, lanes: [{ ...v.lanes[0], ...waiting }, v.lanes[1]] }; };
+  const out = formatView(two()).split('\n');
+  assert.equal(out[0], 'Run — going on — phase 32 waits for your answer');
+  assert.equal(formatView(two({ ui: { lang: 'ru' } })).split('\n')[0], 'Прогон — идёт — фаза 32 ждёт вашего ответа');
+  assert.ok(!out.some((l) => /Reason: ;|owner question/.test(l)), out.join('\n'));
+  const alone = { ...two(), lanes: [two().lanes[0]] };
+  assert.match(formatView(alone).split('\n')[0], /stopped — waits for your answer/);
+});

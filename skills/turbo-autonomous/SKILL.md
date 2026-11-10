@@ -21,12 +21,14 @@ The user is leaving (for the night, say). Gather every question that can be answ
 2. An empty array: tell the user there is nothing to answer ahead and go to point 3. Otherwise run **Answer the open questions** from its point 2 with that array (four at a time; `Not now` records nothing).
 3. Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" away --set` and show its line: what turbo does while the user is away. Questions left open wait for the user, except the safe ones: after `owner.auto_answer_minutes` (60 by default) turbo takes their recommended option itself and notifies it, with the command that takes it back. Tell the user that `/turbo-autonomous back` (or any `/turbo-autonomous` call, or `turbo-run back`) shows what happened. Then stop.
 
-## If the arguments are `status`, `stop` or `resume <phase>`
+## If the arguments are `status`, `stop`, `resume <phase>`, `park <phase>` or `note <phase> <text>`
 
 Run the matching command and show its output, then stop:
 
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" status`
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" stop`
+- `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" park <phase>` (the phase waits for the owner and the phases after it should not: they start at the supervisor's next check without it, each told so in its inbox; the parked phase's questions stay open; `park <phase> --undo` takes it back). The stopped owner action cards offer the same as their last option, «Park it — let the other phases go on»
+- `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" note <phase> '<text>'` (in single quotes; something the phase cannot see, for example that the main branch already holds a fix: the phase reads it before its next step and passes it to every step after it; never a secret)
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" resume <phase> --start` (clears the phase's lane record and its owner request, which the resume answers, and starts the supervisor in one command; with several lanes and the supervisor running it prints `handed to the running supervisor`: the supervisor relaunches that lane at its next check and the other lanes go on)
 
 If `status` prints `supervisor: state damaged`, tell the user in plain words that the supervisor's state file was damaged, most likely by a machine crash, that nothing runs the lanes now, and that `/turbo-autonomous` (its `start`) keeps the damaged file aside and rebuilds the lanes. `resume <phase>` rebuilds it the same way and prints what it recovered: show those lines.
@@ -121,6 +123,7 @@ The owner's questions are the checkpoints of the phases' plans and the questions
    - `Not now`: nothing.
 5. Read each command's line:
    - exit 0, `answered …`: recorded;
+   - exit 0, `parked phase …`: the park option: nothing recorded, the phase is parked and its question stays open (the phases after it start without it);
    - exit 3, `already answered: …`: another channel answered first; tell the user which answer stands;
    - exit 4, `changed: …`: the question changed meanwhile (re-planned, or reopened at a stop): run point 1 again and ask that question anew;
    - exit 1, `refused: …`: show the line; when it says the answer looks like a secret, ask that question again and say the answer must not contain secrets.

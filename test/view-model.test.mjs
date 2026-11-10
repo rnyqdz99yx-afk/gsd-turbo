@@ -1554,3 +1554,23 @@ test('a damaged supervisor state: a red verdict with the command, the band says 
   // a later view without the damage raises no toast of its own
   assert.deepEqual(toastsFor(damaged, view({ questions: [] })), []);
 });
+
+// live run 2026-11-11: lane 34 stopped for two owner questions while lane 35 kept running; the pane said the whole run
+// had stopped and its reason line read «; owner question 34-06-t3».
+test('one lane waits for the owner while another runs: the run goes on, amber, naming the waiting phase; every owner-question id leaves the reason', () => {
+  const waiting = { status: 'needs-owner', reason: 'owner question 32-09-t3; owner question 32-10-t1' };
+  const two = (over = {}) => ({ ...lanes3(over, waiting), lanes: lanes3(over, waiting).lanes.slice(0, 2) });
+  assert.deepEqual(verdict(two()), { kind: 'ownerOthersRun', tone: 'warn', text: 'going on — phase 32 waits for your answer' });
+  assert.equal(lines(two())[0], 'Run — going on — phase 32 waits for your answer');
+  assert.equal(lines(two(RU))[0], 'Прогон — идёт — фаза 32 ждёт вашего ответа');
+  assert.equal(verdict(two({ questions: [] })).text, 'going on — phase 32 waits for your decision');
+  const both = { ...lanes3({}, waiting, { status: 'needs-owner', reason: 'owner question 33-01-t1' }) };
+  assert.equal(verdict(both).text, 'going on — phases 32, 33 wait for your answer');
+  assert.equal(verdict({ ...lanes3(RU, waiting, { status: 'needs-owner' }) }).text, 'идёт — фазы 32, 33 ждут вашего ответа');
+  // nothing else runs: the run has stopped, as before
+  const alone = { ...lanes3({}, waiting), lanes: lanes3({}, waiting).lanes.slice(0, 1) };
+  assert.equal(verdict(alone).kind, 'needsOwner');
+  // the supervisor does not run: no lane goes on
+  assert.equal(verdict(two({ supervisor: { running: false, pid: null, finished: false, halted: false, failingSince: null } })).kind, 'supStopped');
+  assert.ok(!lines(two()).some((l) => /Reason: ;|owner question/.test(l)), lines(two()).join('\n'));
+});

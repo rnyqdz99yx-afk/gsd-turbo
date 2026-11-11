@@ -134,6 +134,36 @@ test('red after the fix stops for the owner', async (t) => {
   assert.equal(r.ctx.state.red.tries, 2);
 });
 
+test('a red a later, unmerged, test-editing slice will fix is deferred, not halted', async (t) => {
+  // 05-01 changes its source to a new value; the test that 05-02 will update still expects the old value -> red after
+  // 05-01 merges, and the fixer (scoped to 05-01 = src/a.js) cannot touch the test. 05-02 edits test/a.test.js to the
+  // new value -> green. No owner card; the phase finishes.
+  const r = await loopRig(t, {
+    plans: {
+      '05-01': compactPlan({ id: '05-01', files: ['src/a.js'] }),
+      '05-02': compactPlan({ id: '05-02', files: ['test/a.test.js'], deps: ['05-01'] }),
+    },
+    config: { build: { max_builders: 1 } },
+    slices: {
+      '05-01': { files: { 'src/a.js': 'module.exports = () => 2;\n' } },
+      '05-02': { files: { 'test/a.test.js': spec('a', 2) } },
+    },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }] },
+    before: (r) => {
+      r.write('src/a.js', 'module.exports = () => 1;\n');
+      r.write('test/a.test.js', spec('a', 1));
+      r.commit('feat: a is green at the phase base');
+    },
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.deepEqual(readQuestions(r.root, '5').map((q) => q.id), [], 'no owner card was raised');
+  const s = r.ctx.state.slices;
+  assert.deepEqual([s['05-01'].state, s['05-01'].tests], ['merged', 'green']);
+  assert.deepEqual([s['05-02'].state, s['05-02'].tests], ['merged', 'green']);
+  assert.equal(r.ctx.state.red, null);
+  assert.equal(r.ctx.state.pendingRed ?? null, null, 'the deferred red was cleared');
+});
+
 test('a pause or a stop while the tests are red ends with merges still queued', async (t) => {
   const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }) };
   const slices = { '05-01': { files: files('a', { value: 1, expect: 2 }) }, '05-02': { files: files('b'), delayMs: 3000 } };

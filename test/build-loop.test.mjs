@@ -398,3 +398,58 @@ test('fixerWindow: the first-parent commits that are no merge; a merge on the li
   assert.equal(w.shas.length, 1);
   assert.equal(w.merges.length, 1);
 });
+
+// live run 2026-11-11: a fixer asked the owner whether it may change test files outside its slice, the owner said yes,
+// the fixer changed exactly those, and the scope guard set them aside and asked again (ask-8 -> ask-9).
+const SCOPE_ASK = 'Need you.\n## OWNER QUESTION\nQuestion: May I update the shared inventory test outside this slice?\nContext: It lists every file; the new one is missing.\nFiles: src/shared.js\nOptions:\n1. Yes — update it (recommended) (grants)\n2. No — leave it red';
+const scopeRig = (t, ask = SCOPE_ASK) => loopRig(t, {
+  plans: { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }) },
+  config: { build: { max_builders: 1 } },
+  slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) }, '05-02': { files: files('b') } },
+  script: { fixes: [{ ask, files: { 'src/a.js': 'module.exports = () => 2;\n', 'src/shared.js': 'module.exports = 1;\n' }, message: 'fix(05): the red test', result: 'fixed' }] },
+});
+
+test('a fixer that asked the owner during its round keeps its changes outside the slice: no second card', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }) };
+  const ask = SCOPE_ASK;
+  const r = await loopRig(t, {
+    plans,
+    config: { build: { max_builders: 1 } },
+    slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) }, '05-02': { files: files('b') } },
+    script: { fixes: [{ ask, files: { 'src/a.js': 'module.exports = () => 2;\n', 'src/shared.js': 'module.exports = 1;\n' }, message: 'fix(05): the red test', result: 'fixed' }] },
+  });
+  const asked = [];
+  every(t, () => {
+    const q = openCard(r.root);
+    if (!q) return false;
+    asked.push(q.question);
+    answer(r.root, q.id, 1);
+    return true;
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.deepEqual(asked, ['May I update the shared inventory test outside this slice?'], 'only the fixer\'s own question');
+  assert.equal(r.ctx.state.red, null);
+  assert.equal(read(r, 'src/shared.js'), 'module.exports = 1;\n');
+  const log = fs.readFileSync(path.join(r.root, '.planning', 'turbo', 'logs', 'supervisor.log'), 'utf8');
+  assert.match(log, /the fixer changed files outside slice 05-01 \(src\/shared\.js\), as the owner allowed in ask-\d+: kept/);
+});
+
+// the side check of 2026-11-11: only the option that allows the change counts, and only for the files it names
+test('the owner\'s «no», or an allowing option without the file in Files, keeps the scope guard: the fix goes aside', async (t) => {
+  for (const [option, ask] of [[2, SCOPE_ASK], [1, SCOPE_ASK.replace('Files: src/shared.js', 'Files: src/other.js')]]) {
+    const r = await scopeRig(t, ask);
+    const asked = [];
+    every(t, () => {
+      const q = openCard(r.root);
+      if (!q) return false;
+      asked.push(q.question);
+      // the fixer's question gets the option under test; the guard's card: Stop here (then the poller ends)
+      answer(r.root, q.id, asked.length === 1 ? option : 3);
+      return asked.length >= 2;
+    });
+    assert.equal(await runStep(r.ctx, 'build'), 'stopped');
+    assert.equal(asked.length, 2, `option ${option}: the guard asked after the fixer's question`);
+    assert.deepEqual(r.ctx.state.red.scope, ['src/shared.js']);
+    assert.equal(fs.existsSync(path.join(r.root, 'src', 'shared.js')), false, 'the fix is off the phase branch');
+  }
+});

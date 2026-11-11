@@ -149,6 +149,13 @@ function actMain({ argv, stdin, cwd, resume }) {
     const cfg = (script.slices || {})[who.plan] || {};
     const wait = (n === 1 && cfg.firstDelayMs) || cfg.delayMs;
     if (wait) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    // waitFor: the builder holds its seat until that file is there, at most waitCapMs (20 s); <file>.capped tells it
+    // gave up waiting
+    if (cfg.waitFor) {
+      const until = Date.now() + (cfg.waitCapMs || 20000);
+      while (!fs.existsSync(cfg.waitFor) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      if (!fs.existsSync(cfg.waitFor)) fs.writeFileSync(`${cfg.waitFor}.capped`, '');
+    }
     if (cfg.ask && !resume) return answer({ result: cfg.ask });
     if (n <= times(cfg.fail)) return answer({ result: 'failed', isError: true, exitCode: 1 });
     // blocked: the builder stops for a file outside its list (B3's blocked SUMMARY), the first blockedTimes calls
@@ -212,6 +219,7 @@ function actMain({ argv, stdin, cwd, resume }) {
 // prompt's start (slicer, builder with its plan, fixer, discuss, verify-work, integrate), else other. script:
 //   plans { rel: text } (the slicer writes them); slices { <id>: { files { rel: text } committed as feat(<id>): build,
 //   ask (the result of the first call, nothing written), delayMs (before every call's work), firstDelayMs (the first only), fail (the first n calls end with exit 1; true = 1),
+//   waitFor (an absolute path: every call waits until that file is there, at most waitCapMs, then writes <path>.capped),
 //   noSummary (the first n calls write no SUMMARY), extra { rel: text } written, never staged } }; summaries { <id>:
 //   text } (else summaryText); fixes [{ files, message, result }]; reviews / verifications [{ path, text }]; audits
 //   [text]; research { path, text }; context { path, text } (committed); uat (text); verifyWork { path, text } (written

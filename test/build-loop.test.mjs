@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildRig, claudeHome } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
+import { tmpDir } from './helpers/tmp.mjs';
 import { adoptRound, openBuild, runStep } from '../lib/build.mjs';
 import { askOwner, markDelivered, readQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
@@ -349,9 +350,47 @@ test('a new break no slice ahead is built on gets its fixer and the owner\'s car
   const fixer = r.f.calls().filter((c) => c.stdin.startsWith('You are the fixer'));
   assert.equal(fixer.length, 2);
   assert.ok(fixer[1].stdin.includes('Change only the files of slice 05-02: src/b.js, test/b.test.js.'), fixer[1].stdin);
+  // the tests put off are not this slice's: its fixer is told only what its merge turned red
+  assert.ok(fixer[1].stdin.includes('The merge of slice 05-02 turned these tests red: "b", "test/b.test.js > b".'), fixer[1].stdin);
   assert.equal(r.ctx.state.red.after, '05-02');
   assert.equal(r.ctx.state.pendingRed.after, '05-01', 'the planned break stays deferred');
   assert.equal(r.ctx.state.slices['05-03'].state, 'waiting', 'nothing new started while red');
+});
+
+// where every merge runs the whole suite, every merge is red by the tests put off: a join that waited for the running
+// builders gave one merge per builder session
+test('a red that joins the deferred red does not wait for the running builders: the free seat is filled at once', async (t) => {
+  const marker = path.join(tmpDir('seat'), 'next-dispatched');
+  const r = await loopRig(t, {
+    plans: {
+      '05-01': compactPlan({ id: '05-01', files: ['src/a.js'] }),
+      '05-02': plan('05-02', 'b', { deps: ['05-01'], reqs: ['DEMO-02'] }),
+      '05-03': plan('05-03', 'c', { deps: ['05-01'], reqs: ['DEMO-03'] }),
+      '05-04': plan('05-04', 'd', { deps: ['05-01'], reqs: ['DEMO-04'] }),
+      '05-05': compactPlan({ id: '05-05', files: ['test/a.test.js'], deps: ['05-02', '05-03', '05-04'], reqs: ['DEMO-05'] }),
+    },
+    config: { build: { max_builders: 2 } },
+    slices: {
+      '05-01': { files: src('a', 2) },
+      '05-02': { files: files('b') },
+      // builds until 05-04 is dispatched: that needs the seat 05-02 left, while the branch is red by the test put off
+      '05-03': { files: files('c'), waitFor: marker },
+      '05-04': { files: files('d') },
+      '05-05': { files: { 'test/a.test.js': spec('a', 2) } },
+    },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }] },
+    before: greenBase('a'),
+  });
+  every(t, () => {
+    if (r.ctx.state.slices['05-04'].state === 'waiting') return false;
+    fs.writeFileSync(marker, '');
+    return true;
+  });
+  const asked = stopOnCard(t, r);
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.deepEqual(asked, [], 'no owner card');
+  assert.equal(fs.existsSync(`${marker}.capped`), false, '05-04 was dispatched while 05-03 was still building');
+  assert.deepEqual(Object.values(r.ctx.state.slices).map((x) => [x.state, x.tests]), Array(5).fill(['merged', 'green']));
 });
 
 // «edits a test» means: changes a test that exists. A slice that only adds its own new test file fixes nobody's red.

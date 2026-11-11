@@ -203,3 +203,11 @@ test('parseOwnerQuestion: a later heading ends the block; ### and trailing space
   assert.deepEqual(r, { question: 'q', context: 'c', options: [{ label: 'a', description: 'x', recommended: false }] });
   assert.equal(parseOwnerQuestion('## OWNER QUESTION\nQuestion: q\nContext: c\n## Next\nmore').context, 'c');
 });
+
+test('an OWNER QUESTION may name the files it asks for (Files, never on the card) and mark the option that allows them (grants)', () => {
+  const q = parseOwnerQuestion('x\n## OWNER QUESTION\nQuestion: May I update two tests?\nContext: They list every file.\nFiles: `backend/test/a.test.js`, backend/test/fixtures/b.json\nOptions:\n1. Allow — update both (recommended) (grants)\n2. No — leave them red');
+  assert.equal(q.context, 'They list every file.');
+  assert.deepEqual(q.files, ['backend/test/a.test.js', 'backend/test/fixtures/b.json']);
+  assert.deepEqual(q.options, [{ label: 'Allow', description: 'update both', recommended: true, grants: true }, { label: 'No', description: 'leave them red', recommended: false }]);
+  assert.equal(parseOwnerQuestion('## OWNER QUESTION\nQuestion: Q?\nOptions:\n1. A\n2. B').files, undefined);
+});

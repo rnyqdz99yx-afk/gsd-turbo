@@ -8,7 +8,8 @@ import { adoptRound, openBuild, runStep } from '../lib/build.mjs';
 import { askOwner, markDelivered, readQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
-import { writeAttend } from '../lib/attend.mjs';
+import { clearAttend, writeAttend } from '../lib/attend.mjs';
+import { reconcileBuildState } from '../lib/build-queue.mjs';
 import { writeOwnerStop } from '../lib/autostart.mjs';
 
 const H = claudeHome();
@@ -162,6 +163,242 @@ test('a red a later, unmerged, test-editing slice will fix is deferred, not halt
   assert.deepEqual([s['05-02'].state, s['05-02'].tests], ['merged', 'green']);
   assert.equal(r.ctx.state.red, null);
   assert.equal(r.ctx.state.pendingRed ?? null, null, 'the deferred red was cleared');
+});
+
+// The deferred red, after the live run of 2026-11-11 (a phase where three slices each break suites that three later
+// slices migrate). The phase base has src/<name>.js returning 1 and its test expecting 1.
+const greenBase = (...names) => (r) => {
+  for (const n of names) for (const [f, text] of Object.entries(files(n))) r.write(f, text);
+  r.commit('feat: green at the phase base');
+};
+const src = (name, value) => ({ [`src/${name}.js`]: `module.exports = () => ${value};\n` });
+const fixerActs = (r) => r.a.acts().filter((x) => x.role === 'fixer').length;
+const logOf = (r) => fs.readFileSync(path.join(r.root, '.planning', 'turbo', 'logs', 'supervisor.log'), 'utf8');
+// Stop here (the last option) on every card, so a build that asks ends instead of waiting. -> the questions asked
+function stopOnCard(t, r) {
+  const asked = [];
+  every(t, () => {
+    const q = openCard(r.root);
+    if (!q) return false;
+    asked.push(q.question);
+    answer(r.root, q.id, q.options.length);
+    return false;
+  });
+  return asked;
+}
+
+// the live defect: a restart while the branch was red merged two finished slices untested; the retest was deferred,
+// nothing could be dispatched in that pass (a merged slice not yet tested holds the queue), and the loop read "nothing
+// in flight" as "no slice left": it took the deferred red back and started a fixer with no test output (a crash, the
+// supervisor's relaunch, the same again)
+test('after a restart with slices merged untested, a deferred red waits for the slices ahead', async (t) => {
+  const r = await loopRig(t, {
+    plans: {
+      '05-01': compactPlan({ id: '05-01', files: ['src/a.js'] }),
+      '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }),
+      '05-03': plan('05-03', 'c', { reqs: ['DEMO-03'] }),
+      '05-04': compactPlan({ id: '05-04', files: ['test/a.test.js'], deps: ['05-01'], reqs: ['DEMO-04'] }),
+    },
+    slices: {
+      '05-01': { files: src('a', 2) },
+      '05-02': { files: files('b'), delayMs: 3000 },
+      '05-03': { files: files('c'), delayMs: 3000 },
+      '05-04': { files: { 'test/a.test.js': spec('a', 2) } },
+    },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }] },
+    before: greenBase('a'),
+  });
+  // the owner sits down right after 05-01's merge: its tests turn the branch red, 05-02 and 05-03 finish and wait
+  r.ctx.deps.checkpoint = (n) => {
+    if (n === 'merged:05-01') writeAttend(r.root, '5');
+  };
+  assert.equal(await runStep(r.ctx, 'build'), 'paused');
+  assert.equal(r.ctx.state.red.after, '05-01');
+  assert.deepEqual(['05-02', '05-03'].map((id) => r.ctx.state.slices[id].state), ['running', 'running']);
+  // turbo-run build 5 --resume (lib/build.mjs resumeState): the hold ends, the reconcile merges the finished slices
+  clearAttend(r.root, '5');
+  r.ctx.deps.checkpoint = () => {};
+  r.ctx.state.hold = null;
+  r.ctx.save();
+  r.ctx.state = reconcileBuildState(r.root, r.ctx.runDir, '5', { alive: () => false, now: r.ctx.deps.now() }).state;
+  assert.deepEqual(['05-02', '05-03'].map((id) => [r.ctx.state.slices[id].state, r.ctx.state.slices[id].tests]), [['merged', null], ['merged', null]]);
+  const asked = stopOnCard(t, r);
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.deepEqual(asked, [], 'no owner card');
+  assert.equal(fixerActs(r), 1, 'the one fixer of the first red; none for the deferred red');
+  assert.deepEqual(Object.values(r.ctx.state.slices).map((x) => [x.state, x.tests]), Array(4).fill(['merged', 'green']));
+  assert.deepEqual([r.ctx.state.red, r.ctx.state.pendingRed ?? null], [null, null]);
+});
+
+// test-changed --merge runs what one merge's files reach: its green says nothing of the tests put off
+test('a green run of an unrelated merge does not clear the deferred red: the phase is tested as it stands at the end', async (t) => {
+  const r = await loopRig(t, {
+    plans: {
+      // a green slice first: the full green run the later, targeted runs start from
+      '05-01': plan('05-01', 'z'),
+      '05-02': compactPlan({ id: '05-02', files: ['src/a.js'], deps: ['05-01'], reqs: ['DEMO-02'] }),
+      '05-03': plan('05-03', 'b', { reqs: ['DEMO-03'] }),
+      // built on the breaker and changes an existing test, but not the red one
+      '05-04': plan('05-04', 'c', { deps: ['05-02'], reqs: ['DEMO-04'] }),
+    },
+    config: { build: { max_builders: 1 } },
+    slices: { '05-01': { files: files('z') }, '05-02': { files: src('a', 2) }, '05-03': { files: files('b') }, '05-04': { files: files('c', { value: 3, expect: 3 }) } },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }, { files: src('a', 1), message: 'fix(05): a as its test wants it', result: 'fixed' }] },
+    before: greenBase('a', 'c'),
+  });
+  const asked = stopOnCard(t, r);
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.deepEqual(asked, [], 'no owner card');
+  assert.match(logOf(r), /no slice left to clear the deferred red/);
+  const fixer = r.f.calls().filter((c) => c.stdin.startsWith('You are the fixer'));
+  assert.equal(fixer.length, 2, 'the first red\'s fixer, and one more when no slice was left to fix it');
+  assert.match(fixer[1].stdin, /tests-retest-\d+\.log is the output of tests that failed after a merge/);
+  assert.ok(fixer[1].stdin.includes('Change only the files of slice 05-02: src/a.js.'), fixer[1].stdin);
+  assert.equal(read(r, 'src/a.js'), 'module.exports = () => 1;\n');
+  assert.deepEqual(Object.values(r.ctx.state.slices).map((x) => [x.state, x.tests]), Array(4).fill(['merged', 'green']));
+  assert.deepEqual([r.ctx.state.red, r.ctx.state.pendingRed ?? null], [null, null]);
+});
+
+test('a second planned break joins the deferred red without a fixer round or a card', async (t) => {
+  const r = await loopRig(t, {
+    plans: {
+      '05-01': compactPlan({ id: '05-01', files: ['src/a.js'] }),
+      '05-02': compactPlan({ id: '05-02', files: ['src/b.js'], reqs: ['DEMO-02'] }),
+      '05-03': compactPlan({ id: '05-03', files: ['test/a.test.js', 'test/b.test.js'], deps: ['05-01', '05-02'], reqs: ['DEMO-03'] }),
+    },
+    config: { build: { max_builders: 1 } },
+    slices: {
+      '05-01': { files: src('a', 2) },
+      '05-02': { files: src('b', 2) },
+      '05-03': { files: { 'test/a.test.js': spec('a', 2), 'test/b.test.js': spec('b', 2) } },
+    },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }] },
+    before: greenBase('a', 'b'),
+  });
+  const asked = stopOnCard(t, r);
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.deepEqual(asked, [], 'no owner card');
+  assert.equal(fixerActs(r), 1, 'the first break\'s fixer only');
+  assert.match(logOf(r), /tests red after 05-02 \(.*\): a slice ahead is built on 05-02 and edits tests; put off until no slice ahead edits tests/);
+  assert.deepEqual(Object.values(r.ctx.state.slices).map((x) => [x.state, x.tests]), Array(3).fill(['merged', 'green']));
+  assert.deepEqual([r.ctx.state.red, r.ctx.state.pendingRed ?? null], [null, null]);
+});
+
+// a merge's tests run on the branch as it stands: after a restart several merges wait for their tests at once, and the
+// run of the first is red by a later one's planned break too
+test('after a crash, a red found while other merges wait for their tests is told by their planned breaks too', async (t) => {
+  const r = await loopRig(t, {
+    plans: {
+      '05-01': compactPlan({ id: '05-01', files: ['src/a.js'] }),
+      '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }),
+      '05-03': compactPlan({ id: '05-03', files: ['src/c.js'], reqs: ['DEMO-03'] }),
+      '05-04': compactPlan({ id: '05-04', files: ['test/a.test.js', 'test/c.test.js'], deps: ['05-01', '05-03'], reqs: ['DEMO-04'] }),
+    },
+    slices: {
+      '05-01': { files: src('a', 2) },
+      // 05-02 ends well before 05-03: it is merged first
+      '05-02': { files: files('b'), delayMs: 1500 },
+      '05-03': { files: src('c', 2), delayMs: 5000 },
+      '05-04': { files: { 'test/a.test.js': spec('a', 2), 'test/c.test.js': spec('c', 2) } },
+    },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }] },
+    before: greenBase('a', 'c'),
+  });
+  // the red after 05-01 is put off; 05-02 is merged and the build dies before its tests, 05-03 built and not merged
+  r.ctx.deps.checkpoint = (n) => {
+    if (n === 'merged:05-02') throw new Error('crash');
+  };
+  await assert.rejects(runStep(r.ctx, 'build'), /crash/);
+  assert.equal(r.ctx.state.pendingRed.after, '05-01');
+  assert.equal(r.ctx.state.slices['05-03'].state, 'running');
+  r.ctx.release();
+  // turbo-run build 5 --resume: the reconcile merges 05-03; 05-02's tests then run with 05-03's break in the branch
+  const ctx = await openBuild(r.root, '5', { resume: true, deps: { ...r.deps, checkpoint: () => {} } });
+  t.after(() => ctx.release());
+  ctx.state = reconcileBuildState(r.root, ctx.runDir, '5', { alive: () => false, now: ctx.deps.now() }).state;
+  assert.deepEqual(['05-02', '05-03'].map((id) => [ctx.state.slices[id].state, ctx.state.slices[id].tests]), [['merged', null], ['merged', null]]);
+  const asked = stopOnCard(t, r);
+  assert.equal(await runStep(ctx, 'build'), 'done');
+  assert.deepEqual(asked, [], 'no owner card');
+  assert.equal(fixerActs(r), 1, 'no fixer for 05-02: the new red test is 05-03\'s planned break');
+  assert.match(logOf(r), /tests red after 05-02 \(.*\): a slice ahead is built on 05-03 and edits tests; put off/);
+  assert.deepEqual(Object.values(ctx.state.slices).map((x) => [x.state, x.tests]), Array(4).fill(['merged', 'green']));
+  assert.deepEqual([ctx.state.red, ctx.state.pendingRed ?? null], [null, null]);
+});
+
+test('a new break no slice ahead is built on gets its fixer and the owner\'s card, deferred red or not', async (t) => {
+  const r = await loopRig(t, {
+    plans: {
+      '05-01': compactPlan({ id: '05-01', files: ['src/a.js'] }),
+      '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }),
+      '05-03': compactPlan({ id: '05-03', files: ['test/a.test.js'], deps: ['05-01'], reqs: ['DEMO-03'] }),
+    },
+    config: { build: { max_builders: 1 } },
+    slices: {
+      '05-01': { files: src('a', 2) },
+      '05-02': { files: files('b', { value: 1, expect: 2 }) },
+      '05-03': { files: { 'test/a.test.js': spec('a', 2) } },
+    },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }, { files: {}, result: 'nothing to change' }] },
+    before: greenBase('a'),
+  });
+  const asked = stopOnCard(t, r);
+  assert.equal(await runStep(r.ctx, 'build'), 'stopped');
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /the tests stay red after one fix/);
+  const fixer = r.f.calls().filter((c) => c.stdin.startsWith('You are the fixer'));
+  assert.equal(fixer.length, 2);
+  assert.ok(fixer[1].stdin.includes('Change only the files of slice 05-02: src/b.js, test/b.test.js.'), fixer[1].stdin);
+  assert.equal(r.ctx.state.red.after, '05-02');
+  assert.equal(r.ctx.state.pendingRed.after, '05-01', 'the planned break stays deferred');
+  assert.equal(r.ctx.state.slices['05-03'].state, 'waiting', 'nothing new started while red');
+});
+
+// «edits a test» means: changes a test that exists. A slice that only adds its own new test file fixes nobody's red.
+test('a slice ahead that only adds a test of its own makes no break planned: the fixer, then the owner\'s card', async (t) => {
+  const r = await loopRig(t, {
+    plans: {
+      '05-01': compactPlan({ id: '05-01', files: ['src/a.js'] }),
+      // built on the breaker, with a new test file of its own
+      '05-02': plan('05-02', 'b', { deps: ['05-01'], reqs: ['DEMO-02'] }),
+    },
+    config: { build: { max_builders: 1 } },
+    slices: { '05-01': { files: src('a', 2) }, '05-02': { files: files('b') } },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }] },
+    before: greenBase('a'),
+  });
+  const asked = stopOnCard(t, r);
+  assert.equal(await runStep(r.ctx, 'build'), 'stopped');
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /the tests stay red after one fix/);
+  assert.equal(fixerActs(r), 1);
+  assert.equal(r.ctx.state.pendingRed ?? null, null, 'nothing was put off');
+  assert.equal(r.ctx.state.slices['05-02'].state, 'waiting', 'nothing new started while red');
+});
+
+test('a run red as a whole (no failing test to tell it by) is never deferred', async (t) => {
+  const r = await loopRig(t, {
+    plans: {
+      '05-01': compactPlan({ id: '05-01', files: ['src/boom.js'] }),
+      // changes an existing test and is built on 05-01: by its tests alone the break would count as planned
+      '05-02': compactPlan({ id: '05-02', files: ['test/a.test.js'], deps: ['05-01'], reqs: ['DEMO-02'] }),
+    },
+    config: { build: { max_builders: 1 }, test: { full: 'node tests.cjs' } },
+    slices: { '05-01': { files: { 'src/boom.js': 'module.exports = 1;\n' } }, '05-02': { files: { 'test/a.test.js': spec('a', 2) } } },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }] },
+    before: (r) => {
+      // the project's test command: once src/boom.js is there it ends with exit code 3 and names no test
+      r.write('tests.cjs', "process.exit(require('node:fs').existsSync('src/boom.js') ? 3 : 0);\n");
+      r.write('test/a.test.js', spec('a', 1));
+      r.commit('test: a test command that crashes with src/boom.js');
+    },
+  });
+  const asked = stopOnCard(t, r);
+  assert.equal(await runStep(r.ctx, 'build'), 'stopped');
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /the tests stay red after one fix/);
+  assert.equal(r.ctx.state.pendingRed ?? null, null);
+  assert.equal(r.ctx.state.slices['05-02'].state, 'waiting', 'nothing new started while red');
 });
 
 test('a pause or a stop while the tests are red ends with merges still queued', async (t) => {

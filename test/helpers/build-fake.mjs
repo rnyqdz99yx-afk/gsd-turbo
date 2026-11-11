@@ -169,6 +169,9 @@ function actMain({ argv, stdin, cwd, resume }) {
     return answer({ result: `slice ${who.plan} built` });
   }
   if (role === 'fixer') {
+    // a fix with ask: the first call asks the owner (nothing written), the resumed one makes the fix
+    const next = Array.isArray(script.fixes) ? script.fixes[0] : null;
+    if (next?.ask && !resume) return answer({ result: next.ask });
     const fx = shift('fixes');
     if (!fx) return answer({ result: 'nothing to fix' });
     commit(writeAll(fx.files), fx.message || 'fix: build path fix');

@@ -208,7 +208,7 @@ test('state-sync --no-commit writes STATE.md through GSD\'s state commands and l
 // writes survives the begin-phase call every execute-phase run starts with, and undoes planned-phase's flip.
 const core = gsdCoreDir(null);
 const realGsd = core && versionInRange(readVersion(core) || '');
-const SKIP = { skip: !realGsd && 'GSD 1.16–1.20 is not installed' };
+const SKIP = { skip: !realGsd && 'GSD 1.16–1.21 is not installed' };
 const stateOf = (root) => fs.readFileSync(path.join(root, '.planning', 'STATE.md'), 'utf8');
 function committedFixture(opts) {
   const root = fixture(opts);

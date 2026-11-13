@@ -14,7 +14,7 @@ import { slicePhase, DEMO_INFO } from './helpers/slices.mjs';
 // copy drifted from GSD — fix the copy (roles/*.md), not this test.
 const core = gsdCoreDir(null);
 const realGsd = core && versionInRange(readVersion(core) || '');
-const SKIP = { skip: !realGsd && 'GSD 1.16–1.20 is not installed', timeout: 300000 };
+const SKIP = { skip: !realGsd && 'GSD 1.16–1.21 is not installed', timeout: 300000 };
 
 const REL = '.planning/phases/05-demo';
 const NO_SIGNALS = { research: { yes: false, why: '' }, security: { yes: false, why: '' } };

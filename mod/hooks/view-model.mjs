@@ -105,6 +105,8 @@ const VIEW_WORDS = {
     slicesWaiting: (k) => `${k} waiting`,
     slicesYours: (k) => `${k} ${k === 1 ? 'waits' : 'wait'} for you`,
     slicesRed: 'tests red, fixing',
+    // v0.8.1: a red put off (tests a later part of the work updates): said, so a build that goes on with red tests is no surprise
+    slicesRedOff: (n) => `${n} test${n === 1 ? '' : 's'} red on purpose until a later part updates ${n === 1 ? 'it' : 'them'}`,
     gapRound: (k) => `gap round ${k}`,
     fixRound: (k) => `fix round ${k}`,
     helpersDone: (n, more) => `${n} ${more ? 'more ' : ''}${n === 1 ? 'helper' : 'helpers'} finished`,
@@ -217,6 +219,7 @@ const VIEW_WORDS = {
     slicesWaiting: (k) => `в очереди ${k}`,
     slicesYours: (k) => `ждут вас ${k}`,
     slicesRed: 'тесты красные, чиню',
+    slicesRedOff: (n) => `красных по плану тестов: ${n} (их обновит одна из следующих частей)`,
     gapRound: (k) => `круг доработки ${k}`,
     fixRound: (k) => `круг исправлений ${k}`,
     helpersDone: (n, more) => `${more ? 'ещё ' : ''}${n} ${ruPlural(n, 'помощник закончил', 'помощника закончили', 'помощников закончили')}`,
@@ -744,6 +747,7 @@ export function buildRows(build, lang) {
     count(build.waiting) ? t.slicesWaiting(build.waiting) : null,
     yours ? t.slicesYours(yours) : null,
     build.red ? t.slicesRed : null,
+    !build.red && count(build.redOff) ? t.slicesRedOff(build.redOff) : null,
     count(build.round) ? t.gapRound(build.round) : null,
     count(build.fixRound) ? t.fixRound(build.fixRound) : null,
   ].filter(Boolean).join(' · ')];

@@ -17,7 +17,7 @@ const SR = 'b4000000-0000-4000-8000-000000000009';
 
 // A checkout whose supervisor runs phase 5 on the build path: 05-01 merged, 05-02 building (its session edits
 // src/b.js, started 6 min ago), 05-03 waiting for the owner's card ask-1, 05-04 waiting.
-function buildLaneProject({ step = 'build', red = null, path: lanePath = 'build', state = true, round = 0, review = {} } = {}) {
+function buildLaneProject({ step = 'build', red = null, pendingRed = null, path: lanePath = 'build', state = true, round = 0, review = {} } = {}) {
   const root = tmpDir('view-build');
   const run = path.join(root, '.planning', 'turbo', 'run');
   fs.mkdirSync(run, { recursive: true });
@@ -29,7 +29,7 @@ function buildLaneProject({ step = 'build', red = null, path: lanePath = 'build'
   const slice = (st, fields = {}) => ({ state: st, plan: '', summary: '', base: null, sessions: [], pid: null, worktree: null, branch: null, links: [], merge: null, tests: null, question: null, ownerQuestion: null, reason: null, retries: 0, rebuilds: 0, salvage: [], leftover: null, at: {}, ...fields });
   if (state) {
     fs.writeFileSync(path.join(run, 'build-p5.json'), JSON.stringify({
-      v: 1, phase: '5', round, startedAt: ago(20), head0: null, graphSha: null, maxBuilders: 4, edges: [], order: ['05-01', '05-02', '05-03', '05-04'], red, hold: null,
+      v: 1, phase: '5', round, startedAt: ago(20), head0: null, graphSha: null, maxBuilders: 4, edges: [], order: ['05-01', '05-02', '05-03', '05-04'], red, pendingRed, hold: null,
       slices: {
         '05-01': slice('merged', { tests: 'green' }),
         '05-02': slice('running', { worktree: wt, pid: 777, sessions: [{ id: S2, role: 'builder', at: ago(6), transcript: t2 }] }),
@@ -80,7 +80,7 @@ test('v0.8.1: a build that is over is worded so, in status and in the pane alike
 test("a build lane's view: step, active slices with their last action, the counts", () => {
   const v = viewOf(buildLaneProject());
   assert.deepEqual(v.lanes[0].build, {
-    step: 'build', round: 0, red: false, hold: null, merged: 1, total: 4, waiting: 1, fixRound: 0,
+    step: 'build', round: 0, red: false, redOff: 0, hold: null, merged: 1, total: 4, waiting: 1, fixRound: 0,
     slices: [
       { id: '05-02', state: 'running', question: null, action: { tool: 'Edit', detail: 'src/b.js' }, elapsedMs: 360000, lastAt: ago(1) },
       { id: '05-03', state: 'owner', question: 'ask-1', action: null, elapsedMs: null, lastAt: null },
@@ -111,6 +111,12 @@ test('the text view and the pane print the same build lines', async () => {
   assert.equal(red.lanes[0].build.fixRound, 1);
   assert.ok(formatView(red).split('\n').includes('  Build: building slices · slices 1 of 4 merged · 1 building · 1 waiting · 1 waits for you · tests red, fixing · fix round 1'), formatView(red));
   assert.deepEqual(buildRows(red.lanes[0].build, 'ru')[0], 'Сборка: собираю куски · куски: слито 1 из 4 · собираются 1 · в очереди 1 · ждут вас 1 · тесты красные, чиню · круг исправлений 1');
+  // v0.8.1: a red put off is said in the build line, in the text view and the pane alike
+  const off = viewOf(buildLaneProject({ pendingRed: { after: '05-01', fresh: ['test/a.test.js > a', 'a', 'b'], at: '2026-01-05T00:00:00.000Z' } }));
+  assert.equal(off.lanes[0].build.redOff, 2);
+  assert.ok(formatView(off).split('\n').includes('  Build: building slices · slices 1 of 4 merged · 1 building · 1 waiting · 1 waits for you · 2 tests red on purpose until a later part updates them'), formatView(off));
+  assert.deepEqual(buildRows(off.lanes[0].build, 'ru')[0], 'Сборка: собираю куски · куски: слито 1 из 4 · собираются 1 · в очереди 1 · ждут вас 1 · красных по плану тестов: 2 (их обновит одна из следующих частей)');
+  assert.deepEqual(pane.buildRows(off.lanes[0].build, 'ru')[0], buildRows(off.lanes[0].build, 'ru')[0]);
   // a step of its own session (review): the build line, then what it does now
   const review = viewOf(buildLaneProject({ step: 'review' }));
   const reviewLines = formatView(review).split('\n');

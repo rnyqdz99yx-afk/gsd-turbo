@@ -29,6 +29,10 @@ const SINCE_STAGE5 = {
     // v0.7.0: note messages in the inbox (turbo-run note, a parked phase, the main branch moved)
     " `note` messages → information for this phase, from the owner (`turbo-run note`) or from turbo (a phase this one depends on is parked: it started without that phase's work). Take each into account in every later step, and put it in the prompt of every subagent you dispatch after it (planner, checker, executors, fixer) under a heading \"Notes for this phase\"; the plan and the owner's answers still decide. A note that says the main branch already holds a fix or a change: run step **integrate** before acting on anything it touches.",
     '',
+  ], [
+    // v0.8.1: the phase's name in single quotes (a ROADMAP name with `$`, a backtick or `"` broke the command)
+    "--name '<phase_name from init phase-op>' --plans <the plan count>",
+    '--name "<phase_name from init phase-op>" --plans <the plan count>',
   ]],
 };
 const skill = (name) => {

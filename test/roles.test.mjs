@@ -184,7 +184,8 @@ test('slicer prompt: signals in L1\'s words are not repeated, and stay short', (
 });
 
 // v0.6.1: the decide rule and the language line grew the slicer prompt; Russian instructions take two bytes a letter
-test('slicer prompt: the worst case stays within 9216 bytes (en) and 10240 (ru)', () => {
+// v0.8.1: 9472 for en (two rules more: the pinned files, the owner's live steps)
+test('slicer prompt: the worst case stays within 9472 bytes (en) and 10240 (ru)', () => {
   const ctx = slicerCtx({
     info: { ...INFO6, needsResearchItems: TOPICS },
     researchPath: undefined,
@@ -194,7 +195,7 @@ test('slicer prompt: the worst case stays within 9216 bytes (en) and 10240 (ru)'
   const p = rolePrompt('slicer', { ...ctx, info: { ...ctx.info, needsResearchItems: [] }, findingsPath: path.join(phaseDir(ctx.root), '05-VERIFICATION.md') });
   const q = rolePrompt('slicer', { ...ctx, findingsPath: path.join(phaseDir(ctx.root), '05-VERIFICATION.md') });
   const e = rolePrompt('slicer', { ...ctx, lang: 'en', findingsPath: path.join(phaseDir(ctx.root), '05-VERIFICATION.md') });
-  for (const [x, cap] of [[p, 10240], [q, 10240], [e, 9216]]) {
+  for (const [x, cap] of [[p, 10240], [q, 10240], [e, 9472]]) {
     assert.ok(x.includes('## Gap round') && x.includes('Security: ') && x.includes('## Owner answers given ahead'));
     assert.ok(Buffer.byteLength(x) <= cap, `${Buffer.byteLength(x)} bytes`);
   }

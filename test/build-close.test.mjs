@@ -383,3 +383,24 @@ test('close in a slot: a stale report the verifier writes human_needed again is 
   const b = await slotRig(t, { gsd: gsd2 });
   await assert.rejects(runStep(b.ctx, 'close'), /verification human_needed after taking in the main branch/);
 });
+
+// v0.8.1 (live runs 2026-11-12/13): the lane's own STATE.md writes pushed the file over the project's size test; the
+// full run went red on a file no slice owns and a card followed. The build path never applied the STATE budget.
+test('tests: STATE.md is kept within lean.state_budget_kb before the full run, in a commit of its own', async (t) => {
+  const big = ['# State', '', '## Current Position', '', 'Phase: 5', '', '## Session Log', '', ...Array.from({ length: 200 }, (_, i) => `- entry ${i} ${'x'.repeat(40)}`), ''].join('\n');
+  assert.ok(Buffer.byteLength(big) > 8 * 1024);
+  const r = await closeRig(t, {
+    config: { lean: { state_budget_kb: 4 } },
+    setup: (x) => {
+      x.write('.planning/STATE.md', big);
+      x.commit('docs: a long STATE');
+    },
+  });
+  assert.equal(await runStep(r.ctx, 'tests'), 'done');
+  const state = fs.readFileSync(path.join(r.root, '.planning', 'STATE.md'), 'utf8');
+  assert.ok(Buffer.byteLength(state) <= 4 * 1024, `${Buffer.byteLength(state)} B; log: ${fs.readFileSync(path.join(logsDir(r.root), "supervisor.log"), "utf8").slice(-600)}`);
+  assert.ok(state.includes('## Current Position'), 'the protected sections stay');
+  assert.ok(fs.existsSync(path.join(r.root, '.planning', 'STATE-ARCHIVE.md')));
+  assert.match(fs.readFileSync(path.join(logsDir(r.root), 'supervisor.log'), 'utf8'), /STATE\.md kept within its size: the history of 1 section\(s\) moved to STATE-ARCHIVE\.md/);
+  assert.equal(r.git('status', '--porcelain', '--', '.planning/STATE.md', '.planning/STATE-ARCHIVE.md'), '', 'committed before the run');
+});

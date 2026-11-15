@@ -1338,7 +1338,17 @@ async function main() {
         }
       }
       writeLaneStatus(root, id, status, { reason: flag(args, '--reason'), fields });
-      out(status === 'ready' ? `lane ${id}: ready (base ${fields.base.slice(0, 12)}, head ${fields.head.slice(0, 12)}); the supervisor merges it into main` : `lane ${id}: ${status}`);
+      // v0.8.1 (live run 2026-11-13: a phase closed by hand, with GSD's own commands, left no line in the log and its
+      // lane looked as before): a record set outside a lane is the owner's, and the log says so
+      const byHand = !process.env.TURBO_LANE && !process.env.TURBO_BUILD_LANE;
+      if (byHand) {
+        try {
+          fs.mkdirSync(logsDir(root), { recursive: true });
+          fs.appendFileSync(path.join(logsDir(root), 'supervisor.log'), `${new Date().toISOString()} phase ${id}: its lane record was set to ${status} by hand, outside turbo${flag(args, '--reason') ? ` (${String(flag(args, '--reason')).replace(/\s+/g, ' ').slice(0, 300)})` : ''}\n`);
+        } catch { /* the record is written; the log line is only a trace */ }
+      }
+      const closed = byHand && status === 'done' ? ' (closed outside turbo: the supervisor frees its lane at its next check, once GSD marks the phase complete)' : '';
+      out(status === 'ready' ? `lane ${id}: ready (base ${fields.base.slice(0, 12)}, head ${fields.head.slice(0, 12)}); the supervisor merges it into main` : `lane ${id}: ${status}${closed}`);
       // v0.3.3 (D8): a stop for the owner reaches them as a question card only through turbo-run ask
       if (status === 'needs-owner' && !deliveryState(root, id).waiting.length) process.stderr.write(`hint: no owner question waits for phase ${id}, so the owner gets only this reason: ask with turbo-run ask ${id} --question <plain words> --option <label>|<description> (2 to 4) --recommended <n>, or --action <the owner's one step>\n`);
       return 0;

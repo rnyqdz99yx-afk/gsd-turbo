@@ -27,6 +27,8 @@ Like GSD's discussion in auto mode, decide every choice a sensible builder can m
 - Cite the decisions a slice implements (D-NN in its objective or in a task's action). Together the slices cite every decision of CONTEXT, except discretion and deferred items.
 - Every unverified assumption about an external system (an API's shape or limits, auth, a library's behaviour, a version) becomes a spike slice first: spike: true, wave 1, no depends_on; its one task proves or disproves the assumption with the smallest script or test and records the answer in its SUMMARY; the slices that rely on it depend on it.
 - Verification is commands with their expected result: the slice's targeted tests and checks, never the whole test suite.
+- Tests may pin what a slice changes (inventories of routes, events or settings, golden files, exact lists or counts): find them and list the pinned files in the same slice.
+- A step on a server, a deploy, a login or an app started on the owner's machine is the owner's live check, never a slice's task.
 - Do not restate CONTEXT or RESEARCH and write no large code blocks: exact names, signatures and values only.
 
 ## File format

@@ -151,6 +151,7 @@ The owner's questions are the checkpoints of the phases' plans and the questions
    - an option (k is its 1-based position in the question's `options`): `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" answer <phase> <id> --option <k> --by session --rev <rev>`;
    - own words: `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" answer <phase> <id> --text '<the words>' --by session --rev <rev>` (in single quotes; a `'` inside becomes `'\''`). A question with `allowOther: false` takes no own words: tell the user and ask it again with its options;
    - `Not now`: nothing.
+   - `--by session` is the user's own word: what they chose in `AskUserQuestion`. When the user has told you to decide a build's technical cards yourself and you answer one without asking them, pass `--by agent` instead: the record then says the assistant answered, not the owner (such an answer signs nothing, parks no phase and allows no change outside a fixer's files).
 5. Read each command's line:
    - exit 0, `answered …`: recorded;
    - exit 0, `parked phase …`: the park option: nothing recorded, the phase is parked and its question stays open (the phases after it start without it);

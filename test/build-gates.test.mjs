@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildRig, claudeHome, summaryText } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
-import { adoptRound, openBuild, resultWith, runStep, setStep } from '../lib/build.mjs';
+import { adoptRound, openBuild, resultWith, runStep, setStep, whoAnswered } from '../lib/build.mjs';
 import { needsSecurity, readPhaseInfo } from '../lib/phase-signals.mjs';
 import { readQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
@@ -301,4 +301,44 @@ test('the review, verify and security cards say what they halted on', async (t) 
   assert.match(seen[0].context, /^Open threats that block the phase: 1\. No fix was tried\./);
   assert.deepEqual(seen[0].details, ['verdict: escalate, threats_open 1', 'blocking: T-5-24', `report: ${REL}/05-SECURITY.md`]);
   assert.equal(seen[0].header, 'Security');
+});
+
+// v0.8.1 (live run 2026-11-13: the controller's «Дальше» on a verify card was logged «accepted by the owner»)
+test('a Go on from the owner\'s assistant is on record as such: the card names the open goals, the uat skip says who accepted them', async (t) => {
+  const gaps = { path: `${REL}/05-VERIFICATION.md`, text: '---\nphase: 05-demo\nstatus: gaps_found\nscore: 1/3 must-haves verified\ngaps:\n  - truth: "the release is live on the server"\n    status: failed\n    reason: "live step not run"\n  - truth: "the keys are rotated"\n    status: failed\n    reason: "live step not run"\n---\n\n# Verification\n' };
+  const r = await gatesRig(t, {
+    script: { verifications: [gaps] },
+    setup: (x) => {
+      x.write(`${REL}/05-01-PLAN.md`, compactPlan({ id: '05-01', files: ['src/a.js'], reqs: ['DEMO-01', 'DEMO-02'] }));
+      x.write(`${REL}/05-01-SUMMARY.md`, summaryText({ phaseSlug: '05-demo', plan: '05-01' }));
+      x.commit('docs: plan and summary');
+    },
+  });
+  const { ctx } = r;
+  adoptRound(ctx, { round: 0 });
+  for (const s of ['slice', 'build', 'review']) setStep(ctx.state, s, { state: 'done' });
+  ctx.state.gapRounds = 1;
+  ctx.save();
+  const seen = [];
+  every(t, () => {
+    const q = readQuestions(r.root, '5').find((x) => x.state === 'open');
+    if (!q) return false;
+    seen.push(q);
+    answerQuestion({ root: r.root, phase: '5', id: q.id, option: 2, by: 'agent', laneRunning: true });
+    return true;
+  });
+  assert.equal(await runStep(ctx, 'verify'), 'done');
+  assert.match(seen[0].context, /^Goals not met: 2\. Extra rounds of work so far: 1\./);
+  assert.deepEqual(seen[0].details, ['score: 1/3 must-haves verified', 'failed: the release is live on the server', 'failed: the keys are rotated', `report: ${REL}/05-VERIFICATION.md`]);
+  assert.deepEqual([ctx.state.steps.verify.accepted, ctx.state.steps.verify.acceptedBy], [seen[0].id, 'agent']);
+  const log = fs.readFileSync(path.join(r.root, '.planning', 'turbo', 'logs', 'supervisor.log'), 'utf8');
+  assert.match(log, /ask-1 \(halt: verify\) answered by the owner's assistant, not by the owner: go on/);
+  assert.equal(await runStep(ctx, 'uat'), 'skipped');
+  assert.equal(ctx.state.steps.uat.why, `verification gaps accepted by the owner's assistant, not by the owner (2 goal(s) stay open in ${REL}/05-VERIFICATION.md): nothing to check by hand`);
+  assert.equal(whoAnswered('pane'), 'by the owner');
+  assert.equal(whoAnswered('session'), 'by the owner');
+  assert.equal(whoAnswered('auto'), 'by turbo itself');
+  assert.equal(whoAnswered(null), 'on its card');
+  // the owner's alone stay the owner's: an assistant's answer parks no phase
+  assert.throws(() => answerQuestion({ root: r.root, phase: '5', id: 'nope', option: 1, by: 'robot', laneRunning: true }), /unknown channel robot/);
 });

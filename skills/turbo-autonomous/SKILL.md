@@ -127,6 +127,7 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
    - for the curious: `claude attach <session id>` (exit with the detach key, the session keeps running), `/turbo-autonomous status`, and the log `.planning/turbo/logs/supervisor.log`;
    - that a desktop notification arrives when the owner is needed or the milestone is done;
    - that this session can be closed: the supervisor and the lanes keep running;
+   - a restart of the computer: run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" autostart status`. When it prints `autostart: off`, say in one plain sentence that after a restart of the computer the run does not come back by itself, and ask with `AskUserQuestion` (header `turbo`) whether turbo should start it again at logon; on yes run `… autostart on` and show its lines (`autostart off` undoes it; a run the user stopped themselves never comes back by itself). Ask once per project: not again when it is on, or when the user said no before;
    - how to come back to this chat after a crash or a reboot: when the status output has a `back to this chat:` line (`вернуться в этот чат:` in Russian), pass it on unchanged: `claude -r` and pick this chat by its title, or `claude --resume <id>`. Never suggest a bare `claude -c`: it may open a lane's conversation instead (in checkout mode the lanes work in this folder too);
    - how to stop: `/turbo-autonomous stop`.
 

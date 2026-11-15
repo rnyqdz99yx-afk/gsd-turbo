@@ -194,3 +194,18 @@ test('retestRows: issue rows go back to pending for the re-test after a gap roun
   // nothing to re-test: the text as it was
   assert.deepEqual(retestRows(r.text, { round: 3, now: NOW }), { text: r.text, retest: [] });
 });
+
+// v0.8.1 (live run 2026-11-12: `uat defer` refused a pending row, so rows that wait for the merged phase had to be
+// edited by hand before they could be deferred)
+test('a pending row is deferred with the owner\'s reason; without one it is refused, and the refusal says how', () => {
+  const pending = '---\nstatus: testing\nphase: 05-demo\n---\n\n## Tests\n\n### 1. the greeting shows\nexpected: it works\nresult: pass\n\n### 2. the release runs on the server\nexpected: it works\nresult: [pending]\n\n## Summary\n\ntotal: 2\npassed: 1\nissues: 0\npending: 1\nskipped: 0\nblocked: 0\n\n## Gaps\n';
+  assert.throws(() => deferRows(pending, { tests: [2], now: NOW }), /test 2: only a skipped or blocked row can be deferred \(it is pending\); a pending row needs --reason <why it waits>/);
+  const r = deferRows(pending, { tests: [2], now: NOW, reason: 'not checked and not signed;\n it waits for the merge of the phase' });
+  assert.deepEqual(r.deferred, [2]);
+  const row = rowOf(r.text, 2);
+  assert.equal(row.result, 'skipped');
+  assert.match(firstReasonLine(row), /^"Deferred follow-up: not checked and not signed; it waits for the merge of the phase"$/);
+  assert.match(r.text, /## Deferred Follow-Ups/);
+  // GSD's predicate takes a deferred row as settled: nothing is left for the owner to sign
+  assert.equal(ownerRequest({ phase: '5', tests: parseUat(r.text).tests }).needsOwner, false);
+});

@@ -86,9 +86,15 @@ test('uat: nothing to check by hand when verification passed', async (t) => {
   assert.deepEqual(r.turbo.calls, []);
   // the owner's Go on at the verify card holds here too
   const g = await closeRig(t, { setup: (x) => { x.write(`${REL}/05-VERIFICATION.md`, verification('gaps_found')); x.commit('docs: v'); } });
-  setStep(g.ctx.state, 'verify', { state: 'done', accepted: 'ask-1', acceptedOn: createHash('sha256').update(verification('gaps_found')).digest('hex') });
+  setStep(g.ctx.state, 'verify', { state: 'done', accepted: 'ask-1', acceptedBy: 'pane', acceptedOn: createHash('sha256').update(verification('gaps_found')).digest('hex') });
   assert.equal(await runStep(g.ctx, 'uat'), 'skipped');
-  assert.equal(g.ctx.state.steps.uat.why, 'verification gaps accepted by the owner: nothing to check by hand');
+  // v0.8.1: who accepted them, and that they stay open (this report lists none in its frontmatter)
+  assert.equal(g.ctx.state.steps.uat.why, `verification gaps accepted by the owner (0 goal(s) stay open in ${REL}/05-VERIFICATION.md): nothing to check by hand`);
+  // a state an older turbo saved has no record of who answered: never «by the owner» by default
+  const old = await closeRig(t, { setup: (x) => { x.write(`${REL}/05-VERIFICATION.md`, verification('gaps_found')); x.commit('docs: v'); } });
+  setStep(old.ctx.state, 'verify', { state: 'done', accepted: 'ask-1', acceptedOn: createHash('sha256').update(verification('gaps_found')).digest('hex') });
+  assert.equal(await runStep(old.ctx, 'uat'), 'skipped');
+  assert.match(old.ctx.state.steps.uat.why, /^verification gaps accepted on its card \(0 goal\(s\) stay open/);
 });
 
 test('uat: human_needed runs turbo-uat and the uat commands in the skill\'s order', async (t) => {
@@ -403,4 +409,27 @@ test('tests: STATE.md is kept within lean.state_budget_kb before the full run, i
   assert.ok(fs.existsSync(path.join(r.root, '.planning', 'STATE-ARCHIVE.md')));
   assert.match(fs.readFileSync(path.join(logsDir(r.root), 'supervisor.log'), 'utf8'), /STATE\.md kept within its size: the history of 1 section\(s\) moved to STATE-ARCHIVE\.md/);
   assert.equal(r.git('status', '--porcelain', '--', '.planning/STATE.md', '.planning/STATE-ARCHIVE.md'), '', 'committed before the run');
+});
+
+// v0.8.1 (live run 2026-11-12, phase 36: «the only go-on button writes a false record»)
+test('the sign-off card offers Defer: the rows become open follow-ups with a true reason, nothing is signed, the step goes on', async (t) => {
+  const setup = (x) => {
+    x.write(`${REL}/05-VERIFICATION.md`, verification('human_needed'));
+    x.write(`${REL}/05-UAT.md`, uatFile([[1, 'the greeting shows', 'pass'], [2, 'the release runs on the server', 'pass']]));
+    x.commit('docs: v and uat');
+  };
+  const s = await closeRig(t, {
+    setup,
+    turbo: { 'uat plan': json({ items: [] }), 'uat owner-request': [json({ needsOwner: true, sign: [2], reason: 'row 2' }), json({ needsOwner: false, sign: [] })] },
+  });
+  const seen = answerNext(t, s.root, '5', 3);
+  assert.equal(await runStep(s.ctx, 'uat'), 'done');
+  assert.deepEqual(seen[0].options.map((o) => o.label), ['Accept', 'Not now', 'Defer']);
+  assert.equal(seen[0].header, 'Checks');
+  const calls = s.turbo.args().map((a) => a.join(' '));
+  assert.ok(!calls.some((c) => c.startsWith('uat sign')), 'nothing is signed');
+  const defer = s.turbo.args().find((a) => a[1] === 'defer' && a[3] === '2');
+  assert.deepEqual(defer.slice(0, 5), ['uat', 'defer', '5', '2', '--reason']);
+  assert.equal(defer[5], 'deferred at the sign-off card by the owner: not checked and not signed; it waits for what comes after this phase (its merge or a live step)');
+  assert.match(fs.readFileSync(path.join(logsDir(s.root), 'supervisor.log'), 'utf8'), /ask-1: UAT rows 2 deferred by the owner, not signed/);
 });

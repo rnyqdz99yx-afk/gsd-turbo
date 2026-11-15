@@ -54,13 +54,15 @@ import { runCostCommand, spawnCostLog } from '../lib/cost.mjs';
 import { buildLaneDeps, runnerOf, runningBuilds, stopBuild, waitBuildPaused } from '../lib/build-lane.mjs';
 import { loadBuildState } from '../lib/build-queue.mjs';
 import { buildOf, buildRows } from '../lib/view.mjs';
+import { recordFailure, reportsLine, runReportCommand } from '../lib/report.mjs';
+import { runUpdateCommand, updateNotice } from '../lib/update.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|park|note|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost|build> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|park|note|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost|build|report|update> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
-const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', '--merge', ...WHATIF_VALUE_FLAGS]);
+const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', '--merge', '--summary', '--title', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
-const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart', 'lean']);
+const OWNER_COMMANDS = new Set(['start', 'daemon', 'status', 'view', 'stop', 'resume', 'attend', 'away', 'back', 'autostart', 'lean', 'update']);
 // No path separators: a phase id only ever names p<id>.json inside the run directory.
 const PHASE_ID = /^[A-Za-z0-9._-]+$/;
 const START_USAGE = 'usage: turbo-run start [--from <phase>] [--to <phase>] | start --only <phase> | start --all';
@@ -438,6 +440,12 @@ async function makeCtx(root, mode = 'safe') {
       leanBoundary: (phase) => leanBoundary({ root, phase, core, log: (l) => ctx.deps.log(l), effort: () => effortApply({ root, env: process.env }) }),
       // Stage 6 B4 (spec §6.1): eligible phases run turbo-run build N as a detached lane (lib/build-lane.mjs)
       build: buildLaneDeps(root, config),
+      // v0.8 (lib/report.mjs): a check that fails with a programming error, or keeps failing, is recorded as a failure
+      // report (nothing is sent); the log names a new one once
+      report: (input) => {
+        const line = recordFailure(input, { root });
+        if (line) log(line);
+      },
     },
   };
   if (plugins) {
@@ -1188,6 +1196,12 @@ async function main() {
       printAttended(attended);
       printAway(root, config);
       printLeftovers(leftovers);
+      // v0.8: turbo's own failures that wait for the owner's yes (lib/report.mjs)
+      const reports = reportsLine(config.lang, { root });
+      if (reports) out(reports);
+      // v0.8: a newer turbo, known from the daily look (lib/update.mjs)
+      const newerTurbo = updateNotice(config.lang, { script: SELF });
+      if (newerTurbo) out(newerTurbo);
       const back = backToChat(process.env, config.lang);
       if (back) out(back);
       return 0;
@@ -1268,6 +1282,21 @@ async function main() {
           hint: () => effortOffHint(),
         },
       });
+    }
+    case 'report':
+      // v0.8 (lib/report.mjs): turbo's own failures, written up; sent only by `report send <id>`, after the owner's yes
+      return runReportCommand(args, { root, out });
+    case 'update': {
+      // v0.8 (lib/update.mjs, /turbo-update): the newest released turbo, installed by its own installer; never while
+      // turbo runs here (this project's supervisor or a build; the machine's role sessions are checked there)
+      refuseInLane('update');
+      const busy = () => {
+        if (!root) return null;
+        if (supAlive(readJson(supPath(root), null), pollOf(root))) return 'the supervisor of this project is running';
+        const builds = runningBuilds(root);
+        return builds.length ? `the build of phase ${builds.map((b) => b.phase).join(', ')} is running` : null;
+      };
+      return runUpdateCommand(args, { root, out, deps: { busy } });
     }
     case 'cost': {
       // Stage 6 M (spec §7): a phase's time and tokens by step and role; --log appends its line to supervisor.log
@@ -1426,7 +1455,12 @@ async function main() {
   return 0;
 }
 
-main().then(
-  (code) => { process.exitCode = code ?? 0; },
-  (e) => die(CONFIG_ERROR.test(e?.message) ? e.message.replace(/\s*\r?\n\s*/g, ' ') : e?.stack || String(e)),
-);
+// An error nothing expected ends the command with its stack, as before. v0.8: it is recorded as a failure report too
+// (lib/report.mjs: under turbo's own directory, nothing sent), and the line that names the report follows the stack.
+function crashed(e) {
+  if (CONFIG_ERROR.test(e?.message)) die(e.message.replace(/\s*\r?\n\s*/g, ' '));
+  const line = recordFailure({ kind: 'crash', err: e, cmd: process.argv[2] }, { root: findProjectRoot(process.cwd()), again: true });
+  die(`${e?.stack || String(e)}${line ? `\n${line}` : ''}`);
+}
+process.on('uncaughtException', crashed);
+main().then((code) => { process.exitCode = code ?? 0; }, crashed);

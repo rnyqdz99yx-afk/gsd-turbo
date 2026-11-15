@@ -53,7 +53,7 @@ import { gitRunner } from '../lib/staleness.mjs';
 import { runCostCommand, spawnCostLog } from '../lib/cost.mjs';
 import { buildLaneDeps, runnerOf, runningBuilds, stopBuild, waitBuildPaused } from '../lib/build-lane.mjs';
 import { loadBuildState } from '../lib/build-queue.mjs';
-import { buildOf, buildRows } from '../lib/view.mjs';
+import { buildOf, buildOver, buildRows, laneRecordStatus, withOver } from '../lib/view.mjs';
 import { recordFailure, reportsLine, runReportCommand } from '../lib/report.mjs';
 import { runUpdateCommand, updateNotice } from '../lib/update.mjs';
 
@@ -312,9 +312,13 @@ function statusOpts(root, config) {
 // the lane line names the hold instead of a session to watch.
 // closed: Stage 5's line about the closed phases turbo skips (lib/cli-adopt.mjs closedLineFor), after the supervisor line.
 // Stage 6 B4 (spec §6.7): a build lane's step and slices (lib/view.mjs buildRows), under its lane line
+// v0.8.1: the pid of a build that is over is no process any more: status does not name it as one
+const buildPidWords = (root, lane) => (root && buildOver(root, lane, laneRecordStatus(root, lane)) ? 'build not running' : `build pid ${lane.pid}`);
 function printBuildRows(root, lane, lang) {
   if (!root) return;
-  for (const row of buildRows(buildOf(root, lane, { home: claudeHome() }), lang)) out(`  ${row}`);
+  // v0.8.1: a build that is over (the lane record, or its runner's dead record) is worded so, as in the pane
+  const build = withOver(buildOf(root, lane, { home: claudeHome() }), buildOver(root, lane, laneRecordStatus(root, lane)));
+  for (const row of buildRows(build, lang)) out(`  ${row}`);
 }
 
 function printStatus(sup, running, { root = null, rangeLine = true, attended = [], questions = 0, lang = 'en', resumes = [], closed = null } = {}) {
@@ -331,7 +335,7 @@ function printStatus(sup, running, { root = null, rangeLine = true, attended = [
     const when = running ? "at the supervisor's next check" : 'once a supervisor runs: turbo-run start';
     out(`lane: phase ${sup.lane.phase} · relaunch pending (resume) · replaces session ${sup.lane.sessionId} ${when} · mode ${sup.lane.mode || 'safe'}`);
   } else if (sup.lane?.path === 'build') {
-    out(`lane: phase ${sup.lane.phase} · build pid ${sup.lane.pid} · restarts ${sup.lane.restarts ?? 0} · since ${sup.lane.launchedAt}`);
+    out(`lane: phase ${sup.lane.phase} · ${buildPidWords(root, sup.lane)} · restarts ${sup.lane.restarts ?? 0} · since ${sup.lane.launchedAt}`);
     printBuildRows(root, sup.lane, lang);
   } else if (sup.lane) {
     const held = attended.map((a) => a.phase).join(', ');
@@ -349,7 +353,7 @@ function printLanes(sup, { root = null, attended, questions, lang, resumes = [],
   for (const l of lanes) {
     if (l.path === 'build') {
       // Stage 6 B4: a build lane runs turbo-run build N, no session
-      out(`lane ${l.key}: ${laneLabel(l)} · slot ${l.slot} ${l.slotPath} · build pid ${l.pid} · restarts ${l.restarts ?? 0} · since ${l.launchedAt || '-'}`);
+      out(`lane ${l.key}: ${laneLabel(l)} · slot ${l.slot} ${l.slotPath} · ${buildPidWords(root, l)} · restarts ${l.restarts ?? 0} · since ${l.launchedAt || '-'}`);
       printBuildRows(root, l, lang);
       continue;
     }

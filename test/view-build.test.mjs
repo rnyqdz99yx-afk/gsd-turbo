@@ -5,6 +5,8 @@ import path from 'node:path';
 import { tmpDir } from './helpers/tmp.mjs';
 import { entry, usage, writeSession } from './helpers/transcripts.mjs';
 import { buildView, formatView, buildRows, WORDS } from '../lib/view.mjs';
+import { buildRows as paneBuildRows } from '../mod/hooks/view-model.mjs';
+import { writeLaneStatus } from '../lib/run-status.mjs';
 import { BUILD_STEPS } from '../lib/build.mjs';
 import { SLICE_STATES } from '../lib/build-queue.mjs';
 
@@ -42,6 +44,39 @@ function buildLaneProject({ step = 'build', red = null, path: lanePath = 'build'
 }
 const viewOf = (p, over = {}) => ({ ...buildView({ root: p.root, sup: p.sup, running: true, env: p.env, now: NOW, commits: () => [] }), ...over });
 
+test('v0.8.1: a build that is over is worded so, in status and in the pane alike; nothing of it reads as going on', () => {
+  // the lane record written since the launch: closed, built and handed to the merge, failed
+  const recorded = (status, step = 'close') => {
+    const p = buildLaneProject({ step });
+    writeLaneStatus(p.root, '5', status, { reason: 'x' });
+    return viewOf(p, {}).lanes[0].build;
+  };
+  const rows = (build, lang) => [buildRows(build, lang), paneBuildRows(build, lang)];
+  for (const [status, en, ru] of [
+    ['done', 'Build finished: the phase is closed', 'Сборка закончена: фаза закрыта'],
+    ['ready', 'Build finished: the phase is built and waits for its merge and close', 'Сборка закончена: фаза собрана, ждёт слияния и закрытия'],
+    ['failed', 'Build stopped by a failure at: closing the phase', 'Сборка остановлена сбоем на шаге: закрываю фазу'],
+  ]) {
+    const build = recorded(status);
+    assert.equal(build.over, status);
+    for (const r of rows(build, 'en')) assert.equal(r[0].split(' · ')[0], en, status);
+    for (const r of rows(build, 'ru')) assert.equal(r[0].split(' · ')[0], ru, status);
+    // no slice shown as being built, no «now» row; the slice that waits for the owner stays
+    for (const r of rows(build, 'en')) assert.deepEqual(r.slice(1).map((x) => x.trim().split(' · ')[0]), ['05-03'], status);
+  }
+  // the runner's record is there and its process is gone (a crash, a restart of the machine): dead
+  const p = buildLaneProject({ step: 'review' });
+  fs.mkdirSync(path.join(p.root, '.planning', 'turbo', 'locks'), { recursive: true });
+  fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'locks', 'build-run-p5.json'), JSON.stringify({ pid: 999999, token: 't', startedAt: ago(600), beat: ago(590) }));
+  const dead = viewOf(p).lanes[0].build;
+  assert.equal(dead.over, 'dead');
+  assert.equal(buildRows(dead, 'ru')[0].split(' · ')[0], 'Сборка не идёт: остановилась на шаге: ревью кода');
+  assert.ok(!buildRows(dead, 'en').some((r) => /^Now:/.test(r)) && !paneBuildRows(dead, 'en').some((r) => /^Now:/.test(r)));
+  // a lane that waits for the owner's answer, and one whose runner left no record, read as before
+  assert.equal(recorded('needs-owner', 'build').over, null);
+  assert.equal(viewOf(buildLaneProject()).lanes[0].build.over, null);
+});
+
 test("a build lane's view: step, active slices with their last action, the counts", () => {
   const v = viewOf(buildLaneProject());
   assert.deepEqual(v.lanes[0].build, {
@@ -51,6 +86,7 @@ test("a build lane's view: step, active slices with their last action, the count
       { id: '05-03', state: 'owner', question: 'ask-1', action: null, elapsedMs: null, lastAt: null },
     ],
     session: null,
+    over: null,
   });
   const review = viewOf(buildLaneProject({ step: 'review' })).lanes[0].build;
   assert.deepEqual(review.session, { role: 'reviewer', action: { tool: 'Read', detail: 'src/a.js' }, elapsedMs: 180000, lastAt: ago(2) });

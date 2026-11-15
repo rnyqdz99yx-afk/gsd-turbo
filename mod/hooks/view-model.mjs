@@ -96,6 +96,8 @@ const VIEW_WORDS = {
     busy: (d) => `a long command is running${d ? ` · ${d}` : ''}`,
     // Stage 6 B4: a build phase's slices (buildRows); v0.6.1: one build line with the step and the fix round
     buildHead: (step) => `Build: ${step}`,
+    // v0.8.1: a build that no longer runs is never worded as going on (the lane record, or its runner's dead record)
+    buildOver: { done: () => 'Build finished: the phase is closed', ready: () => 'Build finished: the phase is built and waits for its merge and close', failed: (step) => `Build stopped by a failure at: ${step}`, dead: (step) => `Build is not running: it stopped at: ${step}` },
     slicesHead: (m, n) => `slices ${m} of ${n} merged`,
     slicesBuilding: (k) => `${k} building`,
     slicesWaiting: (k) => `${k} waiting`,
@@ -207,6 +209,7 @@ const VIEW_WORDS = {
     quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''}`,
     busy: (d) => `идёт долгая команда${d ? ` · ${d}` : ''}`,
     buildHead: (step) => `Сборка: ${step}`,
+    buildOver: { done: () => 'Сборка закончена: фаза закрыта', ready: () => 'Сборка закончена: фаза собрана, ждёт слияния и закрытия', failed: (step) => `Сборка остановлена сбоем на шаге: ${step}`, dead: (step) => `Сборка не идёт: остановилась на шаге: ${step}` },
     slicesHead: (m, n) => `куски: слито ${m} из ${n}`,
     slicesBuilding: (k) => `собираются ${k}`,
     slicesWaiting: (k) => `в очереди ${k}`,
@@ -644,6 +647,9 @@ function laneForm(view, lane) {
 // How long the lane ran: while it runs, until now; otherwise until its last activity, so the time stops growing.
 function laneTime(t, lane, form) {
   const ran = form === 'running' ? lane.elapsedMs : Date.parse(lane.lastAt) - Date.parse(lane.launchedAt);
+  // v0.8.1: a build lane has no session of its own, so no last activity: once it does not run it shows no time (the
+  // time since its launch would grow for ever: «21 ч 30 мин» under a build that had ended a day before)
+  if (isBuild(lane) && form !== 'running' && !Number.isFinite(ran)) return null;
   const d = fmtDuration(t, Number.isFinite(ran) ? ran : lane.elapsedMs);
   return d === '-' ? null : d;
 }
@@ -662,9 +668,11 @@ function laneLine(t, view, lane, v, asked) {
   const tail = v && v.kind !== state?.kind ? [' · ', text(toned(v.tone, { bold: true }), v.text)] : null;
   const dimmed = (parts) => (parts.filter(Boolean).length ? text(TONES.dim, ` · ${parts.filter(Boolean).join(' · ')}`) : null);
   if (form === 'running') return text({ wrap: 'wrap' }, text({ bold: true }, head), ` — ${stepText(t, lane)}`, dimmed([plans, dur]), tail);
-  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${head} ${t.stoppedAt(stepNoun(t, lane.step))}`), dimmed([plans, dur]), tail);
+  // v0.8.1: a build phase's step is its build's (the build rows word it in full), never /turbo-phase's first step
+  const stepOf = () => (isBuild(lane) ? buildWord(t, lane.build.step) : stepNoun(t, lane.step));
+  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${head} ${t.stoppedAt(stepOf())}`), dimmed([plans, dur]), tail);
   // an attended lane's step is the stopped lane's: what the sitting does is said under the line (sittingRows)
-  const noun = attendedLane(view, lane) ? null : stepNoun(t, lane.step);
+  const noun = attendedLane(view, lane) || (isBuild(lane) && lane.build.over) ? null : stepOf();
   const where = [noun && t.atStep(noun), plans, dur && (lane.status === 'done' ? t.took(dur) : dur)];
   return text({ wrap: 'wrap' }, text(toned(state.tone, { bold: true }), `${head} ${state.text}`), dimmed(where), tail);
 }
@@ -725,8 +733,10 @@ export function buildRows(build, lang) {
   const yours = slices.filter((s) => s?.state === 'owner').length;
   const count = (v) => (Number.isInteger(v) && v > 0 ? v : 0);
   // v0.6.1: one build line: the step, the slices merged / building / waiting, the gap round, the current fix round
+  // v0.8.1: a build that is over (build.over, lib/view.mjs buildOver) says so; nothing of it reads as going on
+  const over = typeof build.over === 'string' && t.buildOver[build.over] ? build.over : null;
   const rows = [[
-    t.buildHead(buildWord(t, build.step)),
+    over ? t.buildOver[over](buildWord(t, build.step)) : t.buildHead(buildWord(t, build.step)),
     build.total > 0 ? t.slicesHead(build.merged, build.total) : null,
     building ? t.slicesBuilding(building) : null,
     count(build.waiting) ? t.slicesWaiting(build.waiting) : null,
@@ -737,9 +747,9 @@ export function buildRows(build, lang) {
   ].filter(Boolean).join(' · ')];
   // the step's own session (review, verify, …): what it does now and for how long
   const s0 = build.session;
-  if (s0 && typeof s0 === 'object') rows.push([`${t.nowHead}: ${doingWords(t, s0.action ?? null)}`, Number.isFinite(s0.elapsedMs) ? fmtDuration(t, s0.elapsedMs) : null].filter(Boolean).join(' · '));
+  if (!over && s0 && typeof s0 === 'object') rows.push([`${t.nowHead}: ${doingWords(t, s0.action ?? null)}`, Number.isFinite(s0.elapsedMs) ? fmtDuration(t, s0.elapsedMs) : null].filter(Boolean).join(' · '));
   for (const s of slices) {
-    if (!SLICE_ROWS.has(s?.state)) continue;
+    if (!SLICE_ROWS.has(s?.state) || (over && (s.state === 'dispatched' || s.state === 'running'))) continue;
     const time = Number.isFinite(s.elapsedMs) ? fmtDuration(t, s.elapsedMs) : null;
     rows.push(`  ${[cut(s.id, 20), t.sliceState[s.state] ?? s.state, s.action ? doingWords(t, s.action) : null, time].filter(Boolean).join(' · ')}`);
   }
@@ -884,7 +894,9 @@ const GATE_STEPS = new Set(['gates-off', 'restore', 'integrate']);
 // The lane's steps, each { step, state: 'done' | 'now' | 'ahead' }, from its step alone (completeStep keeps them in
 // order); a step turbo does not know is the only one; none for a phase done or no lane.
 export function phaseSteps(lane) {
-  if (!lane || lane.status === 'done' || lane.job === 'annotate') return [];
+  // v0.8.1: a build phase has its own steps, told by its build rows: /turbo-phase's list would show its first step as
+  // «now» for ever (seen live: «▶ проверка актуальности — сейчас» under a build that had ended)
+  if (!lane || lane.status === 'done' || lane.job === 'annotate' || isBuild(lane)) return [];
   const at = lane.step == null ? STEPS.length : STEPS.indexOf(lane.step);
   if (at < 0) return [{ step: lane.step, state: 'now' }];
   return STEPS.map((step, i) => ({ step, state: i < at ? 'done' : i === at ? 'now' : 'ahead' })).filter((s) => s.state === 'now' || !GATE_STEPS.has(s.step));

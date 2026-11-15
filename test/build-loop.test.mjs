@@ -5,7 +5,7 @@ import path from 'node:path';
 import { buildRig, claudeHome } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
 import { tmpDir } from './helpers/tmp.mjs';
-import { adoptRound, openBuild, runStep } from '../lib/build.mjs';
+import { adoptRound, endedByShutdown, openBuild, runStep } from '../lib/build.mjs';
 import { askOwner, markDelivered, readQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
@@ -526,6 +526,36 @@ test('a failed builder gets one fresh try, then the owner', async (t) => {
   assert.equal(await runStep(r2.ctx, 'build'), 'done');
   assert.equal(r2.ctx.state.slices['05-01'].state, 'merged');
   assert.equal(r2.a.acts().filter((x) => x.role === 'builder').length, 3);
+});
+
+test('endedByShutdown: only the exit status Windows gives a process it ends at a shutdown', () => {
+  assert.ok(endedByShutdown({ exitCode: 3221225786 }));
+  assert.ok(!endedByShutdown({ exitCode: 1 }) && !endedByShutdown({ exitCode: null }) && !endedByShutdown(undefined));
+});
+
+// 0xC000013A is a Windows exit status: elsewhere a process cannot end with it (exit statuses are 0–255)
+test('a builder ended by a shutdown of the machine is no try of its slice and raises no card', { skip: process.platform !== 'win32' && 'a Windows exit status' }, async (t) => {
+  const plans = { '05-01': plan('05-01', 'a') };
+  const r = await loopRig(t, { plans, slices: { '05-01': { files: files('a'), fail: 1, failExit: 0xC000013A } } });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  const s = r.ctx.state.slices['05-01'];
+  assert.deepEqual([s.retries, s.interrupts, s.interrupted, s.state], [0, 1, false, 'merged']);
+  assert.ok(!openCard(r.root));
+  assert.equal(r.a.acts().filter((x) => x.role === 'builder').length, 2);
+
+  // the same exit every time is a failure after all: two free tries, the usual retry, then the owner's card
+  const r2 = await loopRig(t, { plans, slices: { '05-01': { files: files('a'), fail: 9, failExit: 0xC000013A } } });
+  every(t, () => {
+    const q = openCard(r2.root);
+    if (!q) return false;
+    assert.match(q.question, /one part of the work did not get built after two tries/);
+    answer(r2.root, q.id, 2);
+    return true;
+  });
+  assert.equal(await runStep(r2.ctx, 'build'), 'stopped');
+  // (the answer to the card puts the slice back in the queue: the second counted retry)
+  assert.deepEqual([r2.ctx.state.slices['05-01'].interrupts, r2.ctx.state.slices['05-01'].retries], [2, 2]);
+  assert.equal(r2.a.acts().filter((x) => x.role === 'builder').length, 4);
 });
 
 test('a builder blocked for a file no unmerged slice lists: the slice takes it and is built again, once (B5 A/B)', async (t) => {

@@ -157,7 +157,8 @@ function actMain({ argv, stdin, cwd, resume }) {
       if (!fs.existsSync(cfg.waitFor)) fs.writeFileSync(`${cfg.waitFor}.capped`, '');
     }
     if (cfg.ask && !resume) return answer({ result: cfg.ask });
-    if (n <= times(cfg.fail)) return answer({ result: 'failed', isError: true, exitCode: 1 });
+    // failExit: the exit status of those failing calls (1 when not given)
+    if (n <= times(cfg.fail)) return answer({ result: 'failed', isError: true, exitCode: cfg.failExit || 1 });
     // blocked: the builder stops for a file outside its list (B3's blocked SUMMARY), the first blockedTimes calls
     if (cfg.blocked && n <= (cfg.blockedTimes || 1)) {
       const rel = who.summaryPath || `${script.phaseDir || '.planning/phases/05-demo'}/${who.plan}-SUMMARY.md`;

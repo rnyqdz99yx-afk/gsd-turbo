@@ -75,6 +75,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 | `/turbo-autonomous attend N` | run the rest of phase N here with you (for plans that need a device, a login…) |
 | `/turbo-autonomous stop` | stop the supervisor and its sessions |
 | `/turbo-adopt` | move a milestone already running on plain GSD onto turbo: where it stands, the closed phases turbo skips, all questions at once, one commit; then `/turbo-autonomous` ([details](docs/reference.md#adopting-a-running-milestone)) |
+| `/turbo-update` | install the newest turbo: shows both versions and what changed, never replaces turbo while it runs ([details](docs/reference.md#update-turbo-update)) |
 
 ## Before you start
 
@@ -83,7 +84,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 - **GSD version.** Tested with GSD core 1.16.x to 1.21.x. With another version `turbo-run doctor` drops to a safe mode, or refuses to start if GSD changed incompatibly.
 - **What stays yours.** Signatures, your accounts on third-party sites, physical devices, 2FA, money. The run does everything else first, then stops and asks. A safe question you leave open for an hour (a plan's recommended choice, a check its automated evidence decides) is taken by turbo itself and notified, with an undo command ([which ones](docs/reference.md#owner-questions)).
 - **Safety rails.** No force-push, no rewriting published history, no data deletion without a dry run, no overwriting a running executable. Details in [Safety](docs/reference.md#safety).
-- **Uninstall** with `node install.mjs --uninstall` ([what to check first](docs/reference.md#uninstall)).
+- **Update** with `/turbo-update`; **uninstall** with `node install.mjs --uninstall` ([what to check first](docs/reference.md#uninstall)).
 
 ## Optional extras
 
@@ -98,6 +99,8 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 
 **After a crash or a reboot.** Come back to your chat with `claude -r` (pick it by its title) or `claude --resume <id>`: `/turbo-autonomous status` prints that line with the id. A bare `claude -c` opens the latest conversation in the folder, which in checkout mode may be a lane's own. The turbo pane comes back by itself. Unless autostart is on, start the supervisor again with `/turbo-autonomous`: lanes whose sessions died with the machine go on where they stopped ([details](docs/reference.md#after-a-crash-or-a-reboot)). A supervisor that dies without a word while you are away is told to you once, on the desktop and in Telegram, by the turbo pane in your session or by a running lane. If the crash left the supervisor's state file damaged, the pane and `/turbo-autonomous status` say so, and `/turbo-autonomous` keeps the file aside and rebuilds the lanes from the slots and their sessions, saying what it recovered and what not.
 
+**When turbo itself fails.** turbo is young, and you should not have to notice or describe its bugs. Your Claude Code agent does it: when it sees turbo misbehave (a crash, a stuck supervisor, a status that contradicts the facts, an empty question card), it checks the facts, writes the failure up and asks you whether to send it to turbo's author. Say yes and it becomes an issue in this repository, filed from your own GitHub account with `gh`; without `gh` you get a link that files the same report from a browser. A report holds turbo's versions, your system, turbo's own error text and code locations and the agent's short description, with paths, names and secrets masked; no project code, file contents or logs, and nothing is sent without your yes ([what exactly](docs/reference.md#failure-reports-turbo-run-report)). A failure that happens while nobody is looking is kept on your machine and offered the next time you call `/turbo-autonomous`.
+
 ## Documentation
 
 The [full reference](docs/reference.md) covers every command, the config, owner questions, live sittings, automated UAT, the GSD settings turbo writes and recovery. Design specs are in [docs/specs](docs/specs).
@@ -109,7 +112,8 @@ The [full reference](docs/reference.md) covers every command, the config, owner 
 3. ✅ **The owner in the loop** — question cards answered ahead (session, pane, Telegram), push and CI, the live view, live sittings.
 4. ✅ **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging.
 5. ✅ **Adoption** — `/turbo-adopt`: plug turbo into a milestone that is already in progress — where it stands, what was skipped, all questions up front, a plan for the rest.
-6. ✅ **Lean turbo** — ✅ the lean GSD profile: no gates that catch nothing, less thinking and reading, one fixer pass, one full test run per phase, `turbo-run cost` *(v0.5)*; ✅ the build path: code conducts the phase, and each plan starts in its own short session as soon as the plans it needs are merged *(v0.6)*; ✅ park a phase so the phases after it go on, and notes to a running phase *(v0.7, current)*.
+6. ✅ **Lean turbo** — ✅ the lean GSD profile: no gates that catch nothing, less thinking and reading, one fixer pass, one full test run per phase, `turbo-run cost` *(v0.5)*; ✅ the build path: code conducts the phase, and each plan starts in its own short session as soon as the plans it needs are merged *(v0.6)*; ✅ park a phase so the phases after it go on, and notes to a running phase *(v0.7)*.
+7. ✅ **Ready to share** — turbo's own failures become reports that your Claude Code agent checks, writes up and offers to send (nothing of your project in them, nothing sent without your yes); `/turbo-update` installs the newest version *(v0.8, current)*.
 
 ## License
 

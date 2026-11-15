@@ -140,7 +140,8 @@ The owner's questions are the checkpoints of the phases' plans and the questions
 2. Order: the questions with `stopped: true` first (a lane stands still until they are answered), then the others as listed.
 3. Ask them with `AskUserQuestion`, up to 4 questions per call, as many calls as needed. For each question:
    - `header`: its `header`; a question without one (a phase's own) gets `Phase <its phase>`;
-   - `question`: its `question`, a new line, then the first 300 characters of its `context`;
+   - `question`: its `question`, a new line, then its `context` (up to 600 characters);
+   - a question with `details` (a build that stopped: the failing tests, the part of the work, the log): they are technical lines for you, not for the user. Read them, and the log they name when you need it, before you ask; add one plain sentence of your own after the context saying what they mean and which option fits; never paste them to the user as they are;
    - options: its `options` in their order, at most 4 (the option the plan recommends is already first): `label` is the option's `label` with ` (Recommended)` added when its `recommended` is true, `description` is the option's `description`;
    - a question with fewer than 2 options also gets the option `Not now`, which records nothing (`AskUserQuestion` needs at least 2);
    - a question with `sitting: true` is a live sitting: the phase conducts that step together with the user in an attended session, so it is never answered done (`turbo-run answer` refuses it). At its stop, do not ask it: show its `question`, which says to run `/turbo-autonomous attend <phase>` in a new Claude Code window, unless the user wants to say something else to the phase in their own words.

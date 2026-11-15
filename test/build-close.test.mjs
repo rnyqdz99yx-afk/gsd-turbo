@@ -252,15 +252,15 @@ test('close in a checkout: phase.complete, one commit, the done record', async (
 });
 
 // A slot of phase 5 (Stage 4 L0's helpers) with the build state's B4 fields, gsd-tools answered by a stub.
-async function slotRig(t, { integrate = null, turbo = {}, script = {} } = {}) {
+async function slotRig(t, { integrate = null, turbo = {}, script = {}, gsd: gsdFake = null } = {}) {
   const p = laneProject({ job: { kind: 'phase', phase: '5' }, files: { [`${REL}/05-CONTEXT.md`]: '# Context\n', [`${REL}/05-VERIFICATION.md`]: verification('passed'), '.planning/ROADMAP.md': '# Roadmap\n\n### Phase 5: Demo Feature\n' } });
   fakeGsdCore(p.slot);
   const rec = turboRec(turbo);
-  const gsd = (args) => {
+  const gsd = gsdFake ?? ((args) => {
     if (args[0] === 'init') return { phase_name: 'Demo Feature', padded_phase: '05' };
     if (args[0] === 'verification') return { status: 'passed' };
     return '{"committed":false,"reason":"nothing_to_commit"}';
-  };
+  });
   const git = slotGit(ISOLATED);
   const r = await buildRig({ script, deps: { turbo: rec.fn, gsd, integrate: integrate ?? ((root, phase) => integrateMain(root, phase, { git })) } });
   const ctx = await openBuild(p.slot, '5', { deps: { ...r.deps, gsd, turbo: rec.fn, integrate: integrate ?? ((root, phase) => integrateMain(root, phase, { git })) } });
@@ -338,4 +338,48 @@ test('close in a slot: integrate, full tests, verification, then ready', async (
     assert.equal(readLaneStatus(e.p.root, '5').status, 'ready', kind);
     if (kind === 'ci-red') assert.ok(e.turbo.args().some((x) => x[0] === 'test-changed'));
   }
+});
+
+// v0.8.1 (live run 2026-11-12, phase 36, twice): a report that waits only on UAT which already passes GSD's predicate
+// became a dead end at every close after an integrate that made it stale
+test('close in a slot: a stale report the verifier writes human_needed again is passed by GSD\'s UAT predicate, then ready', async (t) => {
+  const calls = [];
+  let reads = 0;
+  let status = 'human_needed';
+  const gsd = (args) => {
+    calls.push(args.join(' '));
+    if (args[0] === 'init') return { phase_name: 'Demo Feature', padded_phase: '05' };
+    // stale at the close's first look (the integrate brought commits), then what the verifier's new report says
+    if (args[0] === 'verification') return { status: reads++ === 0 ? 'stale' : status };
+    if (args[0] === 'phase' && args[1] === 'uat-passed') return '{"passed":true,"blockers":[]}';
+    if (args[0] === 'query' && args[1] === 'frontmatter.set') {
+      status = 'passed';
+      return '{"updated":true}';
+    }
+    // gsd-tools commit: the report the verifier wrote goes into the lane's branch
+    if (args[0] === 'commit' && holder.p && holder.p.inSlot('status', '--porcelain')) {
+      holder.p.inSlot('add', '-A');
+      holder.p.inSlot('commit', '-q', '-m', String(args[1]));
+      return '{"committed":true}';
+    }
+    return '{"committed":false,"reason":"nothing_to_commit"}';
+  };
+  const holder = {};
+  const a = await slotRig(t, { gsd, script: { verifications: [{ path: `${REL}/05-VERIFICATION.md`, text: verification('human_needed') }] } });
+  holder.p = a.p;
+  assert.equal(await runStep(a.ctx, 'close'), 'done');
+  assert.equal(readLaneStatus(a.p.root, '5').status, 'ready');
+  assert.ok(calls.includes('phase uat-passed 5 --uat-only'), calls.join(' | '));
+  assert.ok(calls.some((c) => c.startsWith('query frontmatter.set') && c.endsWith('--field status --value passed')));
+
+  // UAT that does not pass GSD's predicate: the close still fails, in plain words
+  const st2 = 'human_needed';
+  const gsd2 = (args) => {
+    if (args[0] === 'init') return { phase_name: 'Demo Feature', padded_phase: '05' };
+    if (args[0] === 'verification') return { status: st2 };
+    if (args[0] === 'phase' && args[1] === 'uat-passed') return '{"passed":false,"blockers":["row 3"]}';
+    return '{"committed":false,"reason":"nothing_to_commit"}';
+  };
+  const b = await slotRig(t, { gsd: gsd2 });
+  await assert.rejects(runStep(b.ctx, 'close'), /verification human_needed after taking in the main branch/);
 });

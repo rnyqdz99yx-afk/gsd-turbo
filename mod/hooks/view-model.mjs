@@ -15,7 +15,9 @@ const LABEL_MAX = 80;
 // An option's text on its button: a longer one is cut there with … and listed in full above the buttons, so two long
 // options never read alike on their buttons alone
 const BUTTON_MAX = 30;
-const CONTEXT_MAX = 200;
+// v0.8.1: a question card's context and each option's description are wrapped and shown up to the card's own limit
+// (lib/questions.mjs DESCRIPTION_MAX): a cut at 200 hid where the sentence goes
+const CARD_TEXT_MAX = 400;
 const ACTIVE = new Set(['running', 'quiet']);
 const STOPPED = new Set(['needs-owner', 'failed']);
 // S2's CI states; none and superseded show no mark, cancelled (nothing was tested) shows as unknown
@@ -820,7 +822,7 @@ function questionCard(t, view, q, field) {
   const where = [plain, slot ? t.lane(slot) : null].filter(Boolean).join(' · ') || null;
   const holds = waitsFor(view, q);
   const running = Boolean(view.supervisor?.running) && list(view.lanes).some((l) => String(l.phase) === question.phase && l.status === 'running');
-  const options = list(q.options).map((o, i) => ({ n: i + 1, label: cut(typeof o === 'string' ? o : o?.label ?? '', LABEL_MAX), description: cut(o?.description ?? '', CONTEXT_MAX), recommended: o?.recommended === true }));
+  const options = list(q.options).map((o, i) => ({ n: i + 1, label: cut(typeof o === 'string' ? o : o?.label ?? '', LABEL_MAX), description: cut(o?.description ?? '', CARD_TEXT_MAX), recommended: o?.recommended === true }));
   const listed = options.some((o) => o.description || textWidth(o.label) > BUTTON_MAX);
   const buttons = options.map((o) => ({ type: 'Button', props: { key: `q:${id}:${o.n}`, label: `${o.n}. ${cut(o.label, BUTTON_MAX)}${o.recommended ? ' ★' : ''}`, ...(o.recommended ? { variant: 'primary' } : {}) }, press: { question, option: o.n, label: o.label } }));
   const other = q.allowOther === false ? null : field.inputFor === id
@@ -829,7 +831,7 @@ function questionCard(t, view, q, field) {
   return box({ flexDirection: 'column', borderStyle: 'round', borderColor: (holds ? TONES.bad : TONES.warn).color, paddingX: 1 },
     holds ? text(toned('bad', { bold: true }), t.holds) : text(TONES.dim, t.ahead(running)),
     text({ bold: true, wrap: 'wrap' }, cut(q.question || q.header || '', QUESTION_MAX), where ? text(TONES.dim, ` (${where})`) : null),
-    q.context ? text(toned('dim', { wrap: 'truncate-end' }), cut(q.context, CONTEXT_MAX)) : null,
+    q.context ? text(toned('dim', { wrap: 'wrap' }), cut(q.context, CARD_TEXT_MAX)) : null,
     listed ? box({ flexDirection: 'column', paddingLeft: 2 }, options.map((o) => text({ wrap: 'wrap' }, `${o.n}. ${o.label}`, o.recommended ? text(TONES.ok, ` ★ ${t.recommended}`) : null, o.description ? text(TONES.dim, ` — ${o.description}`) : null))) : null,
     buttons.length ? box({ flexDirection: 'row', columnGap: 2, flexWrap: 'wrap', paddingLeft: 2 }, buttons) : null,
     other ? box({ flexDirection: 'row', paddingLeft: 2 }, other) : null);

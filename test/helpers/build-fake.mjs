@@ -190,7 +190,11 @@ function actMain({ argv, stdin, cwd, resume }) {
     if (doc) write(doc.path, doc.text);
     return answer({ result: doc ? `wrote ${doc.path}` : 'nothing written' });
   }
-  if (role === 'gsd-security-auditor') return answer({ result: shift('audits') || '## SECURED\n**threats_open:** 0' });
+  if (role === 'gsd-security-auditor') {
+    // an audit: its last message, or { texts: [earlier messages], result } (a remark after the verdict)
+    const audit = shift('audits');
+    return answer(audit && typeof audit === 'object' ? audit : { result: audit || '## SECURED\n**threats_open:** 0' });
+  }
   if (role === 'gsd-phase-researcher') {
     if (script.research) write(script.research.path, script.research.text);
     return answer({ result: 'research written' });

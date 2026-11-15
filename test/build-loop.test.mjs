@@ -115,6 +115,12 @@ test('red after the fix stops for the owner', async (t) => {
     if (!q) return false;
     assert.equal(q.held, true);
     assert.match(q.question, /the tests stay red after one fix/);
+    // v0.8.1: the card says what is red and that it is the red from before the fix; the details name the test and the log
+    assert.equal(q.context, 'Red tests now: 1. They are the same tests as before the fix: it did not help.');
+    assert.equal(q.header, 'Tests');
+    assert.match(q.details[0], /^red now \(1\): test[\\/]a\.test\.js > a$/);
+    assert.match(q.details[1], /^red before the fix \(1\): test[\\/]a\.test\.js > a$/);
+    assert.match(q.details.at(-1), /^log: .*tests-/);
     answer(r.root, q.id, 2);
     return true;
   });
@@ -517,7 +523,10 @@ test('a failed builder gets one fresh try, then the owner', async (t) => {
   every(t, () => {
     const q = openCard(r2.root);
     if (!q) return false;
-    assert.match(q.question, /one part of the work did not get built after two tries/);
+    // v0.8.1: the card names the slice, why it failed and its own number of tries
+    assert.equal(q.question, 'Phase 5: one part of the work did not get built (tries: 2). What should the build do?');
+    assert.equal(q.context, 'Its builder ended with an error.');
+    assert.deepEqual(q.details.slice(0, 2), ['slice 05-01', 'reason: the builder ended with exit 1']);
     answer(r2.root, q.id, 2);
     return true;
   });
@@ -548,7 +557,7 @@ test('a builder ended by a shutdown of the machine is no try of its slice and ra
   every(t, () => {
     const q = openCard(r2.root);
     if (!q) return false;
-    assert.match(q.question, /one part of the work did not get built after two tries/);
+    assert.match(q.question, /one part of the work did not get built \(tries: 2\)/);
     answer(r2.root, q.id, 2);
     return true;
   });
@@ -582,6 +591,9 @@ test('a builder blocked for a file another unmerged slice lists, or GSD\'s own: 
     every(t, () => {
       const q = openCard(r.root);
       if (!q) return false;
+      // v0.8.1: the card quotes the builder's Blocked line (the owner's helper sees which file it is)
+      assert.match(q.context, /^Its builder needs files that are not in its list/);
+      assert.ok(q.details.includes(`Blocked: needs \`${needed}\` because the slice cannot pass without it`), q.details.join(' | '));
       answer(r.root, q.id, 2);
       return true;
     });
@@ -788,4 +800,53 @@ test('the owner\'s «no», or an allowing option without the file in Files, keep
     assert.deepEqual(r.ctx.state.red.scope, ['src/shared.js']);
     assert.equal(fs.existsSync(path.join(r.root, 'src', 'shared.js')), false, 'the fix is off the phase branch');
   }
+});
+
+// v0.8.1 (live run 2026-11-12, ask-4 of phase 36): the red after a fix was another red, of the machine
+const flaky = (marker) => `const test = require('node:test');\nconst assert = require('node:assert');\nconst fs = require('node:fs');\ntest('other', () => { if (!fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, ''); assert.fail('first run'); } });\n`;
+
+test('another red after the fix gets one run more before any card: green then, the build goes on with no card', async (t) => {
+  const marker = path.join(tmpDir('turbo-flaky-'), 'ran').replace(/\\/g, '/');
+  const r = await loopRig(t, {
+    plans: { '05-01': plan('05-01', 'a') },
+    slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) } },
+    script: { fixes: [{ files: { 'src/a.js': 'module.exports = () => 2;\n', 'test/a.test.js': flaky(marker) }, message: 'fix(05): the red test', result: 'fixed' }] },
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.deepEqual(readQuestions(r.root, '5'), []);
+  const log = read(r, '.planning/turbo/logs/supervisor.log');
+  assert.match(log, /the red after the fix is another one \(.*other.*\); the 1 from before are green: one run more before the owner is asked/);
+  assert.match(log, /the run after it is green: that red was not the code's/);
+  assert.equal(r.a.acts().filter((x) => x.role === 'fixer').length, 1);
+});
+
+test('another red after the fix that stays red: one run more, then a card that says it is another red; the next fixer gets the red of now', async (t) => {
+  const other = "const test = require('node:test');\nconst assert = require('node:assert');\ntest('other', () => assert.fail('still red'));\n";
+  const r = await loopRig(t, {
+    plans: { '05-01': plan('05-01', 'a') },
+    slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) } },
+    script: { fixes: [{ files: { 'src/a.js': 'module.exports = () => 2;\n', 'test/a.test.js': other }, message: 'fix(05): the red test', result: 'fixed' }, { files: {}, result: 'nothing to change' }] },
+  });
+  let cards = 0;
+  every(t, () => {
+    const q = openCard(r.root);
+    if (!q) return false;
+    cards += 1;
+    if (cards === 1) {
+      assert.equal(q.context, 'Red tests now: 1. They are other tests: the ones that failed before the fix (1) are green now. One more run gave the same result.');
+      assert.match(q.details[0], /^red now \(1\): test[\\/]a\.test\.js > other$/);
+      assert.match(q.details[1], /^red before the fix \(1\): test[\\/]a\.test\.js > a$/);
+      answer(r.root, q.id, 1);
+      return false;
+    }
+    // the second card: the same red now (no run more: once per red)
+    assert.equal(q.context, 'Red tests now: 1. They are the same tests as before the fix: it did not help.');
+    answer(r.root, q.id, 2);
+    return true;
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'stopped');
+  const fixers = r.f.calls().filter((c) => c.stdin.startsWith('You are the fixer'));
+  assert.equal(fixers.length, 2);
+  assert.match(fixers[1].stdin, /other/, 'the second fixer is told the red of now');
+  assert.equal((read(r, '.planning/turbo/logs/supervisor.log').match(/one run more before the owner is asked/g) ?? []).length, 1);
 });

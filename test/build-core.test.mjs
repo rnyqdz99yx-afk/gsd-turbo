@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildRig, claudeHome } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
-import { BUILD_STEPS, HALT_KINDS, BuildFailed, adoptRound, haltQuestion, openBuild, ownerAsk, runStep, setStep, stepSession, takeAnswer } from '../lib/build.mjs';
+import { BUILD_STEPS, HALT_KINDS, BuildFailed, adoptRound, distinctTests, envSign, haltQuestion, openBuild, ownerAsk, runStep, setStep, stepSession, takeAnswer } from '../lib/build.mjs';
 import { loadBuildState, reconcileBuildState, saveBuildState } from '../lib/build-queue.mjs';
 import { runDir } from '../lib/paths.mjs';
 import { askOwner, laneQuestion, liveAnswer, markDelivered, readAnswers, readQuestions } from '../lib/questions.mjs';
@@ -151,7 +151,10 @@ test('a question the card refuses is rewritten once by the same session, then th
 test('haltQuestion: plain words in the owner\'s language', () => {
   assert.deepEqual(haltQuestion('red', { phase: '5', lang: 'en' }), {
     question: 'Phase 5: the tests stay red after one fix. What should the build do?',
-    context: '',
+    // v0.8.1: never an empty context, even with no fact at hand
+    context: 'The test run failed as a whole, not on single tests.',
+    details: [],
+    header: 'Tests',
     options: [{ label: 'Try again', description: 'the build runs this step once more' }, { label: 'Stop here', description: 'the phase waits; `turbo-run resume 5` starts it again' }],
     recommended: 1,
   });
@@ -178,4 +181,79 @@ test('a card refused twice for the language alone is asked as it is, with a warn
 test('haltQuestion scope: try again, keep the fix, stop', () => {
   assert.deepEqual(haltQuestion('scope', { phase: '5', lang: 'en' }).options.map((o) => [o.label, o.description]), [['Try again', 'the build runs this step once more'], ['Go on', 'keep that fix as it is and test again'], ['Stop here', 'the phase waits; `turbo-run resume 5` starts it again']]);
   assert.deepEqual(haltQuestion('scope', { phase: '5', lang: 'ru' }).options.map((o) => o.label), ['Ещё раз', 'Дальше', 'Остановить']);
+});
+
+// v0.8.1 (live runs 2026-11-11..13: «the known empty halt card»): every halt card says what the build knows
+const HALT_FACTS = {
+  slices: { problems: ['05-02 overlap: src/a.js is also in 05-01'] },
+  slice: { slice: '05-02', reason: 'the builder wrote status: blocked', tries: 2, blocked: ['Blocked: needs `backend/test/fixtures/x.json` because the fixture lists the deleted file'], salvage: 'turbo-salvage/05-02-20261111T185620Z' },
+  red: { now: ['backend/test/a.test.js > A1', 'A1', 'backend/test/a.test.js > A2', 'A2'], before: ['agent/test/t.test.js > trace 1', 'trace 1'], line: '✖ A1', log: 'D:/home/dev/run/build-p5/tests-retest-1.log', env: envSign('TypeError: fetch failed\n  cause: Error: bad port'), retested: true, step: 'build' },
+  scope: { slice: '05-02', outside: ['src/other.js'], aside: true, kept: 'turbo-salvage/fix-05-02-20261111T085520Z' },
+  review: { findings: [{ code: 'CR-01', severity: 'critical', title: 'check 6 probes a route that routes/admin.js does not have' }], report: '.planning/phases/05-demo/05-REVIEW.md' },
+  verify: { score: '9/14', gaps: [{ status: 'failed', truth: 'SC1 / LIVE-02: the packaged exe passes the build gates' }], rounds: 2, report: '.planning/phases/05-demo/05-VERIFICATION.md' },
+  security: { status: 'escalate', threatsOpen: 1, blocking: ['T-35-24'], fixed: false, variant: 'escalate', report: '.planning/phases/05-demo/05-SECURITY.md' },
+  ci: { rounds: 2, run: '43702761554' },
+  session: { role: 'verifier', step: 'verify', ended: 'exit 1', stderr: 'Error: cannot read D:/home/dev/x/y.js' },
+  integrate: { files: ['src/a.js', 'src/b.js'] },
+};
+
+test('every halt card carries a plain context the questions module takes, technical details and a short title', () => {
+  for (const lang of ['en', 'ru']) {
+    for (const kind of HALT_KINDS) {
+      for (const facts of [HALT_FACTS[kind], {}, null]) {
+        const h = haltQuestion(kind, { phase: '5', lang, facts });
+        assert.ok(h.context.trim(), `${kind} ${lang}: the context is never empty`);
+        assert.ok(h.header && [...h.header].length <= 12, `${kind} ${lang}: a title of 12 characters at most`);
+        // the plain-words check with the phase's plan ids: no id, file name or path in what the owner reads
+        const q = laneQuestion({ ...h, phase: '5', id: 'ask-1', lang, planIds: ['05-01', '05-02'] });
+        assert.equal(q.context, h.context);
+        assert.equal(q.header, h.header);
+        if (facts === HALT_FACTS[kind]) assert.ok(q.details.length, `${kind} ${lang}: details`);
+        else assert.equal(q.details, undefined);
+      }
+    }
+  }
+});
+
+test('the slice card: the slice, its reason, its Blocked lines and its own number of tries', () => {
+  const h = haltQuestion('slice', { phase: '5', lang: 'en', facts: HALT_FACTS.slice });
+  assert.equal(h.question, 'Phase 5: one part of the work did not get built (tries: 2). What should the build do?');
+  assert.equal(h.context, 'Its builder needs files that are not in its list; a retry with the same list ends the same way. What was done is kept aside and is not lost.');
+  assert.deepEqual(h.details, ['slice 05-02', 'reason: the builder wrote status: blocked', 'Blocked: needs `backend/test/fixtures/x.json` because the fixture lists the deleted file', 'kept work: turbo-salvage/05-02-20261111T185620Z']);
+  assert.equal(haltQuestion('slice', { phase: '5', lang: 'ru', facts: { slice: '05-01', reason: 'the builder timed out', tries: 1 } }).question, 'Фаза 5: одна часть работы не собралась (попыток: 1). Что делать сборке?');
+});
+
+test('the red card: the same red, another red or a part of it; an environment signature is named as one', () => {
+  const ctx = (facts, lang = 'en') => haltQuestion('red', { phase: '5', lang, facts }).context;
+  assert.equal(ctx({ now: ['f.js > a', 'a'], before: ['f.js > a', 'a'] }), 'Red tests now: 1. They are the same tests as before the fix: it did not help.');
+  assert.equal(ctx({ now: ['f.js > b', 'b'], before: ['f.js > a', 'a', 'g.js > c', 'c'] }), 'Red tests now: 1. They are other tests: the ones that failed before the fix (2) are green now.');
+  assert.equal(ctx({ now: ['a', 'b', 'c'], before: ['a', 'd'] }), 'Red tests now: 3. Still red from before the fix: 1 of 2; new ones: 2.');
+  assert.equal(ctx({ now: [], line: 'Error: boom', whole: true }), 'The test run failed as a whole, not on single tests.');
+  const red = haltQuestion('red', { phase: '36', lang: 'ru', facts: HALT_FACTS.red });
+  assert.equal(red.context, 'Красных тестов сейчас: 2. Это другие тесты: те, что падали до исправления (1), позеленели. Повторный прогон дал то же самое. Похоже на сбой на этом компьютере, а не на ошибку в коде (сетевой порт, который тестам нельзя использовать): здесь уместно «Ещё раз».');
+  assert.deepEqual(red.details, ['red now (2): backend/test/a.test.js > A1; backend/test/a.test.js > A2', 'red before the fix (1): agent/test/t.test.js > trace 1', 'environment signature: bad port', 'step: build', 'log: D:/home/dev/run/build-p5/tests-retest-1.log']);
+  assert.deepEqual(distinctTests(['f.js > a', 'a', 'b']), ['f.js > a', 'b']);
+  assert.deepEqual([envSign('listen EADDRINUSE: address already in use')?.sign, envSign("Error: Cannot find module 'x'")?.sign, envSign('ENOSPC: no space left')?.sign, envSign('AssertionError: 1 !== 2')], ['EADDRINUSE', 'Cannot find module', 'ENOSPC', null]);
+});
+
+test('the security card never says «after one fix» when no fix ran', () => {
+  const esc = haltQuestion('security', { phase: '5', lang: 'en', facts: HALT_FACTS.security });
+  assert.equal(esc.question, 'Phase 5: the security check found something it cannot close by itself and hands the decision to you. What should the build do?');
+  assert.match(esc.context, /^Open threats that block the phase: 1\. No fix was tried\./);
+  assert.deepEqual(esc.details, ['verdict: escalate, threats_open 1', 'blocking: T-35-24', 'report: .planning/phases/05-demo/05-SECURITY.md']);
+  const open = haltQuestion('security', { phase: '5', lang: 'en', facts: { status: 'open', threatsOpen: 2, blocking: ['T-1', 'T-2'], fixed: true } });
+  assert.equal(open.question, 'Phase 5: the security check still finds an open threat after one fix. What should the build do?');
+  assert.match(open.context, /One fix was tried\./);
+});
+
+test('a card keeps its details masked and capped, a title, and a long option description cut at a word', () => {
+  const long = `${'word '.repeat(100)}end`;
+  const q = laneQuestion({ phase: '5', id: 'ask-1', question: 'Which way?', context: 'Two ways fit.', header: 'A title that is too long', details: ['  one\n line ', '', ...Array.from({ length: 20 }, (_, i) => `line ${i}`)], options: [{ label: 'One', description: long }, { label: 'Two', description: 'short' }], recommended: 1 });
+  assert.equal(q.header, 'A title that');
+  assert.equal(q.details.length, 12);
+  assert.equal(q.details[0], 'one line');
+  const d = q.options[0].description;
+  assert.ok([...d].length <= 400 && d.endsWith('word…'), d.slice(-20));
+  assert.equal(q.options[1].description, 'short');
+  assert.equal(laneQuestion({ phase: '5', id: 'ask-1', question: 'Which way?', options: [{ label: 'One', description: 'a' }, { label: 'Two', description: 'b' }], recommended: 1 }).details, undefined);
 });

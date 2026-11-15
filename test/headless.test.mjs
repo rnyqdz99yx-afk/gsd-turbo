@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
 import { SESSION } from './helpers/transcripts.mjs';
-import { buildHeadlessArgs, headlessEnv, sessionSettings, removeSessionSettings, killTree, parseStreamLine, newStreamState, foldEvent, usageOf, transcriptPath, parseOwnerQuestion, OWNER_CONTEXT_MAX, OWNER_OPTIONS_MAX } from '../lib/headless.mjs';
+import { buildHeadlessArgs, headlessEnv, sessionSettings, removeSessionSettings, killTree, parseStreamLine, newStreamState, foldEvent, usageOf, messagesOf, transcriptPath, parseOwnerQuestion, OWNER_CONTEXT_MAX, OWNER_OPTIONS_MAX } from '../lib/headless.mjs';
 import { projectKey } from '../lib/transcripts.mjs';
 import { decodeGuardArg, GUARD_MATCHER } from '../lib/lane-guard.mjs';
 import { pidAlive } from '../lib/merge-lock.mjs';
@@ -210,4 +210,20 @@ test('an OWNER QUESTION may name the files it asks for (Files, never on the card
   assert.deepEqual(q.files, ['backend/test/a.test.js', 'backend/test/fixtures/b.json']);
   assert.deepEqual(q.options, [{ label: 'Allow', description: 'update both', recommended: true, grants: true }, { label: 'No', description: 'leave them red', recommended: false }]);
   assert.equal(parseOwnerQuestion('## OWNER QUESTION\nQuestion: Q?\nOptions:\n1. A\n2. B').files, undefined);
+});
+
+// v0.8.1 (live run 2026-11-12): the run's result is the last message; a notice after the answer replaces it there
+test('foldEvent keeps the text of every assistant message, in order (messagesOf)', () => {
+  const say = (id, ...blocks) => ({ type: 'assistant', message: { id, usage: { input_tokens: 1 }, content: blocks } });
+  const s = fold(
+    say('m1', { type: 'text', text: '## OPEN_THREATS\n\nthreats_open: 0' }),
+    say('m1', { type: 'text', text: '## OPEN_THREATS\n\nthreats_open: 0' }), // stream-json repeats a message per block
+    say('m2', { type: 'tool_use', id: 't1', name: 'Bash', input: {} }),
+    say('m3', { type: 'text', text: 'first part' }),
+    say('m3', { type: 'text', text: 'second part' }),
+    { type: 'assistant', message: { id: 'm4', content: [{ type: 'text', text: '   ' }] } },
+    { type: 'result', result: 'second part', is_error: false },
+  );
+  assert.deepEqual(messagesOf(s), ['## OPEN_THREATS\n\nthreats_open: 0', 'first part\nsecond part']);
+  assert.deepEqual(messagesOf(newStreamState()), []);
 });

@@ -225,9 +225,19 @@ test('lane-status N done records done and removes nothing', () => {
   const tmp = path.join(runDirOf(root), 'tmp', 'p3');
   fs.mkdirSync(tmp, { recursive: true });
   fs.writeFileSync(path.join(tmp, 'scratch.txt'), 'x');
-  assert.match(run(['lane-status', '03', 'done', '--reason', 'closed'], root), /^lane 3: done\r?\n$/);
+  assert.match(run(['lane-status', '03', 'done', '--reason', 'closed'], root, { ...process.env, TURBO_LANE: '1', TURBO_BUILD_LANE: '' }), /^lane 3: done\r?\n$/);
   assert.ok(fs.existsSync(path.join(tmp, 'scratch.txt')));
   assert.equal(JSON.parse(fs.readFileSync(path.join(runDirOf(root), 'p3.json'), 'utf8')).status, 'done');
+  assert.ok(!fs.existsSync(path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log')), 'a lane\'s own record leaves no by-hand line');
+});
+
+// v0.8.1 (live run 2026-11-13): a phase closed by hand with GSD's own commands left no trace in turbo's log
+test('lane-status N done by hand (outside a lane) says the phase was closed outside turbo and logs it', () => {
+  const root = plainProject();
+  const out = run(['lane-status', '03', 'done', '--reason', 'closed by hand\nafter the live half'], root, { ...process.env, TURBO_LANE: '', TURBO_BUILD_LANE: '' });
+  assert.match(out, /^lane 3: done \(closed outside turbo: the supervisor frees its lane at its next check, once GSD marks the phase complete\)\r?\n$/);
+  const log = fs.readFileSync(path.join(root, '.planning', 'turbo', 'logs', 'supervisor.log'), 'utf8');
+  assert.match(log, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z phase 3: its lane record was set to done by hand, outside turbo \(closed by hand after the live half\)\n$/);
 });
 
 test('lane-status rejects an unknown status with a non-zero exit', () => {

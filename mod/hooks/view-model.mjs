@@ -15,7 +15,9 @@ const LABEL_MAX = 80;
 // An option's text on its button: a longer one is cut there with … and listed in full above the buttons, so two long
 // options never read alike on their buttons alone
 const BUTTON_MAX = 30;
-const CONTEXT_MAX = 200;
+// v0.8.1: a question card's context and each option's description are wrapped and shown up to the card's own limit
+// (lib/questions.mjs DESCRIPTION_MAX): a cut at 200 hid where the sentence goes
+const CARD_TEXT_MAX = 400;
 const ACTIVE = new Set(['running', 'quiet']);
 const STOPPED = new Set(['needs-owner', 'failed']);
 // S2's CI states; none and superseded show no mark, cancelled (nothing was tested) shows as unknown
@@ -96,11 +98,15 @@ const VIEW_WORDS = {
     busy: (d) => `a long command is running${d ? ` · ${d}` : ''}`,
     // Stage 6 B4: a build phase's slices (buildRows); v0.6.1: one build line with the step and the fix round
     buildHead: (step) => `Build: ${step}`,
+    // v0.8.1: a build that no longer runs is never worded as going on (the lane record, or its runner's dead record)
+    buildOver: { done: () => 'Build finished: the phase is closed', ready: () => 'Build finished: the phase is built and waits for its merge and close', failed: (step) => `Build stopped by a failure at: ${step}`, dead: (step) => `Build is not running: it stopped at: ${step}` },
     slicesHead: (m, n) => `slices ${m} of ${n} merged`,
     slicesBuilding: (k) => `${k} building`,
     slicesWaiting: (k) => `${k} waiting`,
     slicesYours: (k) => `${k} ${k === 1 ? 'waits' : 'wait'} for you`,
     slicesRed: 'tests red, fixing',
+    // v0.8.1: a red put off (tests a later part of the work updates): said, so a build that goes on with red tests is no surprise
+    slicesRedOff: (n) => `${n} test${n === 1 ? '' : 's'} red on purpose until a later part updates ${n === 1 ? 'it' : 'them'}`,
     gapRound: (k) => `gap round ${k}`,
     fixRound: (k) => `fix round ${k}`,
     helpersDone: (n, more) => `${n} ${more ? 'more ' : ''}${n === 1 ? 'helper' : 'helpers'} finished`,
@@ -112,7 +118,7 @@ const VIEW_WORDS = {
     holds: 'The phase waits for this answer',
     ahead: (running) => (running ? 'you can answer ahead — the phase is not waiting' : 'you can answer ahead'),
     recommended: 'recommended',
-    changes: 'Latest changes:',
+    changes: 'Latest changes in this folder (not in the lanes):',
     ago: (d) => `${d} ago`,
     justNow: 'just now',
     days: (n) => `${n}d`,
@@ -207,11 +213,13 @@ const VIEW_WORDS = {
     quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''}`,
     busy: (d) => `идёт долгая команда${d ? ` · ${d}` : ''}`,
     buildHead: (step) => `Сборка: ${step}`,
+    buildOver: { done: () => 'Сборка закончена: фаза закрыта', ready: () => 'Сборка закончена: фаза собрана, ждёт слияния и закрытия', failed: (step) => `Сборка остановлена сбоем на шаге: ${step}`, dead: (step) => `Сборка не идёт: остановилась на шаге: ${step}` },
     slicesHead: (m, n) => `куски: слито ${m} из ${n}`,
     slicesBuilding: (k) => `собираются ${k}`,
     slicesWaiting: (k) => `в очереди ${k}`,
     slicesYours: (k) => `ждут вас ${k}`,
     slicesRed: 'тесты красные, чиню',
+    slicesRedOff: (n) => `красных по плану тестов: ${n} (их обновит одна из следующих частей)`,
     gapRound: (k) => `круг доработки ${k}`,
     fixRound: (k) => `круг исправлений ${k}`,
     helpersDone: (n, more) => `${more ? 'ещё ' : ''}${n} ${ruPlural(n, 'помощник закончил', 'помощника закончили', 'помощников закончили')}`,
@@ -222,7 +230,7 @@ const VIEW_WORDS = {
     holds: 'Фаза ждёт этот ответ',
     ahead: (running) => (running ? 'можно ответить заранее — фаза не стоит' : 'можно ответить заранее'),
     recommended: 'рекомендуется',
-    changes: 'Последние изменения:',
+    changes: 'Последние изменения в этой папке (не в полосах):',
     ago: (d) => `${d} назад`,
     justNow: 'только что',
     days: (n) => `${n} дн`,
@@ -303,7 +311,7 @@ export const TEXT = {
     answered: (what, at, note) => `Answer recorded: “${what}”${at ? ` · ${at}` : ''}${note ? ` · not committed to git: ${note}` : ''}`,
     parkedToast: (phase) => `Phase ${phase} parked: the phases waiting for it may start; its question stays open`,
     already: (what, how, at) => `Already answered${how || at ? ` (${[how, at].filter(Boolean).join(', ')})` : ''}${what ? `: “${what}”` : ''}`,
-    channel: { session: 'in a session', pane: 'in the pane', telegram: 'in Telegram', 'standing-rule': 'by a standing rule' },
+    channel: { session: 'in a session', pane: 'in the pane', telegram: 'in Telegram', agent: 'by your assistant, not by you', 'standing-rule': 'by a standing rule' },
     changed: 'The question changed — the pane now shows the new one; answer again',
     refused: (why) => `Not recorded: ${why}`,
     refusal: { secret: 'the answer looks like it holds a secret — say it without', tooLong: (n) => `the answer is longer than ${n} characters`, empty: 'the answer is empty', gone: 'the question is closed', noOption: 'no such option', optionsOnly: 'this question takes one of its options only', sitting: (p) => `this is a live sitting, never answered done: run /turbo-autonomous attend ${p} in a new Claude Code window`, lane: "a phase's own session cannot answer" },
@@ -336,7 +344,7 @@ export const TEXT = {
     answered: (what, at, note) => `Ответ принят: «${what}»${at ? ` · ${at}` : ''}${note ? ` · не сохранён в git: ${note}` : ''}`,
     parkedToast: (phase) => `Фаза ${phase} отложена: фазы, которые её ждут, могут начинать; её вопрос остаётся открытым`,
     already: (what, how, at) => `Уже отвечено${how || at ? ` (${[how, at].filter(Boolean).join(', ')})` : ''}${what ? `: «${what}»` : ''}`,
-    channel: { session: 'в сессии', pane: 'в панели', telegram: 'в Telegram', 'standing-rule': 'по постоянному правилу' },
+    channel: { session: 'в сессии', pane: 'в панели', telegram: 'в Telegram', agent: 'вашим помощником, не вами', 'standing-rule': 'по постоянному правилу' },
     changed: 'Вопрос изменился — панель показала новый, ответьте ещё раз',
     refused: (why) => `Не принято: ${why}`,
     refusal: { secret: 'похоже, в ответе секрет — напишите без него', tooLong: (n) => `ответ длиннее ${n} символов`, empty: 'пустой ответ', gone: 'вопрос уже закрыт', noOption: 'такого варианта нет', optionsOnly: 'этот вопрос принимает только варианты из списка', sitting: (p) => `это живой сеанс, «сделано» здесь не ответ: запустите /turbo-autonomous attend ${p} в новом окне Claude Code`, lane: 'из сессии самой фазы отвечать нельзя' },
@@ -644,6 +652,9 @@ function laneForm(view, lane) {
 // How long the lane ran: while it runs, until now; otherwise until its last activity, so the time stops growing.
 function laneTime(t, lane, form) {
   const ran = form === 'running' ? lane.elapsedMs : Date.parse(lane.lastAt) - Date.parse(lane.launchedAt);
+  // v0.8.1: a build lane has no session of its own, so no last activity: once it does not run it shows no time (the
+  // time since its launch would grow for ever: «21 ч 30 мин» under a build that had ended a day before)
+  if (isBuild(lane) && form !== 'running' && !Number.isFinite(ran)) return null;
   const d = fmtDuration(t, Number.isFinite(ran) ? ran : lane.elapsedMs);
   return d === '-' ? null : d;
 }
@@ -662,9 +673,11 @@ function laneLine(t, view, lane, v, asked) {
   const tail = v && v.kind !== state?.kind ? [' · ', text(toned(v.tone, { bold: true }), v.text)] : null;
   const dimmed = (parts) => (parts.filter(Boolean).length ? text(TONES.dim, ` · ${parts.filter(Boolean).join(' · ')}`) : null);
   if (form === 'running') return text({ wrap: 'wrap' }, text({ bold: true }, head), ` — ${stepText(t, lane)}`, dimmed([plans, dur]), tail);
-  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${head} ${t.stoppedAt(stepNoun(t, lane.step))}`), dimmed([plans, dur]), tail);
+  // v0.8.1: a build phase's step is its build's (the build rows word it in full), never /turbo-phase's first step
+  const stepOf = () => (isBuild(lane) ? buildWord(t, lane.build.step) : stepNoun(t, lane.step));
+  if (form === 'held') return text({ wrap: 'wrap' }, text({ bold: true }, `${head} ${t.stoppedAt(stepOf())}`), dimmed([plans, dur]), tail);
   // an attended lane's step is the stopped lane's: what the sitting does is said under the line (sittingRows)
-  const noun = attendedLane(view, lane) ? null : stepNoun(t, lane.step);
+  const noun = attendedLane(view, lane) || (isBuild(lane) && lane.build.over) ? null : stepOf();
   const where = [noun && t.atStep(noun), plans, dur && (lane.status === 'done' ? t.took(dur) : dur)];
   return text({ wrap: 'wrap' }, text(toned(state.tone, { bold: true }), `${head} ${state.text}`), dimmed(where), tail);
 }
@@ -725,21 +738,24 @@ export function buildRows(build, lang) {
   const yours = slices.filter((s) => s?.state === 'owner').length;
   const count = (v) => (Number.isInteger(v) && v > 0 ? v : 0);
   // v0.6.1: one build line: the step, the slices merged / building / waiting, the gap round, the current fix round
+  // v0.8.1: a build that is over (build.over, lib/view.mjs buildOver) says so; nothing of it reads as going on
+  const over = typeof build.over === 'string' && t.buildOver[build.over] ? build.over : null;
   const rows = [[
-    t.buildHead(buildWord(t, build.step)),
+    over ? t.buildOver[over](buildWord(t, build.step)) : t.buildHead(buildWord(t, build.step)),
     build.total > 0 ? t.slicesHead(build.merged, build.total) : null,
     building ? t.slicesBuilding(building) : null,
     count(build.waiting) ? t.slicesWaiting(build.waiting) : null,
     yours ? t.slicesYours(yours) : null,
     build.red ? t.slicesRed : null,
+    !build.red && count(build.redOff) ? t.slicesRedOff(build.redOff) : null,
     count(build.round) ? t.gapRound(build.round) : null,
     count(build.fixRound) ? t.fixRound(build.fixRound) : null,
   ].filter(Boolean).join(' · ')];
   // the step's own session (review, verify, …): what it does now and for how long
   const s0 = build.session;
-  if (s0 && typeof s0 === 'object') rows.push([`${t.nowHead}: ${doingWords(t, s0.action ?? null)}`, Number.isFinite(s0.elapsedMs) ? fmtDuration(t, s0.elapsedMs) : null].filter(Boolean).join(' · '));
+  if (!over && s0 && typeof s0 === 'object') rows.push([`${t.nowHead}: ${doingWords(t, s0.action ?? null)}`, Number.isFinite(s0.elapsedMs) ? fmtDuration(t, s0.elapsedMs) : null].filter(Boolean).join(' · '));
   for (const s of slices) {
-    if (!SLICE_ROWS.has(s?.state)) continue;
+    if (!SLICE_ROWS.has(s?.state) || (over && (s.state === 'dispatched' || s.state === 'running'))) continue;
     const time = Number.isFinite(s.elapsedMs) ? fmtDuration(t, s.elapsedMs) : null;
     rows.push(`  ${[cut(s.id, 20), t.sliceState[s.state] ?? s.state, s.action ? doingWords(t, s.action) : null, time].filter(Boolean).join(' · ')}`);
   }
@@ -810,7 +826,7 @@ function questionCard(t, view, q, field) {
   const where = [plain, slot ? t.lane(slot) : null].filter(Boolean).join(' · ') || null;
   const holds = waitsFor(view, q);
   const running = Boolean(view.supervisor?.running) && list(view.lanes).some((l) => String(l.phase) === question.phase && l.status === 'running');
-  const options = list(q.options).map((o, i) => ({ n: i + 1, label: cut(typeof o === 'string' ? o : o?.label ?? '', LABEL_MAX), description: cut(o?.description ?? '', CONTEXT_MAX), recommended: o?.recommended === true }));
+  const options = list(q.options).map((o, i) => ({ n: i + 1, label: cut(typeof o === 'string' ? o : o?.label ?? '', LABEL_MAX), description: cut(o?.description ?? '', CARD_TEXT_MAX), recommended: o?.recommended === true }));
   const listed = options.some((o) => o.description || textWidth(o.label) > BUTTON_MAX);
   const buttons = options.map((o) => ({ type: 'Button', props: { key: `q:${id}:${o.n}`, label: `${o.n}. ${cut(o.label, BUTTON_MAX)}${o.recommended ? ' ★' : ''}`, ...(o.recommended ? { variant: 'primary' } : {}) }, press: { question, option: o.n, label: o.label } }));
   const other = q.allowOther === false ? null : field.inputFor === id
@@ -819,7 +835,7 @@ function questionCard(t, view, q, field) {
   return box({ flexDirection: 'column', borderStyle: 'round', borderColor: (holds ? TONES.bad : TONES.warn).color, paddingX: 1 },
     holds ? text(toned('bad', { bold: true }), t.holds) : text(TONES.dim, t.ahead(running)),
     text({ bold: true, wrap: 'wrap' }, cut(q.question || q.header || '', QUESTION_MAX), where ? text(TONES.dim, ` (${where})`) : null),
-    q.context ? text(toned('dim', { wrap: 'truncate-end' }), cut(q.context, CONTEXT_MAX)) : null,
+    q.context ? text(toned('dim', { wrap: 'wrap' }), cut(q.context, CARD_TEXT_MAX)) : null,
     listed ? box({ flexDirection: 'column', paddingLeft: 2 }, options.map((o) => text({ wrap: 'wrap' }, `${o.n}. ${o.label}`, o.recommended ? text(TONES.ok, ` ★ ${t.recommended}`) : null, o.description ? text(TONES.dim, ` — ${o.description}`) : null))) : null,
     buttons.length ? box({ flexDirection: 'row', columnGap: 2, flexWrap: 'wrap', paddingLeft: 2 }, buttons) : null,
     other ? box({ flexDirection: 'row', paddingLeft: 2 }, other) : null);
@@ -884,7 +900,9 @@ const GATE_STEPS = new Set(['gates-off', 'restore', 'integrate']);
 // The lane's steps, each { step, state: 'done' | 'now' | 'ahead' }, from its step alone (completeStep keeps them in
 // order); a step turbo does not know is the only one; none for a phase done or no lane.
 export function phaseSteps(lane) {
-  if (!lane || lane.status === 'done' || lane.job === 'annotate') return [];
+  // v0.8.1: a build phase has its own steps, told by its build rows: /turbo-phase's list would show its first step as
+  // «now» for ever (seen live: «▶ проверка актуальности — сейчас» under a build that had ended)
+  if (!lane || lane.status === 'done' || lane.job === 'annotate' || isBuild(lane)) return [];
   const at = lane.step == null ? STEPS.length : STEPS.indexOf(lane.step);
   if (at < 0) return [{ step: lane.step, state: 'now' }];
   return STEPS.map((step, i) => ({ step, state: i < at ? 'done' : i === at ? 'now' : 'ahead' })).filter((s) => s.state === 'now' || !GATE_STEPS.has(s.step));

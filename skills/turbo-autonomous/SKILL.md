@@ -127,6 +127,7 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
    - for the curious: `claude attach <session id>` (exit with the detach key, the session keeps running), `/turbo-autonomous status`, and the log `.planning/turbo/logs/supervisor.log`;
    - that a desktop notification arrives when the owner is needed or the milestone is done;
    - that this session can be closed: the supervisor and the lanes keep running;
+   - a restart of the computer: run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" autostart status`. When it prints `autostart: off`, say in one plain sentence that after a restart of the computer the run does not come back by itself, and ask with `AskUserQuestion` (header `turbo`) whether turbo should start it again at logon; on yes run `… autostart on` and show its lines (`autostart off` undoes it; a run the user stopped themselves never comes back by itself). Ask once per project: not again when it is on, or when the user said no before;
    - how to come back to this chat after a crash or a reboot: when the status output has a `back to this chat:` line (`вернуться в этот чат:` in Russian), pass it on unchanged: `claude -r` and pick this chat by its title, or `claude --resume <id>`. Never suggest a bare `claude -c`: it may open a lane's conversation instead (in checkout mode the lanes work in this folder too);
    - how to stop: `/turbo-autonomous stop`.
 
@@ -140,7 +141,8 @@ The owner's questions are the checkpoints of the phases' plans and the questions
 2. Order: the questions with `stopped: true` first (a lane stands still until they are answered), then the others as listed.
 3. Ask them with `AskUserQuestion`, up to 4 questions per call, as many calls as needed. For each question:
    - `header`: its `header`; a question without one (a phase's own) gets `Phase <its phase>`;
-   - `question`: its `question`, a new line, then the first 300 characters of its `context`;
+   - `question`: its `question`, a new line, then its `context` (up to 600 characters);
+   - a question with `details` (a build that stopped: the failing tests, the part of the work, the log): they are technical lines for you, not for the user. Read them, and the log they name when you need it, before you ask; add one plain sentence of your own after the context saying what they mean and which option fits; never paste them to the user as they are;
    - options: its `options` in their order, at most 4 (the option the plan recommends is already first): `label` is the option's `label` with ` (Recommended)` added when its `recommended` is true, `description` is the option's `description`;
    - a question with fewer than 2 options also gets the option `Not now`, which records nothing (`AskUserQuestion` needs at least 2);
    - a question with `sitting: true` is a live sitting: the phase conducts that step together with the user in an attended session, so it is never answered done (`turbo-run answer` refuses it). At its stop, do not ask it: show its `question`, which says to run `/turbo-autonomous attend <phase>` in a new Claude Code window, unless the user wants to say something else to the phase in their own words.
@@ -150,6 +152,7 @@ The owner's questions are the checkpoints of the phases' plans and the questions
    - an option (k is its 1-based position in the question's `options`): `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" answer <phase> <id> --option <k> --by session --rev <rev>`;
    - own words: `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" answer <phase> <id> --text '<the words>' --by session --rev <rev>` (in single quotes; a `'` inside becomes `'\''`). A question with `allowOther: false` takes no own words: tell the user and ask it again with its options;
    - `Not now`: nothing.
+   - `--by session` is the user's own word: what they chose in `AskUserQuestion`. When the user has told you to decide a build's technical cards yourself and you answer one without asking them, pass `--by agent` instead: the record then says the assistant answered, not the owner (such an answer signs nothing, parks no phase and allows no change outside a fixer's files).
 5. Read each command's line:
    - exit 0, `answered …`: recorded;
    - exit 0, `parked phase …`: the park option: nothing recorded, the phase is parked and its question stays open (the phases after it start without it);

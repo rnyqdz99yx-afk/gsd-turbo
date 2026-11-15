@@ -77,7 +77,7 @@ test('render draws the run in plain words, in sections a blank line apart: verdi
     '  · acceptance',
     '  · wrap-up',
     '',
-    'Latest changes: 1 fix, 1 test change · latest 12m ago',
+    'Latest changes in this folder (not in the lanes): 1 fix, 1 test change · latest 12m ago',
     '',
     'Supervisor running · phases 32–34',
   ]);
@@ -116,7 +116,7 @@ test('render in Russian is Russian throughout, no English but paths and commands
     '  · приёмка',
     '  · завершение',
     '',
-    'Последние изменения: 1 исправление, 1 правка тестов · последнее только что',
+    'Последние изменения в этой папке (не в полосах): 1 исправление, 1 правка тестов · последнее только что',
     '',
     'Супервизор работает · фазы 32–34',
   ]);
@@ -1010,7 +1010,7 @@ test('the pane draws now, the next steps and the owner, the phase steps and the 
     '  · acceptance',
     '  · wrap-up',
     '',
-    'Latest changes: 1 fix, 1 test change · latest 12m ago',
+    'Latest changes in this folder (not in the lanes): 1 fix, 1 test change · latest 12m ago',
     '',
     'Supervisor running · phases 32–34',
   ]);
@@ -1164,7 +1164,7 @@ test('two lanes: the verdict, the summary line, a block per lane, the questions 
     'What comes next:',
     '  You can answer the question above ahead',
     '',
-    'Latest changes: 1 fix, 1 test change · latest 12m ago',
+    'Latest changes in this folder (not in the lanes): 1 fix, 1 test change · latest 12m ago',
     '',
     'Supervisor running · phases 32–34',
   ]);
@@ -1185,7 +1185,7 @@ test('more than two lanes: calm lanes are one line, the lane with the question i
     'What comes next:',
     '  You can answer the question above ahead',
     '',
-    'Latest changes: 1 fix, 1 test change · latest 12m ago',
+    'Latest changes in this folder (not in the lanes): 1 fix, 1 test change · latest 12m ago',
     '',
     'Supervisor running · phases 32–34',
   ]);
@@ -1211,7 +1211,7 @@ test('more than two lanes: calm lanes are one line, the lane with the question i
     'Что дальше:',
     '  На вопрос выше можно ответить заранее',
     '',
-    'Последние изменения: 1 исправление, 1 правка тестов · последнее 12 мин назад',
+    'Последние изменения в этой папке (не в полосах): 1 исправление, 1 правка тестов · последнее 12 мин назад',
     '',
     'Супервизор работает · фазы 32–34',
   ]);
@@ -1226,7 +1226,7 @@ test('more than two lanes: calm lanes are one line, the lane with the question i
     'What comes next:',
     '  Nothing needed from you now',
     '',
-    'Latest changes: 1 fix, 1 test change · latest 12m ago',
+    'Latest changes in this folder (not in the lanes): 1 fix, 1 test change · latest 12m ago',
     '',
     'Supervisor running · phases 32–34',
   ]);

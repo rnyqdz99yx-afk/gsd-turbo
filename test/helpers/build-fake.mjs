@@ -157,12 +157,15 @@ function actMain({ argv, stdin, cwd, resume }) {
       if (!fs.existsSync(cfg.waitFor)) fs.writeFileSync(`${cfg.waitFor}.capped`, '');
     }
     if (cfg.ask && !resume) return answer({ result: cfg.ask });
-    if (n <= times(cfg.fail)) return answer({ result: 'failed', isError: true, exitCode: 1 });
+    // failExit: the exit status of those failing calls (1 when not given)
+    if (n <= times(cfg.fail)) return answer({ result: 'failed', isError: true, exitCode: cfg.failExit || 1 });
     // blocked: the builder stops for a file outside its list (B3's blocked SUMMARY), the first blockedTimes calls
     if (cfg.blocked && n <= (cfg.blockedTimes || 1)) {
       const rel = who.summaryPath || `${script.phaseDir || '.planning/phases/05-demo'}/${who.plan}-SUMMARY.md`;
       const text = summaryText({ phaseSlug: path.posix.basename(path.posix.dirname(rel)), plan: who.plan, status: 'blocked', check: 'FAILED' });
-      write(rel, text.replace('## Task Commits', `Blocked: needs \`${cfg.blocked}\` because the slice cannot pass without it\n\n## Task Commits`));
+      // blocked: one file, or a list (the n-th blocked call names the n-th)
+      const needed = Array.isArray(cfg.blocked) ? cfg.blocked[Math.min(n, cfg.blocked.length) - 1] : cfg.blocked;
+      write(rel, text.replace('## Task Commits', `Blocked: needs \`${needed}\` because the slice cannot pass without it\n\n## Task Commits`));
       commit([rel], `docs(${who.plan}): blocked`);
       return answer({ result: `slice ${who.plan} blocked` });
     }
@@ -189,7 +192,11 @@ function actMain({ argv, stdin, cwd, resume }) {
     if (doc) write(doc.path, doc.text);
     return answer({ result: doc ? `wrote ${doc.path}` : 'nothing written' });
   }
-  if (role === 'gsd-security-auditor') return answer({ result: shift('audits') || '## SECURED\n**threats_open:** 0' });
+  if (role === 'gsd-security-auditor') {
+    // an audit: its last message, or { texts: [earlier messages], result } (a remark after the verdict)
+    const audit = shift('audits');
+    return answer(audit && typeof audit === 'object' ? audit : { result: audit || '## SECURED\n**threats_open:** 0' });
+  }
   if (role === 'gsd-phase-researcher') {
     if (script.research) write(script.research.path, script.research.text);
     return answer({ result: 'research written' });

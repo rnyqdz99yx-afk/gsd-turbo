@@ -79,10 +79,12 @@ process.stdin.on('end', () => {
     } catch (e) {
       failAct(e);
     }
-    for (const k of ['result', 'isError', 'exitCode']) if (o[k] !== undefined) B[k] = o[k];
+    for (const k of ['result', 'isError', 'exitCode', 'texts']) if (o[k] !== undefined) B[k] = o[k];
   }
   const finish = () => {
     for (const [mid, u] of B.messages) out({ type: 'assistant', session_id: id, parent_tool_use_id: null, message: { id: mid, usage: u } });
+    // texts: the assistant messages of the session before its last one (the result), oldest first
+    (B.texts || []).forEach((text, i) => out({ type: 'assistant', session_id: id, parent_tool_use_id: null, message: { id: 'msg_text_' + i, content: [{ type: 'text', text }] } }));
     if (!B.noResult) out({ type: 'result', subtype: B.isError ? 'error_during_execution' : 'success', is_error: Boolean(B.isError), result: B.result, session_id: id, usage: B.resultUsage });
     process.exitCode = B.exitCode;
   };

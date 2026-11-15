@@ -5,7 +5,7 @@ import path from 'node:path';
 import { buildRig, claudeHome } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
 import { tmpDir } from './helpers/tmp.mjs';
-import { adoptRound, openBuild, runStep } from '../lib/build.mjs';
+import { adoptRound, endedByShutdown, neededPaths, openBuild, runStep } from '../lib/build.mjs';
 import { askOwner, markDelivered, readQuestions } from '../lib/questions.mjs';
 import { answerQuestion } from '../lib/answers.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
@@ -115,6 +115,12 @@ test('red after the fix stops for the owner', async (t) => {
     if (!q) return false;
     assert.equal(q.held, true);
     assert.match(q.question, /the tests stay red after one fix/);
+    // v0.8.1: the card says what is red and that it is the red from before the fix; the details name the test and the log
+    assert.equal(q.context, 'Red tests now: 1. They are the same tests as before the fix: it did not help.');
+    assert.equal(q.header, 'Tests');
+    assert.match(q.details[0], /^red now \(1\): test[\\/]a\.test\.js > a$/);
+    assert.match(q.details[1], /^red before the fix \(1\): test[\\/]a\.test\.js > a$/);
+    assert.match(q.details.at(-1), /^log: .*tests-/);
     answer(r.root, q.id, 2);
     return true;
   });
@@ -517,7 +523,10 @@ test('a failed builder gets one fresh try, then the owner', async (t) => {
   every(t, () => {
     const q = openCard(r2.root);
     if (!q) return false;
-    assert.match(q.question, /one part of the work did not get built after two tries/);
+    // v0.8.1: the card names the slice, why it failed and its own number of tries
+    assert.equal(q.question, 'Phase 5: one part of the work did not get built (tries: 2). What should the build do?');
+    assert.equal(q.context, 'Its builder ended with an error.');
+    assert.deepEqual(q.details.slice(0, 2), ['slice 05-01', 'reason: the builder ended with exit 1']);
     answer(r2.root, q.id, 2);
     return true;
   });
@@ -526,6 +535,36 @@ test('a failed builder gets one fresh try, then the owner', async (t) => {
   assert.equal(await runStep(r2.ctx, 'build'), 'done');
   assert.equal(r2.ctx.state.slices['05-01'].state, 'merged');
   assert.equal(r2.a.acts().filter((x) => x.role === 'builder').length, 3);
+});
+
+test('endedByShutdown: only the exit status Windows gives a process it ends at a shutdown', () => {
+  assert.ok(endedByShutdown({ exitCode: 3221225786 }));
+  assert.ok(!endedByShutdown({ exitCode: 1 }) && !endedByShutdown({ exitCode: null }) && !endedByShutdown(undefined));
+});
+
+// 0xC000013A is a Windows exit status: elsewhere a process cannot end with it (exit statuses are 0–255)
+test('a builder ended by a shutdown of the machine is no try of its slice and raises no card', { skip: process.platform !== 'win32' && 'a Windows exit status' }, async (t) => {
+  const plans = { '05-01': plan('05-01', 'a') };
+  const r = await loopRig(t, { plans, slices: { '05-01': { files: files('a'), fail: 1, failExit: 0xC000013A } } });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  const s = r.ctx.state.slices['05-01'];
+  assert.deepEqual([s.retries, s.interrupts, s.interrupted, s.state], [0, 1, false, 'merged']);
+  assert.ok(!openCard(r.root));
+  assert.equal(r.a.acts().filter((x) => x.role === 'builder').length, 2);
+
+  // the same exit every time is a failure after all: two free tries, the usual retry, then the owner's card
+  const r2 = await loopRig(t, { plans, slices: { '05-01': { files: files('a'), fail: 9, failExit: 0xC000013A } } });
+  every(t, () => {
+    const q = openCard(r2.root);
+    if (!q) return false;
+    assert.match(q.question, /one part of the work did not get built \(tries: 2\)/);
+    answer(r2.root, q.id, 2);
+    return true;
+  });
+  assert.equal(await runStep(r2.ctx, 'build'), 'stopped');
+  // (the answer to the card puts the slice back in the queue: the second counted retry)
+  assert.deepEqual([r2.ctx.state.slices['05-01'].interrupts, r2.ctx.state.slices['05-01'].retries], [2, 2]);
+  assert.equal(r2.a.acts().filter((x) => x.role === 'builder').length, 4);
 });
 
 test('a builder blocked for a file no unmerged slice lists: the slice takes it and is built again, once (B5 A/B)', async (t) => {
@@ -552,6 +591,9 @@ test('a builder blocked for a file another unmerged slice lists, or GSD\'s own: 
     every(t, () => {
       const q = openCard(r.root);
       if (!q) return false;
+      // v0.8.1: the card quotes the builder's Blocked line (the owner's helper sees which file it is)
+      assert.match(q.context, /^Its builder needs files that are not in its list/);
+      assert.ok(q.details.includes(`Blocked: needs \`${needed}\` because the slice cannot pass without it`), q.details.join(' | '));
       answer(r.root, q.id, 2);
       return true;
     });
@@ -758,4 +800,133 @@ test('the owner\'s «no», or an allowing option without the file in Files, keep
     assert.deepEqual(r.ctx.state.red.scope, ['src/shared.js']);
     assert.equal(fs.existsSync(path.join(r.root, 'src', 'shared.js')), false, 'the fix is off the phase branch');
   }
+});
+
+// v0.8.1 (live run 2026-11-12, ask-4 of phase 36): the red after a fix was another red, of the machine
+const flaky = (marker) => `const test = require('node:test');\nconst assert = require('node:assert');\nconst fs = require('node:fs');\ntest('other', () => { if (!fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, ''); assert.fail('first run'); } });\n`;
+
+test('another red after the fix gets one run more before any card: green then, the build goes on with no card', async (t) => {
+  const marker = path.join(tmpDir('turbo-flaky-'), 'ran').replace(/\\/g, '/');
+  const r = await loopRig(t, {
+    plans: { '05-01': plan('05-01', 'a') },
+    slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) } },
+    script: { fixes: [{ files: { 'src/a.js': 'module.exports = () => 2;\n', 'test/a.test.js': flaky(marker) }, message: 'fix(05): the red test', result: 'fixed' }] },
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  assert.deepEqual(readQuestions(r.root, '5'), []);
+  const log = read(r, '.planning/turbo/logs/supervisor.log');
+  assert.match(log, /the red after the fix is another one \(.*other.*\); the 1 from before are green: one run more before the owner is asked/);
+  assert.match(log, /the run after it is green: that red was not the code's/);
+  assert.equal(r.a.acts().filter((x) => x.role === 'fixer').length, 1);
+});
+
+test('another red after the fix that stays red: one run more, then a card that says it is another red; the next fixer gets the red of now', async (t) => {
+  const other = "const test = require('node:test');\nconst assert = require('node:assert');\ntest('other', () => assert.fail('still red'));\n";
+  const r = await loopRig(t, {
+    plans: { '05-01': plan('05-01', 'a') },
+    slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) } },
+    script: { fixes: [{ files: { 'src/a.js': 'module.exports = () => 2;\n', 'test/a.test.js': other }, message: 'fix(05): the red test', result: 'fixed' }, { files: {}, result: 'nothing to change' }] },
+  });
+  let cards = 0;
+  every(t, () => {
+    const q = openCard(r.root);
+    if (!q) return false;
+    cards += 1;
+    if (cards === 1) {
+      assert.equal(q.context, 'Red tests now: 1. They are other tests: the ones that failed before the fix (1) are green now. One more run gave the same result.');
+      assert.match(q.details[0], /^red now \(1\): test[\\/]a\.test\.js > other$/);
+      assert.match(q.details[1], /^red before the fix \(1\): test[\\/]a\.test\.js > a$/);
+      answer(r.root, q.id, 1);
+      return false;
+    }
+    // the second card: the same red now (no run more: once per red)
+    assert.equal(q.context, 'Red tests now: 1. They are the same tests as before the fix: it did not help.');
+    answer(r.root, q.id, 2);
+    return true;
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'stopped');
+  const fixers = r.f.calls().filter((c) => c.stdin.startsWith('You are the fixer'));
+  assert.equal(fixers.length, 2);
+  assert.match(fixers[1].stdin, /other/, 'the second fixer is told the red of now');
+  assert.equal((read(r, '.planning/turbo/logs/supervisor.log').match(/one run more before the owner is asked/g) ?? []).length, 1);
+});
+
+// v0.8.1: the older open marks that still stood (journal 2026-11-15, point 13)
+test('neededPaths: every path of a Blocked line, not only the first', () => {
+  assert.deepEqual(neededPaths('Blocked: needs `backend/test/agent-hub-contract.test.js` and `backend/test/fixtures/agent-hub-contract.json` because both list the deleted file'), ['backend/test/agent-hub-contract.test.js', 'backend/test/fixtures/agent-hub-contract.json']);
+  assert.deepEqual(neededPaths('x\nBlocked: needs src/b.js: the slice cannot pass without it\nBlocked: needs a\\b.js, c/d.js; e.json and the fixture because …\n'), ['src/b.js', 'a/b.js', 'c/d.js', 'e.json']);
+  assert.deepEqual(neededPaths('Blocked: needs `src/b.js` because the slice cannot pass without it'), ['src/b.js']);
+  assert.deepEqual(neededPaths('status: blocked\nnothing named'), []);
+  // «and» inside a file name is no separator
+  assert.deepEqual(neededPaths('Blocked: needs src/drag-and-drop.js and test/drag-and-drop.test.js because the handler moved'), ['src/drag-and-drop.js', 'test/drag-and-drop.test.js']);
+});
+
+test('a builder blocked a second time for another file: the slice takes that one too (twice per slice), then it is built', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a') };
+  const r = await loopRig(t, { plans, slices: { '05-01': { files: files('a'), blocked: ['src/x.js', 'src/y.js'], blockedTimes: 2 } } });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  const s = r.ctx.state.slices['05-01'];
+  assert.deepEqual([s.state, s.widened, s.widenings], ['merged', ['src/x.js', 'src/y.js'], 2]);
+  assert.match(read(r, `${REL}/05-01-PLAN.md`), /^files_modified: \[src\/a\.js, test\/a\.test\.js, src\/x\.js, src\/y\.js\]$/m);
+  assert.deepEqual(readQuestions(r.root, '5'), []);
+  // the builder that starts the slice again is told where its earlier try is kept
+  const builders = r.f.calls().filter((c) => c.stdin.startsWith('You are a builder'));
+  assert.equal(builders.length, 3);
+  assert.doesNotMatch(builders[0].stdin, /## Facts from the build/);
+  assert.match(builders[1].stdin, /## Facts from the build\n- An earlier try of this slice is kept on the branch turbo-salvage\/05-01-\d{8}T\d{6}Z: read what it did/);
+});
+
+test('a builder is told which tests are red on the branch on purpose while a red is put off', async (t) => {
+  // 05-01 breaks test b on purpose; 05-03, built on it, edits test b; 05-02 is built in between and must know
+  const plans = {
+    '05-01': compactPlan({ id: '05-01', files: ['src/b.js'] }),
+    '05-02': compactPlan({ id: '05-02', files: ['src/c.js', 'test/c.test.js'], wave: 2, deps: ['05-01'] }),
+    '05-03': compactPlan({ id: '05-03', files: ['test/b.test.js'], wave: 3, deps: ['05-02'] }),
+  };
+  const r = await loopRig(t, {
+    plans,
+    config: { build: { max_builders: 1 } },
+    before: (x) => {
+      for (const [f, text] of Object.entries(files('b'))) x.write(f, text);
+      x.commit('feat: b and its test');
+    },
+    slices: {
+      '05-01': { files: { 'src/b.js': 'module.exports = () => 2;\n' } },
+      '05-02': { files: files('c') },
+      '05-03': { files: { 'test/b.test.js': spec('b', 2) } },
+    },
+    script: { fixes: [{ files: {}, result: 'nothing to change' }] },
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  const builders = r.f.calls().filter((c) => c.stdin.startsWith('You are a builder'));
+  assert.equal(builders.length, 3);
+  assert.doesNotMatch(builders[0].stdin, /Tests red on this branch on purpose/);
+  assert.match(builders[1].stdin, /## Facts from the build\n- Tests red on this branch on purpose \(a later part of the work updates them\): test[\\/]b\.test\.js > b\. They are not yours to fix/);
+  assert.deepEqual(readQuestions(r.root, '5'), []);
+});
+
+test('the owner keeps a fix that went outside the slice after the branch moved: its commits are picked onto the branch', async (t) => {
+  const plans = { '05-01': plan('05-01', 'a'), '05-02': plan('05-02', 'b', { reqs: ['DEMO-02'] }) };
+  const r = await loopRig(t, {
+    plans,
+    config: { build: { max_builders: 1 } },
+    slices: { '05-01': { files: files('a', { value: 1, expect: 2 }) }, '05-02': { files: files('b') } },
+    script: { fixes: [{ files: { 'src/a.js': 'module.exports = () => 2;\n', 'src/shared.js': 'module.exports = 1;\n' }, message: 'fix(05): the red test', result: 'fixed' }] },
+  });
+  every(t, () => {
+    const q = openCard(r.root);
+    if (!q) return false;
+    // the branch moves while the card waits (a restart's reconcile merged a slice, a docs commit)
+    r.write('.planning/moved.md', 'moved\n');
+    r.commit('docs: the branch moved');
+    answer(r.root, q.id, 2); // Go on: keep that fix
+    return true;
+  });
+  assert.equal(await runStep(r.ctx, 'build'), 'done');
+  const subjects = r.git('log', '--format=%s').split('\n');
+  assert.ok(subjects.includes('fix(05): the red test'), 'the kept fix is on the phase branch');
+  assert.ok(subjects.includes('docs: the branch moved'));
+  assert.equal(read(r, 'src/shared.js'), 'module.exports = 1;\n');
+  assert.match(read(r, '.planning/turbo/logs/supervisor.log'), /the owner keeps the fix of the tests after 05-01: its commits are back from turbo-salvage\/fix-05-01-/);
+  assert.equal(r.a.acts().filter((x) => x.role === 'fixer').length, 1, 'no second fixer');
 });

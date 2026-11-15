@@ -281,7 +281,7 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
     '  · acceptance',
     '  · wrap-up',
     '',
-    'Latest changes: 1 fix · latest 12m ago',
+    'Latest changes in this folder (not in the lanes): 1 fix · latest 12m ago',
     '',
     'Supervisor running · phases 32–…',
   ].join('\n'));
@@ -321,7 +321,7 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
     '  · приёмка',
     '  · завершение',
     '',
-    'Последние изменения: 1 исправление · последнее 12 мин назад',
+    'Последние изменения в этой папке (не в полосах): 1 исправление · последнее 12 мин назад',
     '',
     'Супервизор работает · фазы 32–…',
   ].join('\n'));
@@ -333,7 +333,7 @@ test('formatView, what turbo-run view and status --watch print, is the pane in p
   assert.deepEqual(ru({ questions: [] }, { push: { outcome: 'pushed', sha: 'a1b2c3d', ci: 'red' }, ci: { fixes: 1, rounds: 2 } }).split('\n').slice(0, 2), ['Фаза 32 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин · CI красный — фаза чинит сама (попытка 1 из 2), от вас ничего не нужно', '  Сейчас: чинит красный CI — попытка 1 из 2']);
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [] }), 'Run — supervisor never started');
   assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [], ui: { lang: 'ru' } }), 'Прогон — супервизор не запускался');
-  assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [{ sha: 'a1b2c3d', subject: 'old view' }] }), 'Run — supervisor never started\n\nLatest changes: 1 other change', 'a view without commit times: the count alone');
+  assert.equal(formatView({ supervisor: null, range: null, lanes: [], questions: [], commits: [{ sha: 'a1b2c3d', subject: 'old view' }] }), 'Run — supervisor never started\n\nLatest changes in this folder (not in the lanes): 1 other change', 'a view without commit times: the count alone');
 });
 
 // Every value of a words table, functions called with fixed arguments, as [path, value] pairs.

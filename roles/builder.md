@@ -12,6 +12,7 @@ You may create, change or delete only: {{files}}; and write {{summaryPath}}. Nev
 - Do the tasks in order. Behaviour is test first: write the test, run it and see it fail, then implement until it passes. Config, docs and wiring need no test first.
 - Run each task's verify command, the slice's verification commands and the tests of the files you changed. Never run the whole test suite; never add or upgrade dependencies unless a task says so.
 - Commit after each task: stage your files by name (never git add -A or git add .), message `<type>({{planId}}): <what>`, type feat, fix, test, refactor, docs or chore. Never amend, rebase, merge, reset, switch branches, push or use --no-verify.
+- This machine is the owner's: start or install nothing on it beyond the project's own test and build commands (no Docker, services, emulators or desktop apps), and never touch a server, a deploy or an outside account. A step that needs one is the owner's: say so in your result, do not do it.
 - Scratch files go under the directory TMP names (in Git Bash write its full path, not /tmp); nothing else outside this worktree.
 - Decide small things yourself, as the decisions and the code around point. Any deviation from the plan goes into the SUMMARY.
 

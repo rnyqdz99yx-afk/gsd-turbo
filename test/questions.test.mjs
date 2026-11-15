@@ -412,12 +412,14 @@ test('a lane question: options in the given order with the recommended one moved
   assert.deepEqual([q.id, q.phase, q.plan, q.task, q.kind, q.class, q.classified, q.stopped, q.state, q.agentId, q.source, q.rev, q.allowOther, q.header], ['ask-1', '32', null, null, 'decision', 'decision', true, true, 'open', null, 'lane', 1, true, '']);
   assert.deepEqual(q.options.map((o) => [o.label, o.recommended, o.signal, o.defer]), [['Сразу живая проверка', true, 'Сразу живая проверка', false], ['Сначала исправить замечания', false, 'Сначала исправить замечания', false]]);
   assert.equal(q.question, RU_Q);
-  const long = laneQuestion({ phase: '32', id: 'ask-2', question: 'я'.repeat(400), context: `ключ ghp_${'a1B2'.repeat(9)} ${'ж'.repeat(700)}`, options: [{ label: 'д'.repeat(100), description: 'о'.repeat(300) }, RU_OPTS[1]], recommended: 1, lang: 'ru' });
+  const long = laneQuestion({ phase: '32', id: 'ask-2', question: 'я'.repeat(400), context: `ключ ghp_${'a1B2'.repeat(9)} ${'ж'.repeat(700)}`, options: [{ label: 'д'.repeat(100), description: 'о'.repeat(500) }, RU_OPTS[1]], recommended: 1, lang: 'ru' });
   assert.equal([...long.question].length, 300);
   assert.equal([...long.context].length, 600);
   assert.ok(!long.context.includes('a1B2a1B2'), 'masked');
   assert.equal([...long.options[0].label].length, 80);
-  assert.equal([...long.options[0].description].length, 200);
+  // v0.8.1: 400, and the cut is marked (at a word where one is near the end)
+  assert.equal([...long.options[0].description].length, 400);
+  assert.ok(long.options[0].description.endsWith('…'));
 });
 
 test('a lane question is refused without 2-4 options, a recommended one, a question, or with a bare label', () => {

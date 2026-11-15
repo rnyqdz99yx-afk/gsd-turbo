@@ -19,6 +19,9 @@ jobs:
             node: 22
           - os: windows-latest
             node: 24
+          # the first friends run turbo on a Mac: its own temp-directory links, file system and process tools
+          - os: macos-latest
+            node: 22
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

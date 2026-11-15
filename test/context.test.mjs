@@ -62,6 +62,28 @@ test('the last main-chain assistant usage counts: input + cache creation + cache
   assert.deepEqual([r.used, r.window, r.pct], [270003, 1000000, 27]);
 });
 
+// v0.8.1 (live run 2026-11-12: «708667 of 1000000 (70%)» for a session whose /context showed 40%): the real numbers
+// of that turn's shape: a request of the session's model, the advisor's own, a second request of the session's model
+test('a turn that called the advisor counts its last own request, never the sum of the turn\'s requests', () => {
+  const f = setup();
+  const turn = {
+    ...usage(8, 2030, 238908),
+    iterations: [
+      { type: 'message', ...usage(4, 1014, 118828) },
+      { type: 'advisor_message', model: 'claude-fable-5-2', ...usage(2, 500, 120920) },
+      { type: 'message', ...usage(4, 1016, 120080) },
+    ],
+  };
+  f.transcript(keyOf(f.root), 'aaaa1111-0000', [user(f.root), assistant(f.root, usage(1, 10, 100)), assistant(f.root, turn)]);
+  const r = measureContext({ root: f.root, window: 1000000, env: f.env });
+  assert.deepEqual([r.used, r.pct], [121100, 12]);
+  // one request only, or no list at all: the usage as it is
+  f.transcript(keyOf(f.root), 'aaaa1111-0000', [user(f.root), assistant(f.root, { ...usage(3, 2000, 268000), iterations: [{ type: 'message', ...usage(3, 2000, 268000) }] })]);
+  assert.equal(measureContext({ root: f.root, window: 1000000, env: f.env }).used, 270003);
+  f.transcript(keyOf(f.root), 'aaaa1111-0000', [user(f.root), assistant(f.root, { ...usage(3, 2000, 268000), iterations: [] })]);
+  assert.equal(measureContext({ root: f.root, window: 1000000, env: f.env }).used, 270003);
+});
+
 test('without a lane: the newest transcript whose cwd is the project root, wherever it lives; other projects are skipped', () => {
   const f = setup();
   const other = path.join(path.dirname(f.root), 'other');

@@ -233,7 +233,10 @@ test('the red card: the same red, another red or a part of it; an environment si
   assert.equal(red.context, 'Красных тестов сейчас: 2. Это другие тесты: те, что падали до исправления (1), позеленели. Повторный прогон дал то же самое. Похоже на сбой на этом компьютере, а не на ошибку в коде (сетевой порт, который тестам нельзя использовать): здесь уместно «Ещё раз».');
   assert.deepEqual(red.details, ['red now (2): backend/test/a.test.js > A1; backend/test/a.test.js > A2', 'red before the fix (1): agent/test/t.test.js > trace 1', 'environment signature: bad port', 'step: build', 'log: D:/home/dev/run/build-p5/tests-retest-1.log']);
   assert.deepEqual(distinctTests(['f.js > a', 'a', 'b']), ['f.js > a', 'b']);
-  assert.deepEqual([envSign('listen EADDRINUSE: address already in use')?.sign, envSign("Error: Cannot find module 'x'")?.sign, envSign('ENOSPC: no space left')?.sign, envSign('AssertionError: 1 !== 2')], ['EADDRINUSE', 'Cannot find module', 'ENOSPC', null]);
+  assert.deepEqual([envSign('listen EADDRINUSE: address already in use')?.sign, envSign("Error: Cannot find module 'x'")?.sign, envSign('ENOSPC: no space left')?.sign, envSign('AssertionError: 1 !== 2')], ['EADDRINUSE', "Cannot find module 'x'", 'ENOSPC', null]);
+  // a module that is a path is a broken import, the code's own fault: never called a fault of the machine
+  for (const text of ["Error: Cannot find module './lib/a.js'", "Cannot find module '../b'", "Cannot find module '/srv/app/c.js'", "Cannot find module 'D:\\home\\dev\\d.js'", "code: 'MODULE_NOT_FOUND'"]) assert.equal(envSign(text), null, text);
+  assert.equal(envSign("Cannot find package '@scope/pkg' imported from x")?.sign, "Cannot find package '@scope/pkg'");
 });
 
 test('the security card never says «after one fix» when no fix ran', () => {

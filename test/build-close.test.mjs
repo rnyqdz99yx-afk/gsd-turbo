@@ -433,3 +433,13 @@ test('the sign-off card offers Defer: the rows become open follow-ups with a tru
   assert.equal(defer[5], 'deferred at the sign-off card by the owner: not checked and not signed; it waits for what comes after this phase (its merge or a live step)');
   assert.match(fs.readFileSync(path.join(logsDir(s.root), 'supervisor.log'), 'utf8'), /ask-1: UAT rows 2 deferred by the owner, not signed/);
 });
+
+// v0.8.1: `--by agent` must never fail a build: an assistant's Accept on a sign-off card is refused at the answer
+test('an assistant cannot accept a sign-off card; it may defer', async (t) => {
+  const r = await closeRig(t);
+  const q = askOwner(r.root, '5', { question: 'Phase 5: please check these items yourself and accept them.', context: '', sign: [2], signText: ['the release runs on the server'], signDefer: true }, { lang: 'en', keepRunning: true }).question;
+  assert.throws(() => answerQuestion({ root: r.root, phase: '5', id: q.id, option: 1, by: 'agent', laneRunning: true }), /accepting these items is the owner's own signature/);
+  assert.equal(readQuestions(r.root, '5').find((x) => x.id === q.id).state, 'open', 'nothing was recorded');
+  assert.doesNotThrow(() => answerQuestion({ root: r.root, phase: '5', id: q.id, option: 3, by: 'agent', laneRunning: true }));
+  assert.equal(readQuestions(r.root, '5').find((x) => x.id === q.id).answer.by, 'agent');
+});

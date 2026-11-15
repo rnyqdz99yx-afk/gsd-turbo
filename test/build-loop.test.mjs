@@ -857,6 +857,8 @@ test('neededPaths: every path of a Blocked line, not only the first', () => {
   assert.deepEqual(neededPaths('x\nBlocked: needs src/b.js: the slice cannot pass without it\nBlocked: needs a\\b.js, c/d.js; e.json and the fixture because …\n'), ['src/b.js', 'a/b.js', 'c/d.js', 'e.json']);
   assert.deepEqual(neededPaths('Blocked: needs `src/b.js` because the slice cannot pass without it'), ['src/b.js']);
   assert.deepEqual(neededPaths('status: blocked\nnothing named'), []);
+  // «and» inside a file name is no separator
+  assert.deepEqual(neededPaths('Blocked: needs src/drag-and-drop.js and test/drag-and-drop.test.js because the handler moved'), ['src/drag-and-drop.js', 'test/drag-and-drop.test.js']);
 });
 
 test('a builder blocked a second time for another file: the slice takes that one too (twice per slice), then it is built', async (t) => {

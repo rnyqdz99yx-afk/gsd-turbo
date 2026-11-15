@@ -58,6 +58,8 @@ Run the matching command and show its output, then stop:
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" note <phase> '<text>'` (in single quotes; something the phase cannot see, for example that the main branch already holds a fix: the phase reads it before its next step and passes it to every step after it; never a secret)
 - `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" resume <phase> --start` (clears the phase's lane record and its owner request, which the resume answers, and starts the supervisor in one command; with several lanes and the supervisor running it prints `handed to the running supervisor`: the supervisor relaunches that lane at its next check and the other lanes go on)
 
+If `status` prints `turbo <version> is out …` (`вышел turbo <version> …` in Russian), here or in any later section, tell the user once that a newer turbo exists and that `/turbo-update` installs it.
+
 If `status` prints `supervisor: state damaged`, tell the user in plain words that the supervisor's state file was damaged, most likely by a machine crash, that nothing runs the lanes now, and that `/turbo-autonomous` (its `start`) keeps the damaged file aside and rebuilds the lanes. `resume <phase>` rebuilds it the same way and prints what it recovered: show those lines.
 
 ## If the arguments are `answer`

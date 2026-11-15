@@ -55,7 +55,7 @@ import { buildLaneDeps, runnerOf, runningBuilds, stopBuild, waitBuildPaused } fr
 import { loadBuildState } from '../lib/build-queue.mjs';
 import { buildOf, buildRows } from '../lib/view.mjs';
 import { recordFailure, reportsLine, runReportCommand } from '../lib/report.mjs';
-import { runUpdateCommand } from '../lib/update.mjs';
+import { runUpdateCommand, updateNotice } from '../lib/update.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|park|note|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost|build|report|update> [args]';
@@ -1199,6 +1199,9 @@ async function main() {
       // v0.8: turbo's own failures that wait for the owner's yes (lib/report.mjs)
       const reports = reportsLine(config.lang, { root });
       if (reports) out(reports);
+      // v0.8: a newer turbo, known from the daily look (lib/update.mjs)
+      const newerTurbo = updateNotice(config.lang, { script: SELF });
+      if (newerTurbo) out(newerTurbo);
       const back = backToChat(process.env, config.lang);
       if (back) out(back);
       return 0;

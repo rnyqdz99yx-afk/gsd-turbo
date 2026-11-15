@@ -269,7 +269,8 @@ test('turbo-run report through the CLI: recorded under the Claude home, listed b
   const root = tmpDir('rep-cli-proj');
   fs.mkdirSync(path.join(root, '.planning'));
   // status names the waiting reports only outside the test runner: this test stands in for the owner's session
-  const env = { ...process.env, CLAUDE_CONFIG_DIR: home, TURBO_CONTROL_ROOT: '' };
+  // (TURBO_UPDATE_CHECK off: outside the test runner a status would also look for a newer turbo on the network)
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: home, TURBO_CONTROL_ROOT: '', TURBO_UPDATE_CHECK: 'off' };
   delete env.NODE_TEST_CONTEXT;
   delete env.TURBO_LANE;
   const cli = (...args) => spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: 'utf8', windowsHide: true, env });

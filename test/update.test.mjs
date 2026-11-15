@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { installedVersion, latestRelease, liveSessions, newer, releaseNotes, runUpdateCommand } from '../lib/update.mjs';
+import { installedVersion, latestRelease, liveSessions, newer, readUpdateCheck, releaseNotes, runUpdateCommand, updateNotice } from '../lib/update.mjs';
 
 // A stand-in for turbo's repository: an installer that writes the install manifest of the Claude home it is given, two
 // released versions (0.9.0, then 0.10.0: a later version by number, not by spelling) and tags that are no release.
@@ -104,6 +104,34 @@ test('a source that cannot be read fails with one line', async () => {
   assert.equal(await m.run([], {}, { TURBO_UPDATE_REPO: path.join(m.home, 'no-such-repo') }), 1);
   assert.match(m.lines[0], /^cannot look for a newer turbo at /);
   assert.equal(m.lines.length, 1);
+});
+
+test('updateNotice: status names a newer turbo once a look found one, and looks again once a day', async () => {
+  const m = machine('0.9.0');
+  const env = { ...m.env };
+  delete env.NODE_TEST_CONTEXT; // the notice is silent under the test runner; this test stands in for the owner's session
+  delete env.TURBO_LANE;
+  const spawned = [];
+  const spawnImpl = (cmd, args) => { spawned.push(args); return { unref() {}, on() {} }; };
+  const notice = (extra = {}) => updateNotice('en', { env, script: '/turbo/bin/turbo-run.mjs', spawnImpl, ...extra });
+  // nothing known yet: no line, one detached look
+  assert.equal(notice(), null);
+  assert.deepEqual(spawned, [['/turbo/bin/turbo-run.mjs', 'update', '--check']]);
+  assert.equal(notice(), null);
+  assert.equal(spawned.length, 1); // looked a moment ago
+  // the look itself (update --check) writes what it found
+  assert.equal(await m.run(['--check']), 0);
+  assert.equal(readUpdateCheck(env).latest, '0.10.0');
+  assert.equal(notice(), 'turbo 0.10.0 is out (installed: 0.9.0): /turbo-update installs it');
+  assert.equal(updateNotice('ru', { env, spawnImpl }), 'вышел turbo 0.10.0 (у вас 0.9.0): обновить — /turbo-update');
+  assert.equal(notice({ installed: '0.10.0' }), null);
+  // a day later it looks again; never in a lane, under node --test or when switched off
+  notice({ now: Date.now() + 25 * 3600 * 1000 });
+  assert.equal(spawned.length, 2);
+  for (const off of [{ TURBO_LANE: '1' }, { NODE_TEST_CONTEXT: 'child-v8' }, { TURBO_UPDATE_CHECK: 'off' }]) {
+    assert.equal(updateNotice('en', { env: { ...env, ...off }, script: 'x', spawnImpl, now: Date.now() + 99 * 3600 * 1000 }), null);
+  }
+  assert.equal(spawned.length, 2);
 });
 
 test('liveSessions counts the role sessions whose holder lives and whose heartbeat is fresh', () => {

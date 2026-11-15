@@ -25,7 +25,7 @@ test('the demo builds a project with .planning/turbo/ and a test-free copy of th
   assert.ok(text.includes(PROBE), text);
   // the checklist quotes the pane, the band and the toasts as the mod draws them
   assert.ok(text.includes('\n       Фаза 32 — выполняются планы · 5 из 9 планов готово · 1 ч 12 мин · нужен ваш ответ (1)\n         Сейчас: пишет код по 2 планам сразу\n         последнее действие 20 с назад\n'), text);
-  assert.ok(text.includes('\n       Последние изменения: 1 новая возможность, 1 исправление, 1 правка документов · последнее 12 мин назад\n'), text);
+  assert.ok(text.includes('\n       Последние изменения в этой папке (не в полосах): 1 новая возможность, 1 исправление, 1 правка документов · последнее 12 мин назад\n'), text);
   assert.ok(text.includes('"откройте панель: /turbo-view"'), text);
   assert.ok(text.includes('       │   [1. Да, по гейту ★]  [2. Стоп]\n       │   [Свой ответ…]\n'), text);
   assert.ok(text.includes('[Свой ответ…] on it'), text);

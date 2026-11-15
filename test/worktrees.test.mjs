@@ -224,3 +224,12 @@ test('an untracked file counts as a change whatever status.showUntrackedFiles sa
   assert.equal(r.text, `kept ${p}: it has uncommitted changes`);
   assert.ok(fs.existsSync(path.join(p, 'new-work.txt')));
 });
+
+// v0.8.1: outside a git repository the command printed git's error with a stack
+test('outside a git repository: one plain line, exit 2, nothing removed', async () => {
+  const dir = tmpDir('turbo-nogit-');
+  const r = await run(dir, ['prune']);
+  assert.equal(r.code, 2);
+  assert.equal(r.lines.length, 1);
+  assert.match(r.text, /^ERR turbo-run worktrees prune needs a git repository: .* is not inside one; nothing was removed$/);
+});

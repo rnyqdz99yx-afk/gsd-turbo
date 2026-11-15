@@ -146,7 +146,9 @@ test('nothing to adopt when every phase is done; the overview in Russian names t
   assert.ok(ru.includes('  закрыты, проверка устарела: 24, 31'), ru.join('\n'));
   assert.ok(ru.includes('  спланированы: 34 (планирование не закончено: 34)'), ru.join('\n'));
   assert.ok(ru.includes('сейчас идёт фаза 33'), ru.join('\n'));
-  assert.ok(ru.includes('markup: off'));
+  // v0.8.1: the machine word stays for the skill, the owner's words follow it; no English line is left in a Russian overview
+  assert.ok(ru.includes('markup: off (разметка полос выключена: фазы идут по одной)'), ru.join('\n'));
+  assert.ok(!ru.some((l) => /^branch:/.test(l)));
   for (const l of ru) assert.doesNotMatch(l, /\.md\b|\.planning/, l);
 });
 

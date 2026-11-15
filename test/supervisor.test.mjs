@@ -335,6 +335,25 @@ test('a launch that keeps failing notifies supervisorFailing once per failing sp
   assert.ok(!('failingSince' in s) && !('failingNotified' in s) && !('launchFailures' in s));
 });
 
+test('v0.8: a failing spell becomes a failure report when the owner is told; a programming error becomes one at once', async () => {
+  const h = harness({ phases: [P('2')] });
+  const reports = [];
+  h.ctx.deps.report = (r) => { reports.push({ kind: r.kind, message: r.err.message, minutes: r.minutes }); };
+  h.ctx.deps.loadPhases = () => { throw new Error('gsd-tools init manager failed'); };
+  let s = await tick(fresh(), h.ctx);
+  assert.deepEqual(reports, []);
+  h.advance(DEFAULTS.blocked_minutes_before_notify);
+  s = await tick(s, h.ctx);
+  s = await tick(s, h.ctx);
+  assert.deepEqual(reports, [{ kind: 'stuck', message: 'gsd-tools init manager failed', minutes: DEFAULTS.blocked_minutes_before_notify }]);
+  h.ctx.deps.loadPhases = () => { throw new TypeError('phases.map is not a function'); };
+  s = await tick(s, h.ctx);
+  assert.deepEqual(reports.at(-1), { kind: 'tick', message: 'phases.map is not a function', minutes: undefined });
+  // a report that fails never fails the tick
+  h.ctx.deps.report = () => { throw new Error('disk full'); };
+  await tick(s, h.ctx);
+});
+
 test('loadPhases or list failing every tick notifies once per spell with the first error line, capped', async () => {
   const h = harness({ phases: [P('2')] });
   const long = `gsd-tools init manager: ${'x'.repeat(300)}\nat stack line`;

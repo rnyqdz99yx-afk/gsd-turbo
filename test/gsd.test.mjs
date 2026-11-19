@@ -17,7 +17,8 @@ test('versionInRange', () => {
   assert.equal(versionInRange('1.18.0'), true);
   assert.equal(versionInRange('1.20.1'), true);
   assert.equal(versionInRange('1.21.0'), true);
-  assert.equal(versionInRange('1.22.0'), false);
+  assert.equal(versionInRange('1.22.0'), true);
+  assert.equal(versionInRange('1.23.0'), false);
   assert.equal(versionInRange('1.15.4'), false);
   assert.equal(versionInRange('garbage'), false);
 });

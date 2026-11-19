@@ -1,7 +1,7 @@
 ---
 name: turbo-autonomous
 description: Run the rest of the current GSD milestone with gsd-turbo — a background supervisor starts each phase as an unattended Claude Code background session, continues automatically after context limits, runs targeted tests, and notifies the owner only when they are truly needed. Use instead of /gsd-autonomous when speed matters. Also use it when turbo itself misbehaves (a crash, a stuck or wrong status, an empty question card): it checks the failure, writes it up and offers the owner to send the report to turbo's author.
-argument-hint: "[--from <N>] [--to <N>] | --only <N> | --all | status | stop | resume <phase> | attend <phase> | answer | away | back"
+argument-hint: "[--from <N>] [--to <N>] | --only <N> | --all | status | brief | stop | resume <phase> | attend <phase> | answer | away | back"
 allowed-tools: [Bash, Read, AskUserQuestion, Skill]
 ---
 
@@ -62,6 +62,10 @@ If `status` prints `turbo <version> is out …` (`вышел turbo <version> …
 
 If `status` prints `supervisor: state damaged`, tell the user in plain words that the supervisor's state file was damaged, most likely by a machine crash, that nothing runs the lanes now, and that `/turbo-autonomous` (its `start`) keeps the damaged file aside and rebuilds the lanes. `resume <phase>` rebuilds it the same way and prints what it recovered: show those lines.
 
+## If the arguments are `brief`
+
+Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" brief` and read its page: the milestone's closed and open phases, what turbo does now, the questions that wait, the standing notes of the open phases, the end of the log, and what is next. Tell the user in a few plain sentences, in their language, where things stand and what is next (the page's `## Next` lines), then stop. Do this first in a session that picks turbo's work up again (after `/clear`, a restart, another day): the page is built at each call from the records turbo and GSD keep, so it is current; it changes nothing.
+
 ## If the arguments are `answer`
 
 Run **Answer the open questions** (the last section), then stop.
@@ -106,7 +110,8 @@ The range flags are the `--from <N>`, `--to <N>`, `--only <N>` and `--all` flags
    - If it prints `supervisor: running`, show the output and tell the user a run is already in progress (watch it with `claude attach <session id>` or `/turbo-autonomous status`, stop it with `/turbo-autonomous stop`). Then run **Answer the open questions** (it only says so when there are none) and stop. Commit nothing yourself: a background session is working in this checkout.
 2. **Compatibility.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor`.
    - Exit code 2 (`mode: unsupported`): show the failed checks with what to fix and stop.
-   - `mode: safe`: tell the user that turbo runs in safe mode (GSD version outside the tested range, or the turbo-phase skill, the turbo-uat agent or GSD's hook listing is missing; doctor's checks say which) and continue.
+   - `mode: safe`: tell the user that turbo runs in safe mode (a GSD version older than the tested range, a newer one that failed doctor's read checks, or the turbo-phase skill, the turbo-uat agent or GSD's hook listing is missing; doctor's checks say which) and continue.
+   - a `warn gsd-version` line with `mode: full`: GSD is newer than the versions this turbo was tested with and passed doctor's read checks. Tell the user in one sentence (turbo works as usual; `/turbo-update` brings a release tested with that GSD once there is one) and continue.
 3. **Project setup (first run only).** If `.planning/turbo/config.json` does not exist, run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" init --lang <en|ru by the user's language>`. Show init's whole output, including whether `workflow.test_command` was set or how to enable targeted tests.
 4. **Clean tree.** Run `git status --porcelain`.
    - Commit only these setup files, where they are new or changed: `.planning/turbo/config.json`, `.planning/turbo/.gitignore`, `.planning/config.json` (the GSD config that `init` changed), `.planning/turbo/lean-prev.json` (the values lean mode replaced, for `turbo-run lean off`), and the owner's answers in `.planning/turbo/answers/` that a stopped run left uncommitted. Use the project's own commit conventions.

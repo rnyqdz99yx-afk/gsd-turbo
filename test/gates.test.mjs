@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpDir, tmpGitRepo } from './helpers/tmp.mjs';
-import { ABSENT, GATE_KEYS, gatesRel, createGsdConfig, gatesOff, gatesRestore, gatesActive, docsCommitsOff, docsCommitsRestore, ensureChunkedParallel, sameConfig } from '../lib/gates.mjs';
+import { ABSENT, GATE_KEYS, gatesRel, createGsdConfig, gsdText, gatesOff, gatesRestore, gatesActive, docsCommitsOff, docsCommitsRestore, ensureChunkedParallel, sameConfig } from '../lib/gates.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 
 const git = (root, ...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim();
@@ -337,4 +337,16 @@ test('createGsdConfig calls gsd-tools with argument arrays, a sentinel default a
   assert.ok(calls.every((c) => c.cmd === process.execPath && c.args[0] === path.join('/core', 'bin', 'gsd-tools.cjs')));
   const broken = createGsdConfig({ root: '/p', core: '/core', exec: () => { throw new Error('boom'); } });
   assert.deepEqual(broken.activeCaps(), ['nyquist', 'security', 'ui', 'code-review']);
+});
+
+test('v0.9.2: a failed gsd-tools call names its error, never the warning GSD prints first', () => {
+  // seen on obs-chat (2026-11-13 to 2026-11-20): «phase.complete failed … gsd-tools: warning: …defaults.json sets
+  // model_profile …» in the merge record and the brief, while the real line was «Error: verification is incomplete»
+  const fail = (stderr) => () => { throw Object.assign(new Error('Command failed'), { stderr }); };
+  const lines = ['gsd-tools: warning: /home/u/.gsd/defaults.json sets model_profile but a project config takes precedence here', 'Error: verification is incomplete: Gaps found', 'at x'];
+  assert.throws(() => gsdText('/core', '/p', ['query', 'phase.complete', '37'], fail(lines.join('\r\n'))), { message: 'gsd-tools query phase.complete failed: Error: verification is incomplete: Gaps found' });
+  // no Error line: the first line that is no warning
+  assert.throws(() => gsdText('/core', '/p', ['query', 'x'], fail(['gsd-tools: warning: w', 'something broke', ''].join('\n'))), { message: 'gsd-tools query x failed: something broke' });
+  // only warnings: the first one, as before
+  assert.throws(() => gsdText('/core', '/p', ['query', 'x'], fail(['gsd-tools: warning: w1', 'gsd-tools: warning: w2'].join('\n'))), { message: 'gsd-tools query x failed: gsd-tools: warning: w1' });
 });

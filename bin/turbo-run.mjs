@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
+import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, isSlot, stateRoot } from '../lib/paths.mjs';
 import { cwdInside, laneSessionIds, ownSessionId } from '../lib/transcripts.mjs';
 import { DEFAULTS, loadConfig, fullEntries, laneGates, lanesSettings, maxPrep, mergeRounds, pushSettings, leanSettings, prepSettings, laneEffort, buildSettings } from '../lib/config.mjs';
 import { effortApply, effortOffHint, leanApply, leanBoundary, runLeanCommand } from '../lib/lean.mjs';
@@ -17,7 +17,7 @@ import { createGh } from '../lib/ci.mjs';
 import { readLaneStatus, writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
 import { createClaude, daemonAware, resolveBin, laneSessionName, sessionFreeEnv } from '../lib/claude.mjs';
 import { loadPhases, normalizePhaseId, readVersion, versionClass } from '../lib/gsd.mjs';
-import { briefText } from '../lib/brief.mjs';
+import { SESSION_START_HEAD, briefText, capPage } from '../lib/brief.mjs';
 import { phaseNotes } from '../lib/inbox.mjs';
 import { mergeState } from '../lib/merge.mjs';
 import { doctor } from '../lib/doctor.mjs';
@@ -1112,6 +1112,21 @@ async function attendLane(root, id, sup) {
   return code;
 }
 
+// v0.10.0: whether a session start in root gets the brief. Never in turbo's own sessions (a lane, prep or markup
+// session: TURBO_LANE; a build role: TURBO_BUILD_LANE; a slot checkout as a second fence): the page's Next lines would
+// read as licence to a role. Never where turbo does not run (no .planning/turbo/, or set up and never run: no
+// supervisor state and no run record), nor when the owner turned it off (brief.session_start false).
+function briefAtStart(root) {
+  if (!root || process.env.TURBO_LANE || process.env.TURBO_BUILD_LANE || isSlot(root)) return false;
+  if (!fs.existsSync(path.join(root, '.planning', 'turbo'))) return false;
+  let ran = false;
+  try {
+    ran = fs.readdirSync(runDir(root)).length > 0;
+  } catch { /* no run directory: turbo never ran here */ }
+  if (!ran) return false;
+  return loadConfig(root).brief?.session_start !== false;
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   // attend's --done takes no value (phase-step's does): it never hides a --project after it
@@ -1291,6 +1306,16 @@ async function main() {
       });
     }
     case 'brief': {
+      // v0.10.0: --session-start, what the turbo-view mod adds to a new session's context: the page or nothing, and
+      // never a failure of the session start (exit 0 always)
+      if (args.includes('--session-start')) {
+        try {
+          if (!briefAtStart(root)) return 0;
+          const page = spawnSync(process.execPath, [SELF, 'brief'], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+          if (page.status === 0 && String(page.stdout ?? '').trim()) process.stdout.write(`${SESSION_START_HEAD}\n\n${capPage(page.stdout)}`);
+        } catch { /* nothing at all: a session start never fails for turbo */ }
+        return 0;
+      }
       // v0.9 (lib/brief.mjs): one page for the session that resumes work, from the records turbo and GSD keep
       if (!root) die('no .planning directory found');
       const { sup, damaged } = readSupervisor(root);

@@ -10,7 +10,7 @@ import { buildProject } from './helpers/build-fake.mjs';
 import { compactPlan } from './helpers/slices.mjs';
 import { writeAttend } from '../lib/attend.mjs';
 import { loadConfig } from '../lib/config.mjs';
-import { runDir } from '../lib/paths.mjs';
+import { gsdCoreDir, runDir } from '../lib/paths.mjs';
 import { pidAlive, processAlive } from '../lib/merge-lock.mjs';
 import { buildPathFor, buildLaneDeps, buildLogFile, claimRunner, launchBuild, processAlive as laneProcessAlive, runnerAlive, runnerFile, runnerOf, runningBuilds, stopBuild, waitBuildPaused } from '../lib/build-lane.mjs';
 
@@ -40,6 +40,18 @@ test('buildPathFor: the refusals of spec §6.8, each with its reason', () => {
   const p = buildProject();
   assert.deepEqual(buildPathFor(p.root, '5'), { build: true, why: '' });
   assert.deepEqual(buildPathFor(p.root, '5', { core: null }), { build: false, why: 'gsd-core not found' });
+  // the GSD version: a tested one is taken; an older one never; a newer one by what turbo reads from it (doctor's rule)
+  const versionFile = path.join(gsdCoreDir(p.root), 'VERSION');
+  const tested = fs.readFileSync(versionFile, 'utf8');
+  fs.writeFileSync(versionFile, '1.15.9\n');
+  assert.deepEqual(buildPathFor(p.root, '5'), { build: false, why: 'gsd-core 1.15.9 is outside the tested range' });
+  fs.writeFileSync(versionFile, '1.23.0\n');
+  const seen = [];
+  const usable = (ok) => (core, root) => { seen.push([core, root]); return { ok, cls: 'newer', detail: ok ? 'fine' : '1.23.0 (tested >=1.16.0 <1.23.0); on this version: init manager: no phases list' }; };
+  assert.deepEqual(buildPathFor(p.root, '5', { gsdUsable: usable(true) }), { build: true, why: '' });
+  assert.deepEqual(buildPathFor(p.root, '5', { gsdUsable: usable(false) }), { build: false, why: 'gsd-core 1.23.0 (tested >=1.16.0 <1.23.0); on this version: init manager: no phases list' });
+  assert.deepEqual(seen[0], [gsdCoreDir(p.root), p.root]);
+  fs.writeFileSync(versionFile, tested);
   writeAttend(p.root, '5');
   assert.deepEqual(buildPathFor(p.root, '5'), { build: false, why: 'phase 5 is attended' });
 

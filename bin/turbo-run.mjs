@@ -1334,7 +1334,14 @@ async function main() {
         questions: openQuestions(root).map((q) => ({ id: q.id, phase: q.phase, question: q.question })),
         ownerRequests: ownerRequestFiles(root),
         notes: notePhases.flatMap((phase) => phaseNotes(root, phase).map((n) => ({ phase, ...n }))),
-        kept: lanePhases.map((phase) => ({ phase, rows: mergeState(root, phase)?.keptRequirements ?? [] })).filter((k) => k.rows.length),
+        // lib/req-notes.mjs: the merge of a lane records them, and so does the build path's close in a checkout
+        kept: [...new Set([...lanePhases, ...phases.map((p) => String(p.number))])].map((phase) => {
+          let built = null;
+          try {
+            built = loadBuildState(runDir(root), phase)?.keptRequirements;
+          } catch { /* a damaged build state: status says so */ }
+          return { phase, rows: mergeState(root, phase)?.keptRequirements ?? built ?? [] };
+        }).filter((k) => k.rows.length),
         reports: reportsLine(config.lang),
         log,
       };

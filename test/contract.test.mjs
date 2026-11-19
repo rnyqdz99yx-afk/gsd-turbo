@@ -72,8 +72,21 @@ test('GSD_FILES names every GSD file the roles, skills and code refer to, and no
     }
   };
   for (const d of ['lib', 'roles', 'skills', 'agents']) walk(path.join(REPO, d));
-  const listed = [...GSD_FILES.agents.map((f) => `agents/${f}`), ...GSD_FILES.core];
+  const listed = [...GSD_FILES.agents.map((f) => `agents/${f}`), ...GSD_FILES.core, ...GSD_FILES.mirrored];
   assert.deepEqual([...found].sort(), [...listed].sort());
+  // a file a role or a skill opens at run time is one doctor looks for: never only "mirrored"
+  const opened = new Set();
+  for (const d of ['roles', 'skills', 'agents']) {
+    const walkMd = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const f = path.join(dir, e.name);
+        if (e.isDirectory()) walkMd(f);
+        else if (e.name.endsWith('.md')) for (const m of fs.readFileSync(f, 'utf8').matchAll(/(?<![A-Za-z0-9_-])((?:workflows|references|templates)\/[A-Za-z0-9_./-]+\.md)/g)) opened.add(m[1]);
+      }
+    };
+    walkMd(path.join(REPO, d));
+  }
+  assert.deepEqual([...opened].filter((f) => GSD_FILES.mirrored.includes(f)), []);
 });
 
 test('probeGsd: every read check passes on the answers turbo reads; each broken answer is named', () => {

@@ -188,7 +188,7 @@ test('uat at the gap-round limit: an issue asks the owner; Try again is one more
 });
 
 test('tests: one full run; red → one fixer → full again → else the owner', async (t) => {
-  const r = await closeRig(t, { turbo: { 'test-changed': [{ code: 1, out: 'red\n' }, { code: 0, out: '' }] }, script: { fixes: [{ files: {}, result: 'x' }] } });
+  const r = await closeRig(t, { turbo: { 'test-changed': [{ code: 1, out: 'red\n' }, { code: 0, out: '' }] }, script: { fixes: [{ files: { 'src/fix.js': 'export const fixed = 1;\n' }, result: 'x' }] } });
   assert.equal(await runStep(r.ctx, 'tests'), 'done');
   const full = r.turbo.calls.filter((c) => c.args[0] === 'test-changed');
   assert.equal(full.length, 2);
@@ -199,10 +199,23 @@ test('tests: one full run; red → one fixer → full again → else the owner',
   assert.ok(fixer[0].stdin.includes('.planning/turbo/run/build-p5/tests-full-'));
   assert.match(r.ctx.state.steps.tests.why, /push\.mode off/);
 
-  const red = await closeRig(t, { turbo: { 'test-changed': { code: 1, out: 'red\n' } } });
+  const red = await closeRig(t, { turbo: { 'test-changed': { code: 1, out: 'red\n' } }, script: { fixes: [{ files: { 'src/fix.js': 'export const fixed = 1;\n' }, result: 'x' }] } });
   const seen = answerNext(t, red.root, '5', 2);
   assert.equal(await runStep(red.ctx, 'tests'), 'stopped');
   assert.match(seen[0].question, /the tests stay red after one fix/);
+  assert.equal(red.turbo.calls.filter((c) => c.args[0] === 'test-changed').length, 2, 'a fix that changed something is tested again');
+});
+
+test('v0.9.2: a full-run fixer that changes nothing is not followed by the same run again: the card says so at once', async (t) => {
+  // seen live on obs-chat phase 35 (2026-11-11 23:12Z): the project's budget test failed on .planning/STATE.md, the
+  // fixer rightly changed nothing (its rule: nothing under .planning/), the build ran the whole suite again (the same
+  // red, 2 more minutes) and asked ask-29 with an empty context
+  const red = await closeRig(t, { turbo: { 'test-changed': { code: 1, out: 'red\n' } } });
+  const seen = answerNext(t, red.root, '5', 2);
+  assert.equal(await runStep(red.ctx, 'tests'), 'stopped');
+  assert.equal(red.turbo.calls.filter((c) => c.args[0] === 'test-changed').length, 1, 'no second run after a fixer that changed nothing');
+  assert.equal(red.f.calls().filter((c) => c.stdin.startsWith('You are the fixer')).length, 1);
+  assert.match(seen[0].context, /The fixer changed nothing, so the run was not repeated\./);
 });
 
 test('push: off by default; on, push-request --wait until it ends; CI red → one fixer per round', async (t) => {

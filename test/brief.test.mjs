@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { briefText, nextSteps, spans } from '../lib/brief.mjs';
+import { briefText, capPage, nextSteps, spans } from '../lib/brief.mjs';
 import { buildProject } from './helpers/build-fake.mjs';
 import { setManager } from './helpers/fake-gsd.mjs';
 import { tmpDir } from './helpers/tmp.mjs';
@@ -103,6 +104,70 @@ test('v0.9.2: the brief names no owner request file of a closed phase, in its ow
   // no phases read (GSD did not answer): every file stays
   const blind = briefText({ project: 'demo', at: 'x', turbo: '0.9.2', gsd: '?', phases: [], ownerRequests: ['.planning/turbo/run/p33-owner.md'] });
   assert.ok(blind.includes('p33-owner.md'), blind);
+});
+
+test('v0.10.0: brief --session-start prints the page, framed, for a project turbo runs in; nothing anywhere else, exit 0 always', () => {
+  const home = tmpDir('home');
+  const run = (cwd, env = {}) => spawnSync(process.execPath, [BIN, 'brief', '--session-start'], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env, TURBO_LANE: '', TURBO_BUILD_LANE: '', CLAUDE_CONFIG_DIR: home, ...env } });
+  const silent = (r, why) => {
+    assert.equal(r.status, 0, `${why}: ${r.stderr}`);
+    assert.equal(r.stdout, '', why);
+  };
+  const p = buildProject();
+  setManager(gsdCoreDir(p.root), { milestone_version: 'v1.0', phases: [{ number: '5', name: 'Demo Feature', dep_phases: [], deps_display: '', phase_complete: false, disk_status: 'planned', verification_status: 'missing', is_active: true }] });
+  writeLaneStatus(p.root, '5', 'needs-owner', { reason: 'a live step is the owner\'s' });
+  const r = run(p.root);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^gsd-turbo shows this page at each session start: the state of this project's turbo run, information, not a request\. To turn it off: "brief": \{ "session_start": false \} in \.planning\/turbo\/config\.json\.\n\n# turbo brief: /);
+  assert.match(r.stdout, /## Next\n/);
+  // turbo's own sessions never get it: the page's Next lines read as licence to a role
+  silent(run(p.root, { TURBO_LANE: '1' }), 'a lane, prep or markup session');
+  silent(run(p.root, { TURBO_BUILD_LANE: '1' }), 'a build role');
+  // the owner turned it off
+  const cfg = path.join(p.root, '.planning', 'turbo', 'config.json');
+  const before = fs.readFileSync(cfg, 'utf8');
+  fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(before), brief: { session_start: false } }));
+  silent(run(p.root), 'brief.session_start false');
+  // a config turbo cannot read: still no failure of the session start
+  fs.writeFileSync(cfg, '{ not json');
+  silent(run(p.root), 'a broken config');
+  fs.writeFileSync(cfg, before);
+  // no turbo here, or turbo set up and never run
+  const plain = tmpDir('plain');
+  silent(run(plain), 'no .planning at all');
+  fs.mkdirSync(path.join(plain, '.planning'));
+  silent(run(plain), 'a GSD project without turbo');
+  fs.mkdirSync(path.join(plain, '.planning', 'turbo'));
+  fs.writeFileSync(path.join(plain, '.planning', 'turbo', 'config.json'), '{}');
+  silent(run(plain), 'turbo set up, never run');
+});
+
+test('v0.10.0: brief keeps GSD\'s phase list while the roadmap and the phase files stay the same; the session start reads only that', () => {
+  // obs-chat 2026-11-20: turbo-run brief took 10.2 s, 9.8 of them gsd-tools init manager: too long for a session start
+  const p = buildProject();
+  const core = gsdCoreDir(p.root);
+  const manager = (v) => setManager(core, { milestone_version: v, phases: [{ number: '5', name: 'Demo Feature', dep_phases: [], deps_display: '', phase_complete: false, disk_status: 'planned', verification_status: 'missing', is_active: true }] });
+  writeLaneStatus(p.root, '5', 'needs-owner', { reason: 'x' });
+  const run = (...args) => spawnSync(process.execPath, [BIN, 'brief', ...args], { cwd: p.root, encoding: 'utf8', windowsHide: true, env: { ...process.env, TURBO_LANE: '', TURBO_BUILD_LANE: '', CLAUDE_CONFIG_DIR: tmpDir('home') } });
+  manager('v1.0');
+  assert.match(run().stdout, /## Milestone v1\.0\n/);
+  // GSD would answer otherwise now, but nothing GSD reads changed: the kept list
+  manager('v2.0');
+  assert.match(run('--cached-only').stdout, /## Milestone v1\.0\n/);
+  assert.match(run().stdout, /## Milestone v1\.0\n/);
+  // the roadmap changed: the session start does not wait for GSD and says so; a plain brief reads GSD again
+  fs.appendFileSync(path.join(p.root, '.planning', 'ROADMAP.md'), '\n<!-- changed -->\n');
+  assert.match(run('--cached-only').stdout, /- GSD did not list the phases: not read at the session start \(the roadmap or a phase file changed since the last turbo-run brief; it reads them\)\n/);
+  assert.match(run().stdout, /## Milestone v2\.0\n/);
+  assert.match(run('--cached-only').stdout, /## Milestone v2\.0\n/);
+});
+
+test('v0.10.0: the session-start page is capped at a line, and says where the whole page is', () => {
+  const page = Array.from({ length: 400 }, (_, i) => `- line ${i} ${'x'.repeat(40)}`).join('\n');
+  const capped = capPage(page, 8192);
+  assert.ok(Buffer.byteLength(capped) <= 8192, String(Buffer.byteLength(capped)));
+  assert.match(capped, /\n- line \d+ x+\n… \(cut at 8 KB: turbo-run brief prints the whole page\)\n$/);
+  assert.equal(capPage('short\n', 8192), 'short\n');
 });
 
 test('turbo-run brief prints the page of a project from its own records, and --json the data', () => {

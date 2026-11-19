@@ -103,6 +103,32 @@ test('a refused push or a CI timeout goes to the owner and keeps the slot; the l
   assert.equal(readSlotRecord(p.slot).job.state, 'active');
 });
 
+test('v0.9.2: a refused push the owner allowed and turbo then pushed leaves no stale needs-owner lane record', async () => {
+  // seen live on obs-chat phase 36 (2026-11-12 15:48Z): push refused → turbo-run push-allow → «pushed 7776883», and 7 s
+  // later «phase 36 needs the owner» with the refused text: the follow-up only waited for CI (outcome wait), so the
+  // supervisor read the lane record this follow-up had written at the refusal, and it stayed needs-owner
+  const { p, m, sha } = await merged({ push: { mode: 'after-phase', ci: 'github' } });
+  const id = mergeState(p.root, '3').pushRequestId;
+  writeJsonAtomic(recordFile(p.root, '3'), { requestId: id, phase: '3', remote: 'origin', at: 'x', outcome: 'refused', branch: 'main', sha, findings: [{ file: 'a.log', kind: 'forbidden name *.log' }] });
+  assert.equal((await mergeFollowUp(m.ctx, laneOf(p))).outcome, 'needs-owner');
+  assert.equal(readLaneStatus(p.root, '3').status, 'needs-owner');
+  // the owner's push-allow: the same request scanned again and pushed; CI runs
+  ciRecord(p, sha, 'pending', { requestId: id });
+  assert.equal((await mergeFollowUp(m.ctx, laneOf(p))).outcome, 'wait');
+  const lane = readLaneStatus(p.root, '3');
+  assert.equal(lane.status, 'ready', 'the lane record is the merged lane\'s again, never the refusal\'s');
+  assert.doesNotMatch(lane.reason, /nothing was pushed/);
+  assert.equal(mergeState(p.root, '3').ownerNotified ?? null, null);
+  // a lane record the follow-up did not write (the lane asked something itself) is left as it is
+  writeJsonAtomic(recordFile(p.root, '3'), { requestId: id, phase: '3', remote: 'origin', at: 'x', outcome: 'refused', branch: 'main', sha, findings: [{ file: 'b.log', kind: 'forbidden name *.log' }] });
+  assert.equal((await mergeFollowUp(m.ctx, laneOf(p))).outcome, 'needs-owner');
+  const { writeLaneStatus } = await import('../lib/run-status.mjs');
+  writeLaneStatus(p.root, '3', 'needs-owner', { reason: 'owner question ask-4' });
+  ciRecord(p, sha, 'pending', { requestId: id });
+  assert.equal((await mergeFollowUp(m.ctx, laneOf(p))).outcome, 'wait');
+  assert.equal(readLaneStatus(p.root, '3').reason, 'owner question ask-4');
+});
+
 test('a superseded CI watch follows the later push that holds the merge (Review Focus 5)', async () => {
   const { p, m, sha } = await merged({ push: { mode: 'after-phase', ci: 'github' } });
   ciRecord(p, sha, 'superseded');

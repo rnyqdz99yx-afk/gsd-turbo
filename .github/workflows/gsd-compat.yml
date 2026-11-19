@@ -9,6 +9,8 @@ on:
     - cron: '17 4 * * *'
   workflow_dispatch:
   push:
+    # branches only: a release tag points at a commit that already ran
+    branches: ['**']
     paths:
       - .github/workflows/gsd-compat.yml
       - scripts/gsd-compat.mjs

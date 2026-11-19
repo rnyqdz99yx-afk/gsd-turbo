@@ -1312,7 +1312,9 @@ async function main() {
       const lanePhases = [...new Set((sup ? supervisorLanes(sup) : []).filter((l) => l.phase != null).map((l) => String(l.phase)))];
       const lanes = lanePhases.map((phase) => {
         const r = readLaneStatus(root, phase);
-        return { phase, status: r?.status ?? null, reason: r?.reason ?? '' };
+        // the merge record: a lane merged into the main branch keeps its `ready` record until the phase is closed
+        const m = mergeState(root, phase);
+        return { phase, status: r?.status ?? null, reason: r?.reason ?? '', merged: Boolean(m?.mergeSha), closed: Boolean(m?.completed), mergeNote: m?.mergeSha && !m?.completed ? String(m.reason ?? '') : '' };
       });
       // the notes of the phases still open: a closed phase's notes are history
       const notePhases = phases.filter((p) => !p.complete && !p.closed).map((p) => String(p.number));

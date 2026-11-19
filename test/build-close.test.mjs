@@ -257,6 +257,36 @@ test('close in a checkout: phase.complete, one commit, the done record', async (
   }
 });
 
+// GSD 1.22 (#6293) ticks a row whose Status carries a note and drops the note: the close puts it back and says so
+test('close in a checkout: a requirement row with a note in its Status stays as written and the step says so', async (t) => {
+  const NOTE = 'Pending (waits for a live check)';
+  const h = {};
+  const gsd = (args, { json = true } = {}) => {
+    const core = gsdCoreDir(h.root);
+    const out = json ? runGsdJson(core, args, { cwd: h.root }) : gsdText(core, h.root, args);
+    if (args[1] === 'phase.complete') fs.writeFileSync(h.req, fs.readFileSync(h.req, 'utf8').replaceAll('- [ ]', '- [x]').replace(`| ${NOTE} |`, '| Complete |').replace('| Pending |', '| Complete |'));
+    return out;
+  };
+  const setup = (x) => {
+    h.root = x.root;
+    h.req = path.join(x.root, '.planning', 'REQUIREMENTS.md');
+    x.write('.planning/REQUIREMENTS.md', fs.readFileSync(h.req, 'utf8').replace('| DEMO-01 | Phase 5 | Pending |', `| DEMO-01 | Phase 5 | ${NOTE} |`));
+    x.commit('docs: a requirement waits for a live check');
+  };
+  const r = await closeRig(t, { deps: { gsd }, setup });
+  assert.equal(await runStep(r.ctx, 'close'), 'done');
+  const text = fs.readFileSync(h.req, 'utf8');
+  assert.match(text, /^- \[ \] \*\*DEMO-01\*\*: greet works$/m);
+  assert.match(text, /^\| DEMO-01 \| Phase 5 \| Pending \(waits for a live check\) \|$/m);
+  assert.match(text, /^- \[x\] \*\*DEMO-02\*\*: farewell works$/m);
+  assert.match(text, /^\| DEMO-02 \| Phase 5 \| Complete \|$/m);
+  assert.equal(r.ctx.state.steps.close.why, `1 requirement row(s) kept as written (GSD would mark them Complete and drop the note): DEMO-01 «${NOTE}»`);
+  assert.deepEqual(r.ctx.state.keptRequirements, [{ id: 'DEMO-01', status: NOTE }]);
+  // the same line is in the supervisor log, where the controller reads
+  assert.match(fs.readFileSync(path.join(logsDir(r.root), 'supervisor.log'), 'utf8'), /phase 5 build: step close done: 1 requirement row\(s\) kept as written/);
+  assert.equal(r.git('status', '--porcelain', '--untracked-files=no', '--', '.planning/REQUIREMENTS.md'), '', 'what was put back is what the close committed');
+});
+
 // A slot of phase 5 (Stage 4 L0's helpers) with the build state's B4 fields, gsd-tools answered by a stub.
 async function slotRig(t, { integrate = null, turbo = {}, script = {}, gsd: gsdFake = null } = {}) {
   const p = laneProject({ job: { kind: 'phase', phase: '5' }, files: { [`${REL}/05-CONTEXT.md`]: '# Context\n', [`${REL}/05-VERIFICATION.md`]: verification('passed'), '.planning/ROADMAP.md': '# Roadmap\n\n### Phase 5: Demo Feature\n' } });

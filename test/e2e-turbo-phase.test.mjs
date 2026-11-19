@@ -10,8 +10,7 @@ import { UAT } from './fixtures/uat-sample.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
 import { STEPS, readProgress } from '../lib/phase-progress.mjs';
 import { readLaneStatus } from '../lib/run-status.mjs';
-import { gsdCoreDir } from '../lib/paths.mjs';
-import { readVersion, versionInRange } from '../lib/gsd.mjs';
+import { REAL_CORE, REAL_GSD } from './helpers/real-gsd.mjs';
 
 const CONFIG = '{\n  "commit_docs": true,\n  "workflow": {\n    "research": true\n  }\n}\n';
 const HOOKS = {
@@ -132,8 +131,8 @@ test('a scripted /turbo-phase run drives every deterministic step and leaves GSD
   const uatFile = path.join(root, dir, '03-UAT.md');
   const signed = fs.readFileSync(uatFile, 'utf8').replace('expected: the release is signed\nresult: [pending]', 'expected: the release is signed\nresult: pass');
   fs.writeFileSync(uatFile, signed);
-  const realCore = gsdCoreDir(null, process.env);
-  if (realCore && versionInRange(readVersion(realCore))) {
+  const realCore = REAL_CORE;
+  if (REAL_GSD) {
     write('.planning/ROADMAP.md', '# Roadmap\n\n### Phase 3: Demo\n**Goal**: demo\n');
     // a failing verdict exits 1 (GSD #5170): read the JSON at any exit status so the checks are shown
     const r = spawnSync(process.execPath, [path.join(realCore, 'bin', 'gsd-tools.cjs'), 'phase', 'uat-passed', '3', '--uat-only', '--cwd', root], { encoding: 'utf8', stdio: 'pipe' });

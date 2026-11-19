@@ -81,7 +81,7 @@ That's it. The run shows up on the right of any Claude Code session in the proje
 
 - **Permissions.** Background sessions run with `--permission-mode bypassPermissions` so nobody has to approve tool calls. Your Claude Code hooks still apply. For a stricter first run, set `lane_permission_mode` in `.planning/turbo/config.json` ([config](docs/reference.md#config)).
 - **Usage.** Phases run on your model in the background with parallel helpers and automated UAT. Expect to hit your plan's limits faster than with plain GSD.
-- **GSD version.** Tested with GSD core 1.16.x to 1.22.x. With another version `turbo-run doctor` drops to a safe mode, or refuses to start if GSD changed incompatibly.
+- **GSD version.** Tested with GSD core 1.16.x to 1.22.x. On a newer GSD `turbo-run doctor` checks what turbo reads from it and keeps working with a warning when the checks pass; it drops to a safe mode when they do not or when GSD is older, and refuses to start if GSD changed incompatibly.
 - **What stays yours.** Signatures, your accounts on third-party sites, physical devices, 2FA, money. The run does everything else first, then stops and asks. A safe question you leave open for an hour (a plan's recommended choice, a check its automated evidence decides) is taken by turbo itself and notified, with an undo command ([which ones](docs/reference.md#owner-questions)).
 - **Safety rails.** No force-push, no rewriting published history, no data deletion without a dry run, no overwriting a running executable. Details in [Safety](docs/reference.md#safety).
 - **Update** with `/turbo-update`; **uninstall** with `node install.mjs --uninstall` ([what to check first](docs/reference.md#uninstall)).
@@ -113,7 +113,7 @@ The [full reference](docs/reference.md) covers every command, the config, owner 
 4. ✅ **Parallel phases** — `/turbo-plan-milestone`: every future phase prepared ahead at once; several phases running side by side with shared-resource locks and merging.
 5. ✅ **Adoption** — `/turbo-adopt`: plug turbo into a milestone that is already in progress — where it stands, what was skipped, all questions up front, a plan for the rest.
 6. ✅ **Lean turbo** — ✅ the lean GSD profile: no gates that catch nothing, less thinking and reading, one fixer pass, one full test run per phase, `turbo-run cost` *(v0.5)*; ✅ the build path: code conducts the phase, and each plan starts in its own short session as soon as the plans it needs are merged *(v0.6)*; ✅ park a phase so the phases after it go on, and notes to a running phase *(v0.7)*.
-7. ✅ **Ready to share** — turbo's own failures become reports that your Claude Code agent checks, writes up and offers to send (nothing of your project in them, nothing sent without your yes); `/turbo-update` installs the newest version *(v0.8, current)*.
+7. ✅ **Ready to share** — turbo's own failures become reports that your Claude Code agent checks, writes up and offers to send (nothing of your project in them, nothing sent without your yes); `/turbo-update` installs the newest version *(v0.8)*; a GSD newer than the tested versions is checked instead of being refused by its number, a note in a requirement's status survives the phase close, and `turbo-run brief` gives the session that resumes work one page *(v0.9, current)*.
 
 ## License
 

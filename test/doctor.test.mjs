@@ -7,6 +7,7 @@ import { doctor, supportsMods } from '../lib/doctor.mjs';
 import { mainProject, slotFixture } from './helpers/slots.mjs';
 import { setupSlots, slotPath } from '../lib/slots.mjs';
 import { trustLine, untrustSlot } from '../lib/trust.mjs';
+import { GSD_FILES } from '../lib/contract.mjs';
 
 function env() {
   const home = tmpDir('home');
@@ -149,11 +150,57 @@ test('unsupported when claude too old', () => {
   assert.ok(r.checks.some((c) => c.name === 'claude-version' && !c.ok));
 });
 
-test('safe mode when GSD version is outside the tested range', () => {
-  const e = env();
-  fs.writeFileSync(path.join(e.core, 'VERSION'), '1.23.0');
-  const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: execOk('2.1.291'), claudeBin: BIN });
-  assert.equal(r.mode, 'safe');
+test('safe mode when the GSD version is older than the tested range or of another major: the number decides, nothing is asked', () => {
+  for (const version of ['1.15.9', '2.0.0']) {
+    const e = env();
+    fs.writeFileSync(path.join(e.core, 'VERSION'), version);
+    const asked = [];
+    const exec = (cmd, args) => { asked.push(args.join(' ')); return execOk('2.1.291')(cmd, args); };
+    const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: BIN });
+    assert.equal(r.mode, 'safe', version);
+    assert.deepEqual(r.checks.find((c) => c.name === 'gsd-version'), { name: 'gsd-version', ok: false, detail: `${version} (tested >=1.16.0 <1.23.0)` });
+    assert.ok(!asked.some((a) => a.includes('config-get workflow.no_such_key_turbo')), 'no read checks on a version that is not newer');
+  }
+});
+
+// A GSD newer than the tested range: the read checks of what turbo uses decide (lib/contract.mjs).
+test('a GSD newer than the tested range: full mode with a warning when the read checks pass, safe mode naming the check that fails', () => {
+  const newer = () => {
+    const e = env();
+    fs.writeFileSync(path.join(e.core, 'VERSION'), '1.23.0');
+    for (const f of GSD_FILES.agents) fs.writeFileSync(path.join(e.home, 'agents', f), 'x');
+    for (const f of GSD_FILES.core) {
+      fs.mkdirSync(path.dirname(path.join(e.core, ...f.split('/'))), { recursive: true });
+      fs.writeFileSync(path.join(e.core, ...f.split('/')), 'x');
+    }
+    return e;
+  };
+  // gsd-tools of a 1.23 that still answers what turbo reads; absent: what a key that is not set prints with --default
+  const exec = (absent) => (cmd, args) => {
+    if (args.includes('workflow.no_such_key_turbo')) return absent;
+    if (args.includes('workflow.security_enforcement')) return 'false\n';
+    return execOk('2.1.291')(cmd, args);
+  };
+  const e = newer();
+  const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec: exec('__turbo_absent__\n'), claudeBin: BIN });
+  assert.equal(r.mode, 'full', JSON.stringify(r.checks));
+  assert.deepEqual(r.checks.find((c) => c.name === 'gsd-version'), {
+    name: 'gsd-version', ok: true, warn: true,
+    detail: '1.23.0 is newer than the tested range (>=1.16.0 <1.23.0): 5 read checks of what turbo uses passed; what turbo writes through GSD is not checked on this version; turbo-run update brings a release tested with it',
+  });
+  const b = newer();
+  const bad = doctor({ root: b.root, env: { CLAUDE_CONFIG_DIR: b.home }, exec: exec('null\n'), claudeBin: BIN });
+  assert.equal(bad.mode, 'safe');
+  assert.deepEqual(bad.checks.find((c) => c.name === 'gsd-version'), {
+    name: 'gsd-version', ok: false,
+    detail: '1.23.0 (tested >=1.16.0 <1.23.0); on this version: config-get --default --raw: a key that is not set printed "null", not the default',
+  });
+  // a GSD file turbo's prompts name is gone in the newer version
+  const g = newer();
+  fs.rmSync(path.join(g.core, 'workflows', 'plan-phase.md'));
+  const gone = doctor({ root: g.root, env: { CLAUDE_CONFIG_DIR: g.home }, exec: exec('__turbo_absent__\n'), claudeBin: BIN });
+  assert.equal(gone.mode, 'safe');
+  assert.match(gone.checks.find((c) => c.name === 'gsd-version').detail, /on this version: gsd files: missing: workflows\/plan-phase\.md$/);
 });
 
 test('unsupported without a .planning project', () => {

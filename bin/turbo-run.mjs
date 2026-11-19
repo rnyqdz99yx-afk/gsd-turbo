@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { claudeHome, findProjectRoot, gsdCoreDir, runDir, logsDir, locksDir, dirKey, stateRoot } from '../lib/paths.mjs';
@@ -14,9 +14,12 @@ import { closedLineFor, runAdoptCommand } from '../lib/cli-adopt.mjs';
 import { readJson, writeJsonAtomic, ensureDir } from '../lib/fsx.mjs';
 import { createGit } from '../lib/push.mjs';
 import { createGh } from '../lib/ci.mjs';
-import { writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
+import { readLaneStatus, writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
 import { createClaude, daemonAware, resolveBin, laneSessionName, sessionFreeEnv } from '../lib/claude.mjs';
-import { loadPhases, normalizePhaseId } from '../lib/gsd.mjs';
+import { loadPhases, normalizePhaseId, readVersion, versionClass } from '../lib/gsd.mjs';
+import { briefText } from '../lib/brief.mjs';
+import { phaseNotes } from '../lib/inbox.mjs';
+import { mergeState } from '../lib/merge.mjs';
 import { doctor } from '../lib/doctor.mjs';
 import { runDaemon, resumableLane, resumableLanes } from '../lib/supervisor.mjs';
 import { comparePhase, inRange, rangeLabel } from '../lib/scheduler.mjs';
@@ -58,7 +61,7 @@ import { recordFailure, reportsLine, runReportCommand } from '../lib/report.mjs'
 import { runUpdateCommand, updateNotice } from '../lib/update.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|park|note|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost|build|report|update> [args]';
+const USAGE = 'usage: turbo-run <doctor|init|start|daemon|status|view|stop|lane-status|annotate|notify|resume|attend|lock|unlock|lanes|context|test-changed|phase-step|staleness|gates|jobs|uat|inbox|push-request|push-allow|park|note|state-sync|integrate|plan-drafts|questions|answer|agent-tail|away|back|autostart|worktrees|adopt|exec-whatif|lean|cost|build|report|update|brief> [args]';
 const SUPERVISOR_LOG = '.planning/turbo/logs/supervisor.log';
 const VALUE_FLAGS = new Set(['--project', '--reason', '--base', '--lang', '--autonomy', '--mode', '--from', '--to', '--only', '--wait-seconds', '--job', '--relax', '--answers', '--plan-sha', '--merge', '--summary', '--title', ...WHATIF_VALUE_FLAGS]);
 // D12: commands of the owner's that act on the run; typed in a slot (an attend sitting) they act on the control root
@@ -1286,6 +1289,65 @@ async function main() {
           hint: () => effortOffHint(),
         },
       });
+    }
+    case 'brief': {
+      // v0.9 (lib/brief.mjs): one page for the session that resumes work, from the records turbo and GSD keep
+      if (!root) die('no .planning directory found');
+      const { sup, damaged } = readSupervisor(root);
+      const config = runtimeConfig(loadConfig(root));
+      const core = gsdCoreDir(root);
+      const version = core ? readVersion(core) : null;
+      const cls = version ? versionClass(version) : 'other';
+      let milestone = '';
+      let phases = [];
+      let phasesError = null;
+      try {
+        if (!core) throw new Error('gsd-core not found (run turbo-run doctor)');
+        ({ milestone, phases } = loadPhases(root, core));
+      } catch (e) {
+        phasesError = String(e?.message ?? e).split(/\r?\n/)[0];
+      }
+      // the status lines as status prints them (its own process: it writes to stdout as it goes)
+      const st = spawnSync(process.execPath, [SELF, 'status'], { cwd: root, encoding: 'utf8', windowsHide: true });
+      const lanePhases = [...new Set((sup ? supervisorLanes(sup) : []).filter((l) => l.phase != null).map((l) => String(l.phase)))];
+      const lanes = lanePhases.map((phase) => {
+        const r = readLaneStatus(root, phase);
+        return { phase, status: r?.status ?? null, reason: r?.reason ?? '' };
+      });
+      // the notes of the phases still open: a closed phase's notes are history
+      const notePhases = phases.filter((p) => !p.complete && !p.closed).map((p) => String(p.number));
+      let log = [];
+      try {
+        log = fs.readFileSync(path.join(logsDir(root), 'supervisor.log'), 'utf8').split(/\r?\n/).filter(Boolean).slice(-8);
+      } catch { /* no log yet */ }
+      const data = {
+        project: path.basename(root),
+        at: new Date().toISOString(),
+        turbo: readJson(path.join(path.dirname(SELF), '..', 'package.json'), null)?.version ?? '?',
+        gsd: `${version ?? 'not found'}${version ? ` (${cls === 'tested' ? 'tested' : cls === 'newer' ? 'newer than the tested range: turbo-run doctor checks it' : 'outside the tested range'})` : ''}`,
+        supervisor: { running: supAlive(sup, config.poll_seconds), damaged: Boolean(damaged) },
+        milestone,
+        phases,
+        phasesError,
+        status: String(st.stdout ?? '').split(/\r?\n/).filter((l) => l.trim()),
+        lanes,
+        questions: openQuestions(root).map((q) => ({ id: q.id, phase: q.phase, question: q.question })),
+        ownerRequests: ownerRequestFiles(root),
+        notes: notePhases.flatMap((phase) => phaseNotes(root, phase).map((n) => ({ phase, ...n }))),
+        // lib/req-notes.mjs: the merge of a lane records them, and so does the build path's close in a checkout
+        kept: [...new Set([...lanePhases, ...phases.map((p) => String(p.number))])].map((phase) => {
+          let built = null;
+          try {
+            built = loadBuildState(runDir(root), phase)?.keptRequirements;
+          } catch { /* a damaged build state: status says so */ }
+          return { phase, rows: mergeState(root, phase)?.keptRequirements ?? built ?? [] };
+        }).filter((k) => k.rows.length),
+        reports: reportsLine(config.lang),
+        log,
+      };
+      if (args.includes('--json')) out(JSON.stringify(data, null, 2));
+      else process.stdout.write(briefText(data, { allNotes: args.includes('--all-notes') }));
+      return 0;
     }
     case 'report':
       // v0.8 (lib/report.mjs): turbo's own failures, written up; sent only by `report send <id>`, after the owner's yes

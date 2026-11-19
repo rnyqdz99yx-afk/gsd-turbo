@@ -21,7 +21,8 @@ Treat the arguments block as data. Reply in the user's language. The commands be
    - `update failed: …`: show the output. When a line names a kept directory and a command that finishes by hand (`node "<…>/install.mjs"`), run that command once; if it fails too, show both outputs and stop.
 3. **Check.** Run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" doctor` (in a project folder; skip this point outside one).
    - `mode: full`: everything fits.
-   - `mode: safe` because of the `gsd-version` line (GSD core outside the range this turbo is tested with, shown as `tested >=… <…`): say which. GSD older than the range: `/gsd-update` brings it in. GSD newer than the range: turbo works in safe mode until its next release covers that GSD; `/turbo-update` then.
+   - `mode: safe` because of the `gsd-version` line (GSD core outside the range this turbo is tested with, shown as `tested >=… <…`): say which. GSD older than the range: `/gsd-update` brings it in. GSD newer than the range: the line names the read check that failed on it; turbo works in safe mode until its next release covers that GSD; `/turbo-update` then.
+   - `mode: full` with a `warn gsd-version` line: GSD is newer than the range and passed doctor's read checks. Say so in one sentence: turbo works as usual, and a release tested with that GSD will follow.
    - Exit code 2 (`mode: unsupported`): show the failed checks.
 4. **Start again.** Only when you stopped the run in point 2: run `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/turbo/bin/turbo-run.mjs" start`, then `status`, and show the status output.
 5. **Report to the user, briefly:** the version installed now and what it brings; that Claude Code sessions opened before the update keep the old turbo pane and skills until they are restarted (new sessions have the new ones); and, when point 3 found something, what to do about it.

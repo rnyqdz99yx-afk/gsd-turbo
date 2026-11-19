@@ -202,6 +202,28 @@ test('after the merge: phase.complete in main and one commit with ROADMAP and ST
   assert.deepEqual([st.completed, st.completeSha, st.finalSha, st.pushRequestId], [true, r.sha, r.sha, null]);
 });
 
+// GSD 1.22 (#6293) ticks a row whose Status carries a note and drops the note: the merge puts it back and says so
+test('after the merge: a requirement row with a note in its Status stays as written; the bare one is ticked; the log names the row', async () => {
+  const NOTE = 'Pending (waits for a live check)';
+  const req = (one, two, box1, box2) => `# Requirements\n\n- [${box1}] **REQ-1**: one\n- [${box2}] **REQ-2**: two\n\n| Requirement | Phase | Status |\n|---|---|---|\n| REQ-1 | Phase 3 | ${one} |\n| REQ-2 | Phase 3 | ${two} |\n`;
+  const p = laneProject({ files: { '.planning/REQUIREMENTS.md': req(NOTE, 'Pending', ' ', ' ') } });
+  finishPhase(p);
+  reportReady(p);
+  const base = fakeGsd();
+  const gsd = (args, o) => {
+    const out = base(args, o);
+    if (args[1] === 'phase.complete') fs.writeFileSync(path.join(o.cwd, '.planning', 'REQUIREMENTS.md'), req('Complete', 'Complete', 'x', 'x'));
+    return out;
+  };
+  const m = mergeCtx(p, { gsd });
+  const r = await mergeReady(m.ctx, laneOf(p));
+  assert.equal(r.outcome, 'merged', r.reason);
+  assert.equal(p.inMain('show', 'HEAD:.planning/REQUIREMENTS.md'), req(NOTE, 'Complete', ' ', 'x').trimEnd());
+  assert.equal(p.inMain('status', '--porcelain', '--untracked-files=no'), '');
+  assert.ok(m.logs.includes(`merge p3: 1 requirement row(s) kept as written (GSD would mark them Complete and drop the note): REQ-1 «${NOTE}»`), m.logs.join('\n'));
+  assert.deepEqual(mergeState(p.root, '3').keptRequirements, [{ id: 'REQ-1', status: NOTE }]);
+});
+
 test('S3: core.autocrlf=true in main, LF in the slot: equal blobs, the digest re-stamped over main\'s bytes, phase.complete passes, one commit (Review Focus 3)', async () => {
   const p = laneProject();
   finishPhase(p);

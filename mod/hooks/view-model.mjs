@@ -1286,6 +1286,16 @@ export function answerArgv({ node, turboRun, root, question, option = null, text
 // The argv of the view read: the project is named, never taken from the working directory. --watchdog: the read on
 // the clock also tells the owner once when the supervisor died without a word (lib/watchdog.mjs).
 export const viewArgv = ({ node, turboRun, root }) => [node, turboRun, 'view', '--project', root, '--json', '--watchdog'];
+// v0.10.0: the brief a session start hands to the model (turbo-run brief --session-start prints it, or nothing in
+// turbo's own sessions, where turbo does not run, when it is turned off and on any failure)
+export const briefArgv = ({ node, turboRun, root }) => [node, turboRun, 'brief', '--session-start', '--project', root];
+// The classic SessionStart result with the page added after what other hooks gave; nothing printed: as it was.
+export function withBrief(result, out) {
+  const page = typeof out === 'string' ? out.trim() : '';
+  if (!page) return result;
+  const r = result && typeof result === 'object' ? result : {};
+  return { ...r, additionalContext: [...(Array.isArray(r.additionalContext) ? r.additionalContext : []), page] };
+}
 
 // The directory turbo-run runs in: its install directory (<dir>/bin/turbo-run.mjs → <dir>), never the project, where
 // a node version manager (Volta, asdf, mise) would follow the project's pin. A network share keeps its //server/share

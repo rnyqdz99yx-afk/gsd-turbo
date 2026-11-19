@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, STEPS, TEXT, TONES, WORDS, runSummary, afterAnswer, commitSummary, currentAction, phaseSteps, whatNext, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, clean, clockText, cut, errorWords, notSentToast, turboDir, viewArgv, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, paneLines, parseView, refreshMs, render, shouldAutoOpen, spanText, textWidth, toastsFor, turboRunPath, verdict } from '../mod/hooks/view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, STEPS, TEXT, TONES, WORDS, runSummary, afterAnswer, commitSummary, currentAction, phaseSteps, whatNext, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, clean, clockText, cut, errorWords, notSentToast, turboDir, viewArgv, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, openField, paneLines, parseView, refreshMs, render, shouldAutoOpen, spanText, textWidth, toastsFor, turboRunPath, verdict, briefArgv, withBrief } from '../mod/hooks/view-model.mjs';
 
 const AT = '2026-01-01T11:00:00.000Z';
 const agent = (over) => ({ agentId: 'a1', type: 'gsd-executor', description: '', plan: '32-07', task: '2', model: 'opus', worktreeBranch: null, state: 'running', action: { tool: 'Edit', detail: 'lib/x.mjs' }, startedAt: '2026-01-01T10:54:00.000Z', lastAt: '2026-01-01T10:59:50.000Z', elapsedMs: 360000, tokens: 166000, sessionId: 's', transcript: 't', ...over });
@@ -796,13 +796,15 @@ async function session(name, { surfaces = ['terminal'], placed = [true], read = 
   });
   const BIN = '/home/dev/.claude/turbo/bin/turbo-run.mjs';
   const runs = [];
+  // v0.10.0: the brief a classic SessionStart asks for, kept apart from the view reads
+  const briefs = [];
   const opens = [];
   const asked = [];
   const $ = {
     session: { cwd: async () => '/work', surfaces: async () => surfaces },
     fs: { exists: async (p) => ['/work/.planning', '/work/.planning/turbo', BIN, '/usr/bin/node'].includes(p) },
     env: { get: async (n) => ({ CLAUDE_CONFIG_DIR: '/home/dev/.claude', PATH: '/usr/bin' })[n] },
-    process: { run: async (argv) => (runs.push(argv), { exitCode: 0, stdout: JSON.stringify(read), stderr: '' }) },
+    process: { run: async (argv) => (argv[2] === 'brief' ? (briefs.push(argv), { exitCode: 0, stdout: '# turbo brief: work\n', stderr: '' }) : (runs.push(argv), { exitCode: 0, stdout: JSON.stringify(read), stderr: '' })) },
     clock: { sleep: () => new Promise(() => {}), every: (ms) => ({ ms, cancel() {} }) },
     ui: {
       open: async (o) => (opens.push(o), { isPlaced: placed[Math.min(opens.length - 1, placed.length - 1)] }),
@@ -815,8 +817,18 @@ async function session(name, { surfaces = ['terminal'], placed = [true], read = 
   const start = (isInteractive = true) => hooks['session.start']($, { cwd: '/work', surface: isInteractive && surfaces.length ? 'terminal' : null, isInteractive }, (e) => ({ cwd: e.cwd }));
   const classic = (source) => hooks['classic.SessionStart']($, { hook_event_name: 'SessionStart', source }, () => ({}));
   const band = async () => spanText(await hooks['ui.render:AbovePrompt']($, { component: 'AbovePrompt' }, async () => null) ?? '');
-  return { hooks, runs, opens, asked, settle, start, classic, band };
+  return { hooks, runs, briefs, opens, asked, settle, start, classic, band };
 }
+
+test('v0.10.0: every classic SessionStart hands the brief to the model in a turbo project, also where no terminal is attached', async () => {
+  for (const [name, surfaces] of [['brief-terminal', ['terminal']], ['brief-background', []]]) {
+    const s = await session(name, { surfaces });
+    await s.start();
+    const r = await s.classic('startup');
+    assert.deepEqual(r, { additionalContext: ['# turbo brief: work'] }, name);
+    assert.deepEqual(s.briefs, [['/usr/bin/node', '/home/dev/.claude/turbo/bin/turbo-run.mjs', 'brief', '--session-start', '--project', '/work']], name);
+  }
+});
 
 test('a session that resumes in a terminal reads the run and opens the pane by itself, before any band draw or /turbo-view (Gap 1)', async () => {
   for (const [name, order] of [['resume', ['start', 'resume']], ['resume-first', ['resume', 'start']], ['startup', ['start', 'startup']]]) {
@@ -1582,4 +1594,15 @@ test('one lane waits for the owner while another runs: the run goes on, amber, n
   // the supervisor does not run: no lane goes on
   assert.equal(verdict(two({ supervisor: { running: false, pid: null, finished: false, halted: false, failingSince: null } })).kind, 'supStopped');
   assert.ok(!lines(two()).some((l) => /Reason: ;|owner question/.test(l)), lines(two()).join('\n'));
+});
+
+test('v0.10.0: the session start asks turbo-run for the brief and hands the page to the model with what other hooks gave', () => {
+  assert.deepEqual(briefArgv({ node: 'C:/nodejs/node.exe', turboRun: 'C:/home/.claude/turbo/bin/turbo-run.mjs', root: 'D:/proj' }), ['C:/nodejs/node.exe', 'C:/home/.claude/turbo/bin/turbo-run.mjs', 'brief', '--session-start', '--project', 'D:/proj']);
+  assert.deepEqual(withBrief({ additionalContext: ['from GSD'], sessionTitle: 't' }, 'page'), { additionalContext: ['from GSD', 'page'], sessionTitle: 't' });
+  assert.deepEqual(withBrief(undefined, 'page'), { additionalContext: ['page'] });
+  // nothing printed (turbo's own session, turned off, a failure): the result as it was
+  const r = { additionalContext: ['x'] };
+  assert.equal(withBrief(r, ''), r);
+  assert.equal(withBrief(r, '   '), r);
+  assert.equal(withBrief(r, null), r);
 });

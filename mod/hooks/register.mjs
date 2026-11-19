@@ -2,10 +2,12 @@
 // .planning/turbo/, reads `turbo-run view --json` on a clock, draws the pane and the band above the prompt, shows
 // toasts, and sends pane answers to `turbo-run answer … --by pane --rev <n>`. Module state is lost on a reload; the
 // next read rebuilds it.
-import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, answerToast, bandLine, bandStyle, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, notSentToast, openField, parseView, refreshMs, render, shouldAutoOpen, turboDir, turboRunPath, viewArgv, wordsFor } from './view-model.mjs';
+import { BACKGROUND_MS, NO_FIELD, PANE_ID, PANE_TITLE, afterAnswer, ancestorDirs, answerArgv, briefArgv, answerToast, bandLine, bandStyle, diffViews, firstLine, isWindowsPath, joinPath, keepDraft, nodeCandidates, notSentToast, openField, parseView, refreshMs, render, shouldAutoOpen, turboDir, turboRunPath, viewArgv, withBrief, wordsFor } from './view-model.mjs';
 
 const VIEW_TIMEOUT_MS = 10000;
 const ANSWER_TIMEOUT_MS = 30000;
+// v0.10.0: how long a session start waits for the brief at most (a kept phase list makes it about half a second)
+const BRIEF_TIMEOUT_MS = 15000;
 const TOAST_MS = 8000;
 
 let root = null; // the project directory whose .planning/ holds turbo/, or null
@@ -84,6 +86,20 @@ async function startReads($) {
     return;
   }
   void refresh($, false);
+}
+
+// v0.10.0: turbo-run brief --session-start in this project, or '' (no turbo here, turbo-run silent or failing, time
+// out): the session's start never waits longer than BRIEF_TIMEOUT_MS for it and never fails for it.
+async function sessionBrief($) {
+  try {
+    if (!root) await locate($);
+    if (!root) return '';
+    await runner($);
+    const r = await $.process.run(briefArgv({ node, turboRun: bin, root }), { cwd: turboDir(bin) || root, timeoutMs: BRIEF_TIMEOUT_MS });
+    return r?.exitCode === 0 ? String(r.stdout ?? '') : '';
+  } catch {
+    return '';
+  }
 }
 
 // bin and node as a read or an answer needs them, looked up again when missing: a press after a failed read still
@@ -302,10 +318,12 @@ export function register(on) {
   // Claude Code trusts: the reads start, and the pane opens by itself when there is something to watch. Where an
   // organization manages Claude Code this event skips installed plugins: the band's first draw starts the reads there.
   // A failure here never holds the session's start (.catch).
+  // v0.10.0: and the model of the new session gets turbo's one-page brief in its context (sessionBrief).
   on('classic.SessionStart', async ($, e, next) => {
     trusted = true;
     await startReads($);
-    return next(e);
+    const r = await next(e);
+    return withBrief(r, await sessionBrief($));
   }).catch(($, e, next) => next(e));
 
   on('command.run', { command: 'turbo-view' }, async ($) => {

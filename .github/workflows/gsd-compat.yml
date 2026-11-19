@@ -1,0 +1,111 @@
+name: GSD compatibility
+
+# Every night: the newest released GSD core against this turbo, without a person. The suites that run the installed GSD
+# (the main CI installs none), then every gsd-tools call turbo makes, the writes included, on a synthetic project with
+# the newest tested GSD and with the newest one, compared by scripts/gsd-compat.mjs. A failure, and a new GSD version
+# that passes, land as an issue in this repository.
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/gsd-compat.yml
+      - scripts/gsd-compat.mjs
+      - lib/gsd-contract.mjs
+      - test/helpers/real-gsd.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gsd-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    outputs:
+      head: ${{ steps.versions.outputs.head }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Versions
+        id: versions
+        run: node scripts/gsd-compat.mjs versions | tee -a "$GITHUB_OUTPUT"
+      - name: Install the newest GSD core into a config directory of its own
+        run: |
+          home="$RUNNER_TEMP/claude-home"
+          mkdir -p "$home"
+          npx --yes "@opengsd/gsd-core@${{ steps.versions.outputs.head }}" --claude --global --config-dir "$home"
+          test -f "$home/gsd-core/VERSION"
+          echo "CLAUDE_CONFIG_DIR=$home" >> "$GITHUB_ENV"
+          echo "installed GSD $(cat "$home/gsd-core/VERSION")"
+      - name: The suites that run the installed GSD
+        env:
+          TURBO_GSD_UNTESTED: '1'
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "ci"
+          set -o pipefail
+          node --test test/gsd-contract.test.mjs test/gsd-compat.test.mjs test/req-notes.test.mjs test/slice-gsd-compat.test.mjs test/state-sync.test.mjs test/build-demo.test.mjs test/build-e2e.test.mjs test/e2e-turbo-phase.test.mjs 2>&1 | tee suites.log
+          if grep -q "is not installed" suites.log; then echo "a suite skipped its real-GSD tests: the installed GSD was not found"; exit 1; fi
+      - name: Every gsd-tools call turbo makes, the newest tested GSD against the newest one
+        if: steps.versions.outputs.base != steps.versions.outputs.head
+        run: |
+          for v in "${{ steps.versions.outputs.base }}" "${{ steps.versions.outputs.head }}"; do
+            mkdir -p "$RUNNER_TEMP/gsd-$v"
+            (cd "$RUNNER_TEMP/gsd-$v" && npm pack --silent "@opengsd/gsd-core@$v" > /dev/null && tar xzf ./*.tgz)
+          done
+          node scripts/gsd-compat.mjs diff \
+            --base "$RUNNER_TEMP/gsd-${{ steps.versions.outputs.base }}/package/gsd-core/bin/gsd-tools.cjs" --base-version "${{ steps.versions.outputs.base }}" \
+            --head "$RUNNER_TEMP/gsd-${{ steps.versions.outputs.head }}/package/gsd-core/bin/gsd-tools.cjs" --head-version "${{ steps.versions.outputs.head }}" \
+            --report report.md
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gsd-compat-${{ matrix.os }}
+          path: |
+            report.md
+            suites.log
+          if-no-files-found: ignore
+
+  # One issue per GSD version and verdict; nothing on a push (a branch under work) or when a tested version passes.
+  report:
+    name: issue
+    needs: check
+    if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+        continue-on-error: true
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head="${{ needs.check.outputs.head }}"
+          if [ -z "$head" ]; then head="$(node scripts/gsd-compat.mjs versions | sed -n 's/^head=//p')"; fi
+          verdict=pass
+          if [ "${{ needs.check.result }}" != "success" ]; then verdict=fail; fi
+          cat reports/*/report.md > report.md 2>/dev/null || true
+          node scripts/gsd-compat.mjs issue --verdict "$verdict" --version "$head" --report report.md --run "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

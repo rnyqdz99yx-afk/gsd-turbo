@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpDir } from './helpers/tmp.mjs';
 import { slicePhase } from './helpers/slices.mjs';
 import { REAL_CORE, NO_REAL_GSD } from './helpers/real-gsd.mjs';
-import { GSD_FILES, gsdUsable, probeGsd } from '../lib/gsd-contract.mjs';
+import { GSD_FILES, gsdUsable, probeGsd } from '../lib/contract.mjs';
 import { GSD_TESTED_RANGE, versionClass } from '../lib/gsd.mjs';
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
@@ -64,7 +64,7 @@ test('GSD_FILES names every GSD file the roles, skills and code refer to, and no
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const f = path.join(dir, e.name);
       if (e.isDirectory()) walk(f);
-      else if (/\.(?:mjs|md)$/.test(e.name) && !f.endsWith(path.join('lib', 'gsd-contract.mjs'))) {
+      else if (/\.(?:mjs|md)$/.test(e.name) && !f.endsWith(path.join('lib', 'contract.mjs'))) {
         const text = fs.readFileSync(f, 'utf8');
         for (const m of text.matchAll(/(?<![A-Za-z0-9_-])((?:workflows|references|templates)\/[A-Za-z0-9_./-]+\.md)/g)) found.add(m[1]);
         for (const m of text.matchAll(/agents\/(gsd-[a-z-]+\.md)/g)) found.add(`agents/${m[1]}`);

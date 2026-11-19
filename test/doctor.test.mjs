@@ -7,7 +7,7 @@ import { doctor, supportsMods } from '../lib/doctor.mjs';
 import { mainProject, slotFixture } from './helpers/slots.mjs';
 import { setupSlots, slotPath } from '../lib/slots.mjs';
 import { trustLine, untrustSlot } from '../lib/trust.mjs';
-import { GSD_FILES } from '../lib/gsd-contract.mjs';
+import { GSD_FILES } from '../lib/contract.mjs';
 
 function env() {
   const home = tmpDir('home');
@@ -163,7 +163,7 @@ test('safe mode when the GSD version is older than the tested range or of anothe
   }
 });
 
-// A GSD newer than the tested range: the read checks of what turbo uses decide (lib/gsd-contract.mjs).
+// A GSD newer than the tested range: the read checks of what turbo uses decide (lib/contract.mjs).
 test('a GSD newer than the tested range: full mode with a warning when the read checks pass, safe mode naming the check that fails', () => {
   const newer = () => {
     const e = env();

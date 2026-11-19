@@ -87,7 +87,8 @@ jobs:
   report:
     name: issue
     needs: check
-    if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    # only a run that finished says something: a cancelled one (a newer push took its place) is neither a pass nor a failure
+    if: always() && (needs.check.result == 'success' || needs.check.result == 'failure') && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -107,7 +108,7 @@ jobs:
         run: |
           head="${{ needs.check.outputs.head }}"
           if [ -z "$head" ]; then head="$(node scripts/gsd-compat.mjs versions | sed -n 's/^head=//p')"; fi
-          verdict=pass
-          if [ "${{ needs.check.result }}" != "success" ]; then verdict=fail; fi
+          verdict=fail
+          if [ "${{ needs.check.result }}" = "success" ]; then verdict=pass; fi
           cat reports/*/report.md > report.md 2>/dev/null || true
           node scripts/gsd-compat.mjs issue --verdict "$verdict" --version "$head" --report report.md --run "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

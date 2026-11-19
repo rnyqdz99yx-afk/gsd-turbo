@@ -87,6 +87,9 @@ test('pickVersions: the newest GSD of the tested range is the base; issuePlan: o
   assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.23.0', cls: 'newer', open: [] }), { action: 'create', title: pass });
   assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.23.0', cls: 'newer', open: [pass] }), { action: 'none', title: null });
   assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.22.0', cls: 'tested', open: [] }), { action: 'none', title: null });
+  // a pass closes the failure issue of that version; the "passes" issue of a newer version follows on the next pass
+  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.23.0', cls: 'newer', open: [fail] }), { action: 'close', title: fail });
+  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.22.0', cls: 'tested', open: ['GSD 1.22.0: the compatibility check fails', fail] }), { action: 'close', title: 'GSD 1.22.0: the compatibility check fails' });
 });
 
 // The synthetic project is one the installed GSD accepts: every call of the list exits 0 on it. On the nightly

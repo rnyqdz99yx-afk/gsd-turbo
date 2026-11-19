@@ -388,11 +388,14 @@ export function pickVersions(versions, latest) {
 const TITLE_FAIL = (v) => `GSD ${v}: the compatibility check fails`;
 const TITLE_PASS = (v) => `GSD ${v} passes the compatibility check: the tested range can take it`;
 
-// What to do in the issue tracker. open: titles of the open issues. -> { action: 'none' | 'create' | 'comment', title }
-// A failure opens one issue per GSD version and comments on it on later nights; a pass of a version above the tested
-// range opens one issue saying the range can be widened; a pass of a tested version does nothing.
+// What to do in the issue tracker. open: titles of the open issues.
+// -> { action: 'none' | 'create' | 'comment' | 'close', title }
+// A failure opens one issue per GSD version and comments on it on later nights. A pass closes that version's failure
+// issue when one is open; otherwise a pass of a version above the tested range opens one issue saying the range can
+// be widened (the night after, when it had a failure issue to close), and a pass of a tested version does nothing.
 export function issuePlan({ verdict, version, cls, open }) {
   if (verdict === 'fail') return { action: open.includes(TITLE_FAIL(version)) ? 'comment' : 'create', title: TITLE_FAIL(version) };
+  if (open.includes(TITLE_FAIL(version))) return { action: 'close', title: TITLE_FAIL(version) };
   if (cls !== 'tested' && !open.includes(TITLE_PASS(version))) return { action: 'create', title: TITLE_PASS(version) };
   return { action: 'none', title: null };
 }
@@ -447,7 +450,8 @@ async function main(argv) {
     if (plan.action === 'create') process.stdout.write(gh('issue', 'create', '-R', REPO, '--title', plan.title, '--body-file', file));
     else {
       const number = JSON.parse(gh('issue', 'list', '-R', REPO, '--state', 'open', '--limit', '200', '--json', 'title,number')).find((i) => i.title === plan.title).number;
-      process.stdout.write(gh('issue', 'comment', String(number), '-R', REPO, '--body-file', file));
+      if (plan.action === 'close') process.stdout.write(gh('issue', 'close', String(number), '-R', REPO, '--comment', `The compatibility check of GSD ${version} passes now.${run ? ` Run: ${run}` : ''}`));
+      else process.stdout.write(gh('issue', 'comment', String(number), '-R', REPO, '--body-file', file));
     }
     return 0;
   }

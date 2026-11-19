@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROLES, fillTemplate, rolePrompt } from '../lib/roles.mjs';
 import { slicePhase, compactPlan, writePlan, DEMO_INFO } from './helpers/slices.mjs';
+import { tmpDir } from './helpers/tmp.mjs';
 
 const BLOCK = [
   '## OWNER QUESTION',
@@ -93,6 +94,15 @@ test('builder prompt: its slice, its files, its SUMMARY, relative paths, within 
   ]) assert.ok(p.includes(s), s);
   assert.ok(!p.includes('\\'), 'no backslash');
   assert.ok(!p.includes('{{'), 'no unfilled placeholder');
+});
+
+test('v0.9.2: builder and fixer are told to build a secret-shaped test value at run time', () => {
+  // obs-chat phase 36 (2026-11-12): a made-up AWS-key-shaped scrubber vector written whole in a test turned the
+  // project's own CI secret scan red after the push; the CI fixer then built it from parts at run time (059a5458)
+  const rule = /A secret-shaped test value \(key, token\) is built from parts at run time, never written whole: secret scans flag it\./;
+  assert.match(rolePrompt('builder', builderCtx()), rule);
+  const root = tmpDir('fixer-root');
+  assert.match(rolePrompt('fixer', { root, phase: '5', contextPath: '.planning/phases/05-x/05-CONTEXT.md', findingsPath: '.planning/turbo/run/build-p5/tests-full-1.log', lang: 'en' }), rule);
 });
 
 test('builder prompt carries the rules the spec fixes', () => {

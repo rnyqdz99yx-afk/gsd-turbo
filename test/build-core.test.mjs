@@ -151,8 +151,9 @@ test('a question the card refuses is rewritten once by the same session, then th
 test('haltQuestion: plain words in the owner\'s language', () => {
   assert.deepEqual(haltQuestion('red', { phase: '5', lang: 'en' }), {
     question: 'Phase 5: the tests stay red after one fix. What should the build do?',
-    // v0.8.1: never an empty context, even with no fact at hand
-    context: 'The test run failed as a whole, not on single tests.',
+    // v0.8.1: never an empty context, even with no fact at hand; v0.9.2: and never a fact it does not have (it said
+    // «The test run failed as a whole», which a card asked without facts cannot know)
+    context: 'The build\'s log has the details.',
     details: [],
     header: 'Tests',
     options: [{ label: 'Try again', description: 'the build runs this step once more' }, { label: 'Stop here', description: 'the phase waits; `turbo-run resume 5` starts it again' }],
@@ -237,6 +238,19 @@ test('the red card: the same red, another red or a part of it; an environment si
   // a module that is a path is a broken import, the code's own fault: never called a fault of the machine
   for (const text of ["Error: Cannot find module './lib/a.js'", "Cannot find module '../b'", "Cannot find module '/srv/app/c.js'", "Cannot find module 'D:\\home\\dev\\d.js'", "code: 'MODULE_NOT_FOUND'"]) assert.equal(envSign(text), null, text);
   assert.equal(envSign("Cannot find package '@scope/pkg' imported from x")?.sign, "Cannot find package '@scope/pkg'");
+});
+
+test('v0.9.2: a halt card asked without facts states none, for every kind: it says where the details are', () => {
+  // the fallback after a refused explanation (askHalt asks again with no facts), or a caller that passes none
+  for (const kind of HALT_KINDS) {
+    for (const facts of [null, {}]) {
+      assert.equal(haltQuestion(kind, { phase: '5', lang: 'en', facts }).context, 'The build\'s log has the details.', `${kind} ${JSON.stringify(facts)}`);
+      assert.equal(haltQuestion(kind, { phase: '5', lang: 'ru', facts }).context, 'Подробности — в журнале сборки.', `${kind} ru`);
+    }
+  }
+  // a red run that names no test is said to fail as a whole only when the run says so (whole), as before
+  assert.equal(haltQuestion('red', { phase: '5', lang: 'en', facts: { now: [], whole: true } }).context, 'The test run failed as a whole, not on single tests.');
+  assert.equal(haltQuestion('red', { phase: '5', lang: 'en', facts: { now: [], line: 'Error: boom' } }).context, 'The details are below.');
 });
 
 test('the security card never says «after one fix» when no fix ran', () => {

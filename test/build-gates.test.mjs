@@ -335,6 +335,14 @@ test('a Go on from the owner\'s assistant is on record as such: the card names t
   assert.match(log, /ask-1 \(halt: verify\) answered by the owner's assistant, not by the owner: go on/);
   assert.equal(await runStep(ctx, 'uat'), 'skipped');
   assert.equal(ctx.state.steps.uat.why, `verification gaps accepted by the owner's assistant, not by the owner (2 goal(s) stay open in ${REL}/05-VERIFICATION.md): nothing to check by hand`);
+  // v0.9.2: the accepted open goals reach the owner's request file (obs-chat phase 35, 2026-11-11 23:09Z: the skip
+  // left no checklist for the live half at all; the open truths lived only in VERIFICATION.md and the build state)
+  const own = fs.readFileSync(path.join(r.root, '.planning', 'turbo', 'run', 'p5-owner.md'), 'utf8');
+  assert.match(own, /^# Phase 5: goals accepted as open/m);
+  assert.match(own, /^- \[ \] the release is live on the server$/m);
+  assert.match(own, /^- \[ \] the keys are rotated$/m);
+  assert.ok(own.includes(`${REL}/05-VERIFICATION.md`), own);
+  assert.ok(own.includes("accepted by the owner's assistant, not by the owner"), own);
   assert.equal(whoAnswered('pane'), 'by the owner');
   assert.equal(whoAnswered('session'), 'by the owner');
   assert.equal(whoAnswered('auto'), 'by turbo itself');

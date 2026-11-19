@@ -90,6 +90,21 @@ test('briefText is one page: the milestone, turbo now, the questions, the newest
   assert.match(bare, /## Milestone\n\n- GSD did not list the phases: gsd-core not found \(run turbo-run doctor\)\n\n## Turbo now\n\n- no status\n\n## Next\n\n- nothing waits\n$/);
 });
 
+test('v0.9.2: the brief names no owner request file of a closed phase, in its own list or in the status lines', () => {
+  // seen on obs-chat 2026-11-19: «owner request: .planning/turbo/run/p33-owner.md» for phase 33, closed weeks before
+  const page = briefText({
+    project: 'demo', at: '2026-11-20T00:00:00.000Z', turbo: '0.9.2', gsd: '1.22.0 (tested)', milestone: 'v1',
+    phases: [phase('33', { complete: true }), phase('36', { closed: true }), phase('37')],
+    status: ['supervisor: not running', 'owner request: .planning/turbo/run/p33-owner.md', 'owner request: .planning/turbo/run/p37-owner.md'],
+    ownerRequests: ['.planning/turbo/run/p33-owner.md', '.planning/turbo/run/p36-owner.md', '.planning/turbo/run/p37-owner.md'],
+  });
+  assert.ok(!page.includes('p33-owner.md') && !page.includes('p36-owner.md'), page);
+  assert.equal(page.split('p37-owner.md').length - 1, 2, page);
+  // no phases read (GSD did not answer): every file stays
+  const blind = briefText({ project: 'demo', at: 'x', turbo: '0.9.2', gsd: '?', phases: [], ownerRequests: ['.planning/turbo/run/p33-owner.md'] });
+  assert.ok(blind.includes('p33-owner.md'), blind);
+});
+
 test('turbo-run brief prints the page of a project from its own records, and --json the data', () => {
   const p = buildProject();
   setManager(gsdCoreDir(p.root), { milestone_version: 'v1.0', phases: [

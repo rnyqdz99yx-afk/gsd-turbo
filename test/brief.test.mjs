@@ -34,6 +34,12 @@ test('nextSteps: questions first, then what waits for the owner, then what the s
   const ready = nextSteps({ supervisor: { running: false }, phases, lanes: [{ phase: '2', status: 'ready', reason: '' }, { phase: '1', status: 'ready', reason: '' }], questions: [] });
   assert.equal(ready.length, 1);
   assert.match(ready[0], /^phase 2 is built and waits for its merge and close: the supervisor does both once it runs \(\/turbo-autonomous\)/);
+  // v0.9.1: merged into the main branch with the close still owed (the lane record stays `ready`): never «waits for its merge»
+  const merged = nextSteps({ supervisor: { running: false }, phases, lanes: [{ phase: '2', status: 'ready', reason: '', merged: true, closed: false, mergeNote: 'phase.complete failed after the merge of phase 2:\nverification is incomplete; the merge stays' }], questions: [] });
+  assert.deepEqual(merged, ["phase 2 is merged into the main branch and not closed yet (GSD's phase.complete is still owed): phase.complete failed after the merge of phase 2: verification is incomplete; the merge stays"]);
+  assert.deepEqual(nextSteps({ supervisor: { running: true }, phases, lanes: [{ phase: '2', status: 'ready', reason: '', merged: true, closed: false, mergeNote: '' }], questions: [] }), ["phase 2 is merged into the main branch and not closed yet (GSD's phase.complete is still owed)"]);
+  // merged and closed by turbo, GSD not yet reporting it complete: nothing to say about the merge
+  assert.deepEqual(nextSteps({ supervisor: { running: true }, phases, lanes: [{ phase: '2', status: 'ready', reason: '', merged: true, closed: true }], questions: [] }), ['the supervisor runs: nothing to do until it asks (turbo-run status --watch shows it)']);
   assert.deepEqual(nextSteps({ supervisor: { running: false }, phases: [phase('1', { closed: true })], lanes: [], questions: [] }), ['every phase of the milestone is complete: /gsd-complete-milestone']);
   assert.deepEqual(nextSteps({ supervisor: { running: false, damaged: true }, phases, lanes: [], questions: [] }), ['the supervisor state is damaged: turbo-run start keeps the file aside and rebuilds the lanes']);
 });

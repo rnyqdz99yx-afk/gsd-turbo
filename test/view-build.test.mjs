@@ -88,6 +88,19 @@ test('v0.9.2: a build lane merged into the main branch whose close is still owed
   assert.equal(lane.build.over, 'merged');
   for (const r of [buildRows(lane.build, 'en'), paneBuildRows(lane.build, 'en')]) assert.equal(r[0].split(' · ')[0], 'Build finished: the phase is merged into the main branch and waits for its close');
   for (const r of [buildRows(lane.build, 'ru'), paneBuildRows(lane.build, 'ru')]) assert.equal(r[0].split(' · ')[0], 'Сборка закончена: фаза влита в основную ветку, ждёт закрытия');
+  // closed by hand afterwards (gsd phase.complete: the ROADMAP box ticked, the merge record never learns it): the
+  // phase is closed, never «still has to be closed»
+  const roadmap = path.join(p.root, '.planning', 'ROADMAP.md');
+  const before = fs.existsSync(roadmap) ? fs.readFileSync(roadmap, 'utf8') : null;
+  fs.writeFileSync(roadmap, '# Roadmap\n\n- [x] **Phase 5: Demo** - the demo (completed 2026-11-20)\n- [ ] **Phase 6: Next** - x\n');
+  const byHand = viewOf(p).lanes[0];
+  assert.equal(byHand.closeOwed, false);
+  assert.equal(byHand.status, 'done');
+  assert.equal(byHand.build.over, 'done');
+  fs.writeFileSync(roadmap, '# Roadmap\n\n- [ ] **Phase 5: Demo** - the demo\n- [x] **Phase 50: Other** - x\n');
+  assert.equal(viewOf(p).lanes[0].closeOwed, true, 'another phase ticked is not this one');
+  if (before === null) fs.rmSync(roadmap);
+  else fs.writeFileSync(roadmap, before);
   // merged and closed by turbo: no close owed
   fs.writeFileSync(path.join(p.root, '.planning', 'turbo', 'run', 'p5-merge.json'), JSON.stringify({ phase: '5', state: 'done', mergeSha: 'abc1234', completed: true, at: ago(1) }));
   assert.equal(viewOf(p).lanes[0].closeOwed, false);

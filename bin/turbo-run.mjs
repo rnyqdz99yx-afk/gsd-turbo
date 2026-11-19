@@ -17,7 +17,7 @@ import { createGh } from '../lib/ci.mjs';
 import { readLaneStatus, writeLaneStatus, isAgentAlive, LANE_STATUSES } from '../lib/run-status.mjs';
 import { createClaude, daemonAware, resolveBin, laneSessionName, sessionFreeEnv } from '../lib/claude.mjs';
 import { loadPhases, normalizePhaseId, readVersion, versionClass } from '../lib/gsd.mjs';
-import { SESSION_START_HEAD, briefText, capPage } from '../lib/brief.mjs';
+import { NOT_READ_AT_START, SESSION_START_HEAD, briefText, capPage, phasesKey, readPhasesCache, writePhasesCache } from '../lib/brief.mjs';
 import { phaseNotes } from '../lib/inbox.mjs';
 import { mergeState } from '../lib/merge.mjs';
 import { doctor } from '../lib/doctor.mjs';
@@ -1311,7 +1311,7 @@ async function main() {
       if (args.includes('--session-start')) {
         try {
           if (!briefAtStart(root)) return 0;
-          const page = spawnSync(process.execPath, [SELF, 'brief'], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+          const page = spawnSync(process.execPath, [SELF, 'brief', '--cached-only'], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60000 });
           if (page.status === 0 && String(page.stdout ?? '').trim()) process.stdout.write(`${SESSION_START_HEAD}\n\n${capPage(page.stdout)}`);
         } catch { /* nothing at all: a session start never fails for turbo */ }
         return 0;
@@ -1326,11 +1326,20 @@ async function main() {
       let milestone = '';
       let phases = [];
       let phasesError = null;
-      try {
-        if (!core) throw new Error('gsd-core not found (run turbo-run doctor)');
-        ({ milestone, phases } = loadPhases(root, core));
-      } catch (e) {
-        phasesError = String(e?.message ?? e).split(/\r?\n/)[0];
+      // v0.10.0: GSD's phase list, kept while the roadmap and the phase files stay the same (lib/brief.mjs phasesKey);
+      // --cached-only (the session start) never waits for GSD
+      const key = phasesKey(root);
+      const kept = readPhasesCache(runDir(root), key);
+      if (kept) ({ milestone, phases } = kept);
+      else if (args.includes('--cached-only')) phasesError = NOT_READ_AT_START;
+      else {
+        try {
+          if (!core) throw new Error('gsd-core not found (run turbo-run doctor)');
+          ({ milestone, phases } = loadPhases(root, core));
+          writePhasesCache(runDir(root), key, { milestone, phases });
+        } catch (e) {
+          phasesError = String(e?.message ?? e).split(/\r?\n/)[0];
+        }
       }
       // the status lines as status prints them (its own process: it writes to stdout as it goes)
       const st = spawnSync(process.execPath, [SELF, 'status'], { cwd: root, encoding: 'utf8', windowsHide: true });

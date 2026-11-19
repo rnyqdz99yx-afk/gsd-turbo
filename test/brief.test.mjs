@@ -142,6 +142,26 @@ test('v0.10.0: brief --session-start prints the page, framed, for a project turb
   silent(run(plain), 'turbo set up, never run');
 });
 
+test('v0.10.0: brief keeps GSD\'s phase list while the roadmap and the phase files stay the same; the session start reads only that', () => {
+  // obs-chat 2026-11-20: turbo-run brief took 10.2 s, 9.8 of them gsd-tools init manager: too long for a session start
+  const p = buildProject();
+  const core = gsdCoreDir(p.root);
+  const manager = (v) => setManager(core, { milestone_version: v, phases: [{ number: '5', name: 'Demo Feature', dep_phases: [], deps_display: '', phase_complete: false, disk_status: 'planned', verification_status: 'missing', is_active: true }] });
+  writeLaneStatus(p.root, '5', 'needs-owner', { reason: 'x' });
+  const run = (...args) => spawnSync(process.execPath, [BIN, 'brief', ...args], { cwd: p.root, encoding: 'utf8', windowsHide: true, env: { ...process.env, TURBO_LANE: '', TURBO_BUILD_LANE: '', CLAUDE_CONFIG_DIR: tmpDir('home') } });
+  manager('v1.0');
+  assert.match(run().stdout, /## Milestone v1\.0\n/);
+  // GSD would answer otherwise now, but nothing GSD reads changed: the kept list
+  manager('v2.0');
+  assert.match(run('--cached-only').stdout, /## Milestone v1\.0\n/);
+  assert.match(run().stdout, /## Milestone v1\.0\n/);
+  // the roadmap changed: the session start does not wait for GSD and says so; a plain brief reads GSD again
+  fs.appendFileSync(path.join(p.root, '.planning', 'ROADMAP.md'), '\n<!-- changed -->\n');
+  assert.match(run('--cached-only').stdout, /- GSD did not list the phases: not read at the session start \(the roadmap or a phase file changed since the last turbo-run brief; it reads them\)\n/);
+  assert.match(run().stdout, /## Milestone v2\.0\n/);
+  assert.match(run('--cached-only').stdout, /## Milestone v2\.0\n/);
+});
+
 test('v0.10.0: the session-start page is capped at a line, and says where the whole page is', () => {
   const page = Array.from({ length: 400 }, (_, i) => `- line ${i} ${'x'.repeat(40)}`).join('\n');
   const capped = capPage(page, 8192);

@@ -5,16 +5,13 @@ import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { rolePrompt } from '../lib/roles.mjs';
 import { lintSlices } from '../lib/slice-lint.mjs';
-import { gsdCoreDir } from '../lib/paths.mjs';
-import { readVersion, versionInRange } from '../lib/gsd.mjs';
 import { slicePhase, DEMO_INFO } from './helpers/slices.mjs';
+import { REAL_CORE as core, NO_REAL_GSD } from './helpers/real-gsd.mjs';
 
 // spec §6.9: the plans and summaries the build path's prompts show are files the installed GSD reads as planned,
 // executed and complete. The format is cut out of the rendered prompts, never retyped: a failure here means the role
 // copy drifted from GSD — fix the copy (roles/*.md), not this test.
-const core = gsdCoreDir(null);
-const realGsd = core && versionInRange(readVersion(core) || '');
-const SKIP = { skip: !realGsd && 'GSD 1.16–1.22 is not installed', timeout: 300000 };
+const SKIP = { skip: NO_REAL_GSD, timeout: 300000 };
 
 const REL = '.planning/phases/05-demo';
 const NO_SIGNALS = { research: { yes: false, why: '' }, security: { yes: false, why: '' } };

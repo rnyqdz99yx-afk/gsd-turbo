@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpGitRepo } from './helpers/tmp.mjs';
 import { runPhaseCommand } from '../lib/cli-phase.mjs';
-import { gsdCoreDir } from '../lib/paths.mjs';
+import { REAL_CORE as core, NO_REAL_GSD } from './helpers/real-gsd.mjs';
 import { readVersion, versionInRange } from '../lib/gsd.mjs';
 import { stateSync, trimStateHistory } from '../lib/state-sync.mjs';
 
@@ -206,9 +206,7 @@ test('state-sync --no-commit writes STATE.md through GSD\'s state commands and l
 
 // Against the installed GSD core when it is the tested version (skipped elsewhere): the position state-sync
 // writes survives the begin-phase call every execute-phase run starts with, and undoes planned-phase's flip.
-const core = gsdCoreDir(null);
-const realGsd = core && versionInRange(readVersion(core) || '');
-const SKIP = { skip: !realGsd && 'GSD 1.16–1.22 is not installed' };
+const SKIP = { skip: NO_REAL_GSD };
 const stateOf = (root) => fs.readFileSync(path.join(root, '.planning', 'STATE.md'), 'utf8');
 function committedFixture(opts) {
   const root = fixture(opts);

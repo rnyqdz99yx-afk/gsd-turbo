@@ -5,14 +5,12 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpDir } from './helpers/tmp.mjs';
-import { gsdCoreDir } from '../lib/paths.mjs';
-import { readVersion, versionInRange } from '../lib/gsd.mjs';
+import { REAL_CORE as core, NO_REAL_GSD } from './helpers/real-gsd.mjs';
 
 // scripts/build-demo.mjs (Stage 6 B4, spec §6.11 item 1): its --dry-run makes the scratch project and starts no claude;
 // the live run is the controller's manual step.
 const SCRIPT = fileURLToPath(new URL('../scripts/build-demo.mjs', import.meta.url));
-const core = gsdCoreDir(null);
-const SKIP = { skip: !(core && versionInRange(readVersion(core) || '')) && 'GSD 1.16–1.22 is not installed', timeout: 120000 };
+const SKIP = { skip: NO_REAL_GSD, timeout: 120000 };
 const tool = (dir, ...args) => {
   const r = spawnSync(process.execPath, [path.join(core, 'bin', 'gsd-tools.cjs'), ...args, '--cwd', dir], { encoding: 'utf8', windowsHide: true });
   return JSON.parse(r.stdout.slice(r.stdout.search(/[{[]/)));

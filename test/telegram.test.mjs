@@ -66,6 +66,24 @@ test('the bot posts JSON to the method URL; a Telegram error or a network failur
   await assert.rejects(slow('getUpdates', {}), (e) => e.message === 'telegram getUpdates failed: timed out' && e.transient === true);
 });
 
+test('v0.9.2: a fetch that fails names its cause: Node says only «fetch failed», the reason is in err.cause', async () => {
+  // seen for weeks on the owner's machine: «getUpdates failed: fetch failed», nothing to find a cause by
+  const cause = Object.assign(new Error(`connect ETIMEDOUT 149.154.167.220:443 bot${TOKEN}`), { code: 'ETIMEDOUT' });
+  const down = createBot({ token: TOKEN, fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { cause }); } });
+  await assert.rejects(down('getUpdates', {}), (e) => {
+    assert.equal(e.message, 'telegram getUpdates failed: fetch failed (ETIMEDOUT: connect ETIMEDOUT 149.154.167.220:443 bot[token])');
+    assert.equal(e.transient, true);
+    return true;
+  });
+  // undici's own errors carry their code on the cause, with a nested cause of their own at times
+  const nested = Object.assign(new Error('Connect Timeout Error (attempted address: api.telegram.org:443, timeout: 10000ms)'), { code: 'UND_ERR_CONNECT_TIMEOUT' });
+  const deep = createBot({ token: TOKEN, fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: nested }); } });
+  await assert.rejects(deep('sendMessage', {}), (e) => e.message === 'telegram sendMessage failed: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error (attempted address: api.telegram.org:443, timeout: 10000ms))');
+  // a cause with no code, and none at all, as before
+  const plain = createBot({ token: TOKEN, fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: new Error('other side closed') }); } });
+  await assert.rejects(plain('getUpdates', {}), (e) => e.message === 'telegram getUpdates failed: fetch failed (other side closed)');
+});
+
 test('run/telegram.json keeps the bot, the offset with its time, the sent messages, the nonces and the reply prompts; anything broken reads as empty', () => {
   const root = tmpDir('tg');
   assert.deepEqual(readTelegramState(root), { v: 1, bot: null, offset: 0, offsetAt: null, sent: {}, nonces: {}, replies: {} });

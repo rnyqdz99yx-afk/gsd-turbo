@@ -745,7 +745,11 @@ test('with several lanes formatView is the pane in plain lines too: summary, blo
     textLanes({ next: { phase: '36', why: 'gates', waitsFor: ['33'], gate: 'owner-live' } }),
     textLanes({ next: null, questions: [] }, { status: 'done', step: null }),
     textView({}, { key: '32', job: 'phase', slot: 2 }),
+    // v0.9.2: merged into the main branch, its close still owed (obs-chat phase 37)
+    textLanes({ next: null, questions: [] }, { status: 'ready', closeOwed: true, step: null }),
+    textView({ supervisor: stopped, questions: [] }, { key: '32', job: 'phase', slot: 1, status: 'ready', closeOwed: true, step: null }),
   ];
+  assert.ok(formatView(textLanes({ next: null, questions: [] }, { status: 'ready', closeOwed: true, step: null })).split('\n').some((x) => x.startsWith('Phase 33 · lane 2 merged into the main branch — the phase still has to be closed')), 'status words a merged lane whose close is owed');
   for (const lang of ['en', 'ru']) {
     for (const v of views) {
       // a question is a card with buttons in the pane and a list in the text: the lines are equal without questions

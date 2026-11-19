@@ -1350,6 +1350,15 @@ test('review I3: a lane that finished and is being merged is calm: its own words
   assert.ok(lines(prepped).includes('Phase 35 · lane 3 done — being merged into the main branch · 3m'), lines(prepped).join('\n'));
 });
 
+test('v0.9.2: a lane merged into the main branch whose close is still owed says so, never «being merged»', () => {
+  // obs-chat phase 37: merged, GSD refused phase.complete, the lane record stayed `ready` (closeOwed from the merge record)
+  const v = lanes3({ questions: [] }, { agents: [agent()] }, { status: 'ready', closeOwed: true, step: null, quiet: true, agents: [] });
+  const l = lines(v);
+  assert.ok(l.includes('Phase 33 · lane 2 merged into the main branch — the phase still has to be closed · 2 of 4 plans done · 24m'), l.join('\n'));
+  assert.ok(!l.some((x) => /being merged/.test(x)), l.join('\n'));
+  assert.ok(lines({ ...v, ...RU }).includes('Фаза 33 · полоса 2 влита в основную ветку — осталось закрыть фазу · 2 из 4 планов готово · 24 мин'), lines({ ...v, ...RU }).join('\n'));
+});
+
 test('review M8: a lone prep lane draws no phase chain and no phase steps, only what is needed from the owner', () => {
   const l = lines(view({}, { key: 'prep-35', job: 'prep', slot: 1, phase: '35', step: 'discuss', plans: null }));
   assert.equal(l[0], 'Phase 35 · lane 1 — getting ready ahead: discussion · 1h 12m · needs your answer (1)');

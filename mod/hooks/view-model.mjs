@@ -84,7 +84,7 @@ const VIEW_WORDS = {
       paused: 'paused: needs a fresh context', done: 'done', halted: 'supervisor stopped', failing: (at) => `supervisor failing${at ? ` since ${at}` : ''}`,
       attended: (p) => `phase ${p} is running in your session`, supStopped: 'supervisor not running', finished: 'all phases done', never: 'supervisor never started',
       // Stage 4: a lane the supervisor stopped alone; a lane whose turn ended and that is merged into main
-      laneHalted: 'a lane stopped — the other lanes go on', merging: 'done — being merged into the main branch',
+      laneHalted: 'a lane stopped — the other lanes go on', merging: 'done — being merged into the main branch', closeOwed: 'merged into the main branch — the phase still has to be closed',
       // supervisor.json exists but holds no state (lib/sup-state.mjs): never «never started»
       damaged: 'supervisor state damaged (likely a machine crash) — run turbo-run start, it rebuilds the lanes',
     },
@@ -99,7 +99,7 @@ const VIEW_WORDS = {
     // Stage 6 B4: a build phase's slices (buildRows); v0.6.1: one build line with the step and the fix round
     buildHead: (step) => `Build: ${step}`,
     // v0.8.1: a build that no longer runs is never worded as going on (the lane record, or its runner's dead record)
-    buildOver: { done: () => 'Build finished: the phase is closed', ready: () => 'Build finished: the phase is built and waits for its merge and close', failed: (step) => `Build stopped by a failure at: ${step}`, dead: (step) => `Build is not running: it stopped at: ${step}` },
+    buildOver: { done: () => 'Build finished: the phase is closed', ready: () => 'Build finished: the phase is built and waits for its merge and close', merged: () => 'Build finished: the phase is merged into the main branch and waits for its close', failed: (step) => `Build stopped by a failure at: ${step}`, dead: (step) => `Build is not running: it stopped at: ${step}` },
     slicesHead: (m, n) => `slices ${m} of ${n} merged`,
     slicesBuilding: (k) => `${k} building`,
     slicesWaiting: (k) => `${k} waiting`,
@@ -202,7 +202,7 @@ const VIEW_WORDS = {
       quietTold: (d) => `тишина${d ? ` ${d}` : ''} — разбудить сессию не вышло: нужны вы`, quietHelper: (who, d, more) => `идёт, но ⚠️ ${who} молчит${d ? ` ${d}` : ''}${more ? ` (и ещё ${more})` : ''}`,
       paused: 'на паузе: нужен новый контекст', done: 'готова', halted: 'супервизор остановился', failing: (at) => `супервизор сбоит${at ? ` с ${at}` : ''}`,
       attended: (p) => `фаза ${p} идёт у вас в этой сессии`, supStopped: 'супервизор не работает', finished: 'все фазы готовы', never: 'супервизор не запускался',
-      laneHalted: 'полоса остановилась — остальные идут дальше', merging: 'готова — вливается в основную ветку',
+      laneHalted: 'полоса остановилась — остальные идут дальше', merging: 'готова — вливается в основную ветку', closeOwed: 'влита в основную ветку — осталось закрыть фазу',
       damaged: 'состояние супервизора повреждено (вероятно, сбой машины) — запустите turbo-run start, он восстановит полосы',
     },
     reason: 'Причина',
@@ -213,7 +213,7 @@ const VIEW_WORDS = {
     quietAgent: (who, d) => `⚠️ ${who} молчит${d ? ` ${d}` : ''}`,
     busy: (d) => `идёт долгая команда${d ? ` · ${d}` : ''}`,
     buildHead: (step) => `Сборка: ${step}`,
-    buildOver: { done: () => 'Сборка закончена: фаза закрыта', ready: () => 'Сборка закончена: фаза собрана, ждёт слияния и закрытия', failed: (step) => `Сборка остановлена сбоем на шаге: ${step}`, dead: (step) => `Сборка не идёт: остановилась на шаге: ${step}` },
+    buildOver: { done: () => 'Сборка закончена: фаза закрыта', ready: () => 'Сборка закончена: фаза собрана, ждёт слияния и закрытия', merged: () => 'Сборка закончена: фаза влита в основную ветку, ждёт закрытия', failed: (step) => `Сборка остановлена сбоем на шаге: ${step}`, dead: (step) => `Сборка не идёт: остановилась на шаге: ${step}` },
     slicesHead: (m, n) => `куски: слито ${m} из ${n}`,
     slicesBuilding: (k) => `собираются ${k}`,
     slicesWaiting: (k) => `в очереди ${k}`,
@@ -637,7 +637,8 @@ function laneState(t, view, lane, asked) {
   // Stage 4: a lane the supervisor stopped alone (L1's lane.halted); the other lanes go on
   if (lane.halted) return { kind: 'laneHalted', tone: 'bad', text: t.stoppedLane };
   if (lane.held === 'fullMode') return { kind: 'fullMode', tone: 'bad', text: t.verdict.fullMode };
-  const [kind, tone] = LANE_KINDS[lane.status] ?? [];
+  // v0.9.2: merged into the main branch, its close still owed (lib/view.mjs closeOwed): never «being merged»
+  const [kind, tone] = lane.status === 'ready' && lane.closeOwed === true ? ['closeOwed', 'warn'] : LANE_KINDS[lane.status] ?? [];
   return kind ? { kind, tone, text: kind === 'needsOwner' ? t.verdict.needsOwner(asked) : t.verdict[kind] } : null;
 }
 
@@ -987,7 +988,7 @@ const MERGING = new Set(['ready', 'prepped', 'annotated']);
 function stepHalt(view, lane) {
   if (laneForm(view, lane) === 'running' || attendedLane(view, lane)) return null;
   const asks = shownQuestions(view).some((q) => String(q?.phase ?? '') === String(lane.phase));
-  if (MERGING.has(lane.status) && !lane.halted && lane.held !== 'fullMode' && view?.supervisor?.running && !asks) return null;
+  if (MERGING.has(lane.status) && lane.closeOwed !== true && !lane.halted && lane.held !== 'fullMode' && view?.supervisor?.running && !asks) return null;
   return STOPPED.has(lane.status) || lane.held === 'fullMode' || lane.halted ? 'bad' : 'warn';
 }
 

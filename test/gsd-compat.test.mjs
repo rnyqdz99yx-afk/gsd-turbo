@@ -75,21 +75,21 @@ test('compare: an exit, a tree or a field turbo reads that differs is a break; a
 });
 
 test('pickVersions: the newest GSD of the tested range is the base; issuePlan: one issue per version and verdict', () => {
-  const all = ['1.15.9', '1.16.0', '1.21.0', '1.22.0', '1.22.1', '1.23.0', '1.23.0-rc.1', '2.0.0'];
-  assert.deepEqual(pickVersions(all, '1.23.0'), { base: '1.22.1', head: '1.23.0', cls: 'newer' });
-  assert.deepEqual(pickVersions(all, '1.22.1'), { base: '1.22.1', head: '1.22.1', cls: 'tested' });
+  const all = ['1.15.9', '1.16.0', '1.21.0', '1.23.0', '1.23.1', '1.24.0', '1.24.0-rc.1', '2.0.0'];
+  assert.deepEqual(pickVersions(all, '1.24.0'), { base: '1.23.1', head: '1.24.0', cls: 'newer' });
+  assert.deepEqual(pickVersions(all, '1.23.1'), { base: '1.23.1', head: '1.23.1', cls: 'tested' });
   assert.deepEqual(pickVersions(['2.0.0'], '2.0.0'), { base: null, head: '2.0.0', cls: 'other' });
-  const fail = 'GSD 1.23.0: the compatibility check fails';
-  const pass = 'GSD 1.23.0 passes the compatibility check: the tested range can take it';
-  assert.deepEqual(issuePlan({ verdict: 'fail', version: '1.23.0', cls: 'newer', open: [] }), { action: 'create', title: fail });
-  assert.deepEqual(issuePlan({ verdict: 'fail', version: '1.23.0', cls: 'newer', open: [fail] }), { action: 'comment', title: fail });
-  assert.deepEqual(issuePlan({ verdict: 'fail', version: '1.22.0', cls: 'tested', open: [] }).action, 'create', 'a tested version that fails is said too');
-  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.23.0', cls: 'newer', open: [] }), { action: 'create', title: pass });
-  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.23.0', cls: 'newer', open: [pass] }), { action: 'none', title: null });
-  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.22.0', cls: 'tested', open: [] }), { action: 'none', title: null });
+  const fail = 'GSD 1.24.0: the compatibility check fails';
+  const pass = 'GSD 1.24.0 passes the compatibility check: the tested range can take it';
+  assert.deepEqual(issuePlan({ verdict: 'fail', version: '1.24.0', cls: 'newer', open: [] }), { action: 'create', title: fail });
+  assert.deepEqual(issuePlan({ verdict: 'fail', version: '1.24.0', cls: 'newer', open: [fail] }), { action: 'comment', title: fail });
+  assert.deepEqual(issuePlan({ verdict: 'fail', version: '1.23.0', cls: 'tested', open: [] }).action, 'create', 'a tested version that fails is said too');
+  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.24.0', cls: 'newer', open: [] }), { action: 'create', title: pass });
+  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.24.0', cls: 'newer', open: [pass] }), { action: 'none', title: null });
+  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.23.0', cls: 'tested', open: [] }), { action: 'none', title: null });
   // a pass closes the failure issue of that version; the "passes" issue of a newer version follows on the next pass
-  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.23.0', cls: 'newer', open: [fail] }), { action: 'close', title: fail });
-  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.22.0', cls: 'tested', open: ['GSD 1.22.0: the compatibility check fails', fail] }), { action: 'close', title: 'GSD 1.22.0: the compatibility check fails' });
+  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.24.0', cls: 'newer', open: [fail] }), { action: 'close', title: fail });
+  assert.deepEqual(issuePlan({ verdict: 'pass', version: '1.23.0', cls: 'tested', open: ['GSD 1.23.0: the compatibility check fails', fail] }), { action: 'close', title: 'GSD 1.23.0: the compatibility check fails' });
 });
 
 // The synthetic project is one the installed GSD accepts: every call of the list exits 0 on it. On the nightly

@@ -45,11 +45,11 @@ test('buildPathFor: the refusals of spec §6.8, each with its reason', () => {
   const tested = fs.readFileSync(versionFile, 'utf8');
   fs.writeFileSync(versionFile, '1.15.9\n');
   assert.deepEqual(buildPathFor(p.root, '5'), { build: false, why: 'gsd-core 1.15.9 is outside the tested range' });
-  fs.writeFileSync(versionFile, '1.23.0\n');
+  fs.writeFileSync(versionFile, '1.24.0\n');
   const seen = [];
-  const usable = (ok) => (core, root) => { seen.push([core, root]); return { ok, cls: 'newer', detail: ok ? 'fine' : '1.23.0 (tested >=1.16.0 <1.23.0); on this version: init manager: no phases list' }; };
+  const usable = (ok) => (core, root) => { seen.push([core, root]); return { ok, cls: 'newer', detail: ok ? 'fine' : '1.24.0 (tested >=1.16.0 <1.24.0); on this version: init manager: no phases list' }; };
   assert.deepEqual(buildPathFor(p.root, '5', { gsdUsable: usable(true) }), { build: true, why: '' });
-  assert.deepEqual(buildPathFor(p.root, '5', { gsdUsable: usable(false) }), { build: false, why: 'gsd-core 1.23.0 (tested >=1.16.0 <1.23.0); on this version: init manager: no phases list' });
+  assert.deepEqual(buildPathFor(p.root, '5', { gsdUsable: usable(false) }), { build: false, why: 'gsd-core 1.24.0 (tested >=1.16.0 <1.24.0); on this version: init manager: no phases list' });
   assert.deepEqual(seen[0], [gsdCoreDir(p.root), p.root]);
   fs.writeFileSync(versionFile, tested);
   writeAttend(p.root, '5');

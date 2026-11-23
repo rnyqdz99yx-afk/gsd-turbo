@@ -158,7 +158,7 @@ test('safe mode when the GSD version is older than the tested range or of anothe
     const exec = (cmd, args) => { asked.push(args.join(' ')); return execOk('2.1.291')(cmd, args); };
     const r = doctor({ root: e.root, env: { CLAUDE_CONFIG_DIR: e.home }, exec, claudeBin: BIN });
     assert.equal(r.mode, 'safe', version);
-    assert.deepEqual(r.checks.find((c) => c.name === 'gsd-version'), { name: 'gsd-version', ok: false, detail: `${version} (tested >=1.16.0 <1.23.0)` });
+    assert.deepEqual(r.checks.find((c) => c.name === 'gsd-version'), { name: 'gsd-version', ok: false, detail: `${version} (tested >=1.16.0 <1.24.0)` });
     assert.ok(!asked.some((a) => a.includes('config-get workflow.no_such_key_turbo')), 'no read checks on a version that is not newer');
   }
 });
@@ -167,7 +167,7 @@ test('safe mode when the GSD version is older than the tested range or of anothe
 test('a GSD newer than the tested range: full mode with a warning when the read checks pass, safe mode naming the check that fails', () => {
   const newer = () => {
     const e = env();
-    fs.writeFileSync(path.join(e.core, 'VERSION'), '1.23.0');
+    fs.writeFileSync(path.join(e.core, 'VERSION'), '1.24.0');
     for (const f of GSD_FILES.agents) fs.writeFileSync(path.join(e.home, 'agents', f), 'x');
     for (const f of GSD_FILES.core) {
       fs.mkdirSync(path.dirname(path.join(e.core, ...f.split('/'))), { recursive: true });
@@ -186,14 +186,14 @@ test('a GSD newer than the tested range: full mode with a warning when the read 
   assert.equal(r.mode, 'full', JSON.stringify(r.checks));
   assert.deepEqual(r.checks.find((c) => c.name === 'gsd-version'), {
     name: 'gsd-version', ok: true, warn: true,
-    detail: '1.23.0 is newer than the tested range (>=1.16.0 <1.23.0): 5 read checks of what turbo uses passed; what turbo writes through GSD is not checked on this version; turbo-run update brings a release tested with it',
+    detail: '1.24.0 is newer than the tested range (>=1.16.0 <1.24.0): 5 read checks of what turbo uses passed; what turbo writes through GSD is not checked on this version; turbo-run update brings a release tested with it',
   });
   const b = newer();
   const bad = doctor({ root: b.root, env: { CLAUDE_CONFIG_DIR: b.home }, exec: exec('null\n'), claudeBin: BIN });
   assert.equal(bad.mode, 'safe');
   assert.deepEqual(bad.checks.find((c) => c.name === 'gsd-version'), {
     name: 'gsd-version', ok: false,
-    detail: '1.23.0 (tested >=1.16.0 <1.23.0); on this version: config-get --default --raw: a key that is not set printed "null", not the default',
+    detail: '1.24.0 (tested >=1.16.0 <1.24.0); on this version: config-get --default --raw: a key that is not set printed "null", not the default',
   });
   // a GSD file turbo's prompts name is gone in the newer version
   const g = newer();

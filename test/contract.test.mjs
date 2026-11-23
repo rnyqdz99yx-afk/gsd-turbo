@@ -51,9 +51,9 @@ function gsdAnswers(over = {}, calls = []) {
 }
 
 test('versionClass: tested, newer in the same major, anything else', () => {
-  assert.equal(GSD_TESTED_RANGE, '>=1.16.0 <1.23.0');
-  assert.deepEqual(['1.16.0', '1.22.9'].map((v) => versionClass(v)), ['tested', 'tested']);
-  assert.deepEqual(['1.23.0', '1.23.4', '1.40.0'].map((v) => versionClass(v)), ['newer', 'newer', 'newer']);
+  assert.equal(GSD_TESTED_RANGE, '>=1.16.0 <1.24.0');
+  assert.deepEqual(['1.16.0', '1.23.9'].map((v) => versionClass(v)), ['tested', 'tested']);
+  assert.deepEqual(['1.24.0', '1.24.4', '1.40.0'].map((v) => versionClass(v)), ['newer', 'newer', 'newer']);
   assert.deepEqual(['1.15.9', '2.0.0', '0.9.0', 'garbage', ''].map((v) => versionClass(v)), ['other', 'other', 'other', 'other', 'other']);
   assert.deepEqual(['1.30.0', '1.10.0'].map((v) => versionClass(v, '>=1.16.0')), ['tested', 'other'], 'a range without an upper bound has no newer side');
 });
@@ -90,7 +90,7 @@ test('GSD_FILES names every GSD file the roles, skills and code refer to, and no
 });
 
 test('probeGsd: every read check passes on the answers turbo reads; each broken answer is named', () => {
-  const { core } = gsdHome('1.23.0');
+  const { core } = gsdHome('1.24.0');
   const root = tmpDir('proj');
   const calls = [];
   const ok = probeGsd({ core, root, exec: gsdAnswers({}, calls) });
@@ -112,7 +112,7 @@ test('probeGsd: every read check passes on the answers turbo reads; each broken 
   assert.deepEqual(empty.map((c) => c.name), ['init manager', 'config-get --default --raw', 'config-get workflow.security_enforcement', 'loop render-hooks verify:post', 'gsd files']);
   assert.ok(empty.every((c) => c.ok));
   // a GSD file turbo's prompts name is gone
-  const cut = gsdHome('1.23.0');
+  const cut = gsdHome('1.24.0');
   fs.rmSync(path.join(cut.core, 'workflows', 'secure-phase.md'));
   fs.rmSync(path.join(cut.home, 'agents', 'gsd-verifier.md'));
   assert.deepEqual(probeGsd({ core: cut.core, root, exec: gsdAnswers() }).at(-1), { name: 'gsd files', ok: false, why: 'missing: agents/gsd-verifier.md, workflows/secure-phase.md' });
@@ -121,21 +121,21 @@ test('probeGsd: every read check passes on the answers turbo reads; each broken 
 test('gsdUsable: a tested GSD without a call; a newer one by the read checks; an older one or another major never', () => {
   const root = tmpDir('proj');
   const none = () => { throw new Error('no call expected'); };
-  const tested = gsdUsable(gsdHome('1.22.0').core, root, { exec: none });
-  assert.deepEqual([tested.ok, tested.cls, tested.detail], [true, 'tested', '1.22.0 (tested >=1.16.0 <1.23.0)']);
+  const tested = gsdUsable(gsdHome('1.23.0').core, root, { exec: none });
+  assert.deepEqual([tested.ok, tested.cls, tested.detail], [true, 'tested', '1.23.0 (tested >=1.16.0 <1.24.0)']);
   for (const v of ['1.15.9', '2.0.0']) {
     const r = gsdUsable(gsdHome(v).core, root, { exec: none });
-    assert.deepEqual([r.ok, r.cls, r.detail], [false, 'other', `${v} (tested >=1.16.0 <1.23.0)`]);
+    assert.deepEqual([r.ok, r.cls, r.detail], [false, 'other', `${v} (tested >=1.16.0 <1.24.0)`]);
   }
-  assert.deepEqual([gsdUsable(null, root, { exec: none }).ok, gsdUsable(null, root, { exec: none }).detail], [false, '? (tested >=1.16.0 <1.23.0)']);
-  const newer = gsdUsable(gsdHome('1.23.0').core, root, { exec: gsdAnswers() });
+  assert.deepEqual([gsdUsable(null, root, { exec: none }).ok, gsdUsable(null, root, { exec: none }).detail], [false, '? (tested >=1.16.0 <1.24.0)']);
+  const newer = gsdUsable(gsdHome('1.24.0').core, root, { exec: gsdAnswers() });
   assert.deepEqual([newer.ok, newer.cls], [true, 'newer']);
-  assert.equal(newer.detail, '1.23.0 is newer than the tested range (>=1.16.0 <1.23.0): 9 read checks of what turbo uses passed; what turbo writes through GSD is not checked on this version');
-  const broken = gsdUsable(gsdHome('1.23.0').core, root, { exec: gsdAnswers({ 'phase-plan-index 5': '{"error":"moved"}' }) });
+  assert.equal(newer.detail, '1.24.0 is newer than the tested range (>=1.16.0 <1.24.0): 9 read checks of what turbo uses passed; what turbo writes through GSD is not checked on this version');
+  const broken = gsdUsable(gsdHome('1.24.0').core, root, { exec: gsdAnswers({ 'phase-plan-index 5': '{"error":"moved"}' }) });
   assert.deepEqual([broken.ok, broken.cls], [false, 'newer']);
-  assert.equal(broken.detail, '1.23.0 (tested >=1.16.0 <1.23.0); on this version: phase-plan-index: no plans list');
+  assert.equal(broken.detail, '1.24.0 (tested >=1.16.0 <1.24.0); on this version: phase-plan-index: no plans list');
   // outside a project nothing can be asked: not usable, no call
-  assert.equal(gsdUsable(gsdHome('1.23.0').core, null, { exec: none }).ok, false);
+  assert.equal(gsdUsable(gsdHome('1.24.0').core, null, { exec: none }).ok, false);
 });
 
 test('the read checks pass on the installed GSD', { skip: NO_REAL_GSD, timeout: 120000 }, () => {
